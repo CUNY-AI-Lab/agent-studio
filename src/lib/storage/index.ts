@@ -45,10 +45,28 @@ export interface CardsData {
   }[];
 }
 
+// Tool execution tracking for message display
+export interface ToolExecution {
+  id: string;
+  name: string;
+  input: unknown;
+  status: 'running' | 'success' | 'error';
+  output?: string;
+  startTime?: number;
+  elapsedTime?: number;
+}
+
+export interface ContentBlock {
+  type: 'text' | 'tools';
+  text?: string;
+  tools?: ToolExecution[];
+}
+
 // Message type
 export interface Message {
   role: 'user' | 'assistant';
   content: string;
+  blocks?: ContentBlock[];
 }
 
 // Download request

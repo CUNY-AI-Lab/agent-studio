@@ -25,10 +25,32 @@ export interface Message {
   blocks?: ContentBlock[];
 }
 
+// Panel update type matching runtime
+export interface PanelUpdate {
+  action: 'add' | 'update' | 'remove';
+  panel: {
+    id: string;
+    type: string;
+    title?: string;
+    tableId?: string;
+    chartId?: string;
+    cardsId?: string;
+    content?: string;
+    layout?: { x?: number; y?: number; w?: number; h?: number };
+  };
+  data?: {
+    table?: unknown;
+    chart?: unknown;
+    cards?: unknown;
+    content?: string;
+  };
+}
+
 interface UseStreamingQueryOptions {
   workspaceId: string;
   onMessagesUpdate: (updater: (prev: Message[]) => Message[]) => void;
   onComplete: () => Promise<void>;
+  onPanelUpdate?: (updates: PanelUpdate[]) => void;
 }
 
 const MAX_RETRIES = 2;
@@ -38,6 +60,7 @@ export function useStreamingQuery({
   workspaceId,
   onMessagesUpdate,
   onComplete,
+  onPanelUpdate,
 }: UseStreamingQueryOptions) {
   const isLoadingRef = useRef(false);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
@@ -252,6 +275,11 @@ export function useStreamingQuery({
                 flushTools();
 
                 updateMessage();
+              } else if (event.type === 'panel_update') {
+                // Handle panel updates from server
+                if (onPanelUpdate && event.panelUpdates) {
+                  onPanelUpdate(event.panelUpdates);
+                }
               } else if (event.type === 'done' || event.type === 'aborted') {
                 stopToolTimer();
                 readerRef.current = null;

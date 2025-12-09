@@ -14,7 +14,7 @@ import { SafeMarkdown } from '@/components/SafeMarkdown';
 import { toPng } from 'html-to-image';
 import { useTheme } from '@/components/ThemeProvider';
 import { apiFetch } from '@/lib/api';
-import { useStreamingQuery, type Message, type ToolExecution, type ContentBlock } from '@/hooks/useStreamingQuery';
+import { useStreamingQuery, type Message, type ToolExecution, type ContentBlock, type PanelUpdate } from '@/hooks/useStreamingQuery';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -131,6 +131,8 @@ export default function WorkspacePage() {
   const [editingDescription, setEditingDescription] = useState(false);
   const [tempTitle, setTempTitle] = useState('');
   const [tempDescription, setTempDescription] = useState('');
+  const originalTitleRef = useRef('');
+  const originalDescriptionRef = useRef('');
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; path: string }[]>([]);
   const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
@@ -147,6 +149,68 @@ export default function WorkspacePage() {
   // Load workspace callback (forward declared for hook)
   const loadWorkspaceRef = useRef<((options?: { skipMessages?: boolean }) => Promise<void>) | undefined>(undefined);
 
+  // Handle panel updates from streaming
+  const handlePanelUpdates = useCallback((updates: PanelUpdate[]) => {
+    for (const update of updates) {
+      const { action, panel, data } = update;
+      // Cast panel to UIPanel since we know server sends valid types
+      const typedPanel = panel as unknown as UIPanel;
+
+      if (action === 'add') {
+        // Add new panel to UI state
+        setUIState(prev => {
+          // Check if panel already exists
+          const exists = prev.panels.some(p => p.id === typedPanel.id);
+          if (exists) {
+            // Update existing panel
+            return {
+              ...prev,
+              panels: prev.panels.map(p => p.id === typedPanel.id ? { ...p, ...typedPanel } : p)
+            };
+          }
+          return {
+            ...prev,
+            panels: [...prev.panels, typedPanel]
+          };
+        });
+
+        // Add associated data
+        if (data?.table && typedPanel.tableId) {
+          setTables(prev => ({ ...prev, [typedPanel.tableId!]: data.table as TableData }));
+        }
+        if (data?.chart && typedPanel.chartId) {
+          setCharts(prev => ({ ...prev, [typedPanel.chartId!]: data.chart as ChartData }));
+        }
+        if (data?.cards && typedPanel.cardsId) {
+          setCards(prev => ({ ...prev, [typedPanel.cardsId!]: data.cards as CardsData }));
+        }
+      } else if (action === 'update') {
+        // Update existing panel
+        setUIState(prev => ({
+          ...prev,
+          panels: prev.panels.map(p => p.id === typedPanel.id ? { ...p, ...typedPanel } : p)
+        }));
+
+        // Update associated data
+        if (data?.table && typedPanel.tableId) {
+          setTables(prev => ({ ...prev, [typedPanel.tableId!]: data.table as TableData }));
+        }
+        if (data?.chart && typedPanel.chartId) {
+          setCharts(prev => ({ ...prev, [typedPanel.chartId!]: data.chart as ChartData }));
+        }
+        if (data?.cards && typedPanel.cardsId) {
+          setCards(prev => ({ ...prev, [typedPanel.cardsId!]: data.cards as CardsData }));
+        }
+      } else if (action === 'remove') {
+        // Remove panel from UI state
+        setUIState(prev => ({
+          ...prev,
+          panels: prev.panels.filter(p => p.id !== typedPanel.id)
+        }));
+      }
+    }
+  }, []);
+
   // Streaming query hook
   const { executeQuery, stopQuery, isLoadingRef } = useStreamingQuery({
     workspaceId,
@@ -156,6 +220,7 @@ export default function WorkspacePage() {
         await loadWorkspaceRef.current({ skipMessages: true });
       }
     },
+    onPanelUpdate: handlePanelUpdates,
   });
 
   // Grid config - responsive row height based on viewport
@@ -764,16 +829,18 @@ export default function WorkspacePage() {
                   type="text"
                   value={tempTitle}
                   onChange={(e) => setTempTitle(e.target.value)}
-                  onBlur={() => {
-                    if (tempTitle.trim() && tempTitle !== workspace.name) {
-                      saveWorkspaceInfo(tempTitle.trim());
+                  onBlur={(e) => {
+                    const value = e.target.value.trim();
+                    if (value && value !== originalTitleRef.current) {
+                      saveWorkspaceInfo(value);
                     }
                     setEditingTitle(false);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
-                      if (tempTitle.trim() && tempTitle !== workspace.name) {
-                        saveWorkspaceInfo(tempTitle.trim());
+                      const value = (e.target as HTMLInputElement).value.trim();
+                      if (value && value !== originalTitleRef.current) {
+                        saveWorkspaceInfo(value);
                       }
                       setEditingTitle(false);
                     } else if (e.key === 'Escape') {
@@ -787,6 +854,7 @@ export default function WorkspacePage() {
                 <h1
                   className="text-xl font-medium cursor-pointer hover:text-primary transition-colors truncate"
                   onClick={() => {
+                    originalTitleRef.current = workspace.name;
                     setTempTitle(workspace.name);
                     setEditingTitle(true);
                   }}
@@ -800,16 +868,18 @@ export default function WorkspacePage() {
                   type="text"
                   value={tempDescription}
                   onChange={(e) => setTempDescription(e.target.value)}
-                  onBlur={() => {
-                    if (tempDescription !== workspace.description) {
-                      saveWorkspaceInfo(undefined, tempDescription);
+                  onBlur={(e) => {
+                    const value = e.target.value;
+                    if (value !== originalDescriptionRef.current) {
+                      saveWorkspaceInfo(undefined, value);
                     }
                     setEditingDescription(false);
                   }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
-                      if (tempDescription !== workspace.description) {
-                        saveWorkspaceInfo(undefined, tempDescription);
+                      const value = (e.target as HTMLInputElement).value;
+                      if (value !== originalDescriptionRef.current) {
+                        saveWorkspaceInfo(undefined, value);
                       }
                       setEditingDescription(false);
                     } else if (e.key === 'Escape') {
@@ -823,6 +893,7 @@ export default function WorkspacePage() {
                 <p
                   className="text-sm text-muted-foreground cursor-pointer hover:text-foreground transition-colors truncate"
                   onClick={() => {
+                    originalDescriptionRef.current = workspace.description || '';
                     setTempDescription(workspace.description || '');
                     setEditingDescription(true);
                   }}

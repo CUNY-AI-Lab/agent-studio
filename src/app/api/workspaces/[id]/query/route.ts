@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getSession } from '@/lib/session';
-import { createSandboxedStorage } from '@/lib/storage';
+import { createSandboxedStorage, type ContentBlock, type ToolExecution } from '@/lib/storage';
 import { createWorkspaceRuntime } from '@/lib/runtime';
 
 // Store active queries for cancellation
@@ -66,6 +66,26 @@ export async function POST(
   const encoder = new TextEncoder();
   let fullResponse = '';
 
+  // Track tool executions for block persistence
+  const contentBlocks: ContentBlock[] = [];
+  let currentTextBlock = '';
+  const currentToolsGroup: ToolExecution[] = [];
+  const toolMap = new Map<string, ToolExecution>();
+
+  const flushText = () => {
+    if (currentTextBlock.trim()) {
+      contentBlocks.push({ type: 'text', text: currentTextBlock });
+      currentTextBlock = '';
+    }
+  };
+
+  const flushTools = () => {
+    if (currentToolsGroup.length > 0) {
+      contentBlocks.push({ type: 'tools', tools: [...currentToolsGroup] });
+      currentToolsGroup.length = 0;
+    }
+  };
+
   const stream = new ReadableStream({
     async start(controller) {
       try {
@@ -81,15 +101,44 @@ export async function POST(
           // Capture both full text and deltas for the final message
           if ((event.type === 'text' || event.type === 'text_delta') && event.content) {
             fullResponse += event.content;
+            currentTextBlock += event.content;
+          } else if (event.type === 'tool_use' && event.toolId && event.toolName) {
+            // Flush text before tools
+            flushText();
+
+            const tool: ToolExecution = {
+              id: event.toolId,
+              name: event.toolName,
+              input: event.toolInput,
+              status: 'running',
+            };
+            toolMap.set(event.toolId, tool);
+            currentToolsGroup.push(tool);
+          } else if (event.type === 'tool_result' && event.toolId) {
+            const tool = toolMap.get(event.toolId);
+            if (tool) {
+              tool.status = event.isError ? 'error' : 'success';
+              tool.output = event.toolResult;
+            }
+            // Flush tools after result
+            flushTools();
           }
         }
 
-        // Save assistant message (even partial if aborted)
+        // Final flush
+        flushText();
+        flushTools();
+
+        // Save assistant message with blocks
         if (fullResponse) {
           const content = abortController.signal.aborted
             ? fullResponse + '\n\n*[Response stopped by user]*'
             : fullResponse;
-          await storage.appendMessage(id, { role: 'assistant', content });
+          await storage.appendMessage(id, {
+            role: 'assistant',
+            content,
+            blocks: contentBlocks.length > 0 ? contentBlocks : undefined
+          });
         }
 
         // Send done or aborted event
@@ -101,8 +150,14 @@ export async function POST(
       } catch (error) {
         // Check if this was an abort
         if (error instanceof Error && error.name === 'AbortError') {
+          flushText();
+          flushTools();
           if (fullResponse) {
-            await storage.appendMessage(id, { role: 'assistant', content: fullResponse + '\n\n*[Response stopped by user]*' });
+            await storage.appendMessage(id, {
+              role: 'assistant',
+              content: fullResponse + '\n\n*[Response stopped by user]*',
+              blocks: contentBlocks.length > 0 ? contentBlocks : undefined
+            });
           }
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'aborted' })}\n\n`));
           controller.close();

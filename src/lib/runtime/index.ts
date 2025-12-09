@@ -1,6 +1,18 @@
 import { query, createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk';
-import { SandboxedStorage, WorkspaceConfig, Message } from '../storage';
+import { SandboxedStorage, WorkspaceConfig, Message, UIPanel, Table, ChartData, CardsData } from '../storage';
 import { getTools, ToolContext } from '../tools';
+
+// Panel update type matching execute.ts
+export interface PanelUpdate {
+  action: 'add' | 'update' | 'remove';
+  panel: UIPanel;
+  data?: {
+    table?: Table;
+    chart?: ChartData;
+    cards?: CardsData;
+    content?: string;
+  };
+}
 
 export interface QueryOptions {
   abortController?: AbortController;
@@ -14,7 +26,7 @@ export interface WorkspaceRuntime {
 }
 
 export interface StreamEvent {
-  type: 'text' | 'text_delta' | 'tool_use' | 'tool_result' | 'error' | 'done';
+  type: 'text' | 'text_delta' | 'tool_use' | 'tool_result' | 'panel_update' | 'error' | 'done';
   content?: string;
   toolId?: string;
   toolName?: string;
@@ -22,6 +34,24 @@ export interface StreamEvent {
   toolResult?: string;
   isError?: boolean;
   error?: string;
+  // For panel_update events
+  panelUpdates?: PanelUpdate[];
+}
+
+// Parse panel updates from tool result
+function extractPanelUpdates(toolResult: string): { cleanResult: string; panelUpdates: PanelUpdate[] } {
+  const marker = /__PANEL_UPDATES_START__([\s\S]*?)__PANEL_UPDATES_END__/;
+  const match = toolResult.match(marker);
+  if (match) {
+    try {
+      const panelUpdates = JSON.parse(match[1]) as PanelUpdate[];
+      const cleanResult = toolResult.replace(marker, '').trim();
+      return { cleanResult, panelUpdates };
+    } catch {
+      return { cleanResult: toolResult, panelUpdates: [] };
+    }
+  }
+  return { cleanResult: toolResult, panelUpdates: [] };
 }
 
 export function createWorkspaceRuntime(
@@ -132,7 +162,7 @@ export function createWorkspaceRuntime(
             // Tool results come back as user messages
             for (const block of event.message.content) {
               if (block.type === 'tool_result') {
-                const resultText =
+                const rawResultText =
                   typeof block.content === 'string'
                     ? block.content
                     : Array.isArray(block.content)
@@ -141,12 +171,24 @@ export function createWorkspaceRuntime(
                         .map((c: { type: 'text'; text: string }) => c.text)
                         .join('\n')
                     : '';
+
+                // Extract panel updates from result
+                const { cleanResult, panelUpdates } = extractPanelUpdates(rawResultText);
+
                 yield {
                   type: 'tool_result',
                   toolId: block.tool_use_id,
-                  toolResult: resultText,
+                  toolResult: cleanResult,
                   isError: block.is_error,
                 };
+
+                // Emit panel updates as separate event if any
+                if (panelUpdates.length > 0) {
+                  yield {
+                    type: 'panel_update',
+                    panelUpdates,
+                  };
+                }
               }
             }
           }

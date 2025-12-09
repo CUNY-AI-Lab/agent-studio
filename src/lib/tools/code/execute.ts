@@ -7,7 +7,19 @@ import { PDFParse } from 'pdf-parse';
 import { minimatch } from 'minimatch';
 import { XMLParser } from 'fast-xml-parser';
 import type { ToolContext } from '../types';
-import type { UIPanel } from '../../storage';
+import type { UIPanel, Table, ChartData, CardsData } from '../../storage';
+
+// Panel update type for streaming to client
+export interface PanelUpdate {
+  action: 'add' | 'update' | 'remove';
+  panel: UIPanel;
+  data?: {
+    table?: Table;
+    chart?: ChartData;
+    cards?: CardsData;
+    content?: string;
+  };
+}
 
 // Skills directory location
 const SKILLS_DIR = path.join(process.cwd(), 'src/lib/skills');
@@ -21,9 +33,15 @@ const SKILLS_DIR = path.join(process.cwd(), 'src/lib/skills');
 export const createExecuteTool = (ctx: ToolContext) => {
   const { storage, workspaceId } = ctx;
 
+  // Track panel updates during execution for streaming to client
+  const panelUpdates: PanelUpdate[] = [];
+
   // Create wrapper functions that call the actual storage/tool operations
   // These are the Unix-style primitives exposed to agent code
   const toolFunctions = {
+    // Panel updates getter (for extracting after execution)
+    __panelUpdates: panelUpdates,
+
     // === I/O ===
     async read(from: string): Promise<unknown> {
       if (from.startsWith('table:')) {
@@ -194,12 +212,13 @@ export const createExecuteTool = (ctx: ToolContext) => {
         ?? existing?.columns
         ?? (rows.length > 0 ? Object.keys(rows[0]).map(k => ({ key: k, label: k, type: 'text' as const })) : []);
 
-      await storage.setTable(workspaceId, id, {
+      const tableData: Table = {
         id,
         title: config.title ?? existing?.title ?? id,
         columns,
         data: rows,
-      });
+      };
+      await storage.setTable(workspaceId, id, tableData);
 
       // Auto-add table panel if not exists
       const ui = await storage.getUIState(workspaceId);
@@ -210,24 +229,38 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const layout = config.layout ?? defaultLayout;
 
       if (!existingPanel) {
-        await storage.addPanel(workspaceId, {
+        const panel: UIPanel = {
           id: `table-${id}`,
           type: 'table',
           tableId: id,
           title: config.title ?? id,
           layout
-        });
-      } else if (config.layout) {
-        await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+        };
+        await storage.addPanel(workspaceId, panel);
+        // Track for streaming
+        panelUpdates.push({ action: 'add', panel, data: { table: tableData } });
+      } else {
+        if (config.layout) {
+          await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+        }
+        // Track update for streaming
+        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: config.layout ?? existingPanel.layout }, data: { table: tableData } });
       }
     },
 
     async addPanel(panel: Omit<UIPanel, 'type'> & { type: string }): Promise<void> {
-      await storage.addPanel(workspaceId, panel as UIPanel);
+      const typedPanel = panel as UIPanel;
+      await storage.addPanel(workspaceId, typedPanel);
+      panelUpdates.push({ action: 'add', panel: typedPanel });
     },
 
     async removePanel(id: string): Promise<void> {
+      const ui = await storage.getUIState(workspaceId);
+      const panel = ui.panels.find(p => p.id === id);
       await storage.removePanel(workspaceId, id);
+      if (panel) {
+        panelUpdates.push({ action: 'remove', panel });
+      }
     },
 
     async updatePanel(id: string, updates: Partial<UIPanel>): Promise<void> {
@@ -245,7 +278,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
       valueKey?: string;
       layout?: { x?: number; y?: number; w?: number; h?: number };
     }): Promise<void> {
-      const chartData = {
+      const chartData: ChartData = {
         id,
         title: config.title ?? id,
         type: config.type,
@@ -268,15 +301,20 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const layout = config.layout ?? defaultLayout;
 
       if (!existingPanel) {
-        await storage.addPanel(workspaceId, {
+        const panel: UIPanel = {
           id: `chart-${id}`,
           type: 'chart',
           chartId: id,
           title: config.title ?? id,
           layout
-        });
-      } else if (config.layout) {
-        await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+        };
+        await storage.addPanel(workspaceId, panel);
+        panelUpdates.push({ action: 'add', panel, data: { chart: chartData } });
+      } else {
+        if (config.layout) {
+          await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+        }
+        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: config.layout ?? existingPanel.layout }, data: { chart: chartData } });
       }
     },
 
@@ -286,7 +324,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
       items: { title: string; subtitle?: string; description?: string; image?: string; badge?: string; metadata?: Record<string, string> }[];
       layout?: { x?: number; y?: number; w?: number; h?: number };
     }): Promise<void> {
-      const cardsData = {
+      const cardsData: CardsData = {
         id,
         title: config.title ?? id,
         items: config.items.map((item, i) => ({ id: String(i), ...item })),
@@ -302,15 +340,20 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const layout = config.layout ?? defaultLayout;
 
       if (!existingPanel) {
-        await storage.addPanel(workspaceId, {
+        const panel: UIPanel = {
           id: `cards-${id}`,
           type: 'cards',
           cardsId: id,
           title: config.title ?? id,
           layout
-        });
-      } else if (config.layout) {
-        await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+        };
+        await storage.addPanel(workspaceId, panel);
+        panelUpdates.push({ action: 'add', panel, data: { cards: cardsData } });
+      } else {
+        if (config.layout) {
+          await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+        }
+        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: config.layout ?? existingPanel.layout }, data: { cards: cardsData } });
       }
     },
 
@@ -327,20 +370,25 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const defaultLayout = { x: 0, y: 0, w: 12, h: 5 };
 
       if (existingPanel) {
-        await storage.updatePanel(workspaceId, id, {
+        const updatedPanel: UIPanel = {
+          ...existingPanel,
           type: 'markdown',
           title: config.title ?? existingPanel.title,
           content: config.content,
           layout: config.layout ?? existingPanel.layout,
-        });
+        };
+        await storage.updatePanel(workspaceId, id, updatedPanel);
+        panelUpdates.push({ action: 'update', panel: updatedPanel, data: { content: config.content } });
       } else {
-        await storage.addPanel(workspaceId, {
+        const panel: UIPanel = {
           id,
           type: 'markdown',
           title: config.title ?? id,
           content: config.content,
           layout: config.layout ?? defaultLayout,
-        });
+        };
+        await storage.addPanel(workspaceId, panel);
+        panelUpdates.push({ action: 'add', panel, data: { content: config.content } });
       }
     },
 
@@ -681,27 +729,35 @@ Use async/await for I/O. Return a value to see results.`,
         const logs = toolFunctions.__logs;
         const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
 
+        // Include panel updates in output for runtime to extract
+        const panelUpdateOutput = panelUpdates.length > 0
+          ? `\n__PANEL_UPDATES_START__${JSON.stringify(panelUpdates)}__PANEL_UPDATES_END__`
+          : '';
+
         if (sandbox.__error) {
           return {
-            content: [{ type: 'text' as const, text: `${logOutput}Error: ${sandbox.__error}` }],
+            content: [{ type: 'text' as const, text: `${logOutput}Error: ${sandbox.__error}${panelUpdateOutput}` }],
           };
         }
 
         return {
           content: [{
             type: 'text' as const,
-            text: sandbox.__result !== undefined
+            text: (sandbox.__result !== undefined
               ? `${logOutput}Done. Result: ${JSON.stringify(sandbox.__result, null, 2)}`
-              : `${logOutput}Done (no return value)`,
+              : `${logOutput}Done (no return value)`) + panelUpdateOutput,
           }],
         };
       } catch (error) {
         const logs = toolFunctions.__logs;
         const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
+        const panelUpdateOutput = panelUpdates.length > 0
+          ? `\n__PANEL_UPDATES_START__${JSON.stringify(panelUpdates)}__PANEL_UPDATES_END__`
+          : '';
         return {
           content: [{
             type: 'text' as const,
-            text: `${logOutput}Execution error: ${error instanceof Error ? error.message : String(error)}`,
+            text: `${logOutput}Execution error: ${error instanceof Error ? error.message : String(error)}${panelUpdateOutput}`,
           }],
         };
       }

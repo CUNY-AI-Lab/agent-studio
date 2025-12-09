@@ -35,13 +35,14 @@ export function SafeMarkdown({ children, className }: SafeMarkdownProps) {
                 {children}
               </code>
             ) : (
-              <code className={`${className} text-foreground`} {...props}>
+              // Code inside pre - inherit text color from pre
+              <code className={className} {...props}>
                 {children}
               </code>
             );
           },
           pre: ({ children, ...props }) => (
-            <pre className="bg-[#1e1e1e] dark:bg-[#0d0d0d] text-[#d4d4d4] p-3 rounded-lg overflow-x-auto text-sm font-mono" {...props}>
+            <pre className="bg-[#282c34] text-[#abb2bf] p-3 rounded-lg overflow-x-auto text-sm font-mono" {...props}>
               {children}
             </pre>
           ),
