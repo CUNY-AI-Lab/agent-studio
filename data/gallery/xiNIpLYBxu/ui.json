@@ -1,0 +1,22 @@
+{
+  "panels": [
+    {
+      "id": "chat",
+      "type": "chat",
+      "title": "Chat"
+    },
+    {
+      "id": "table-worldcat-results",
+      "type": "table",
+      "tableId": "worldcat-results",
+      "title": "WorldCat: Digital Humanities Books (0 total)",
+      "layout": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      }
+    }
+  ],
+  "layout": "horizontal"
+}

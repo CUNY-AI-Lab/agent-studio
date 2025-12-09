@@ -1,0 +1,710 @@
+import { tool } from '@anthropic-ai/claude-agent-sdk';
+import { z } from 'zod';
+import * as vm from 'vm';
+import * as fs from 'fs';
+import * as path from 'path';
+import { PDFParse } from 'pdf-parse';
+import { minimatch } from 'minimatch';
+import { XMLParser } from 'fast-xml-parser';
+import type { ToolContext } from '../types';
+import type { UIPanel } from '../../storage';
+
+// Skills directory location
+const SKILLS_DIR = path.join(process.cwd(), 'src/lib/skills');
+
+/**
+ * Execute tool - runs agent-generated JavaScript with Unix-style tools available.
+ *
+ * Instead of reimplementing tools, this sandbox exposes the actual tools
+ * as callable functions. The agent writes code that composes these primitives.
+ */
+export const createExecuteTool = (ctx: ToolContext) => {
+  const { storage, workspaceId } = ctx;
+
+  // Create wrapper functions that call the actual storage/tool operations
+  // These are the Unix-style primitives exposed to agent code
+  const toolFunctions = {
+    // === I/O ===
+    async read(from: string): Promise<unknown> {
+      if (from.startsWith('table:')) {
+        const tableId = from.slice(6);
+        const table = await storage.getTable(workspaceId, tableId);
+        return table?.data ?? [];
+      }
+      if (from.startsWith('file:')) {
+        const filePath = from.slice(5);
+        const ext = filePath.toLowerCase().split('.').pop();
+
+        // Parse PDFs using pdf-parse v2
+        if (ext === 'pdf') {
+          const buffer = await storage.readFileBuffer(workspaceId, filePath);
+          if (!buffer) {
+            return `PDF file not found: ${filePath}`;
+          }
+          try {
+            const parser = new PDFParse({ data: buffer });
+            const result = await parser.getText();
+            return result.text;
+          } catch (err) {
+            return `Error parsing PDF: ${err instanceof Error ? err.message : String(err)}`;
+          }
+        }
+
+        // Excel files still need Python for now
+        if (['xlsx', 'xls'].includes(ext || '')) {
+          return `[Excel file: ${filePath}]\nExcel files cannot be read as text. Use execute_python to process this file:\n\nimport pandas as pd\ndf = pd.read_excel('/workspace/files/${filePath}')\nprint(df.to_string())`;
+        }
+
+        const content = await storage.readFile(workspaceId, filePath);
+        return content;
+      }
+      if (from.startsWith('chart:')) {
+        const chartId = from.slice(6);
+        const chart = await storage.getChart(workspaceId, chartId);
+        return chart; // Returns full chart object {id, title, type, data, config}
+      }
+      if (from.startsWith('cards:')) {
+        const cardsId = from.slice(6);
+        const cards = await storage.getCards(workspaceId, cardsId);
+        return cards; // Returns full cards object {id, title, items}
+      }
+      if (from.startsWith('markdown:')) {
+        const panelId = from.slice(9);
+        const uiState = await storage.getUIState(workspaceId);
+        const panel = uiState.panels.find(p => p.id === panelId && p.type === 'markdown');
+        return panel?.content ?? null;
+      }
+      throw new Error(`Unknown source: ${from}. Use "table:name", "file:path", "chart:id", "cards:id", or "markdown:id"`);
+    },
+
+    async write(data: unknown, to: string): Promise<void> {
+      if (to.startsWith('table:')) {
+        const tableId = to.slice(6);
+        const existing = await storage.getTable(workspaceId, tableId);
+        if (existing) {
+          existing.data = data as Record<string, unknown>[];
+          await storage.setTable(workspaceId, tableId, existing);
+        } else {
+          const rows = data as Record<string, unknown>[];
+          const columns = rows.length > 0
+            ? Object.keys(rows[0]).map(key => ({ key, label: key, type: 'text' as const }))
+            : [];
+          await storage.setTable(workspaceId, tableId, { id: tableId, title: tableId, columns, data: rows });
+        }
+        return;
+      }
+      if (to.startsWith('file:')) {
+        const path = to.slice(5);
+        const content = typeof data === 'string' ? data : JSON.stringify(data, null, 2);
+        await storage.writeFile(workspaceId, path, content);
+        return;
+      }
+      throw new Error(`Unknown destination: ${to}. Use "table:name" or "file:path"`);
+    },
+
+    // === Transform (pure functions, same as our Unix tools) ===
+    filter(data: unknown[], where: string): unknown[] {
+      const match = where.match(/^(\w+)\s*(==|!=|>|<|>=|<=|contains)\s*(.+)$/);
+      if (!match) return data;
+
+      const [, field, op, valueStr] = match;
+      const value = valueStr.startsWith('"') || valueStr.startsWith("'")
+        ? valueStr.slice(1, -1)
+        : isNaN(Number(valueStr)) ? valueStr : Number(valueStr);
+
+      return data.filter((item) => {
+        const rec = item as Record<string, unknown>;
+        const itemValue = rec[field];
+        switch (op) {
+          case '==': return itemValue == value;
+          case '!=': return itemValue != value;
+          case '>': return Number(itemValue) > Number(value);
+          case '<': return Number(itemValue) < Number(value);
+          case '>=': return Number(itemValue) >= Number(value);
+          case '<=': return Number(itemValue) <= Number(value);
+          case 'contains': return String(itemValue).toLowerCase().includes(String(value).toLowerCase());
+          default: return true;
+        }
+      });
+    },
+
+    pick(data: unknown[], fields: string[]): unknown[] {
+      return data.map((item) => {
+        const rec = item as Record<string, unknown>;
+        const result: Record<string, unknown> = {};
+        for (const field of fields) {
+          if (field in rec) result[field] = rec[field];
+        }
+        return result;
+      });
+    },
+
+    sort(data: unknown[], field: string, order: 'asc' | 'desc' = 'asc'): unknown[] {
+      return [...data].sort((a, b) => {
+        const recA = a as Record<string, unknown>;
+        const recB = b as Record<string, unknown>;
+        const aVal = recA[field] as string | number;
+        const bVal = recB[field] as string | number;
+        const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+        return order === 'desc' ? -cmp : cmp;
+      });
+    },
+
+    map(data: unknown[], fn: (item: unknown) => unknown): unknown[] {
+      return data.map(fn);
+    },
+
+    unique(data: unknown[], field?: string): unknown[] {
+      if (field) {
+        const seen = new Set();
+        return data.filter((item) => {
+          const rec = item as Record<string, unknown>;
+          const val = rec[field];
+          if (seen.has(val)) return false;
+          seen.add(val);
+          return true;
+        });
+      }
+      return [...new Set(data)];
+    },
+
+    group(data: unknown[], field: string): Record<string, unknown[]> {
+      const groups: Record<string, unknown[]> = {};
+      for (const item of data) {
+        const rec = item as Record<string, unknown>;
+        const key = String(rec[field] ?? 'undefined');
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(item);
+      }
+      return groups;
+    },
+
+    // === UI ===
+    async setTable(id: string, config: {
+      title?: string;
+      columns?: { key: string; label: string; type?: string }[];
+      data: unknown[];
+      layout?: { x?: number; y?: number; w?: number; h?: number };
+    }): Promise<void> {
+      const existing = await storage.getTable(workspaceId, id);
+      const rows = config.data as Record<string, unknown>[];
+
+      // Infer columns if not provided
+      const columns = config.columns?.map(c => ({ ...c, type: c.type || 'text' })) as { key: string; label: string; type: 'text' | 'number' | 'date' | 'url' | 'status' }[]
+        ?? existing?.columns
+        ?? (rows.length > 0 ? Object.keys(rows[0]).map(k => ({ key: k, label: k, type: 'text' as const })) : []);
+
+      await storage.setTable(workspaceId, id, {
+        id,
+        title: config.title ?? existing?.title ?? id,
+        columns,
+        data: rows,
+      });
+
+      // Auto-add table panel if not exists
+      const ui = await storage.getUIState(workspaceId);
+      const existingPanel = ui.panels.find(p => p.type === 'table' && p.tableId === id);
+
+      // Default layout: full width table with generous height
+      const defaultLayout = { x: 0, y: 0, w: 12, h: 8 };
+      const layout = config.layout ?? defaultLayout;
+
+      if (!existingPanel) {
+        await storage.addPanel(workspaceId, {
+          id: `table-${id}`,
+          type: 'table',
+          tableId: id,
+          title: config.title ?? id,
+          layout
+        });
+      } else if (config.layout) {
+        await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+      }
+    },
+
+    async addPanel(panel: Omit<UIPanel, 'type'> & { type: string }): Promise<void> {
+      await storage.addPanel(workspaceId, panel as UIPanel);
+    },
+
+    async removePanel(id: string): Promise<void> {
+      await storage.removePanel(workspaceId, id);
+    },
+
+    async updatePanel(id: string, updates: Partial<UIPanel>): Promise<void> {
+      await storage.updatePanel(workspaceId, id, updates);
+    },
+
+    // === Charts ===
+    async setChart(id: string, config: {
+      title?: string;
+      type: 'bar' | 'line' | 'pie' | 'area';
+      data: unknown[];
+      xKey?: string;
+      yKey?: string;
+      labelKey?: string;
+      valueKey?: string;
+      layout?: { x?: number; y?: number; w?: number; h?: number };
+    }): Promise<void> {
+      const chartData = {
+        id,
+        title: config.title ?? id,
+        type: config.type,
+        data: config.data as Record<string, unknown>[],
+        config: {
+          xKey: config.xKey,
+          yKey: config.yKey,
+          labelKey: config.labelKey,
+          valueKey: config.valueKey,
+        },
+      };
+      await storage.setChart(workspaceId, id, chartData);
+
+      // Auto-add chart panel if not exists
+      const ui = await storage.getUIState(workspaceId);
+      const existingPanel = ui.panels.find(p => p.type === 'chart' && p.chartId === id);
+
+      // Default layout: medium chart (6 cols)
+      const defaultLayout = { x: 0, y: 0, w: 12, h: 6 };
+      const layout = config.layout ?? defaultLayout;
+
+      if (!existingPanel) {
+        await storage.addPanel(workspaceId, {
+          id: `chart-${id}`,
+          type: 'chart',
+          chartId: id,
+          title: config.title ?? id,
+          layout
+        });
+      } else if (config.layout) {
+        await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+      }
+    },
+
+    // === Cards ===
+    async setCards(id: string, config: {
+      title?: string;
+      items: { title: string; subtitle?: string; description?: string; image?: string; badge?: string; metadata?: Record<string, string> }[];
+      layout?: { x?: number; y?: number; w?: number; h?: number };
+    }): Promise<void> {
+      const cardsData = {
+        id,
+        title: config.title ?? id,
+        items: config.items.map((item, i) => ({ id: String(i), ...item })),
+      };
+      await storage.setCards(workspaceId, id, cardsData);
+
+      // Auto-add cards panel if not exists
+      const ui = await storage.getUIState(workspaceId);
+      const existingPanel = ui.panels.find(p => p.type === 'cards' && p.cardsId === id);
+
+      // Default layout: wide cards (8 cols)
+      const defaultLayout = { x: 0, y: 0, w: 12, h: 6 };
+      const layout = config.layout ?? defaultLayout;
+
+      if (!existingPanel) {
+        await storage.addPanel(workspaceId, {
+          id: `cards-${id}`,
+          type: 'cards',
+          cardsId: id,
+          title: config.title ?? id,
+          layout
+        });
+      } else if (config.layout) {
+        await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+      }
+    },
+
+    // === Markdown ===
+    async setMarkdown(id: string, config: {
+      title?: string;
+      content: string;
+      layout?: { x?: number; y?: number; w?: number; h?: number };
+    }): Promise<void> {
+      const ui = await storage.getUIState(workspaceId);
+      const existingPanel = ui.panels.find(p => p.id === id);
+
+      // Default layout: medium width markdown (6 cols)
+      const defaultLayout = { x: 0, y: 0, w: 12, h: 5 };
+
+      if (existingPanel) {
+        await storage.updatePanel(workspaceId, id, {
+          type: 'markdown',
+          title: config.title ?? existingPanel.title,
+          content: config.content,
+          layout: config.layout ?? existingPanel.layout,
+        });
+      } else {
+        await storage.addPanel(workspaceId, {
+          id,
+          type: 'markdown',
+          title: config.title ?? id,
+          content: config.content,
+          layout: config.layout ?? defaultLayout,
+        });
+      }
+    },
+
+    // === Layout ===
+    async movePanel(id: string, layout: { x?: number; y?: number; w?: number; h?: number }): Promise<void> {
+      await storage.updatePanel(workspaceId, id, { layout });
+    },
+
+    // === Downloads ===
+    async download(filename: string, data: unknown, format: 'csv' | 'json' | 'txt' = 'json'): Promise<void> {
+      await storage.addDownload(workspaceId, { filename, data, format });
+    },
+
+    // === Utilities ===
+    // logs array will be populated later in the sandbox
+    __logs: [] as string[],
+    log(...args: unknown[]): void {
+      const msg = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+      toolFunctions.__logs.push(msg);
+      console.log('[agent]', ...args);
+    },
+
+    // === Workspace Info ===
+    async setWorkspaceInfo(info: { title?: string; description?: string }): Promise<void> {
+      const workspace = await storage.getWorkspace(workspaceId);
+      if (workspace) {
+        if (info.title) workspace.name = info.title;
+        if (info.description) workspace.description = info.description;
+        workspace.updatedAt = new Date().toISOString();
+        await storage.setWorkspace(workspaceId, workspace);
+      }
+    },
+
+    // JSON helpers
+    JSON: {
+      parse: JSON.parse,
+      stringify: JSON.stringify,
+    },
+
+    // XML parsing (for APIs like arXiv that return XML)
+    parseXML(xml: string, options?: { ignoreAttributes?: boolean; attributeNamePrefix?: string }): unknown {
+      const parser = new XMLParser({
+        ignoreAttributes: options?.ignoreAttributes ?? false,
+        attributeNamePrefix: options?.attributeNamePrefix ?? '@_',
+        textNodeName: '#text',
+        removeNSPrefix: true, // Remove namespace prefixes for easier access
+      });
+      return parser.parse(xml);
+    },
+
+    // === HTTP ===
+    async fetch(url: string, options?: RequestInit): Promise<Response> {
+      return globalThis.fetch(url, options);
+    },
+
+    // === Skills Discovery ===
+    async listSkills(): Promise<{ name: string; description: string }[]> {
+      try {
+        const indexPath = path.join(SKILLS_DIR, 'index.json');
+        if (fs.existsSync(indexPath)) {
+          const content = fs.readFileSync(indexPath, 'utf-8');
+          return JSON.parse(content);
+        }
+        return [];
+      } catch {
+        return [];
+      }
+    },
+
+    async readSkill(name: string): Promise<string> {
+      try {
+        const skillPath = path.join(SKILLS_DIR, `${name}.md`);
+        if (fs.existsSync(skillPath)) {
+          return fs.readFileSync(skillPath, 'utf-8');
+        }
+        return `Skill "${name}" not found`;
+      } catch (err) {
+        return `Error reading skill: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    },
+
+    // === Environment ===
+    env(key: string): string | undefined {
+      // Whitelist of allowed environment variables for agent access
+      const ALLOWED_ENV_VARS = [
+        'PRIMO_API_KEY',
+        'PRIMO_VID',
+        'PRIMO_SCOPE',
+        'PRIMO_BASE_URL',
+        'PRIMO_DISCOVERY_URL',
+        'OPENALEX_EMAIL',
+        'OCLC_CLIENT_ID',
+        'OCLC_CLIENT_SECRET',
+        'OCLC_INSTITUTION_ID',
+        'LIBGUIDES_SITE_ID',
+        'LIBGUIDES_CLIENT_ID',
+        'LIBGUIDES_CLIENT_SECRET',
+        'LIBGUIDES_BASE_URL',
+      ];
+      if (!ALLOWED_ENV_VARS.includes(key)) {
+        throw new Error(`Access to environment variable '${key}' is not allowed`);
+      }
+      return process.env[key];
+    },
+
+    // === File Discovery (Glob) ===
+    async glob(pattern: string): Promise<string[]> {
+      // Recursively get all files in workspace
+      const getAllFiles = async (dir: string): Promise<string[]> => {
+        const files = await storage.listFiles(workspaceId, dir);
+        const results: string[] = [];
+        for (const file of files) {
+          if (file.isDirectory) {
+            const subFiles = await getAllFiles(file.path);
+            results.push(...subFiles);
+          } else {
+            results.push(file.path);
+          }
+        }
+        return results;
+      };
+
+      const allFiles = await getAllFiles('');
+      // Filter by glob pattern
+      return allFiles.filter(f => minimatch(f, pattern, { matchBase: true }));
+    },
+
+    // === Content Search (Grep) ===
+    async search(pattern: string, filePath?: string): Promise<{ file: string; line: number; text: string }[]> {
+      const results: { file: string; line: number; text: string }[] = [];
+      const regex = new RegExp(pattern, 'gi');
+
+      const searchFile = async (file: string) => {
+        const content = await storage.readFile(workspaceId, file);
+        if (!content) return;
+
+        const lines = content.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          if (regex.test(lines[i])) {
+            results.push({ file, line: i + 1, text: lines[i].trim() });
+            regex.lastIndex = 0; // Reset regex state
+          }
+        }
+      };
+
+      if (filePath) {
+        // Search single file
+        await searchFile(filePath);
+      } else {
+        // Search all text files
+        const allFiles = await toolFunctions.glob('*');
+        const textExtensions = ['.txt', '.md', '.json', '.csv', '.js', '.ts', '.html', '.css', '.xml', '.yaml', '.yml'];
+        for (const file of allFiles) {
+          const ext = path.extname(file).toLowerCase();
+          if (textExtensions.includes(ext) || !ext) {
+            await searchFile(file);
+          }
+        }
+      }
+
+      return results.slice(0, 100); // Limit results
+    },
+
+    // === Surgical Edit ===
+    async edit(filePath: string, oldText: string, newText: string): Promise<boolean> {
+      const content = await storage.readFile(workspaceId, filePath);
+      if (content === null) {
+        throw new Error(`File not found: ${filePath}`);
+      }
+
+      if (!content.includes(oldText)) {
+        throw new Error(`Text not found in file: "${oldText.slice(0, 50)}${oldText.length > 50 ? '...' : ''}"`);
+      }
+
+      const occurrences = content.split(oldText).length - 1;
+      if (occurrences > 1) {
+        throw new Error(`Text appears ${occurrences} times. Provide more context for unique match.`);
+      }
+
+      const newContent = content.replace(oldText, newText);
+      await storage.writeFile(workspaceId, filePath, newContent);
+      return true;
+    },
+
+    // === List Files ===
+    async listFiles(dir?: string): Promise<{ name: string; path: string; isDirectory: boolean; size?: number }[]> {
+      return storage.listFiles(workspaceId, dir || '');
+    },
+
+    // === Delete File ===
+    async deleteFile(filePath: string): Promise<void> {
+      await storage.deleteFile(workspaceId, filePath);
+    },
+  };
+
+  return tool(
+    'execute',
+    `Execute JavaScript code to compose data operations, call APIs, and build UI.
+
+Available functions:
+
+FILES:
+- read(from) - Read data: "table:id", "chart:id", "cards:id", "markdown:id", "file:path" (supports PDF)
+- write(data, to) - Write to "table:name" or "file:path"
+- glob(pattern) - Find files: glob("*.pdf"), glob("data/*.csv")
+- search(pattern, file?) - Search file contents with regex
+- edit(file, old, new) - Surgical text replacement (must be unique match)
+- listFiles(dir?) - List files in directory
+- deleteFile(path) - Delete a file
+
+DATA TRANSFORMS:
+- filter(data, where) - Filter: filter(data, "status == 'active'")
+- pick(data, fields) - Select fields: pick(data, ["title", "author"])
+- sort(data, field, order) - Sort: sort(data, "date", "desc")
+- map(data, fn) - Transform each item
+- unique(data, field?) - Deduplicate
+- group(data, field) - Group by field
+
+UI:
+- setTable(id, {title?, columns?, data, layout?}) - Create/update table
+- setChart(id, {type, data, xKey?, yKey?, layout?}) - Create chart (bar/line/pie/area)
+- setCards(id, {title?, items, layout?}) - Create card grid
+- setMarkdown(id, {title?, content, layout?}) - Show markdown text
+- addPanel({id, type, layout?, ...}) - Add custom panel
+- removePanel(id) - Remove panel
+- movePanel(id, {x?, y?, w?, h?}) - Move/resize panel
+
+Layout: {x: 0-11, y: row, w: 1-12, h: rows} - Grid-based positioning
+
+OUTPUT:
+- download(filename, data, format) - Trigger download (csv/json/txt)
+
+WORKSPACE:
+- setWorkspaceInfo({title?, description?}) - Set workspace title/description
+
+HTTP & APIs:
+- fetch(url, options) - Make HTTP requests
+- parseXML(xml, options?) - Parse XML string to JSON (for APIs like arXiv)
+- listSkills() - List available API skills
+- readSkill(name) - Read API documentation
+- env(key) - Get environment variable (API keys)
+
+Use async/await for I/O. Return a value to see results.`,
+    z.object({
+      code: z.string().describe('JavaScript code to execute'),
+    }).shape,
+    async ({ code }) => {
+      // Clear logs from previous execution
+      toolFunctions.__logs = [];
+
+      const sandbox = {
+        ...toolFunctions,
+        console: { log: toolFunctions.log, error: toolFunctions.log },
+        // Standard globals needed for common operations
+        JSON,
+        Math,
+        Date,
+        Array,
+        Object,
+        String,
+        Number,
+        Boolean,
+        RegExp,
+        Error,
+        Promise,
+        Map,
+        Set,
+        parseInt,
+        parseFloat,
+        isNaN,
+        isFinite,
+        encodeURIComponent,
+        decodeURIComponent,
+        encodeURI,
+        decodeURI,
+        // Base64 encoding (needed for OAuth)
+        btoa: (str: string) => Buffer.from(str, 'utf-8').toString('base64'),
+        atob: (str: string) => Buffer.from(str, 'base64').toString('utf-8'),
+        // Safe timer wrappers with limits
+        setTimeout: (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+          const maxMs = 30000; // Max 30 seconds
+          return setTimeout(fn, Math.min(ms ?? 0, maxMs), ...args);
+        },
+        clearTimeout,
+        // setInterval is not allowed - too dangerous for DoS
+        setInterval: () => { throw new Error('setInterval is not available in sandbox'); },
+        clearInterval,
+        // URL utilities
+        URL,
+        URLSearchParams,
+        // Text encoding/decoding
+        TextEncoder,
+        TextDecoder,
+        // Abort controller for fetch timeouts
+        AbortController,
+        __result: undefined as unknown,
+        __error: undefined as string | undefined,
+      };
+
+      // Wrap in async IIFE
+      const wrappedCode = `
+        (async () => {
+          try {
+            ${code}
+          } catch (e) {
+            __error = e.message || String(e);
+          }
+        })().then(r => { if (r !== undefined) __result = r; });
+      `;
+
+      try {
+        const context = vm.createContext(sandbox);
+        const script = new vm.Script(wrappedCode);
+        script.runInContext(context, { timeout: 30000 });
+
+        // Wait for async completion with proper timeout
+        const ASYNC_TIMEOUT = 30000; // 30 seconds for async operations
+        const timeoutPromise = new Promise<'timeout'>((resolve) =>
+          setTimeout(() => resolve('timeout'), ASYNC_TIMEOUT)
+        );
+        const completionPromise = new Promise<'done'>((resolve) => {
+          const check = () => {
+            if (sandbox.__result !== undefined || sandbox.__error !== undefined) {
+              resolve('done');
+            } else {
+              setTimeout(check, 100);
+            }
+          };
+          check();
+        });
+
+        const raceResult = await Promise.race([completionPromise, timeoutPromise]);
+        if (raceResult === 'timeout') {
+          sandbox.__error = 'Execution timed out after 30 seconds';
+        }
+
+        // Build output with logs
+        const logs = toolFunctions.__logs;
+        const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
+
+        if (sandbox.__error) {
+          return {
+            content: [{ type: 'text' as const, text: `${logOutput}Error: ${sandbox.__error}` }],
+          };
+        }
+
+        return {
+          content: [{
+            type: 'text' as const,
+            text: sandbox.__result !== undefined
+              ? `${logOutput}Done. Result: ${JSON.stringify(sandbox.__result, null, 2)}`
+              : `${logOutput}Done (no return value)`,
+          }],
+        };
+      } catch (error) {
+        const logs = toolFunctions.__logs;
+        const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
+        return {
+          content: [{
+            type: 'text' as const,
+            text: `${logOutput}Execution error: ${error instanceof Error ? error.message : String(error)}`,
+          }],
+        };
+      }
+    }
+  );
+};

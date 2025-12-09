@@ -1,0 +1,63 @@
+{
+  "id": "ai-subfields",
+  "title": "AI Research Subfields (2023-2025)",
+  "columns": [
+    {
+      "key": "field",
+      "label": "Subfield",
+      "type": "text"
+    },
+    {
+      "key": "count",
+      "label": "Papers",
+      "type": "number"
+    },
+    {
+      "key": "percent",
+      "label": "Share",
+      "type": "text"
+    }
+  ],
+  "data": [
+    {
+      "field": "Machine Learning",
+      "count": 889494,
+      "percent": "23.3%"
+    },
+    {
+      "field": "Deep Learning",
+      "count": 866171,
+      "percent": "22.7%"
+    },
+    {
+      "field": "Neural Networks",
+      "count": 723524,
+      "percent": "19.0%"
+    },
+    {
+      "field": "Large Language Models",
+      "count": 509538,
+      "percent": "13.4%"
+    },
+    {
+      "field": "Natural Language Processing",
+      "count": 337550,
+      "percent": "8.9%"
+    },
+    {
+      "field": "Computer Vision",
+      "count": 232667,
+      "percent": "6.1%"
+    },
+    {
+      "field": "Reinforcement Learning",
+      "count": 158333,
+      "percent": "4.2%"
+    },
+    {
+      "field": "Generative AI",
+      "count": 94647,
+      "percent": "2.5%"
+    }
+  ]
+}
