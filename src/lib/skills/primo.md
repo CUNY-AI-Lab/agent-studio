@@ -148,6 +148,48 @@ const catalogLink = `${discoveryBase}/discovery/fulldisplay?docid=${recordId}&vi
 
 **IMPORTANT:** Do NOT construct links using title searches - they are unreliable. Always use the record ID for direct links.
 
+## Displaying Clickable Catalog Links
+
+When displaying catalog links to users, **always make them clickable**:
+
+### In Tables
+Use a column with `type: "url"` to render clickable links:
+```javascript
+await setTable("results", {
+  title: "Search Results",
+  columns: [
+    { key: "title", label: "Title", type: "text" },
+    { key: "author", label: "Author", type: "text" },
+    { key: "catalogLink", label: "Catalog", type: "url", linkText: "View in Catalog" }
+  ],
+  data: results
+});
+```
+
+### In Cards
+Include the link in card metadata or description with markdown:
+```javascript
+await setCards("results", {
+  title: "Library Results",
+  items: results.map(r => ({
+    title: r.title,
+    subtitle: r.author,
+    description: `[View in Catalog](${r.catalogLink})`
+  }))
+});
+```
+
+### In Markdown
+Use standard markdown link syntax:
+```javascript
+await setMarkdown("result", {
+  title: "Found Item",
+  content: `## ${title}\n\n[Open in Library Catalog](${catalogLink})`
+});
+```
+
+**Never display a raw URL** - always render it as a clickable link with descriptive text like "View in Catalog" or "Open in Library Catalog".
+
 ## Example Code
 
 ### Basic Search

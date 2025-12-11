@@ -6,6 +6,7 @@ export interface TableColumn {
   key: string;
   label: string;
   type: 'text' | 'number' | 'date' | 'url' | 'status';
+  linkText?: string; // For url type: display this text instead of the URL
 }
 
 export interface Table {

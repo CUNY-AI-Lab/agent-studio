@@ -1323,6 +1323,9 @@ export default function WorkspacePage() {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function TableContent({ table }: { table: TableData | null }) {
+  const [sortKey, setSortKey] = useState<string | null>(null);
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
+
   if (!table || table.data.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
@@ -1331,24 +1334,92 @@ function TableContent({ table }: { table: TableData | null }) {
     );
   }
 
+  const handleSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir('asc');
+    }
+  };
+
+  const sortedData = useMemo(() => {
+    if (!sortKey) return table.data;
+
+    return [...table.data].sort((a, b) => {
+      const aVal = a[sortKey];
+      const bVal = b[sortKey];
+
+      // Handle nulls
+      if (aVal == null && bVal == null) return 0;
+      if (aVal == null) return sortDir === 'asc' ? 1 : -1;
+      if (bVal == null) return sortDir === 'asc' ? -1 : 1;
+
+      // Number comparison
+      if (typeof aVal === 'number' && typeof bVal === 'number') {
+        return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+      }
+
+      // String comparison
+      const aStr = String(aVal).toLowerCase();
+      const bStr = String(bVal).toLowerCase();
+      if (aStr < bStr) return sortDir === 'asc' ? -1 : 1;
+      if (aStr > bStr) return sortDir === 'asc' ? 1 : -1;
+      return 0;
+    });
+  }, [table.data, sortKey, sortDir]);
+
+  const renderCell = (col: TableData['columns'][0], value: unknown) => {
+    if (value === null || value === undefined || value === '') {
+      return <span className="text-muted-foreground">—</span>;
+    }
+
+    // Handle URL type columns - render as clickable links
+    if (col.type === 'url' && typeof value === 'string' && value) {
+      return (
+        <a
+          href={value}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-primary hover:underline"
+        >
+          {col.linkText || 'View'}
+        </a>
+      );
+    }
+
+    return String(value);
+  };
+
   return (
     <div className="overflow-auto h-full">
       <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border">
             {table.columns.map((col, idx) => (
-              <th key={`${col.key}-${idx}`} className="px-3 py-2 text-left font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                {col.label}
+              <th
+                key={`${col.key}-${idx}`}
+                className="px-3 py-2 text-left font-medium text-muted-foreground text-xs uppercase tracking-wide cursor-pointer hover:text-foreground transition-colors select-none"
+                onClick={() => handleSort(col.key)}
+              >
+                <span className="inline-flex items-center gap-1">
+                  {col.label}
+                  {sortKey === col.key && (
+                    <span className="text-foreground">
+                      {sortDir === 'asc' ? '↑' : '↓'}
+                    </span>
+                  )}
+                </span>
               </th>
             ))}
           </tr>
         </thead>
         <tbody className="divide-y divide-border/50">
-          {table.data.map((row, i) => (
+          {sortedData.map((row, i) => (
             <tr key={i} className="hover:bg-muted/30 transition-colors">
               {table.columns.map((col, idx) => (
                 <td key={`${col.key}-${idx}`} className="px-3 py-2 text-sm">
-                  {String(row[col.key] ?? '')}
+                  {renderCell(col, row[col.key])}
                 </td>
               ))}
             </tr>
@@ -1370,41 +1441,41 @@ function ChartContent({ chart }: { chart: ChartData | null }) {
 
   const xKey = chart.config.xKey || chart.config.labelKey || 'label';
   const yKey = chart.config.yKey || chart.config.valueKey || 'value';
-  const COLORS = ['hsl(var(--primary))', 'hsl(var(--chart-2))', 'hsl(var(--chart-3))', 'hsl(var(--chart-4))', 'hsl(var(--chart-5))'];
+  const COLORS = ['oklch(var(--chart-1))', 'oklch(var(--chart-2))', 'oklch(var(--chart-3))', 'oklch(var(--chart-4))', 'oklch(var(--chart-5))'];
 
   const chartConfig = {
     [yKey]: {
       label: yKey.charAt(0).toUpperCase() + yKey.slice(1),
-      color: 'hsl(var(--primary))',
+      color: 'oklch(var(--chart-1))',
     },
   };
 
   return (
-    <div className="h-full w-full">
+    <div className="h-full w-full bg-card rounded-lg">
       <ChartContainer config={chartConfig} className="h-full w-full">
         {chart.type === 'bar' ? (
           <BarChart data={chart.data} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Bar dataKey={yKey} fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+            <Bar dataKey={yKey} fill="oklch(var(--chart-1))" radius={[4, 4, 0, 0]} />
           </BarChart>
         ) : chart.type === 'line' ? (
           <LineChart data={chart.data} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Line type="monotone" dataKey={yKey} stroke="hsl(var(--primary))" strokeWidth={2} dot={{ fill: 'hsl(var(--primary))' }} />
+            <Line type="monotone" dataKey={yKey} stroke="oklch(var(--chart-1))" strokeWidth={2} dot={{ fill: 'oklch(var(--chart-1))' }} />
           </LineChart>
         ) : chart.type === 'area' ? (
           <AreaChart data={chart.data} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+            <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Area type="monotone" dataKey={yKey} stroke="hsl(var(--primary))" fill="hsl(var(--primary) / 0.3)" />
+            <Area type="monotone" dataKey={yKey} stroke="oklch(var(--chart-2))" strokeWidth={2} fill="oklch(var(--chart-2) / 0.5)" />
           </AreaChart>
         ) : chart.type === 'pie' ? (
           <PieChart>
