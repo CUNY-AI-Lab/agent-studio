@@ -1579,7 +1579,7 @@ function PreviewContent({ content }: { content?: string }) {
       src={previewUrl}
       className="w-full h-full border-0 rounded"
       referrerPolicy="no-referrer"
-      sandbox="allow-scripts allow-same-origin"
+      sandbox="allow-scripts"
     />
   );
 }

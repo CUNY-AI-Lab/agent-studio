@@ -441,6 +441,18 @@ export const createExecuteTool = (ctx: ToolContext) => {
 
     // === HTTP ===
     async fetch(url: string, options?: RequestInit): Promise<Response> {
+      // SSRF protection: block internal networks and cloud metadata
+      const parsed = new URL(url);
+      const host = parsed.hostname.toLowerCase();
+
+      if (
+        host === 'localhost' ||
+        host === '169.254.169.254' ||
+        /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)
+      ) {
+        throw new Error('Access to internal networks is not allowed');
+      }
+
       return globalThis.fetch(url, options);
     },
 
