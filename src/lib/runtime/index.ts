@@ -117,8 +117,10 @@ export function createWorkspaceRuntime(
       // Build allowed tools list:
       // - Our custom MCP tools (prefixed as mcp__{serverName}__{toolName})
       // - Safe built-in SDK tools that don't access local filesystem
+      // - Bash for Python execution (sandboxed)
       const allowedTools = [
         ...tools.map(t => `mcp__${config.id}__${t.name}`),
+        'Bash',       // Execute Python via sandbox (fast, local)
         'WebFetch',   // Fetch and parse web content (safe - external only)
         'WebSearch',  // Search the web (safe - external only)
         'Skill',      // Use skills from .claude/skills/
@@ -129,12 +131,18 @@ export function createWorkspaceRuntime(
           prompt: contextPrompt,
           options: {
             systemPrompt: config.systemPrompt,
+            model: 'claude-sonnet-4-20250514', // Use Sonnet to avoid Haiku overload
             permissionMode: 'bypassPermissions',
+            allowDangerouslySkipPermissions: true,
             mcpServers: { [config.id]: server },
             allowedTools,
             settingSources: ['project'], // Load skills from .claude/skills/
             includePartialMessages: true, // Enable token-level streaming
             abortController: options?.abortController,
+            sandbox: {
+              enabled: true,
+              autoAllowBashIfSandboxed: true,
+            },
           },
         });
 
@@ -161,6 +169,7 @@ export function createWorkspaceRuntime(
           } else if (event.type === 'user') {
             // Tool results come back as user messages
             for (const block of event.message.content) {
+              if (typeof block === 'string') continue; // Skip string content
               if (block.type === 'tool_result') {
                 const rawResultText =
                   typeof block.content === 'string'

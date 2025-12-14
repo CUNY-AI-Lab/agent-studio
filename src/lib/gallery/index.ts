@@ -236,7 +236,13 @@ export async function cloneGalleryItem(
     createdAt: now,
     updatedAt: now,
     systemPrompt: '', // Will use default from query route
-    tools: ['execute', 'execute_python'],
+    tools: [
+      'execute',
+      'read', 'write',
+      'filter', 'pick', 'sort',
+      'ui.table', 'ui.message',
+      'ui.addPanel', 'ui.removePanel', 'ui.updatePanel', 'ui.setLayout',
+    ],
   });
 
   // Copy UI state

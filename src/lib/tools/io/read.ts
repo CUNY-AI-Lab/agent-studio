@@ -80,10 +80,10 @@ export const createReadTool = (ctx: ToolContext) =>
           }
         }
 
-        // Excel files still need Python for now
+        // Excel files need Python via Bash
         if (['xlsx', 'xls'].includes(ext || '')) {
           return {
-            content: [{ type: 'text' as const, text: `[Excel file: ${name}]\nExcel files cannot be read as text. Use execute_python to process this file:\n\nimport pandas as pd\ndf = pd.read_excel('/workspace/files/${name}')\nprint(df.to_string())` }],
+            content: [{ type: 'text' as const, text: `[Excel file: ${name}]\nExcel files cannot be read as text. Use the Bash tool to run Python:\n\n/home/zweb/apps/agent-studio/.venv/bin/python3 -c "\nimport pandas as pd\ndf = pd.read_excel('path/to/${name}')\nprint(df.to_string())\n"` }],
           };
         }
 

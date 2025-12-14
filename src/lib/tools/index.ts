@@ -10,7 +10,6 @@ import {
   createSetLayoutTool,
 } from './ui';
 import { createExecuteTool } from './code';
-import { createSandboxExecuteTool } from './sandbox';
 
 export type { ToolContext } from './types';
 
@@ -35,9 +34,6 @@ export const toolRegistry = {
 
   // Code execution (need context)
   execute: (ctx: ToolContext) => createExecuteTool(ctx),
-
-  // Python sandbox execution (need context)
-  execute_python: (ctx: ToolContext) => createSandboxExecuteTool(ctx),
 } as const;
 
 export type ToolId = keyof typeof toolRegistry;
@@ -67,6 +63,5 @@ export function listTools(): { id: string; description: string }[] {
     { id: 'ui.updatePanel', description: 'Update an existing panel' },
     { id: 'ui.setLayout', description: 'Set workspace layout direction' },
     { id: 'execute', description: 'Execute JavaScript code with tool functions' },
-    { id: 'execute_python', description: 'Execute Python code in secure sandbox (pandas, pypdf, openpyxl, etc.)' },
   ];
 }

@@ -23,7 +23,7 @@ import { useStreamingQuery, type Message, type ToolExecution, type ContentBlock,
 interface TableData {
   id: string;
   title: string;
-  columns: { key: string; label: string; type: string }[];
+  columns: { key: string; label: string; type: string; linkText?: string }[];
   data: Record<string, unknown>[];
 }
 
@@ -1594,10 +1594,15 @@ const ToolIcon = ({ name, className }: { name: string; className?: string }) => 
 
   switch (cleanName) {
     case 'execute':
-    case 'execute_python':
       return (
         <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+        </svg>
+      );
+    case 'Bash':
+      return (
+        <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
         </svg>
       );
     case 'read':
@@ -1638,7 +1643,7 @@ const getToolLabel = (name: string) => {
   const cleanName = name.replace(/^mcp__[^_]+__/, '');
   const labels: Record<string, string> = {
     execute: 'Running code',
-    execute_python: 'Running Python',
+    Bash: 'Running command',
     read: 'Reading data',
     write: 'Writing data',
     WebFetch: 'Fetching web',
@@ -1667,11 +1672,16 @@ function ToolCard({ tool }: { tool: ToolExecution }) {
 
     switch (cleanName) {
       case 'execute':
-      case 'execute_python':
         if (input?.code) {
           const code = input.code as string;
           const firstLine = code.split('\n')[0].slice(0, 30);
           return firstLine + (code.length > 30 ? '...' : '');
+        }
+        return null;
+      case 'Bash':
+        if (input?.command) {
+          const cmd = input.command as string;
+          return cmd.slice(0, 40) + (cmd.length > 40 ? '...' : '');
         }
         return null;
       case 'read':

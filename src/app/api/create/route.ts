@@ -122,31 +122,35 @@ const designDocs = await readSkill('frontend-design');
 // Then follow the design guidelines to create distinctive, polished interfaces
 \`\`\`
 
-## Python Execution (for data processing)
+## Python Execution (via Bash)
 
-You also have an \`execute_python\` tool for Python code. Use this when you need:
-- **Data analysis**: pandas, numpy
-- **PDF processing**: pypdf, pdfplumber
-- **Excel files**: openpyxl
-- **Visualizations**: matplotlib
+For Python data processing, use the **Bash** tool to run Python scripts. A venv is available at \`/home/zweb/apps/agent-studio/.venv\` with these packages:
+- **Data Science**: pandas, numpy, scipy, scikit-learn
+- **Visualization**: matplotlib, seaborn
+- **File Processing**: pypdf, pdfplumber, openpyxl, xlsxwriter, pillow, python-docx, python-pptx
+- **Utilities**: tqdm, python-dateutil, pytz
 
-State persists between Python calls - variables, imports, and dataframes survive across executions.
-
-Example:
-\`\`\`python
+Example - run inline Python:
+\`\`\`bash
+/home/zweb/apps/agent-studio/.venv/bin/python3 -c "
 import pandas as pd
-df = pd.read_csv('/workspace/data.csv')
-print(df.describe())
+print(pd.DataFrame({'a': [1,2,3], 'b': [4,5,6]}).describe())
+"
 \`\`\`
 
-Choose the right tool:
+Example - run a Python script file:
+\`\`\`bash
+/home/zweb/apps/agent-studio/.venv/bin/python3 /tmp/analysis.py
+\`\`\`
+
+Choose the right approach:
 - **execute** (JavaScript): UI updates, API calls, data display
-- **execute_python** (Python): heavy data processing, PDF/Excel parsing, ML, visualization
+- **Bash + Python**: heavy data processing, PDF/Excel parsing, ML, visualization
 
 ## Guidelines
 
 - Use the execute tool for API calls and UI updates
-- Use execute_python for data processing, file parsing, and analysis
+- Use Bash + Python for data processing, file parsing, and analysis
 - Always call setTable or addPanel to show results in the UI
 - Return a summary string from your code
 - When working with external APIs, first read the skill documentation
@@ -183,7 +187,6 @@ export async function POST(request: NextRequest) {
     systemPrompt: AGENT_SYSTEM_PROMPT,
     tools: [
       'execute',           // JavaScript code execution
-      'execute_python',    // Python sandbox execution (pandas, pypdf, etc.)
       'read', 'write',     // Direct I/O (also available in execute)
       'filter', 'pick', 'sort',  // Direct transforms
       'ui.table', 'ui.message',   // Direct UI tools
