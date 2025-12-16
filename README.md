@@ -1,36 +1,197 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Agent Studio
 
-## Getting Started
+A workspace where you describe what you need and an AI agent builds it. The agent can search academic databases, process documents, create visualizations, and build interactive tools.
 
-First, run the development server:
+## What it does
+
+You type a request in plain English. The agent figures out which APIs to call, writes code to process the data, and creates UI components to display results. Everything happens in a workspace with draggable panels on an infinite canvas.
+
+**Example requests:**
+- "Search for recent papers on climate change and show me a table"
+- "Find books about machine learning at CUNY libraries"
+- "Create a chart showing publication trends in AI research"
+- "Build a tool that converts PDFs to text"
+
+## Available capabilities
+
+### Research
+- **OpenAlex** - 150M+ scholarly papers
+- **Crossref** - DOI lookups and citation data
+- **Semantic Scholar** - AI-powered paper search with summaries
+- **arXiv** - Preprints in physics, math, CS, AI/ML
+- **PubMed** - 35M+ biomedical citations
+- **Unpaywall** - Find open access versions of papers
+
+### Libraries
+- **WorldCat** - Books across 10,000+ libraries worldwide
+- **CUNY OneSearch** - CUNY library catalog
+- **LibGuides** - Research guides by subject
+
+### Data
+- **NYC Open Data** - City datasets (demographics, transit, housing, etc.)
+- **US Census** - Population, economic, and housing statistics
+- **Wikipedia** - General knowledge lookups
+
+### Documents
+- **PDF** - Extract text, create new PDFs, merge/split
+- **Excel** - Read/write spreadsheets with formulas
+- **Word** - Create and edit documents
+- **PowerPoint** - Generate presentations
+
+### Visualization
+- **Tables** - Sortable data tables with links
+- **Charts** - Bar, line, pie, area charts
+- **Maps** - Interactive maps with markers
+- **Network graphs** - Relationship visualizations
+- **3D** - Three.js visualizations
+
+## Setup
+
+### Requirements
+- Node.js 18+
+- Python 3.10+
+- Linux with bubblewrap (`apt install bubblewrap`)
+
+### Installation
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# Clone and install
+git clone <repo-url>
+cd agent-studio
+npm install
+
+# Set up Python environment
+python3 -m venv .venv
+source .venv/bin/activate
+pip install pandas numpy scipy scikit-learn matplotlib seaborn \
+    pypdf pdfplumber openpyxl xlsxwriter pillow \
+    python-docx python-pptx tqdm python-dateutil pytz
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your API keys
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Environment variables
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Required:
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Optional (for specific features):
+```
+# CUNY library search
+PRIMO_API_KEY=...
 
-## Learn More
+# WorldCat book search
+OCLC_CLIENT_ID=...
+OCLC_CLIENT_SECRET=...
 
-To learn more about Next.js, take a look at the following resources:
+# LibGuides
+LIBGUIDES_CLIENT_ID=...
+LIBGUIDES_CLIENT_SECRET=...
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Better rate limits on OpenAlex
+OPENALEX_EMAIL=your@email.edu
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+### Running
 
-## Deploy on Vercel
+```bash
+# Development
+npm run dev
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+# Production
+npm run build
+npm run start
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Open http://localhost:3000
+
+## How it works
+
+1. **You describe what you want** in the chat panel
+2. **The agent reads skill documents** to learn available APIs
+3. **The agent writes JavaScript** to fetch data and transform it
+4. **Code runs in a sandbox** with a 30-second timeout
+5. **Results appear as panels** - tables, charts, cards, or custom HTML
+
+The agent can also run Python for data processing (pandas, numpy, matplotlib) and Bash commands in a sandboxed environment.
+
+## Workspace features
+
+- **Infinite canvas** - Pan and zoom, arrange panels anywhere
+- **Draggable panels** - Resize and reposition tables, charts, etc.
+- **File uploads** - Upload CSVs, PDFs, images (10MB limit per file)
+- **Downloads** - Export results as CSV or JSON
+- **Gallery** - Share workspaces publicly for others to clone
+
+## Data storage
+
+Each user gets isolated storage. Your data is stored in:
+```
+data/users/{your-session-id}/workspaces/{workspace-id}/
+```
+
+Files include:
+- `config.json` - Workspace name and settings
+- `conversation.json` - Chat history
+- `ui.json` - Panel layout
+- `tables/*.json` - Table data
+- `charts/*.json` - Chart configurations
+- `files/*` - Uploaded files
+
+Sessions last 7 days. There's no account system - your browser cookie identifies you.
+
+## Adding new skills
+
+Skills are markdown files that teach the agent how to use an API. To add one:
+
+1. Create `src/lib/skills/{name}.md` with:
+   - API endpoint documentation
+   - Authentication requirements
+   - Example requests and responses
+   - Rate limits and usage notes
+
+2. Add to `src/lib/skills/index.json`:
+   ```json
+   {
+     "name": "my-api",
+     "description": "What this API does and example queries"
+   }
+   ```
+
+3. Add any required environment variables to `.env`
+
+The agent will discover and use new skills automatically.
+
+## Security
+
+- **Code sandbox**: JavaScript runs in Node.js vm with restricted globals
+- **Bash sandbox**: Commands run in bubblewrap with network/filesystem isolation
+- **User isolation**: Each session has separate storage, no cross-user access
+- **File validation**: Uploads checked for type, extension, and size
+- **CSRF protection**: State-changing requests require tokens
+- **Signed sessions**: Cookies use HMAC-SHA256 signatures
+
+## Limitations
+
+- 30-second timeout on code execution
+- 10MB per uploaded file, 50MB total per workspace
+- No persistent accounts (session-based only)
+- Some APIs require authentication keys
+- Bash/Python sandboxing requires Linux with bubblewrap
+
+## Technical details
+
+See [CLAUDE.md](./CLAUDE.md) for:
+- Architecture diagrams
+- API endpoint reference
+- Sandbox function documentation
+- Panel type specifications
+- Development guidelines
+
+## License
+
+[Your license here]

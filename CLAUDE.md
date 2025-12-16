@@ -132,7 +132,7 @@ Located in `src/lib/skills/`:
 - `citation.md` - Citation formatting (APA, MLA, Chicago)
 
 ### UI
-- `src/app/w/[id]/page.tsx` - Workspace page with infinite canvas (@flowscape-ui/canvas-react)
+- `src/app/w/[id]/page.tsx` - Workspace page with infinite canvas (react-zoom-pan-pinch)
 - `src/components/ui/*` - shadcn components
 
 ## MCP Tools (12 total)
@@ -429,7 +429,7 @@ curl -b /tmp/cookies.txt -X POST "http://localhost:3000/api/workspaces/WORKSPACE
 
 - **Framework**: Next.js 15 (App Router)
 - **AI**: Claude Agent SDK with claude-sonnet-4-20250514
-- **UI**: shadcn/ui + Tailwind CSS + @flowscape-ui/canvas-react (infinite canvas)
+- **UI**: shadcn/ui + Tailwind CSS + react-zoom-pan-pinch (infinite canvas)
 - **Charts**: Recharts
 - **Runtime**: Node.js vm (JS) + bubblewrap (Bash/Python)
 - **Storage**: Filesystem-based JSON
