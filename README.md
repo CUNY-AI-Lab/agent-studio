@@ -76,7 +76,15 @@ cp .env.example .env
 
 Required:
 ```
-ANTHROPIC_API_KEY=sk-ant-...
+# Security - generate with: openssl rand -hex 32
+SESSION_SECRET=<random-32-byte-hex>
+CSRF_SECRET=<random-32-byte-hex>
+```
+
+Production:
+```
+# Set to true only if using HTTPS
+COOKIE_SECURE=true
 ```
 
 Optional (for specific features):
