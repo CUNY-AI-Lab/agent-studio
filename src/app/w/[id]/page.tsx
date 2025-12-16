@@ -13,7 +13,7 @@ import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/
 import { SafeMarkdown } from '@/components/SafeMarkdown';
 import { toPng } from 'html-to-image';
 import { useTheme } from '@/components/ThemeProvider';
-import { apiFetch } from '@/lib/api';
+import { apiFetch, basePath } from '@/lib/api';
 import { useStreamingQuery, type Message, type ToolExecution, type ContentBlock, type PanelUpdate } from '@/hooks/useStreamingQuery';
 import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
 import skills from '@/lib/skills/index.json';
@@ -465,7 +465,7 @@ export default function WorkspacePage() {
 
   // Load workspace data
   const loadWorkspace = useCallback(async (options?: { skipMessages?: boolean }) => {
-    const res = await fetch(`/api/workspaces/${workspaceId}`);
+    const res = await apiFetch(`/api/workspaces/${workspaceId}`);
     const data = await res.json();
 
     if (data.workspace) setWorkspace(data.workspace);
@@ -695,7 +695,7 @@ export default function WorkspacePage() {
       });
 
       if (res.ok) {
-        router.push('/');
+        router.push(`${basePath}/`);
       } else {
         const data = await res.json();
         alert(data.error || 'Failed to delete');
@@ -1561,7 +1561,7 @@ function PreviewContent({ content }: { content?: string }) {
         });
         if (res.ok) {
           const { key } = await res.json();
-          setPreviewUrl(`/api/preview?key=${key}`);
+          setPreviewUrl(`${basePath}/api/preview?key=${key}`);
         }
       } catch (e) {
         console.error('Failed to upload preview:', e);
@@ -1800,7 +1800,7 @@ function ChatPanel({ messages, input, isLoading, messagesEndRef, textareaRef, on
     Array.from(files).forEach(file => formData.append('files', file));
 
     try {
-      const res = await fetch(`/api/workspaces/${workspaceId}/upload`, {
+      const res = await fetch(`${basePath}/api/workspaces/${workspaceId}/upload`, {
         method: 'POST',
         body: formData,
       });

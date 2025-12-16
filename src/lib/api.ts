@@ -2,6 +2,7 @@
 
 const CSRF_COOKIE_NAME = 'csrf-token';
 const CSRF_HEADER_NAME = 'x-csrf-token';
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 // Get CSRF token from cookie
 function getCsrfToken(): string | null {
@@ -33,7 +34,10 @@ export async function apiFetch(
     }
   }
 
-  return fetch(url, {
+  // Prepend basePath for relative URLs
+  const fullUrl = url.startsWith('/') ? `${basePath}${url}` : url;
+
+  return fetch(fullUrl, {
     ...options,
     headers,
   });
@@ -70,4 +74,4 @@ export const api = {
     apiFetch(url, { ...options, method: 'DELETE' }),
 };
 
-export { CSRF_COOKIE_NAME, CSRF_HEADER_NAME };
+export { CSRF_COOKIE_NAME, CSRF_HEADER_NAME, basePath };
