@@ -226,7 +226,8 @@ export async function POST(request: NextRequest) {
   });
 
   // Redirect to the new workspace
-  redirect(`/w/${workspaceId}`);
+  const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+  redirect(`${basePath}/w/${workspaceId}`);
 }
 
 function generateName(description: string): string {
