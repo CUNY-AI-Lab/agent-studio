@@ -643,6 +643,21 @@ export const createExecuteTool = (ctx: ToolContext) => {
     async deleteFile(filePath: string): Promise<void> {
       await storage.deleteFile(workspaceId, filePath);
     },
+
+    // === Get Absolute Path (for Bash/Python) ===
+    getFilePath(filename: string): string {
+      // Returns the absolute filesystem path for use with Bash/Python
+      // Validates the filename to prevent path traversal
+      if (filename.includes('..') || filename.startsWith('/')) {
+        throw new Error('Invalid filename');
+      }
+      return path.join(storage.basePath, 'workspaces', workspaceId, 'files', filename);
+    },
+
+    // === Get Workspace Directory (for Bash/Python) ===
+    getWorkspaceDir(): string {
+      return path.join(storage.basePath, 'workspaces', workspaceId, 'files');
+    },
   };
 
   return tool(
