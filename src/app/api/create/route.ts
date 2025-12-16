@@ -5,8 +5,12 @@ import { getSession } from '@/lib/session';
 import { createSandboxedStorage, WorkspaceConfig } from '@/lib/storage';
 import { audit, getRequestMeta } from '@/lib/audit';
 
-// System prompt that teaches the agent to use code execution and dynamic UI
-const AGENT_SYSTEM_PROMPT = `You are a helpful assistant that helps users accomplish tasks by writing code and building interfaces.
+// Build system prompt at runtime to inject dynamic paths
+function getAgentSystemPrompt() {
+  const pythonVenv = process.env.PYTHON_VENV_PATH || `${process.cwd()}/.venv`;
+  const pythonBin = `${pythonVenv}/bin/python3`;
+
+  return `You are a helpful assistant that helps users accomplish tasks by writing code and building interfaces.
 
 ## Core Capability: Code Execution
 
@@ -124,7 +128,7 @@ const designDocs = await readSkill('frontend-design');
 
 ## Python Execution (via Bash)
 
-For Python data processing, use the **Bash** tool to run Python scripts. A venv is available at \`/home/zweb/apps/agent-studio/.venv\` with these packages:
+For Python data processing, use the **Bash** tool to run Python scripts. A venv is available at \`${pythonVenv}\` with these packages:
 - **Data Science**: pandas, numpy, scipy, scikit-learn
 - **Visualization**: matplotlib, seaborn
 - **File Processing**: pypdf, pdfplumber, openpyxl, xlsxwriter, pillow, python-docx, python-pptx
@@ -132,7 +136,7 @@ For Python data processing, use the **Bash** tool to run Python scripts. A venv 
 
 Example - run inline Python:
 \`\`\`bash
-/home/zweb/apps/agent-studio/.venv/bin/python3 -c "
+${pythonBin} -c "
 import pandas as pd
 print(pd.DataFrame({'a': [1,2,3], 'b': [4,5,6]}).describe())
 "
@@ -140,7 +144,7 @@ print(pd.DataFrame({'a': [1,2,3], 'b': [4,5,6]}).describe())
 
 Example - run a Python script file:
 \`\`\`bash
-/home/zweb/apps/agent-studio/.venv/bin/python3 /tmp/analysis.py
+${pythonBin} /tmp/analysis.py
 \`\`\`
 
 Choose the right approach:
@@ -160,6 +164,7 @@ Choose the right approach:
 - Explain what you're doing to the user
 
 The workspace starts with just a chat panel. You build the interface as needed by adding panels.`;
+}
 
 export async function POST(request: NextRequest) {
   const sessionId = await getSession();
@@ -184,7 +189,7 @@ export async function POST(request: NextRequest) {
     description,
     createdAt: now,
     updatedAt: now,
-    systemPrompt: AGENT_SYSTEM_PROMPT,
+    systemPrompt: getAgentSystemPrompt(),
     tools: [
       'execute',           // JavaScript code execution
       'read', 'write',     // Direct I/O (also available in execute)

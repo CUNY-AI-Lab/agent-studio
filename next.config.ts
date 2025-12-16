@@ -2,6 +2,10 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   serverExternalPackages: ["pdf-parse"],
+  // Expand Turbopack's filesystem root to handle .venv symlinks
+  turbopack: {
+    root: '/',
+  },
   async headers() {
     return [
       {

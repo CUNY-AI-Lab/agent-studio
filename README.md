@@ -94,6 +94,9 @@ LIBGUIDES_CLIENT_SECRET=...
 
 # Better rate limits on OpenAlex
 OPENALEX_EMAIL=your@email.edu
+
+# Custom Python venv location (defaults to .venv in project root)
+PYTHON_VENV_PATH=/path/to/venv
 ```
 
 ### Running

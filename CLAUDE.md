@@ -82,14 +82,14 @@ No pre-built specialized agents. Instead, a single powerful agent that:
 
 ### Python Execution (Local venv via Bash)
 Python code executes locally via the Agent SDK's Bash tool in sandbox mode:
-- **Venv location**: `/home/zweb/apps/agent-studio/.venv`
+- **Venv location**: Configurable via `PYTHON_VENV_PATH` env var, defaults to `.venv` in project root
 - **Pre-installed libraries**: pandas, numpy, scipy, scikit-learn, matplotlib, seaborn, pypdf, pdfplumber, openpyxl, xlsxwriter, pillow, python-docx, python-pptx, tqdm, python-dateutil, pytz
 - **Sandbox**: Uses bubblewrap (Linux) with `autoAllowBashIfSandboxed: true`
 - **Fast execution**: Direct local execution, no nested API calls
 
 Example Python via Bash:
 ```bash
-/home/zweb/apps/agent-studio/.venv/bin/python3 -c "
+$PYTHON_VENV_PATH/bin/python3 -c "
 import pandas as pd
 print(pd.DataFrame({'a': [1,2,3]}).describe())
 "
@@ -291,6 +291,7 @@ LIBGUIDES_BASE_URL=https://lgapi-us.libapps.com/1.2
 SESSION_SECRET=...                   # Session signing key
 CSRF_SECRET=...                      # CSRF token secret
 DATA_DIR=data                        # Storage location
+PYTHON_VENV_PATH=.venv               # Python virtual environment path
 ```
 
 ## API Endpoints

@@ -1,7 +1,14 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import { join } from 'path';
 import { PDFParse } from 'pdf-parse';
 import { ToolContext } from '../types';
+
+// Python venv path - computed lazily to avoid Turbopack static analysis
+function getPythonBin(): string {
+  const venv = process.env.PYTHON_VENV_PATH || `${process.cwd()}/.venv`;
+  return `${venv}/bin/python3`;
+}
 
 export const createReadTool = (ctx: ToolContext) =>
   tool(
@@ -83,7 +90,7 @@ export const createReadTool = (ctx: ToolContext) =>
         // Excel files need Python via Bash
         if (['xlsx', 'xls'].includes(ext || '')) {
           return {
-            content: [{ type: 'text' as const, text: `[Excel file: ${name}]\nExcel files cannot be read as text. Use the Bash tool to run Python:\n\n/home/zweb/apps/agent-studio/.venv/bin/python3 -c "\nimport pandas as pd\ndf = pd.read_excel('path/to/${name}')\nprint(df.to_string())\n"` }],
+            content: [{ type: 'text' as const, text: `[Excel file: ${name}]\nExcel files cannot be read as text. Use the Bash tool to run Python:\n\n${getPythonBin()} -c "\nimport pandas as pd\ndf = pd.read_excel('path/to/${name}')\nprint(df.to_string())\n"` }],
           };
         }
 

@@ -24,6 +24,12 @@ export interface PanelUpdate {
 // Skills directory location
 const SKILLS_DIR = path.join(process.cwd(), 'src/lib/skills');
 
+// Python venv path - computed lazily to avoid Turbopack static analysis
+function getPythonBin(): string {
+  const venv = process.env.PYTHON_VENV_PATH || `${process.cwd()}/.venv`;
+  return `${venv}/bin/python3`;
+}
+
 /**
  * Execute tool - runs agent-generated JavaScript with Unix-style tools available.
  *
@@ -70,7 +76,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
 
         // Excel files need Python via Bash
         if (['xlsx', 'xls'].includes(ext || '')) {
-          return `[Excel file: ${filePath}]\nExcel files cannot be read as text. Use the Bash tool to run Python:\n\n/home/zweb/apps/agent-studio/.venv/bin/python3 -c "\nimport pandas as pd\ndf = pd.read_excel('data/users/.../files/${filePath}')\nprint(df.to_string())\n"`;
+          return `[Excel file: ${filePath}]\nExcel files cannot be read as text. Use the Bash tool to run Python:\n\n${getPythonBin()} -c "\nimport pandas as pd\ndf = pd.read_excel('data/users/.../files/${filePath}')\nprint(df.to_string())\n"`;
         }
 
         const content = await storage.readFile(workspaceId, filePath);
