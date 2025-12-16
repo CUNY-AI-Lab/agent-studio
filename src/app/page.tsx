@@ -15,9 +15,15 @@ const EXAMPLE_PROMPTS = [
 ];
 
 export default async function Home() {
-  const sessionId = await getSession();
-  const storage = createSandboxedStorage(sessionId);
-  const workspaces = await storage.listWorkspaces();
+  // Session may not exist on first visit (cookie set by middleware isn't available until next request)
+  let workspaces: Awaited<ReturnType<ReturnType<typeof createSandboxedStorage>['listWorkspaces']>> = [];
+  try {
+    const sessionId = await getSession();
+    const storage = createSandboxedStorage(sessionId);
+    workspaces = await storage.listWorkspaces();
+  } catch {
+    // No session yet - first visit. Workspaces will be empty.
+  }
   const galleryItems = await listGalleryItems();
 
   return (
