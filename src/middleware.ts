@@ -175,7 +175,7 @@ export async function middleware(request: NextRequest) {
     const newSignedSession = await generateSignedSession();
     response.cookies.set('agent-studio-session', newSignedSession, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: process.env.COOKIE_SECURE === 'true',
       sameSite: 'lax',
       path: '/',
       maxAge: SESSION_MAX_AGE,
@@ -190,7 +190,7 @@ export async function middleware(request: NextRequest) {
     csrfToken = await generateCsrfToken();
     response.cookies.set(CSRF_COOKIE_NAME, csrfToken, {
       httpOnly: false, // Needs to be readable by JS to send in header
-      secure: process.env.NODE_ENV === 'production',
+      secure: process.env.COOKIE_SECURE === 'true',
       sameSite: 'strict',
       path: '/',
       maxAge: 60 * 60 * 24, // 24 hours
