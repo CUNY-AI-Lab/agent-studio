@@ -97,7 +97,7 @@ export function createSignedSession(): { value: string; sessionId: string } {
 export function getSessionCookieOptions() {
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.COOKIE_SECURE === 'true',
     sameSite: 'lax' as const,
     path: '/',
     maxAge: SESSION_MAX_AGE / 1000, // in seconds
