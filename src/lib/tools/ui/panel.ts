@@ -78,17 +78,17 @@ export const createUpdatePanelTool = (ctx: ToolContext) =>
 export const createSetLayoutTool = (ctx: ToolContext) =>
   tool(
     'ui_set_layout',
-    'Set the layout direction for workspace panels',
+    'Set the viewport zoom level for the canvas (deprecated - canvas zoom is handled by user interaction)',
     z.object({
-      layout: z.enum(['horizontal', 'vertical', 'grid']).describe('Layout direction'),
+      zoom: z.number().min(0.5).max(2.4).optional().describe('Zoom level (0.5-2.4, default 1)'),
     }).shape,
-    async ({ layout }) => {
+    async ({ zoom = 1 }) => {
       const state = await ctx.storage.getUIState(ctx.workspaceId);
-      state.layout = layout;
+      state.viewport = { x: state.viewport?.x ?? 0, y: state.viewport?.y ?? 0, zoom };
       await ctx.storage.setUIState(ctx.workspaceId, state);
 
       return {
-        content: [{ type: 'text' as const, text: `Set workspace layout to ${layout}` }],
+        content: [{ type: 'text' as const, text: `Set canvas zoom to ${zoom * 100}%` }],
       };
     }
   );

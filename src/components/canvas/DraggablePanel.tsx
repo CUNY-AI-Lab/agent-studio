@@ -1,0 +1,241 @@
+'use client';
+
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import { cn } from '@/lib/utils';
+
+interface PanelLayout {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+interface DraggablePanelProps {
+  id: string;
+  layout: PanelLayout;
+  title: string;
+  type: string;
+  children: React.ReactNode;
+  scale: number;
+  onLayoutChange: (id: string, layout: Partial<PanelLayout>) => void;
+  onDragEnd: (id: string) => void;
+  onOpenMenu?: (id: string) => void;
+  isMenuOpen?: boolean;
+  menuContent?: React.ReactNode;
+}
+
+type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
+
+export function DraggablePanel({
+  id,
+  layout,
+  title,
+  type,
+  children,
+  scale,
+  onLayoutChange,
+  onDragEnd,
+  onOpenMenu,
+  isMenuOpen,
+  menuContent,
+}: DraggablePanelProps) {
+  const [isDragging, setIsDragging] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
+  const [resizeCorner, setResizeCorner] = useState<ResizeCorner | null>(null);
+
+  const dragStartRef = useRef({ x: 0, y: 0, layoutX: 0, layoutY: 0 });
+  const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0, layoutX: 0, layoutY: 0 });
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  // Handle drag start on header
+  const handleDragStart = useCallback((e: React.PointerEvent) => {
+    if ((e.target as HTMLElement).closest('.panel-menu-trigger') ||
+        (e.target as HTMLElement).closest('.panel-menu')) {
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    setIsDragging(true);
+    dragStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      layoutX: layout.x,
+      layoutY: layout.y,
+    };
+
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, [layout.x, layout.y]);
+
+  const handleDragMove = useCallback((e: React.PointerEvent) => {
+    if (!isDragging) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dx = (e.clientX - dragStartRef.current.x) / scale;
+    const dy = (e.clientY - dragStartRef.current.y) / scale;
+
+    onLayoutChange(id, {
+      x: Math.max(0, dragStartRef.current.layoutX + dx),
+      y: Math.max(0, dragStartRef.current.layoutY + dy),
+    });
+  }, [isDragging, scale, id, onLayoutChange]);
+
+  const handleDragEnd = useCallback((e: React.PointerEvent) => {
+    if (!isDragging) return;
+
+    e.preventDefault();
+    setIsDragging(false);
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    onDragEnd(id);
+  }, [isDragging, id, onDragEnd]);
+
+  // Handle resize start
+  const handleResizeStart = useCallback((e: React.PointerEvent, corner: ResizeCorner) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    setIsResizing(true);
+    setResizeCorner(corner);
+    resizeStartRef.current = {
+      x: e.clientX,
+      y: e.clientY,
+      width: layout.width,
+      height: layout.height,
+      layoutX: layout.x,
+      layoutY: layout.y,
+    };
+
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+  }, [layout]);
+
+  const handleResizeMove = useCallback((e: React.PointerEvent) => {
+    if (!isResizing || !resizeCorner) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const dx = (e.clientX - resizeStartRef.current.x) / scale;
+    const dy = (e.clientY - resizeStartRef.current.y) / scale;
+
+    const minWidth = 200;
+    const minHeight = 150;
+
+    let newX = resizeStartRef.current.layoutX;
+    let newY = resizeStartRef.current.layoutY;
+    let newWidth = resizeStartRef.current.width;
+    let newHeight = resizeStartRef.current.height;
+
+    // Handle each corner correctly - anchor opposite corner
+    switch (resizeCorner) {
+      case 'se':
+        newWidth = Math.max(minWidth, resizeStartRef.current.width + dx);
+        newHeight = Math.max(minHeight, resizeStartRef.current.height + dy);
+        break;
+      case 'sw':
+        newWidth = Math.max(minWidth, resizeStartRef.current.width - dx);
+        newHeight = Math.max(minHeight, resizeStartRef.current.height + dy);
+        newX = resizeStartRef.current.layoutX + resizeStartRef.current.width - newWidth;
+        break;
+      case 'ne':
+        newWidth = Math.max(minWidth, resizeStartRef.current.width + dx);
+        newHeight = Math.max(minHeight, resizeStartRef.current.height - dy);
+        newY = resizeStartRef.current.layoutY + resizeStartRef.current.height - newHeight;
+        break;
+      case 'nw':
+        newWidth = Math.max(minWidth, resizeStartRef.current.width - dx);
+        newHeight = Math.max(minHeight, resizeStartRef.current.height - dy);
+        newX = resizeStartRef.current.layoutX + resizeStartRef.current.width - newWidth;
+        newY = resizeStartRef.current.layoutY + resizeStartRef.current.height - newHeight;
+        break;
+    }
+
+    onLayoutChange(id, {
+      x: Math.max(0, newX),
+      y: Math.max(0, newY),
+      width: newWidth,
+      height: newHeight,
+    });
+  }, [isResizing, resizeCorner, scale, id, onLayoutChange]);
+
+  const handleResizeEnd = useCallback((e: React.PointerEvent) => {
+    if (!isResizing) return;
+
+    e.preventDefault();
+    setIsResizing(false);
+    setResizeCorner(null);
+    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    onDragEnd(id);
+  }, [isResizing, id, onDragEnd]);
+
+  return (
+    <div
+      ref={panelRef}
+      className={cn(
+        "artifact-card absolute flex flex-col",
+        isDragging && "dragging",
+        isResizing && "resizing"
+      )}
+      style={{
+        left: layout.x,
+        top: layout.y,
+        width: layout.width,
+        height: layout.height,
+      }}
+    >
+      {/* Drag handle header */}
+      <div
+        className="artifact-header cursor-grab active:cursor-grabbing"
+        onPointerDown={handleDragStart}
+        onPointerMove={handleDragMove}
+        onPointerUp={handleDragEnd}
+        onPointerCancel={handleDragEnd}
+      >
+        <div className="flex items-center gap-2 min-w-0 flex-1">
+          <h3 className="truncate">{title}</h3>
+          <span className="artifact-type flex-shrink-0">{type}</span>
+        </div>
+        <div className="relative flex-shrink-0">
+          <button
+            className="panel-menu-trigger p-1 rounded hover:bg-white/10 transition-colors"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenMenu?.(isMenuOpen ? '' : id);
+            }}
+          >
+            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
+            </svg>
+          </button>
+          {isMenuOpen && menuContent && (
+            <div
+              className="panel-menu absolute right-0 top-full mt-1 w-40 bg-popover border border-border rounded-lg shadow-lg py-1 z-50"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {menuContent}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Content area */}
+      <div className="artifact-content flex-1 overflow-auto">
+        {children}
+      </div>
+
+      {/* Resize handles - corners only */}
+      {['nw', 'ne', 'sw', 'se'].map((corner) => (
+        <div
+          key={corner}
+          className={cn("resize-handle", corner)}
+          onPointerDown={(e) => handleResizeStart(e, corner as ResizeCorner)}
+          onPointerMove={handleResizeMove}
+          onPointerUp={handleResizeEnd}
+          onPointerCancel={handleResizeEnd}
+        />
+      ))}
+    </div>
+  );
+}

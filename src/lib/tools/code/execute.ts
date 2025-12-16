@@ -202,7 +202,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
       title?: string;
       columns?: { key: string; label: string; type?: string }[];
       data: unknown[];
-      layout?: { x?: number; y?: number; w?: number; h?: number };
+      layout?: { x?: number; y?: number; width?: number; height?: number };
     }): Promise<void> {
       const existing = await storage.getTable(workspaceId, id);
       const rows = config.data as Record<string, unknown>[];
@@ -224,9 +224,9 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.type === 'table' && p.tableId === id);
 
-      // Default layout: full width table with generous height
-      const defaultLayout = { x: 0, y: 0, w: 12, h: 8 };
-      const layout = config.layout ?? defaultLayout;
+      // Default layout: pixel-based infinite canvas positioning
+      const defaultLayout = { x: 50, y: 50, width: 600, height: 400 };
+      const layout = { ...defaultLayout, ...config.layout };
 
       if (!existingPanel) {
         const panel: UIPanel = {
@@ -240,11 +240,17 @@ export const createExecuteTool = (ctx: ToolContext) => {
         // Track for streaming
         panelUpdates.push({ action: 'add', panel, data: { table: tableData } });
       } else {
+        // Track update for streaming - ensure all required layout fields are present
+        const updatedLayout = {
+          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+        };
         if (config.layout) {
-          await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+          await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
-        // Track update for streaming
-        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: config.layout ?? existingPanel.layout }, data: { table: tableData } });
+        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { table: tableData } });
       }
     },
 
@@ -276,7 +282,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
       yKey?: string;
       labelKey?: string;
       valueKey?: string;
-      layout?: { x?: number; y?: number; w?: number; h?: number };
+      layout?: { x?: number; y?: number; width?: number; height?: number };
     }): Promise<void> {
       const chartData: ChartData = {
         id,
@@ -296,9 +302,9 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.type === 'chart' && p.chartId === id);
 
-      // Default layout: medium chart (6 cols)
-      const defaultLayout = { x: 0, y: 0, w: 12, h: 6 };
-      const layout = config.layout ?? defaultLayout;
+      // Default layout: pixel-based infinite canvas positioning
+      const defaultLayout = { x: 50, y: 50, width: 500, height: 350 };
+      const layout = { ...defaultLayout, ...config.layout };
 
       if (!existingPanel) {
         const panel: UIPanel = {
@@ -311,10 +317,17 @@ export const createExecuteTool = (ctx: ToolContext) => {
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { chart: chartData } });
       } else {
+        // Ensure all required layout fields are present
+        const updatedLayout = {
+          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+        };
         if (config.layout) {
-          await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+          await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
-        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: config.layout ?? existingPanel.layout }, data: { chart: chartData } });
+        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { chart: chartData } });
       }
     },
 
@@ -322,7 +335,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
     async setCards(id: string, config: {
       title?: string;
       items: { title: string; subtitle?: string; description?: string; image?: string; badge?: string; metadata?: Record<string, string> }[];
-      layout?: { x?: number; y?: number; w?: number; h?: number };
+      layout?: { x?: number; y?: number; width?: number; height?: number };
     }): Promise<void> {
       const cardsData: CardsData = {
         id,
@@ -335,9 +348,9 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.type === 'cards' && p.cardsId === id);
 
-      // Default layout: wide cards (8 cols)
-      const defaultLayout = { x: 0, y: 0, w: 12, h: 6 };
-      const layout = config.layout ?? defaultLayout;
+      // Default layout: pixel-based infinite canvas positioning
+      const defaultLayout = { x: 50, y: 50, width: 500, height: 400 };
+      const layout = { ...defaultLayout, ...config.layout };
 
       if (!existingPanel) {
         const panel: UIPanel = {
@@ -350,10 +363,17 @@ export const createExecuteTool = (ctx: ToolContext) => {
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { cards: cardsData } });
       } else {
+        // Ensure all required layout fields are present
+        const updatedLayout = {
+          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+        };
         if (config.layout) {
-          await storage.updatePanel(workspaceId, existingPanel.id, { layout: config.layout });
+          await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
-        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: config.layout ?? existingPanel.layout }, data: { cards: cardsData } });
+        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { cards: cardsData } });
       }
     },
 
@@ -361,31 +381,44 @@ export const createExecuteTool = (ctx: ToolContext) => {
     async setMarkdown(id: string, config: {
       title?: string;
       content: string;
-      layout?: { x?: number; y?: number; w?: number; h?: number };
+      layout?: { x?: number; y?: number; width?: number; height?: number };
     }): Promise<void> {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.id === id);
 
-      // Default layout: medium width markdown (6 cols)
-      const defaultLayout = { x: 0, y: 0, w: 12, h: 5 };
+      // Default layout: pixel-based infinite canvas positioning
+      const defaultLayout = { x: 50, y: 50, width: 400, height: 300 };
 
       if (existingPanel) {
+        // Ensure all required layout fields are present
+        const updatedLayout = {
+          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+        };
         const updatedPanel: UIPanel = {
           ...existingPanel,
           type: 'markdown',
           title: config.title ?? existingPanel.title,
           content: config.content,
-          layout: config.layout ?? existingPanel.layout,
+          layout: updatedLayout,
         };
         await storage.updatePanel(workspaceId, id, updatedPanel);
         panelUpdates.push({ action: 'update', panel: updatedPanel, data: { content: config.content } });
       } else {
+        const layout = {
+          x: config.layout?.x ?? defaultLayout.x,
+          y: config.layout?.y ?? defaultLayout.y,
+          width: config.layout?.width ?? defaultLayout.width,
+          height: config.layout?.height ?? defaultLayout.height,
+        };
         const panel: UIPanel = {
           id,
           type: 'markdown',
           title: config.title ?? id,
           content: config.content,
-          layout: config.layout ?? defaultLayout,
+          layout,
         };
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { content: config.content } });
@@ -393,8 +426,18 @@ export const createExecuteTool = (ctx: ToolContext) => {
     },
 
     // === Layout ===
-    async movePanel(id: string, layout: { x?: number; y?: number; w?: number; h?: number }): Promise<void> {
-      await storage.updatePanel(workspaceId, id, { layout });
+    async movePanel(id: string, layout: { x?: number; y?: number; width?: number; height?: number }): Promise<void> {
+      // Get current panel to merge with existing layout
+      const ui = await storage.getUIState(workspaceId);
+      const existingPanel = ui.panels.find(p => p.id === id);
+      const defaultLayout = { x: 50, y: 50, width: 400, height: 300 };
+      const fullLayout = {
+        x: layout.x ?? existingPanel?.layout?.x ?? defaultLayout.x,
+        y: layout.y ?? existingPanel?.layout?.y ?? defaultLayout.y,
+        width: layout.width ?? existingPanel?.layout?.width ?? defaultLayout.width,
+        height: layout.height ?? existingPanel?.layout?.height ?? defaultLayout.height,
+      };
+      await storage.updatePanel(workspaceId, id, { layout: fullLayout });
     },
 
     // === Downloads ===
@@ -626,9 +669,9 @@ UI:
 - setMarkdown(id, {title?, content, layout?}) - Show markdown text
 - addPanel({id, type, layout?, ...}) - Add custom panel
 - removePanel(id) - Remove panel
-- movePanel(id, {x?, y?, w?, h?}) - Move/resize panel
+- movePanel(id, {x?, y?, width?, height?}) - Move/resize panel
 
-Layout: {x: 0-11, y: row, w: 1-12, h: rows} - Grid-based positioning
+Layout: {x, y, width, height} - Pixel-based canvas positioning
 
 OUTPUT:
 - download(filename, data, format) - Trigger download (csv/json/txt)

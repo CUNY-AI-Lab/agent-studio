@@ -77,12 +77,14 @@ export interface DownloadRequest {
   format: 'csv' | 'json' | 'txt';
 }
 
-// Layout configuration for canvas positioning
+// Layout configuration for infinite canvas positioning (pixel coords)
 export interface PanelLayout {
-  x?: number;      // Grid column (0-11)
-  y?: number;      // Grid row
-  w?: number;      // Width in columns (1-12)
-  h?: number;      // Height in rows
+  x: number;        // Pixel X (world coords)
+  y: number;        // Pixel Y
+  width: number;    // Pixel width
+  height: number;   // Pixel height
+  rotation?: number;
+  groupId?: string;
 }
 
 // Dynamic UI panel system
@@ -103,7 +105,11 @@ export interface UIPanel {
 
 export interface UIState {
   panels: UIPanel[];
-  layout: 'horizontal' | 'vertical' | 'grid';
+  viewport?: {
+    x: number;
+    y: number;
+    zoom: number;
+  };
   activePanel?: string;
 }
 
@@ -504,7 +510,7 @@ export function createSandboxedStorage(userId: string): SandboxedStorage {
         // Default: just a chat panel
         return {
           panels: [{ id: 'chat', type: 'chat', title: 'Chat' }],
-          layout: 'horizontal',
+          viewport: { x: 0, y: 0, zoom: 1 },
         };
       }
     },

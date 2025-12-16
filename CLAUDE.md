@@ -132,7 +132,7 @@ Located in `src/lib/skills/`:
 - `citation.md` - Citation formatting (APA, MLA, Chicago)
 
 ### UI
-- `src/app/w/[id]/page.tsx` - Workspace page with dynamic grid panels
+- `src/app/w/[id]/page.tsx` - Workspace page with infinite canvas (@flowscape-ui/canvas-react)
 - `src/components/ui/*` - shadcn components
 
 ## MCP Tools (12 total)
@@ -208,10 +208,10 @@ await setMarkdown("notes", {
   content: "# Heading\n\nMarkdown content..."
 })
 
-await addPanel({ id: "custom", type: "preview", content: "<html>...", layout: { x: 0, y: 0, w: 6, h: 4 } })
+await addPanel({ id: "custom", type: "preview", content: "<html>...", layout: { x: 50, y: 50, width: 600, height: 400 } })
 await removePanel("panel-id")
 await updatePanel("panel-id", { title: "New Title" })
-await movePanel("panel-id", { x: 6, y: 0, w: 6, h: 4 })
+await movePanel("panel-id", { x: 700, y: 50, width: 600, height: 400 })
 ```
 
 ### HTTP & APIs
@@ -429,7 +429,7 @@ curl -b /tmp/cookies.txt -X POST "http://localhost:3000/api/workspaces/WORKSPACE
 
 - **Framework**: Next.js 15 (App Router)
 - **AI**: Claude Agent SDK with claude-sonnet-4-20250514
-- **UI**: shadcn/ui + Tailwind CSS + react-grid-layout
+- **UI**: shadcn/ui + Tailwind CSS + @flowscape-ui/canvas-react (infinite canvas)
 - **Charts**: Recharts
 - **Runtime**: Node.js vm (JS) + bubblewrap (Bash/Python)
 - **Storage**: Filesystem-based JSON

@@ -68,7 +68,7 @@ export async function getGalleryItem(id: string): Promise<GalleryItemFull | null
     const config: GalleryItem = JSON.parse(configContent);
 
     // Read UI state
-    let uiState: UIState = { panels: [], layout: 'horizontal' };
+    let uiState: UIState = { panels: [], viewport: { x: 0, y: 0, zoom: 1 } };
     try {
       const uiContent = await readFile(join(itemPath, 'ui.json'), 'utf-8');
       uiState = JSON.parse(uiContent);

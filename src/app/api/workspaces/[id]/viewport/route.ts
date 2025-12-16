@@ -15,23 +15,17 @@ export async function PATCH(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  let body: { panels?: Record<string, unknown> };
+  let viewport: { x: number; y: number; zoom: number };
   try {
-    body = await request.json();
+    viewport = await request.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
 
-  // Update panel layouts: { panels: { panelId: { x, y, width, height }, ... } }
-  if (body.panels && typeof body.panels === 'object') {
-    for (const [panelId, layout] of Object.entries(body.panels)) {
-      if (layout && typeof layout === 'object' && 'x' in layout && 'y' in layout) {
-        await storage.updatePanel(id, panelId, {
-          layout: layout as { x: number; y: number; width: number; height: number }
-        });
-      }
-    }
-  }
+  // Update viewport in UI state
+  const uiState = await storage.getUIState(id);
+  uiState.viewport = viewport;
+  await storage.setUIState(id, uiState);
 
   return NextResponse.json({ success: true });
 }

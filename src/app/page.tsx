@@ -4,6 +4,8 @@ import { createSandboxedStorage } from '@/lib/storage';
 import { listGalleryItems } from '@/lib/gallery';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { ThemeToggle } from '@/components/ThemeToggle';
+import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
+import skills from '@/lib/skills/index.json';
 
 const EXAMPLE_PROMPTS = [
   { label: 'Search papers', prompt: 'Search OpenAlex for recent machine learning papers and show me a table of results' },
@@ -40,9 +42,10 @@ export default async function Home() {
           <h1 className="text-3xl font-medium tracking-tight mb-3">
             What would you like to work on?
           </h1>
-          <p className="text-muted-foreground">
+          <p className="text-muted-foreground mb-4">
             Search APIs, analyze data, create visualizations, or build tools.
           </p>
+          <CapabilitiesPanel skills={skills} />
         </header>
 
         {/* Main Input */}

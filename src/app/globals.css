@@ -76,7 +76,7 @@
   --secondary-foreground: oklch(0.25 0.05 250);
 
   --muted: oklch(0.94 0.008 80);
-  --muted-foreground: oklch(0.45 0.02 250);
+  --muted-foreground: oklch(0.38 0.02 250);
 
   /* Amber accent for highlights */
   --accent: oklch(0.75 0.15 75);
@@ -124,7 +124,7 @@
   --secondary-foreground: oklch(0.92 0.01 80);
 
   --muted: oklch(0.22 0.015 250);
-  --muted-foreground: oklch(0.65 0.02 80);
+  --muted-foreground: oklch(0.70 0.02 80);
 
   --accent: oklch(0.7 0.15 75);
   --accent-foreground: oklch(0.14 0.02 250);
@@ -353,12 +353,12 @@ hr.editorial {
 
 .artifact-header .artifact-type {
   font-family: var(--font-mono);
-  font-size: 0.65rem;
+  font-size: 0.7rem;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.04em;
   color: var(--muted-foreground);
   background: var(--muted);
-  padding: 2px 8px;
+  padding: 3px 8px;
   border-radius: 4px;
 }
 
@@ -388,84 +388,113 @@ hr.editorial {
     -8px 0 48px oklch(0 0 0 / 0.2);
 }
 
-/* react-grid-layout overrides */
-.react-grid-layout {
+/* ═══════════════════════════════════════════════════════════════════════════
+   Custom Infinite Canvas Styles (react-zoom-pan-pinch)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Canvas wrapper */
+.canvas-wrapper {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.canvas-wrapper:active {
+  cursor: grabbing;
+}
+
+/* Canvas content area */
+.canvas-content {
   position: relative;
 }
 
-.react-grid-item {
-  transition: transform 0.2s ease, opacity 0.2s ease;
+/* Smooth panel transitions when not dragging/resizing */
+.artifact-card {
+  transition:
+    box-shadow 0.2s ease,
+    left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    top 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.react-grid-item.cssTransforms {
-  transition: transform 0.2s ease, opacity 0.2s ease;
+/* Disable transitions during drag/resize for responsive feel */
+.artifact-card.dragging,
+.artifact-card.resizing {
+  transition: box-shadow 0.2s ease;
 }
 
-.react-grid-item.react-draggable-dragging {
-  transition: none;
-  z-index: 100;
-  opacity: 0.9;
+/* Elevated state while dragging */
+.artifact-card.dragging {
+  z-index: 1000;
+  box-shadow:
+    0 4px 8px oklch(0.2 0.02 250 / 0.1),
+    0 16px 32px oklch(0.2 0.02 250 / 0.15),
+    0 24px 48px oklch(0.2 0.02 250 / 0.1);
 }
 
-.react-grid-item.react-draggable-dragging .artifact-card {
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
-  transform: scale(1.01);
+.dark .artifact-card.dragging {
+  box-shadow:
+    0 4px 8px oklch(0 0 0 / 0.3),
+    0 16px 32px oklch(0 0 0 / 0.4),
+    0 24px 48px oklch(0 0 0 / 0.3);
 }
 
-.react-grid-item.resizing {
-  transition: none;
-}
-
-.react-grid-item > .react-resizable-handle {
+/* Custom resize handles - corners only */
+.resize-handle {
   position: absolute;
-  width: 20px;
-  height: 20px;
+  width: 12px;
+  height: 12px;
+  background: white;
+  border: 2px solid oklch(0.6 0.2 250);
+  border-radius: 2px;
   opacity: 0;
   transition: opacity 0.15s ease;
+  z-index: 10;
+  touch-action: none;
 }
 
-.react-grid-item:hover > .react-resizable-handle {
+.artifact-card:hover .resize-handle {
   opacity: 1;
 }
 
-.react-grid-item > .react-resizable-handle::after {
-  content: '';
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid var(--muted-foreground);
-  border-bottom: 2px solid var(--muted-foreground);
-  border-radius: 0 0 2px 0;
+/* Corner positions */
+.resize-handle.nw {
+  top: -6px;
+  left: -6px;
+  cursor: nw-resize;
 }
 
-.react-grid-item > .react-resizable-handle-se {
-  bottom: 0;
-  right: 0;
-  cursor: se-resize;
+.resize-handle.ne {
+  top: -6px;
+  right: -6px;
+  cursor: ne-resize;
 }
 
-.react-grid-item > .react-resizable-handle-sw {
-  bottom: 0;
-  left: 0;
+.resize-handle.sw {
+  bottom: -6px;
+  left: -6px;
   cursor: sw-resize;
 }
 
-.react-grid-item > .react-resizable-handle-sw::after {
-  right: auto;
-  left: 4px;
-  border-right: none;
-  border-left: 2px solid var(--muted-foreground);
+.resize-handle.se {
+  bottom: -6px;
+  right: -6px;
+  cursor: se-resize;
 }
 
-/* Grid placeholder */
-.react-grid-placeholder {
-  background: var(--accent);
-  opacity: 0.15;
-  border-radius: 12px;
-  transition-duration: 100ms;
-  z-index: 2;
+/* Dark mode resize handles */
+.dark .resize-handle {
+  background: oklch(0.25 0.02 250);
+  border-color: oklch(0.7 0.15 75);
+}
+
+/* Prevent text selection during drag */
+.artifact-card.dragging * {
+  user-select: none;
+}
+
+.artifact-card.resizing * {
+  user-select: none;
 }
 
 /* Canvas header */
@@ -529,7 +558,7 @@ hr.editorial {
   height: 64px;
   margin-bottom: 24px;
   color: var(--muted-foreground);
-  opacity: 0.5;
+  opacity: 0.6;
 }
 
 .canvas-empty h3 {

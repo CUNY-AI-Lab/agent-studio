@@ -1,10 +1,10 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import GridLayout from 'react-grid-layout';
-import 'react-grid-layout/css/styles.css';
+import { TransformWrapper, TransformComponent, useControls } from 'react-zoom-pan-pinch';
+import { DraggablePanel } from '@/components/canvas/DraggablePanel';
 import {
   Bar, BarChart, Line, LineChart, Pie, PieChart, Area, AreaChart,
   XAxis, YAxis, CartesianGrid, Cell, ResponsiveContainer
@@ -15,6 +15,8 @@ import { toPng } from 'html-to-image';
 import { useTheme } from '@/components/ThemeProvider';
 import { apiFetch } from '@/lib/api';
 import { useStreamingQuery, type Message, type ToolExecution, type ContentBlock, type PanelUpdate } from '@/hooks/useStreamingQuery';
+import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
+import skills from '@/lib/skills/index.json';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -61,10 +63,12 @@ interface DownloadRequest {
 }
 
 interface PanelLayout {
-  x?: number;
-  y?: number;
-  w?: number;
-  h?: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotation?: number;
+  groupId?: string;
 }
 
 interface UIPanel {
@@ -81,7 +85,11 @@ interface UIPanel {
 
 interface UIState {
   panels: UIPanel[];
-  layout: 'horizontal' | 'vertical' | 'grid';
+  viewport?: {
+    x: number;
+    y: number;
+    zoom: number;
+  };
 }
 
 interface WorkspaceData {
@@ -91,15 +99,14 @@ interface WorkspaceData {
   galleryId?: string;
 }
 
-interface GridItem {
-  i: string;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  minW?: number;
-  minH?: number;
-}
+// Default panel sizes in pixels for infinite canvas
+const DEFAULT_PANEL_SIZES: Record<string, { width: number; height: number }> = {
+  table: { width: 600, height: 400 },
+  chart: { width: 500, height: 350 },
+  cards: { width: 500, height: 400 },
+  markdown: { width: 400, height: 300 },
+  preview: { width: 600, height: 500 },
+};
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Main Component
@@ -117,12 +124,10 @@ export default function WorkspacePage() {
   const [tables, setTables] = useState<Record<string, TableData>>({});
   const [charts, setCharts] = useState<Record<string, ChartData>>({});
   const [cards, setCards] = useState<Record<string, CardsData>>({});
-  const [uiState, setUIState] = useState<UIState>({ panels: [{ id: 'chat', type: 'chat' }], layout: 'horizontal' });
+  const [uiState, setUIState] = useState<UIState>({ panels: [{ id: 'chat', type: 'chat' }], viewport: { x: 0, y: 0, zoom: 1 } });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [chatOpen, setChatOpen] = useState(true);
-  const [gridLayout, setGridLayout] = useState<GridItem[]>([]);
-  const [containerWidth, setContainerWidth] = useState(1200);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [publishTitle, setPublishTitle] = useState('');
   const [publishDescription, setPublishDescription] = useState('');
@@ -137,12 +142,18 @@ export default function WorkspacePage() {
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; path: string }[]>([]);
   const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
   const [minimizedPanels, setMinimizedPanels] = useState<Set<string>>(new Set());
+
+  // Canvas state
+  const [panelLayouts, setPanelLayouts] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
   const [zoomLevel, setZoomLevel] = useState(1);
+  const [viewportLoaded, setViewportLoaded] = useState(false);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const viewportSaveTimeout = useRef<NodeJS.Timeout | null>(null);
+  const currentViewport = useRef<{ x: number; y: number; scale: number }>({ x: -3100, y: -3400, scale: 1 });
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const canvasRef = useRef<HTMLDivElement>(null);
   const pendingQueryProcessed = useRef(false);
   const panelRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
@@ -223,24 +234,6 @@ export default function WorkspacePage() {
     onPanelUpdate: handlePanelUpdates,
   });
 
-  // Grid config - responsive row height based on viewport
-  const cols = 12;
-  const [rowHeight, setRowHeight] = useState(80);
-
-  useEffect(() => {
-    const updateRowHeight = () => {
-      // Scale row height: ~12 rows should fit in viewport
-      // Min 50px, max 100px per row
-      const vh = window.innerHeight;
-      const calculated = Math.floor(vh / 12);
-      setRowHeight(Math.max(50, Math.min(100, calculated)));
-    };
-
-    updateRowHeight();
-    window.addEventListener('resize', updateRowHeight);
-    return () => window.removeEventListener('resize', updateRowHeight);
-  }, []);
-
   // Close menu on click outside
   useEffect(() => {
     if (!openMenuId) return;
@@ -259,22 +252,6 @@ export default function WorkspacePage() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [maximizedPanelId]);
 
-  // Canvas zoom with Ctrl+scroll (must use passive: false to preventDefault browser zoom)
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const handleWheel = (e: WheelEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !(e.target as HTMLElement).closest('.chat-panel')) {
-        e.preventDefault();
-        const delta = e.deltaY > 0 ? -0.05 : 0.05;
-        setZoomLevel(z => Math.max(0.1, Math.min(3, z + delta)));
-      }
-    };
-
-    canvas.addEventListener('wheel', handleWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', handleWheel);
-  }, []);
 
   // Get artifact panels (everything except chat)
   const artifactPanels = useMemo(() =>
@@ -282,109 +259,209 @@ export default function WorkspacePage() {
     [uiState.panels]
   );
 
-  // Generate layout for artifacts - read from panel.layout or auto-position
+  // Initialize panel layouts when panels change
+  // New panels appear in the center of the current viewport
   useEffect(() => {
-    // Default sizes by panel type - half width, compact height
-    const defaultSizes: Record<string, { w: number; h: number }> = {
-      table: { w: 6, h: 4 },
-      chart: { w: 6, h: 4 },
-      cards: { w: 6, h: 4 },
-      markdown: { w: 6, h: 3 },
-      preview: { w: 6, h: 6 },
-    };
+    const gap = 40;
 
-    // Find best position for a new panel (first fit algorithm)
-    const findPosition = (w: number, h: number, occupied: GridItem[]): { x: number; y: number } => {
-      const cols = 12;
-      // Try each row starting from 0
-      for (let y = 0; y < 100; y++) {
-        // Try each x position in this row
-        for (let x = 0; x <= cols - w; x++) {
-          // Check if this position collides with any existing panel
-          const collides = occupied.some(item => {
-            const itemRight = item.x + item.w;
-            const itemBottom = item.y + item.h;
-            const newRight = x + w;
-            const newBottom = y + h;
-            return !(x >= itemRight || newRight <= item.x || y >= itemBottom || newBottom <= item.y);
-          });
-          if (!collides) {
-            return { x, y };
+    // Calculate viewport center in canvas coordinates
+    const vp = currentViewport.current;
+    const container = canvasContainerRef.current;
+    const viewportWidth = container?.clientWidth || 1200;
+    const viewportHeight = container?.clientHeight || 700;
+    const startX = Math.round((-vp.x + viewportWidth / 2) / vp.scale - 250); // offset to center panel
+    const startY = Math.round((-vp.y + viewportHeight / 2) / vp.scale - 200);
+
+    setPanelLayouts(prev => {
+      const newLayouts = { ...prev };
+      const occupiedRects: { x: number; y: number; width: number; height: number }[] = [];
+
+      // Collect existing layouts
+      Object.values(newLayouts).forEach(layout => occupiedRects.push(layout));
+
+      // Check if a rectangle overlaps
+      const overlaps = (x: number, y: number, w: number, h: number): boolean => {
+        for (const rect of occupiedRects) {
+          if (!(x >= rect.x + rect.width + gap || x + w + gap <= rect.x ||
+                y >= rect.y + rect.height + gap || y + h + gap <= rect.y)) {
+            return true;
           }
         }
-      }
-      return { x: 0, y: 0 };
-    };
+        return false;
+      };
 
-    setGridLayout(prevLayout => {
-      const newLayout: GridItem[] = [];
+      // Find non-overlapping position
+      const findPosition = (width: number, height: number): { x: number; y: number } => {
+        if (occupiedRects.length === 0) return { x: startX, y: startY };
 
+        // Try right of rightmost in top row
+        const topRow = occupiedRects.filter(r => r.y < startY + 200);
+        if (topRow.length > 0) {
+          const rightmost = topRow.reduce((max, r) => (r.x + r.width) > (max.x + max.width) ? r : max);
+          const x = rightmost.x + rightmost.width + gap;
+          if (!overlaps(x, startY, width, height)) return { x, y: startY };
+        }
+
+        // Grid search
+        for (let row = 0; row < 20; row++) {
+          for (let col = 0; col < 10; col++) {
+            const x = startX + col * (500 + gap);
+            const y = startY + row * (400 + gap);
+            if (!overlaps(x, y, width, height)) return { x, y };
+          }
+        }
+
+        return { x: startX, y: Math.max(...occupiedRects.map(r => r.y + r.height), 0) + gap };
+      };
+
+      // Add layouts for new panels
       for (const panel of artifactPanels) {
-        const defaultSize = defaultSizes[panel.type] || { w: 6, h: 4 };
+        if (!newLayouts[panel.id]) {
+          const defaultSize = DEFAULT_PANEL_SIZES[panel.type] || { width: 500, height: 400 };
+          const width = panel.layout?.width ?? defaultSize.width;
+          const height = panel.layout?.height ?? defaultSize.height;
 
-        // Check if panel has stored layout from server
-        if (panel.layout) {
-          newLayout.push({
-            i: panel.id,
-            x: panel.layout.x ?? 0,
-            y: panel.layout.y ?? 0,
-            w: panel.layout.w ?? defaultSize.w,
-            h: panel.layout.h ?? defaultSize.h,
-            minW: 2,
-            minH: 1,
-          });
-          continue;
+          let x: number, y: number;
+          if (panel.layout?.x !== undefined && panel.layout?.y !== undefined) {
+            x = panel.layout.x;
+            y = panel.layout.y;
+          } else {
+            const pos = findPosition(width, height);
+            x = pos.x;
+            y = pos.y;
+          }
+
+          newLayouts[panel.id] = { x, y, width, height };
+          occupiedRects.push(newLayouts[panel.id]);
         }
-
-        // Check local state for existing position
-        const existing = prevLayout.find(item => item.i === panel.id);
-        if (existing) {
-          newLayout.push(existing);
-          continue;
-        }
-
-        // Auto-position: find best available spot
-        const pos = findPosition(defaultSize.w, defaultSize.h, newLayout);
-        newLayout.push({
-          i: panel.id,
-          x: pos.x,
-          y: pos.y,
-          w: defaultSize.w,
-          h: defaultSize.h,
-          minW: 2,
-          minH: 1,
-        });
       }
 
-      // Only update if layout actually changed
-      if (newLayout.length !== prevLayout.length ||
-          newLayout.some((item, i) => prevLayout[i]?.i !== item.i)) {
-        return newLayout;
-      }
-      return prevLayout;
+      // Remove layouts for deleted panels
+      const panelIds = new Set(artifactPanels.map(p => p.id));
+      Object.keys(newLayouts).forEach(id => {
+        if (!panelIds.has(id)) delete newLayouts[id];
+      });
+
+      return newLayouts;
     });
   }, [artifactPanels]);
 
-  // Measure container width
-  const updateContainerWidth = useCallback(() => {
-    if (canvasRef.current) {
-      const width = canvasRef.current.offsetWidth - 32; // padding
-      setContainerWidth(width);
-    }
+  // Handle panel layout change (during drag/resize)
+  const handleLayoutChange = useCallback((id: string, layout: Partial<{ x: number; y: number; width: number; height: number }>) => {
+    setPanelLayouts(prev => ({
+      ...prev,
+      [id]: { ...prev[id], ...layout },
+    }));
   }, []);
 
-  // Initial width measurement and window resize
-  useEffect(() => {
-    updateContainerWidth();
-    window.addEventListener('resize', updateContainerWidth);
-    return () => window.removeEventListener('resize', updateContainerWidth);
-  }, [updateContainerWidth]);
+  // Resolve collisions and save layout after drag ends
+  const handleDragEnd = useCallback((movedPanelId: string) => {
+    setPanelLayouts(prev => {
+      // Deep copy so we can mutate positions directly
+      const layouts: Record<string, { x: number; y: number; width: number; height: number }> = {};
+      for (const [id, layout] of Object.entries(prev)) {
+        layouts[id] = { ...layout };
+      }
 
-  // Re-measure after chat toggle animation completes (300ms)
-  useEffect(() => {
-    const timeout = setTimeout(updateContainerWidth, 320);
-    return () => clearTimeout(timeout);
-  }, [chatOpen, updateContainerWidth]);
+      const gap = 20;
+      const maxIterations = 15;
+      const panelIds = Object.keys(layouts);
+
+      // Helper to check if two rectangles overlap (with gap)
+      const rectsOverlap = (a: typeof layouts[string], b: typeof layouts[string]) => {
+        return !(a.x + a.width + gap <= b.x || b.x + b.width + gap <= a.x ||
+                 a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y);
+      };
+
+      for (let iter = 0; iter < maxIterations; iter++) {
+        let hadCollision = false;
+
+        for (let i = 0; i < panelIds.length; i++) {
+          for (let j = i + 1; j < panelIds.length; j++) {
+            const idA = panelIds[i];
+            const idB = panelIds[j];
+            const a = layouts[idA];
+            const b = layouts[idB];
+
+            if (!rectsOverlap(a, b)) continue;
+            hadCollision = true;
+
+            // Determine which panel moves: the moved panel stays put
+            // If neither is the moved panel, move the one lower/righter
+            let toMoveId: string;
+            let stayId: string;
+            if (idA === movedPanelId) {
+              toMoveId = idB;
+              stayId = idA;
+            } else if (idB === movedPanelId) {
+              toMoveId = idA;
+              stayId = idB;
+            } else {
+              // Move the one that's more bottom-right
+              if (b.y > a.y || (b.y === a.y && b.x > a.x)) {
+                toMoveId = idB;
+                stayId = idA;
+              } else {
+                toMoveId = idA;
+                stayId = idB;
+              }
+            }
+
+            const stay = layouts[stayId];
+            const move = layouts[toMoveId];
+
+            // Calculate centers to determine push direction
+            const stayCx = stay.x + stay.width / 2;
+            const stayCy = stay.y + stay.height / 2;
+            const moveCx = move.x + move.width / 2;
+            const moveCy = move.y + move.height / 2;
+
+            // Calculate edge-based push amounts
+            let pushRight = 0, pushLeft = 0, pushDown = 0, pushUp = 0;
+
+            // How much to push right so move's left edge clears stay's right edge
+            pushRight = (stay.x + stay.width + gap) - move.x;
+            // How much to push left so move's right edge clears stay's left edge
+            pushLeft = (move.x + move.width + gap) - stay.x;
+            // How much to push down so move's top edge clears stay's bottom edge
+            pushDown = (stay.y + stay.height + gap) - move.y;
+            // How much to push up so move's bottom edge clears stay's top edge
+            pushUp = (move.y + move.height + gap) - stay.y;
+
+            // Choose minimum push in the natural direction (away from stay's center)
+            const pushX = moveCx >= stayCx ? pushRight : pushLeft;
+            const pushY = moveCy >= stayCy ? pushDown : pushUp;
+
+            // Push in the direction requiring minimum movement
+            if (pushX > 0 && pushX <= pushY) {
+              const dx = moveCx >= stayCx ? pushRight : -pushLeft;
+              layouts[toMoveId] = {
+                ...move,
+                x: Math.max(0, move.x + dx),
+              };
+            } else if (pushY > 0) {
+              const dy = moveCy >= stayCy ? pushDown : -pushUp;
+              layouts[toMoveId] = {
+                ...move,
+                y: Math.max(0, move.y + dy),
+              };
+            }
+          }
+        }
+
+        if (!hadCollision) break;
+      }
+
+      // Save to server
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        body: JSON.stringify({ panels: layouts }),
+      }).catch(console.error);
+
+      return layouts;
+    });
+  }, [workspaceId]);
+
 
   // Load workspace data
   const loadWorkspace = useCallback(async (options?: { skipMessages?: boolean }) => {
@@ -406,7 +483,10 @@ export default function WorkspacePage() {
       apiFetch(`/api/workspaces/${workspaceId}/downloads`, { method: 'DELETE' });
     }
     if (!options?.skipMessages && data.messages) setMessages(data.messages);
-    if (data.uiState) setUIState(data.uiState);
+    if (data.uiState) {
+      setUIState(data.uiState);
+      setViewportLoaded(true);
+    }
   }, [workspaceId]);
 
   // Set the ref so hook can access loadWorkspace
@@ -524,33 +604,6 @@ export default function WorkspacePage() {
       handleSubmit(e);
     }
   };
-
-  // Handle layout change - don't update state here as react-grid-layout normalizes values
-  // State is updated via onDragStop/onResizeStop which trigger handleLayoutSave
-  const handleLayoutChange = useCallback(() => {}, []);
-
-  // Persist layout to server on drag/resize stop
-  const handleLayoutSave = useCallback(async (layout: GridItem[]) => {
-    // Update local state with user's changes
-    setGridLayout(layout);
-
-    // Build updated panels with new layout
-    const updates = layout.map(item => ({
-      id: item.i,
-      layout: { x: item.x, y: item.y, w: item.w, h: item.h }
-    }));
-
-    // Save to server
-    try {
-      await apiFetch(`/api/workspaces/${workspaceId}/layout`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ updates }),
-      });
-    } catch (error) {
-      console.error('Failed to save layout:', error);
-    }
-  }, [workspaceId]);
 
   // Save workspace title/description
   const saveWorkspaceInfo = async (title?: string, description?: string) => {
@@ -908,6 +961,7 @@ export default function WorkspacePage() {
             <span className="text-xs text-muted-foreground bg-muted px-3 py-1.5 rounded-lg">
               {artifactPanels.length} artifact{artifactPanels.length !== 1 ? 's' : ''}
             </span>
+            <CapabilitiesPanel skills={skills} />
             {workspace.galleryId ? (
               <button
                 onClick={handleUnpublish}
@@ -970,8 +1024,8 @@ export default function WorkspacePage() {
       <div className="flex-1 flex min-h-0">
         {/* Canvas Area */}
         <div
-          ref={canvasRef}
-          className={`flex-1 canvas-bg overflow-auto p-4 transition-all duration-300 ${chatOpen ? 'md:mr-[400px]' : ''}`}
+          ref={canvasContainerRef}
+          className={`flex-1 canvas-bg overflow-hidden transition-all duration-300 ${chatOpen ? 'md:mr-[400px]' : ''}`}
         >
           {artifactPanels.length === 0 ? (
             <div className="canvas-empty">
@@ -983,219 +1037,169 @@ export default function WorkspacePage() {
             </div>
           ) : (
             <>
-            {/* Zoom Controls */}
-            <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 bg-card/90 backdrop-blur border border-border rounded-lg p-1 shadow-lg">
-              <button
-                onClick={() => setZoomLevel(z => Math.max(0.1, z - 0.1))}
-                className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                title="Zoom out"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607zM13.5 10.5h-6" />
-                </svg>
-              </button>
-              <span className="text-xs font-mono text-muted-foreground w-12 text-center">{Math.round(zoomLevel * 100)}%</span>
-              <button
-                onClick={() => setZoomLevel(z => Math.min(3, z + 0.1))}
-                className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                title="Zoom in"
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607zM10.5 7.5v6m3-3h-6" />
-                </svg>
-              </button>
-              {zoomLevel !== 1 && (
-                <button
-                  onClick={() => setZoomLevel(1)}
-                  className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground text-xs"
-                  title="Reset zoom"
-                >
-                  Reset
-                </button>
-              )}
-            </div>
-
-            {/* Minimized Panels Dock */}
-            {minimizedPanels.size > 0 && (
-              <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-card/90 backdrop-blur border border-border rounded-lg p-2 shadow-lg">
-                {Array.from(minimizedPanels).map(panelId => {
-                  const panel = artifactPanels.find(p => p.id === panelId);
-                  if (!panel) return null;
-                  return (
-                    <button
-                      key={panelId}
-                      onClick={() => setMinimizedPanels(prev => {
-                        const next = new Set(prev);
-                        next.delete(panelId);
-                        return next;
-                      })}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted hover:bg-muted/80 transition-colors text-sm"
-                      title={`Restore ${getPanelTitle(panel)}`}
-                    >
-                      <span className="truncate max-w-[120px]">{getPanelTitle(panel)}</span>
-                      <span className="text-xs text-muted-foreground">{panel.type}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-
-            <div
-              className="will-change-transform"
-              style={{
-                transform: `scale(${zoomLevel})`,
-                transformOrigin: 'top left',
-                width: `${100 / zoomLevel}%`,
+            <TransformWrapper
+              initialScale={uiState.viewport?.zoom || 1}
+              initialPositionX={uiState.viewport?.x ?? -3100}
+              initialPositionY={uiState.viewport?.y ?? -3400}
+              minScale={0.5}
+              maxScale={2.5}
+              wheel={{ step: 0.1 }}
+              panning={{ velocityDisabled: true }}
+              doubleClick={{ disabled: true }}
+              alignmentAnimation={{ disabled: true }}
+              onTransformed={(_, state) => {
+                setZoomLevel(state.scale);
+                // Track current viewport for new panel placement
+                currentViewport.current = { x: state.positionX, y: state.positionY, scale: state.scale };
+                // Debounced save of viewport position
+                if (viewportSaveTimeout.current) clearTimeout(viewportSaveTimeout.current);
+                viewportSaveTimeout.current = setTimeout(() => {
+                  apiFetch(`/api/workspaces/${workspaceId}/viewport`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ x: state.positionX, y: state.positionY, zoom: state.scale }),
+                  }).catch(console.error);
+                }, 500);
               }}
             >
-            <GridLayout
-              className="layout"
-              layout={gridLayout}
-              cols={cols}
-              rowHeight={rowHeight}
-              width={containerWidth / zoomLevel}
-              onLayoutChange={handleLayoutChange}
-              onDragStop={(layout) => handleLayoutSave(layout)}
-              onResizeStop={(layout) => handleLayoutSave(layout)}
-              draggableHandle=".artifact-header"
-              margin={[16, 16]}
-              containerPadding={[0, 0]}
-              useCSSTransforms={true}
-              compactType="vertical"
-              preventCollision={false}
-              resizeHandles={['s', 'w', 'e', 'n', 'sw', 'nw', 'se', 'ne']}
-              transformScale={zoomLevel}
-            >
-              {artifactPanels.filter(p => !minimizedPanels.has(p.id)).map((panel) => (
-                <div key={panel.id} className="artifact-card">
-                  <div className="artifact-header">
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <h3 className="truncate">{getPanelTitle(panel)}</h3>
-                      <span className="artifact-type flex-shrink-0">{panel.type}</span>
-                    </div>
-                    <div className="relative flex-shrink-0">
+              {({ zoomIn, zoomOut, resetTransform }) => (
+                <>
+                  {/* Zoom Controls */}
+                  <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 bg-card/90 backdrop-blur border border-border rounded-lg p-1 shadow-lg">
+                    <button
+                      onClick={() => zoomOut(0.1)}
+                      className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                      title="Zoom out"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607zM13.5 10.5h-6" />
+                      </svg>
+                    </button>
+                    <span className="text-xs font-mono text-muted-foreground w-12 text-center">{Math.round(zoomLevel * 100)}%</span>
+                    <button
+                      onClick={() => zoomIn(0.1)}
+                      className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                      title="Zoom in"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607zM10.5 7.5v6m3-3h-6" />
+                      </svg>
+                    </button>
+                    {zoomLevel !== 1 && (
                       <button
-                        onMouseDown={(e) => e.stopPropagation()}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setOpenMenuId(openMenuId === panel.id ? null : panel.id);
-                        }}
-                        className="p-1 rounded hover:bg-white/10 transition-colors"
+                        onClick={() => resetTransform()}
+                        className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground text-xs"
+                        title="Reset zoom"
                       >
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
-                        </svg>
+                        Reset
                       </button>
-                      {openMenuId === panel.id && (
-                        <div
-                          className="absolute right-0 top-full mt-1 w-40 bg-popover border border-border rounded-lg shadow-lg py-1 z-50"
-                          onMouseDown={(e) => e.stopPropagation()}
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {panel.type === 'table' && (
-                            <>
-                              <button
-                                onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }}
-                                className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                              >
-                                Download CSV
-                              </button>
-                              <button
-                                onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }}
-                                className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                              >
-                                Download JSON
-                              </button>
-                            </>
-                          )}
-                          {panel.type === 'chart' && (
-                            <>
-                              <button
-                                onClick={() => { downloadPanelAsPng(panel.id, getPanelTitle(panel)); setOpenMenuId(null); }}
-                                className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                              >
-                                Download PNG
-                              </button>
-                              <button
-                                onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }}
-                                className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                              >
-                                Download CSV
-                              </button>
-                              <button
-                                onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }}
-                                className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                              >
-                                Download JSON
-                              </button>
-                            </>
-                          )}
-                          {panel.type === 'cards' && (
-                            <button
-                              onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }}
-                              className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                            >
-                              Download JSON
-                            </button>
-                          )}
-                          {panel.type === 'markdown' && (
-                            <button
-                              onClick={() => { downloadPanel(panel, 'md'); setOpenMenuId(null); }}
-                              className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                            >
-                              Download .md
-                            </button>
-                          )}
-                          {panel.type === 'preview' && (
-                            <button
-                              onClick={() => { downloadPanel(panel, 'html'); setOpenMenuId(null); }}
-                              className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-                            >
-                              Download HTML
-                            </button>
-                          )}
+                    )}
+                  </div>
+
+                  {/* Minimized Panels Dock */}
+                  {minimizedPanels.size > 0 && (
+                    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-card/90 backdrop-blur border border-border rounded-lg p-2 shadow-lg">
+                      {Array.from(minimizedPanels).map(panelId => {
+                        const panel = artifactPanels.find(p => p.id === panelId);
+                        if (!panel) return null;
+                        return (
                           <button
-                            onClick={() => {
-                              setMinimizedPanels(prev => new Set(prev).add(panel.id));
-                              setOpenMenuId(null);
-                            }}
-                            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
+                            key={panelId}
+                            onClick={() => setMinimizedPanels(prev => {
+                              const next = new Set(prev);
+                              next.delete(panelId);
+                              return next;
+                            })}
+                            className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted hover:bg-muted/80 transition-colors text-sm"
+                            title={`Restore ${getPanelTitle(panel)}`}
                           >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12h-15" />
-                            </svg>
-                            Minimize
+                            <span className="truncate max-w-[120px]">{getPanelTitle(panel)}</span>
+                            <span className="text-xs text-muted-foreground">{panel.type}</span>
                           </button>
-                          <button
-                            onClick={() => { setMaximizedPanelId(panel.id); setOpenMenuId(null); }}
-                            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
-                          >
-                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
-                            </svg>
-                            Maximize
-                          </button>
-                          <div className="border-t border-border my-1" />
-                          <button
-                            onClick={() => { removePanel(panel.id); setOpenMenuId(null); }}
-                            className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 transition-colors"
-                          >
-                            Remove
-                          </button>
-                        </div>
-                      )}
+                        );
+                      })}
                     </div>
-                  </div>
-                  <div
-                    className="artifact-content"
-                    ref={(el) => { panelRefs.current[panel.id] = el; }}
+                  )}
+
+                  <TransformComponent
+                    wrapperStyle={{ width: '100%', height: '100%' }}
+                    contentStyle={{ width: '8000px', height: '8000px' }}
                   >
-                    {renderArtifact(panel)}
-                  </div>
-                </div>
-              ))}
-            </GridLayout>
-            </div>
+                    <div className="canvas-content relative" style={{ width: '8000px', height: '8000px' }}>
+                      {artifactPanels.filter(p => !minimizedPanels.has(p.id)).map((panel) => {
+                        const layout = panelLayouts[panel.id];
+                        if (!layout) return null;
+
+                        return (
+                          <DraggablePanel
+                            key={panel.id}
+                            id={panel.id}
+                            layout={layout}
+                            title={getPanelTitle(panel)}
+                            type={panel.type}
+                            scale={zoomLevel}
+                            onLayoutChange={handleLayoutChange}
+                            onDragEnd={handleDragEnd}
+                            onOpenMenu={setOpenMenuId}
+                            isMenuOpen={openMenuId === panel.id}
+                            menuContent={
+                              <>
+                                {panel.type === 'table' && (
+                                  <>
+                                    <button onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download CSV</button>
+                                    <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download JSON</button>
+                                  </>
+                                )}
+                                {panel.type === 'chart' && (
+                                  <>
+                                    <button onClick={() => { downloadPanelAsPng(panel.id, getPanelTitle(panel)); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download PNG</button>
+                                    <button onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download CSV</button>
+                                    <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download JSON</button>
+                                  </>
+                                )}
+                                {panel.type === 'cards' && (
+                                  <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download JSON</button>
+                                )}
+                                {panel.type === 'markdown' && (
+                                  <button onClick={() => { downloadPanel(panel, 'md'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download .md</button>
+                                )}
+                                {panel.type === 'preview' && (
+                                  <button onClick={() => { downloadPanel(panel, 'html'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download HTML</button>
+                                )}
+                                <button
+                                  onClick={() => { setMinimizedPanels(prev => new Set(prev).add(panel.id)); setOpenMenuId(null); }}
+                                  className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12h-15" /></svg>
+                                  Minimize
+                                </button>
+                                <button
+                                  onClick={() => { setMaximizedPanelId(panel.id); setOpenMenuId(null); }}
+                                  className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
+                                >
+                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+                                  Maximize
+                                </button>
+                                <div className="border-t border-border my-1" />
+                                <button
+                                  onClick={() => { removePanel(panel.id); setOpenMenuId(null); }}
+                                  className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+                                >
+                                  Remove
+                                </button>
+                              </>
+                            }
+                          >
+                            <div ref={(el) => { panelRefs.current[panel.id] = el; }} className="h-full">
+                              {renderArtifact(panel)}
+                            </div>
+                          </DraggablePanel>
+                        );
+                      })}
+                    </div>
+                  </TransformComponent>
+                </>
+              )}
+            </TransformWrapper>
             </>
           )}
         </div>

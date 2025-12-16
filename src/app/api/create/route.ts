@@ -199,7 +199,7 @@ export async function POST(request: NextRequest) {
   // Initialize with just a chat panel - agent will build the rest
   await storage.setUIState(workspaceId, {
     panels: [{ id: 'chat', type: 'chat', title: 'Chat' }],
-    layout: 'horizontal',
+    viewport: { x: 0, y: 0, zoom: 1 },
   });
 
   // If a prompt was provided (not blank), save it as the first user message
