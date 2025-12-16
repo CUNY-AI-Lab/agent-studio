@@ -62,7 +62,7 @@ export async function verifyCsrfToken(headerToken: string | null): Promise<boole
 export function getCsrfCookieOptions() {
   return {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.COOKIE_SECURE === 'true',
     sameSite: 'strict' as const,
     path: '/',
     maxAge: 60 * 60 * 24, // 24 hours
