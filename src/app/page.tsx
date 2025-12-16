@@ -7,6 +7,8 @@ import { ThemeToggle } from '@/components/ThemeToggle';
 import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
 import skills from '@/lib/skills/index.json';
 
+const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
+
 const EXAMPLE_PROMPTS = [
   { label: 'Search papers', prompt: 'Search OpenAlex for recent machine learning papers and show me a table of results' },
   { label: 'Analyze trends', prompt: 'Find publication trends in AI research over the past 5 years and create a chart' },
@@ -56,7 +58,7 @@ export default async function Home() {
 
         {/* Main Input */}
         <section className="mb-8 animate-fade-in-up" style={{ animationDelay: '100ms' }}>
-          <form action="/api/create" method="POST">
+          <form action={`${basePath}/api/create`} method="POST">
             <div className="relative">
               <input
                 type="text"
@@ -87,7 +89,7 @@ export default async function Home() {
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {galleryItems.slice(0, 6).map((item) => (
-                <form key={item.id} action={`/api/gallery/${item.id}`} method="POST">
+                <form key={item.id} action={`${basePath}/api/gallery/${item.id}`} method="POST">
                   <button
                     type="submit"
                     className="w-full text-left p-4 rounded-xl border border-border/50 bg-card/50 transition-all hover:border-primary/30 hover:bg-card group"
@@ -118,7 +120,7 @@ export default async function Home() {
             </div>
             <div className="flex flex-wrap gap-2 justify-center">
               {EXAMPLE_PROMPTS.map((example) => (
-                <form key={example.label} action="/api/create" method="POST" className="inline">
+                <form key={example.label} action={`${basePath}/api/create`} method="POST" className="inline">
                   <input type="hidden" name="prompt" value={example.prompt} />
                   <button
                     type="submit"
@@ -134,7 +136,7 @@ export default async function Home() {
 
         {/* Start Blank Option */}
         <section className="mb-12 animate-fade-in-up text-center" style={{ animationDelay: '200ms' }}>
-          <form action="/api/create" method="POST" className="inline">
+          <form action={`${basePath}/api/create`} method="POST" className="inline">
             <input type="hidden" name="blank" value="true" />
             <button
               type="submit"

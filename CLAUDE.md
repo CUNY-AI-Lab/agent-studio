@@ -292,6 +292,7 @@ SESSION_SECRET=...                   # Session signing key
 CSRF_SECRET=...                      # CSRF token secret
 DATA_DIR=data                        # Storage location
 PYTHON_VENV_PATH=.venv               # Python virtual environment path
+NEXT_PUBLIC_BASE_PATH=/studio        # Deploy at subpath (e.g., /studio)
 ```
 
 ## API Endpoints

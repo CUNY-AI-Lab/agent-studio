@@ -97,6 +97,9 @@ OPENALEX_EMAIL=your@email.edu
 
 # Custom Python venv location (defaults to .venv in project root)
 PYTHON_VENV_PATH=/path/to/venv
+
+# Base path for deployment at a subpath (e.g., /studio)
+NEXT_PUBLIC_BASE_PATH=/studio
 ```
 
 ### Running

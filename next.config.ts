@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Base path for deployment at a subpath (e.g., /studio)
+  basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
   serverExternalPackages: ["pdf-parse"],
   // Expand Turbopack's filesystem root to handle .venv symlinks
   turbopack: {
