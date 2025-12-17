@@ -10,6 +10,7 @@ import skills from '@/lib/skills/index.json';
 const basePath = process.env.NEXT_PUBLIC_BASE_PATH || '';
 
 const EXAMPLE_PROMPTS = [
+  { label: 'What can you do?', prompt: 'What can you do? What APIs and tools do you have access to?' },
   { label: 'Search papers', prompt: 'Search OpenAlex for recent machine learning papers and show me a table of results' },
   { label: 'Analyze trends', prompt: 'Find publication trends in AI research over the past 5 years and create a chart' },
   { label: 'Find books', prompt: 'Search WorldCat for books about digital humanities' },
