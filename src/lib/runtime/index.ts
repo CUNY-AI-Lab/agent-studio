@@ -159,6 +159,7 @@ export function createWorkspaceRuntime(
             settingSources: ['project'], // Load skills from .claude/skills/
             includePartialMessages: true, // Enable token-level streaming
             abortController: options?.abortController,
+            persistSession: false, // Don't save to ~/.claude/projects/ - keeps app sessions separate from Claude Code
             sandbox: {
               enabled: true,
               autoAllowBashIfSandboxed: true,
