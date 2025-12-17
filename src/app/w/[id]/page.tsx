@@ -495,6 +495,14 @@ export default function WorkspacePage() {
     if (!options?.skipMessages && data.messages) setMessages(data.messages);
     if (data.uiState) {
       setUIState(data.uiState);
+      // Sync currentViewport ref with loaded viewport so new panels appear in view
+      if (data.uiState.viewport) {
+        currentViewport.current = {
+          x: data.uiState.viewport.x ?? -3100,
+          y: data.uiState.viewport.y ?? -3400,
+          scale: data.uiState.viewport.zoom ?? 1,
+        };
+      }
       setViewportLoaded(true);
     }
   }, [workspaceId]);
