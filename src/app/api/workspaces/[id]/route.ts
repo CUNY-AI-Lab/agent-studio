@@ -3,6 +3,9 @@ import { getSession } from '@/lib/session';
 import { createSandboxedStorage } from '@/lib/storage';
 import { audit, getRequestMeta } from '@/lib/audit';
 
+// Disable caching - workspace data changes frequently
+export const dynamic = 'force-dynamic';
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }

@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
 import { createSandboxedStorage } from '@/lib/storage';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   let sessionId: string;
   try {

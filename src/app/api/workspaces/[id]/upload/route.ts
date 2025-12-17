@@ -3,6 +3,8 @@ import { getSession } from '@/lib/session';
 import { createSandboxedStorage } from '@/lib/storage';
 import { audit, getRequestMeta } from '@/lib/audit';
 
+export const dynamic = 'force-dynamic';
+
 // File upload limits
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB per file
 const MAX_TOTAL_SIZE = 50 * 1024 * 1024; // 50MB total per upload

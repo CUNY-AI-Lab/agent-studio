@@ -5,6 +5,8 @@ import { getSession } from '@/lib/session';
 import { createSandboxedStorage, WorkspaceConfig } from '@/lib/storage';
 import { audit, getRequestMeta } from '@/lib/audit';
 
+export const dynamic = 'force-dynamic';
+
 // Build system prompt at runtime to inject dynamic paths
 function getAgentSystemPrompt() {
   const pythonVenv = process.env.PYTHON_VENV_PATH || `${process.cwd()}/.venv`;

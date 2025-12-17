@@ -3,6 +3,8 @@ import { getSession } from '@/lib/session';
 import { createSandboxedStorage, type ContentBlock, type ToolExecution } from '@/lib/storage';
 import { createWorkspaceRuntime } from '@/lib/runtime';
 
+export const dynamic = 'force-dynamic';
+
 // Store active queries for cancellation
 // Key: sessionId:workspaceId, Value: AbortController
 const activeQueries = new Map<string, AbortController>();

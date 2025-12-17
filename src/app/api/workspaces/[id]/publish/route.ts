@@ -3,6 +3,8 @@ import { getSession } from '@/lib/session';
 import { publishWorkspace } from '@/lib/gallery';
 import { createSandboxedStorage } from '@/lib/storage';
 
+export const dynamic = 'force-dynamic';
+
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
