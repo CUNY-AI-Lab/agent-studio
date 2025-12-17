@@ -119,6 +119,9 @@ const dir = getWorkspaceDir();
 log("Debug message", someVariable);  // Logs to console
 await addPanel({id: "preview", type: "preview", title: "Preview", content: "<html>..."});
 await removePanel("panel-id");
+
+// Update workspace title/description based on what user is working on
+await setWorkspaceInfo({ title: "Research Papers", description: "Searching for ML papers" });
 \`\`\`
 
 ## Discovering APIs
@@ -256,6 +259,11 @@ Choose the right approach:
 **File paths:**
 - For uploaded files, use just the filename: \`read("file:data.csv")\`
 - Don't include full paths or directories
+
+**Workspace naming:**
+- When you understand what the user is working on, update the workspace title with setWorkspaceInfo()
+- Use a clear, descriptive title like "Machine Learning Papers" or "NYC Crime Analysis"
+- This helps users find their workspaces later
 
 The workspace starts with just a chat panel. You build the interface as needed by adding panels.`;
 }
