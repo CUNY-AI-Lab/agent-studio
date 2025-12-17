@@ -226,9 +226,9 @@ export function DraggablePanel({
         </div>
       </div>
 
-      {/* Content area - stop wheel events from triggering canvas zoom */}
+      {/* Content area - no-zoom-scroll class excludes from canvas zoom via react-zoom-pan-pinch */}
       <div
-        className="artifact-content flex-1 overflow-auto"
+        className="artifact-content flex-1 overflow-auto no-zoom-scroll"
         onWheel={(e) => e.stopPropagation()}
       >
         {children}

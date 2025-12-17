@@ -1053,7 +1053,7 @@ export default function WorkspacePage() {
               initialPositionY={uiState.viewport?.y ?? -3400}
               minScale={0.5}
               maxScale={2.5}
-              wheel={{ step: 0.1 }}
+              wheel={{ step: 0.1, excluded: ['no-zoom-scroll'] }}
               panning={{ velocityDisabled: true }}
               doubleClick={{ disabled: true }}
               alignmentAnimation={{ disabled: true }}
