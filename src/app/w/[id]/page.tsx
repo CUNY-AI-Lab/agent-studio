@@ -147,6 +147,7 @@ export default function WorkspacePage() {
   const [panelLayouts, setPanelLayouts] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
   const [zoomLevel, setZoomLevel] = useState(1);
   const [viewportLoaded, setViewportLoaded] = useState(false);
+  const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -252,6 +253,15 @@ export default function WorkspacePage() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [maximizedPanelId]);
 
+  // Close publish modal on Escape
+  useEffect(() => {
+    if (!publishModalOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPublishModalOpen(false);
+    };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [publishModalOpen]);
 
   // Get artifact panels (everything except chat)
   const artifactPanels = useMemo(() =>
@@ -1137,8 +1147,10 @@ export default function WorkspacePage() {
                             title={getPanelTitle(panel)}
                             type={panel.type}
                             scale={zoomLevel}
+                            zIndex={focusedPanelId === panel.id ? 100 : 1}
                             onLayoutChange={handleLayoutChange}
                             onDragEnd={handleDragEnd}
+                            onFocus={setFocusedPanelId}
                             onOpenMenu={setOpenMenuId}
                             isMenuOpen={openMenuId === panel.id}
                             menuContent={
@@ -1271,8 +1283,11 @@ export default function WorkspacePage() {
 
       {/* Publish Modal */}
       {publishModalOpen && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-card rounded-2xl shadow-xl w-full max-w-md mx-4 p-6">
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+          onClick={() => !isPublishing && setPublishModalOpen(false)}
+        >
+          <div className="bg-card rounded-2xl shadow-xl w-full max-w-md mx-4 p-6" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-lg font-semibold mb-4">Publish to Gallery</h2>
             <div className="space-y-4">
               <div>

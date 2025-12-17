@@ -453,8 +453,22 @@ hr.editorial {
   touch-action: none;
 }
 
-.artifact-card:hover .resize-handle {
+.artifact-card:hover .resize-handle,
+.artifact-card:focus-within .resize-handle {
   opacity: 1;
+}
+
+/* Always show resize handles on touch devices */
+@media (hover: none) {
+  .resize-handle {
+    opacity: 0.7;
+    width: 20px;
+    height: 20px;
+  }
+  .resize-handle.nw { top: -10px; left: -10px; }
+  .resize-handle.ne { top: -10px; right: -10px; }
+  .resize-handle.sw { bottom: -10px; left: -10px; }
+  .resize-handle.se { bottom: -10px; right: -10px; }
 }
 
 /* Corner positions */

@@ -17,8 +17,10 @@ interface DraggablePanelProps {
   type: string;
   children: React.ReactNode;
   scale: number;
+  zIndex?: number;
   onLayoutChange: (id: string, layout: Partial<PanelLayout>) => void;
   onDragEnd: (id: string) => void;
+  onFocus?: (id: string) => void;
   onOpenMenu?: (id: string) => void;
   isMenuOpen?: boolean;
   menuContent?: React.ReactNode;
@@ -33,8 +35,10 @@ export function DraggablePanel({
   type,
   children,
   scale,
+  zIndex,
   onLayoutChange,
   onDragEnd,
+  onFocus,
   onOpenMenu,
   isMenuOpen,
   menuContent,
@@ -183,7 +187,9 @@ export function DraggablePanel({
         top: layout.y,
         width: layout.width,
         height: layout.height,
+        zIndex: zIndex ?? 1,
       }}
+      onPointerDown={() => onFocus?.(id)}
     >
       {/* Drag handle header */}
       <div
@@ -194,7 +200,7 @@ export function DraggablePanel({
         onPointerCancel={handleDragEnd}
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <h3 className="truncate">{title}</h3>
+          <h3 className="truncate" title={title}>{title}</h3>
           <span className="artifact-type flex-shrink-0">{type}</span>
         </div>
         <div className="relative flex-shrink-0">
@@ -220,8 +226,11 @@ export function DraggablePanel({
         </div>
       </div>
 
-      {/* Content area */}
-      <div className="artifact-content flex-1 overflow-auto">
+      {/* Content area - stop wheel events from triggering canvas zoom */}
+      <div
+        className="artifact-content flex-1 overflow-auto"
+        onWheel={(e) => e.stopPropagation()}
+      >
         {children}
       </div>
 
