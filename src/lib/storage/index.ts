@@ -113,6 +113,14 @@ export interface PanelLayout {
   groupId?: string;
 }
 
+// Resolved layout with required x/y (used by canvas components after positioning)
+export interface CanvasPanelLayout {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 // Dynamic UI panel system
 export interface UIPanel {
   id: string;
@@ -127,6 +135,22 @@ export interface UIPanel {
   filePath?: string;      // for type: 'editor', 'preview', or 'pdf'
   linkedTo?: string;      // for type: 'detail' (links to a table panel)
   content?: string;       // for type: 'preview' or 'markdown' with inline content
+  sourcePanel?: string;   // ID of panel that spawned this one (for connection lines)
+}
+
+// Panel grouping
+export interface PanelGroup {
+  id: string;
+  name?: string;
+  panelIds: string[];
+  color?: string;
+}
+
+// Connection between panels (for visual lines)
+export interface PanelConnection {
+  id: string;
+  sourceId: string;
+  targetId: string;
 }
 
 export interface UIState {
@@ -137,6 +161,8 @@ export interface UIState {
     zoom: number;
   };
   activePanel?: string;
+  groups?: PanelGroup[];
+  connections?: PanelConnection[];
 }
 
 export interface WorkspaceConfig {

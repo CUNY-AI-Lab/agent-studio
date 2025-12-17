@@ -109,6 +109,26 @@ export function createWorkspaceRuntime(
         if (cards.length > 0) {
           contextPrompt += `Cards: ${cards.map(c => `${c.id} ("${c.title}")`).join(', ')}\n`;
         }
+        // Include panel groups if any exist
+        if (uiState?.groups && uiState.groups.length > 0) {
+          contextPrompt += '\n<panel_groups>\n';
+          for (const group of uiState.groups) {
+            contextPrompt += `<group id="${group.id}"${group.name ? ` name="${group.name}"` : ''}>`;
+            contextPrompt += group.panelIds.join(', ');
+            contextPrompt += '</group>\n';
+          }
+          contextPrompt += '</panel_groups>\n';
+          contextPrompt += 'Note: The user has grouped some panels together. Operations on one panel in a group may be relevant to others in the same group.\n';
+        }
+        // Include panel connections if any exist
+        if (uiState?.connections && uiState.connections.length > 0) {
+          contextPrompt += '\n<panel_connections>\n';
+          for (const conn of uiState.connections) {
+            contextPrompt += `${conn.sourceId} -> ${conn.targetId}\n`;
+          }
+          contextPrompt += '</panel_connections>\n';
+          contextPrompt += 'Note: These panels are connected - the target was created from context of the source.\n';
+        }
         contextPrompt += '</current_workspace_state>\n\n';
       }
 

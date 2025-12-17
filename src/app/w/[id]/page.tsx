@@ -5,6 +5,10 @@ import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TransformWrapper, TransformComponent, useControls } from 'react-zoom-pan-pinch';
 import { DraggablePanel } from '@/components/canvas/DraggablePanel';
+import { ContextualChatPopover } from '@/components/canvas/ContextualChatPopover';
+import { ConnectionLines } from '@/components/canvas/ConnectionLines';
+import { SelectionBox } from '@/components/canvas/SelectionBox';
+import { GroupBoundary } from '@/components/canvas/GroupBoundary';
 import {
   Bar, BarChart, Line, LineChart, Pie, PieChart, Area, AreaChart,
   XAxis, YAxis, CartesianGrid, Cell, ResponsiveContainer
@@ -17,6 +21,7 @@ import { apiFetch, basePath } from '@/lib/api';
 import { useStreamingQuery, type Message, type ToolExecution, type ContentBlock, type PanelUpdate } from '@/hooks/useStreamingQuery';
 import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
 import skills from '@/lib/skills/index.json';
+import type { CanvasPanelLayout, UIPanel, UIState, PanelGroup, PanelConnection } from '@/lib/storage';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -60,37 +65,6 @@ interface DownloadRequest {
   filename: string;
   data: unknown;
   format: 'csv' | 'json' | 'txt';
-}
-
-interface PanelLayout {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  rotation?: number;
-  groupId?: string;
-}
-
-interface UIPanel {
-  id: string;
-  type: 'chat' | 'table' | 'preview' | 'fileTree' | 'detail' | 'chart' | 'cards' | 'markdown' | 'pdf';
-  title?: string;
-  layout?: PanelLayout;
-  tableId?: string;
-  chartId?: string;
-  cardsId?: string;
-  linkedTo?: string;
-  content?: string;
-  filePath?: string;
-}
-
-interface UIState {
-  panels: UIPanel[];
-  viewport?: {
-    x: number;
-    y: number;
-    zoom: number;
-  };
 }
 
 interface WorkspaceData {
@@ -145,16 +119,45 @@ export default function WorkspacePage() {
   const [minimizedPanels, setMinimizedPanels] = useState<Set<string>>(new Set());
 
   // Canvas state
-  const [panelLayouts, setPanelLayouts] = useState<Record<string, { x: number; y: number; width: number; height: number }>>({});
+  const [panelLayouts, setPanelLayouts] = useState<Record<string, CanvasPanelLayout>>({});
   const [zoomLevel, setZoomLevel] = useState(1);
   const [viewportLoaded, setViewportLoaded] = useState(false);
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
+
+  // Contextual chat state - messages persisted per panel
+  const [contextualChatPanelId, setContextualChatPanelId] = useState<string | null>(null);
+  const [contextualChatMessages, setContextualChatMessages] = useState<Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>>({});
+  const [contextualChatLoading, setContextualChatLoading] = useState(false);
+
+  // Connection lines state
+  const [connections, setConnections] = useState<PanelConnection[]>([]);
+  const [animatingConnectionIds, setAnimatingConnectionIds] = useState<Set<string>>(new Set());
+
+  // Panel animation state
+  const [animatingPanelIds, setAnimatingPanelIds] = useState<Set<string>>(new Set());
+
+  // Selection and grouping state
+  const [selectedPanelIds, setSelectedPanelIds] = useState<Set<string>>(new Set());
+  const [groups, setGroups] = useState<PanelGroup[]>([]);
+  const [isSelectingBox, setIsSelectingBox] = useState(false);
+  const [selectionBoxStart, setSelectionBoxStart] = useState<{ x: number; y: number } | null>(null);
+  const [selectionBoxEnd, setSelectionBoxEnd] = useState<{ x: number; y: number } | null>(null);
+
+  // UX state
+  const [showCanvasHint, setShowCanvasHint] = useState(true);
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [groupNameInput, setGroupNameInput] = useState('');
 
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const viewportSaveTimeout = useRef<NodeJS.Timeout | null>(null);
   const currentViewport = useRef<{ x: number; y: number; scale: number }>({ x: -3100, y: -3400, scale: 1 });
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+  const contextualSourcePanelRef = useRef<string | null>(null);
+  const transformRef = useRef<{ setTransform: (x: number, y: number, scale: number, duration?: number) => void } | null>(null);
+  const groupsSaveTimeout = useRef<NodeJS.Timeout | null>(null);
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingQueryProcessed = useRef(false);
   const panelRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -197,6 +200,57 @@ export default function WorkspacePage() {
         if (data?.cards && typedPanel.cardsId) {
           setCards(prev => ({ ...prev, [typedPanel.cardsId!]: data.cards as CardsData }));
         }
+
+        // Create connection if panel has a source or was created during contextual chat
+        const sourceId = typedPanel.sourcePanel || contextualSourcePanelRef.current;
+        if (sourceId && sourceId !== typedPanel.id) {
+          const connectionId = `conn-${sourceId}-${typedPanel.id}`;
+          setConnections(prev => {
+            // Don't add duplicate connections
+            if (prev.some(c => c.id === connectionId)) return prev;
+            return [...prev, {
+              id: connectionId,
+              sourceId: sourceId,
+              targetId: typedPanel.id,
+            }];
+          });
+          // Animate the new connection
+          setAnimatingConnectionIds(prev => new Set(prev).add(connectionId));
+          // Remove animation class after animation completes
+          setTimeout(() => {
+            setAnimatingConnectionIds(prev => {
+              const next = new Set(prev);
+              next.delete(connectionId);
+              return next;
+            });
+          }, 600);
+        }
+
+        // Animate new panel with pop-in effect
+        setAnimatingPanelIds(prev => new Set(prev).add(typedPanel.id));
+        setTimeout(() => {
+          setAnimatingPanelIds(prev => {
+            const next = new Set(prev);
+            next.delete(typedPanel.id);
+            return next;
+          });
+        }, 400);
+
+        // Auto-focus viewport on new panel (with delay to let layout settle)
+        setTimeout(() => {
+          const layout = typedPanel.layout;
+          if (layout && layout.x !== undefined && layout.y !== undefined && transformRef.current && canvasContainerRef.current) {
+            const container = canvasContainerRef.current;
+            const viewportWidth = container.clientWidth;
+            const viewportHeight = container.clientHeight;
+            // Calculate position to center the panel
+            const centerX = layout.x + layout.width / 2;
+            const centerY = layout.y + layout.height / 2;
+            const newX = viewportWidth / 2 - centerX * zoomLevel;
+            const newY = viewportHeight / 2 - centerY * zoomLevel;
+            transformRef.current.setTransform(newX, newY, zoomLevel, 300);
+          }
+        }, 100);
       } else if (action === 'update') {
         // Update existing panel
         setUIState(prev => ({
@@ -220,6 +274,17 @@ export default function WorkspacePage() {
           ...prev,
           panels: prev.panels.filter(p => p.id !== typedPanel.id)
         }));
+
+        // Clean up connections involving this panel
+        setConnections(prev => prev.filter(c =>
+          c.sourceId !== typedPanel.id && c.targetId !== typedPanel.id
+        ));
+
+        // Clean up groups containing this panel
+        setGroups(prev => prev.map(g => ({
+          ...g,
+          panelIds: g.panelIds.filter(pid => pid !== typedPanel.id)
+        })).filter(g => g.panelIds.length >= 2)); // Remove groups with less than 2 panels
       }
     }
   }, []);
@@ -235,6 +300,14 @@ export default function WorkspacePage() {
     },
     onPanelUpdate: handlePanelUpdates,
   });
+
+  // Load canvas hint dismissal from localStorage
+  useEffect(() => {
+    const dismissed = localStorage.getItem('canvas-hint-dismissed');
+    if (dismissed === 'true') {
+      setShowCanvasHint(false);
+    }
+  }, []);
 
   // Close menu on click outside
   useEffect(() => {
@@ -253,6 +326,33 @@ export default function WorkspacePage() {
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [maximizedPanelId]);
+
+  // Save groups and connections when they change (debounced)
+  const isInitialGroupsLoad = useRef(true);
+  useEffect(() => {
+    // Don't save on initial mount
+    if (isInitialGroupsLoad.current) {
+      isInitialGroupsLoad.current = false;
+      return;
+    }
+
+    if (groupsSaveTimeout.current) clearTimeout(groupsSaveTimeout.current);
+    groupsSaveTimeout.current = setTimeout(() => {
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        body: JSON.stringify({ groups, connections }),
+      }).catch(console.error);
+    }, 500);
+  }, [groups, connections, workspaceId]);
+
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+      if (groupsSaveTimeout.current) clearTimeout(groupsSaveTimeout.current);
+      if (viewportSaveTimeout.current) clearTimeout(viewportSaveTimeout.current);
+    };
+  }, []);
 
   // Close publish modal on Escape
   useEffect(() => {
@@ -359,11 +459,40 @@ export default function WorkspacePage() {
 
   // Handle panel layout change (during drag/resize)
   const handleLayoutChange = useCallback((id: string, layout: Partial<{ x: number; y: number; width: number; height: number }>) => {
-    setPanelLayouts(prev => ({
-      ...prev,
-      [id]: { ...prev[id], ...layout },
-    }));
-  }, []);
+    setPanelLayouts(prev => {
+      const prevLayout = prev[id];
+      if (!prevLayout) return prev;
+
+      // Check if this panel is in a group
+      const group = groups.find(g => g.panelIds.includes(id));
+
+      // If panel is in a group and we're moving (not resizing), move all panels in group
+      if (group && layout.x !== undefined && layout.y !== undefined &&
+          layout.width === undefined && layout.height === undefined) {
+        const dx = layout.x - prevLayout.x;
+        const dy = layout.y - prevLayout.y;
+
+        // Move all panels in the group by the same delta
+        const newLayouts = { ...prev };
+        for (const panelId of group.panelIds) {
+          if (newLayouts[panelId]) {
+            newLayouts[panelId] = {
+              ...newLayouts[panelId],
+              x: Math.max(0, newLayouts[panelId].x + dx),
+              y: Math.max(0, newLayouts[panelId].y + dy),
+            };
+          }
+        }
+        return newLayouts;
+      }
+
+      // Otherwise just update this panel
+      return {
+        ...prev,
+        [id]: { ...prevLayout, ...layout },
+      };
+    });
+  }, [groups]);
 
   // Resolve collisions and save layout after drag ends
   const handleDragEnd = useCallback((movedPanelId: string) => {
@@ -504,6 +633,13 @@ export default function WorkspacePage() {
           scale: data.uiState.viewport.zoom ?? 1,
         };
       }
+      // Load groups and connections from UIState
+      if (data.uiState.groups) {
+        setGroups(data.uiState.groups);
+      }
+      if (data.uiState.connections) {
+        setConnections(data.uiState.connections);
+      }
       setViewportLoaded(true);
     }
   }, [workspaceId]);
@@ -623,6 +759,258 @@ export default function WorkspacePage() {
       handleSubmit(e);
     }
   };
+
+  // Handle single click on panel - for selection
+  const handlePanelClick = useCallback((panelId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    // Shift+click or Cmd/Ctrl+click for multi-select toggle
+    if (e.shiftKey || e.metaKey || e.ctrlKey) {
+      setSelectedPanelIds(prev => {
+        const next = new Set(prev);
+        if (next.has(panelId)) {
+          next.delete(panelId);
+        } else {
+          next.add(panelId);
+        }
+        return next;
+      });
+      return;
+    }
+
+    // Normal click - select this panel only (like file explorer)
+    setSelectedPanelIds(new Set([panelId]));
+  }, []);
+
+  // Handle double-click on panel - for contextual chat
+  const handlePanelDoubleClick = useCallback((panelId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    // Clear selection when opening chat
+    setSelectedPanelIds(new Set());
+
+    // Toggle contextual chat
+    if (contextualChatPanelId === panelId) {
+      setContextualChatPanelId(null);
+    } else {
+      setContextualChatPanelId(panelId);
+      // Don't clear messages - they persist per panel
+    }
+  }, [contextualChatPanelId]);
+
+  // Get panel data for context
+  const getPanelContextData = useCallback((panel: UIPanel) => {
+    let contextData = '';
+    if (panel.type === 'table' && panel.tableId) {
+      const tableData = tables[panel.tableId];
+      if (tableData) {
+        contextData = `Table: ${tableData.title}\nColumns: ${tableData.columns.map(c => c.label).join(', ')}\nRows: ${tableData.data.length}\nSample data: ${JSON.stringify(tableData.data.slice(0, 3), null, 2)}`;
+      }
+    } else if (panel.type === 'chart' && panel.chartId) {
+      const chartData = charts[panel.chartId];
+      if (chartData) {
+        contextData = `Chart: ${chartData.title}\nType: ${chartData.type}\nData points: ${chartData.data.length}\nSample: ${JSON.stringify(chartData.data.slice(0, 3), null, 2)}`;
+      }
+    } else if (panel.type === 'cards' && panel.cardsId) {
+      const cardsData = cards[panel.cardsId];
+      if (cardsData) {
+        contextData = `Cards: ${cardsData.title}\nItems: ${cardsData.items.length}\nSample: ${JSON.stringify(cardsData.items.slice(0, 3), null, 2)}`;
+      }
+    } else if (panel.type === 'markdown' && panel.content) {
+      contextData = `Markdown content:\n${panel.content.slice(0, 1000)}${panel.content.length > 1000 ? '...' : ''}`;
+    } else if (panel.type === 'preview' && panel.content) {
+      contextData = `Preview HTML (truncated):\n${panel.content.slice(0, 500)}...`;
+    }
+    return contextData;
+  }, [tables, charts, cards]);
+
+  // Handle contextual chat message
+  const handleContextualMessage = useCallback(async (message: string) => {
+    if (!contextualChatPanelId || contextualChatLoading) return;
+
+    const panel = uiState.panels.find(p => p.id === contextualChatPanelId);
+    if (!panel) return;
+
+    const panelId = contextualChatPanelId;
+
+    // Add user message to this panel's chat history
+    setContextualChatMessages(prev => ({
+      ...prev,
+      [panelId]: [...(prev[panelId] || []), { role: 'user', content: message }]
+    }));
+    setContextualChatLoading(true);
+
+    // Set the source panel ref so new panels get connected
+    contextualSourcePanelRef.current = panelId;
+
+    // Get panel context
+    const panelContext = getPanelContextData(panel);
+    const contextualPrompt = `<contextual_focus>
+The user is asking about a specific panel in their workspace.
+Panel ID: ${panel.id}
+Panel Type: ${panel.type}
+Panel Title: ${getPanelTitle(panel)}
+${panelContext ? `\nPanel Data:\n${panelContext}` : ''}
+
+If you create any new panels based on this context, they will automatically be visually connected to this source panel.
+</contextual_focus>
+
+User question: ${message}`;
+
+    try {
+      await executeQuery(contextualPrompt);
+      // The response will be handled by the streaming hook and added to main messages
+      // Add a note that response is in main chat
+      setContextualChatMessages(prev => ({
+        ...prev,
+        [panelId]: [...(prev[panelId] || []), {
+          role: 'assistant',
+          content: 'Response added to main chat. Check the chat panel for the full response.'
+        }]
+      }));
+    } catch (error) {
+      console.error('Contextual query error:', error);
+      setContextualChatMessages(prev => ({
+        ...prev,
+        [panelId]: [...(prev[panelId] || []), {
+          role: 'assistant',
+          content: 'Sorry, there was an error processing your request.'
+        }]
+      }));
+    } finally {
+      setContextualChatLoading(false);
+      // Clear the source panel ref
+      contextualSourcePanelRef.current = null;
+    }
+  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, getPanelContextData, executeQuery]);
+
+  // Handle canvas mouse down for drag-to-select
+  const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
+    // Only start selection if clicking directly on canvas (not on a panel)
+    if ((e.target as HTMLElement).closest('.artifact-card')) return;
+    if ((e.target as HTMLElement).closest('.contextual-chat-popover')) return;
+    if ((e.target as HTMLElement).closest('.group-boundary')) return;
+
+    const rect = canvasContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    // Convert screen coords to canvas coords
+    const vp = currentViewport.current;
+    const canvasX = (e.clientX - rect.left - vp.x) / vp.scale;
+    const canvasY = (e.clientY - rect.top - vp.y) / vp.scale;
+
+    setSelectionBoxStart({ x: canvasX, y: canvasY });
+    setSelectionBoxEnd({ x: canvasX, y: canvasY });
+    setIsSelectingBox(true);
+  }, []);
+
+  const handleCanvasPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!isSelectingBox || !selectionBoxStart) return;
+
+    const rect = canvasContainerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+
+    const vp = currentViewport.current;
+    const canvasX = (e.clientX - rect.left - vp.x) / vp.scale;
+    const canvasY = (e.clientY - rect.top - vp.y) / vp.scale;
+
+    setSelectionBoxEnd({ x: canvasX, y: canvasY });
+  }, [isSelectingBox, selectionBoxStart]);
+
+  const handleCanvasPointerUp = useCallback(() => {
+    if (!isSelectingBox || !selectionBoxStart || !selectionBoxEnd) {
+      setIsSelectingBox(false);
+      return;
+    }
+
+    // Calculate selection rectangle
+    const left = Math.min(selectionBoxStart.x, selectionBoxEnd.x);
+    const right = Math.max(selectionBoxStart.x, selectionBoxEnd.x);
+    const top = Math.min(selectionBoxStart.y, selectionBoxEnd.y);
+    const bottom = Math.max(selectionBoxStart.y, selectionBoxEnd.y);
+
+    // Only select if box is large enough
+    if (right - left > 10 && bottom - top > 10) {
+      // Find panels that intersect with selection box
+      const selected = new Set<string>();
+      for (const panel of artifactPanels) {
+        const layout = panelLayouts[panel.id];
+        if (!layout) continue;
+
+        // Check if panel intersects with selection box
+        const panelLeft = layout.x;
+        const panelRight = layout.x + layout.width;
+        const panelTop = layout.y;
+        const panelBottom = layout.y + layout.height;
+
+        if (panelRight > left && panelLeft < right && panelBottom > top && panelTop < bottom) {
+          selected.add(panel.id);
+        }
+      }
+      setSelectedPanelIds(selected);
+    }
+
+    setIsSelectingBox(false);
+    setSelectionBoxStart(null);
+    setSelectionBoxEnd(null);
+  }, [isSelectingBox, selectionBoxStart, selectionBoxEnd, artifactPanels, panelLayouts]);
+
+  // Show toast notification
+  const showToast = useCallback((message: string, type: 'success' | 'info' = 'success') => {
+    // Clear any existing toast timeout
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+    setToast({ message, type });
+    toastTimeoutRef.current = setTimeout(() => setToast(null), 3000);
+  }, []);
+
+  // Create a group from selected panels
+  const createGroup = useCallback(() => {
+    if (selectedPanelIds.size < 2) return;
+
+    const groupId = `group-${Date.now()}`;
+    const panelCount = selectedPanelIds.size;
+    setGroups(prev => [...prev, {
+      id: groupId,
+      panelIds: Array.from(selectedPanelIds),
+    }]);
+    setSelectedPanelIds(new Set());
+    showToast(`Grouped ${panelCount} panels`);
+  }, [selectedPanelIds, showToast]);
+
+  // Check if all selected panels belong to the same group
+  const selectedPanelsGroup = useMemo(() => {
+    if (selectedPanelIds.size < 2) return null;
+    const selectedArray = Array.from(selectedPanelIds);
+    for (const group of groups) {
+      if (selectedArray.every(id => group.panelIds.includes(id))) {
+        return group;
+      }
+    }
+    return null;
+  }, [selectedPanelIds, groups]);
+
+  // Ungroup selected panels
+  const ungroupPanels = useCallback(() => {
+    if (!selectedPanelsGroup) return;
+    const groupName = selectedPanelsGroup.name || 'Group';
+    setGroups(prev => prev.filter(g => g.id !== selectedPanelsGroup.id));
+    setSelectedPanelIds(new Set());
+    showToast(`Ungrouped "${groupName}"`);
+  }, [selectedPanelsGroup, showToast]);
+
+  // Rename a group
+  const renameGroup = useCallback((groupId: string, newName: string) => {
+    setGroups(prev => prev.map(g =>
+      g.id === groupId ? { ...g, name: newName.trim() || undefined } : g
+    ));
+    setEditingGroupId(null);
+    setGroupNameInput('');
+    if (newName.trim()) {
+      showToast(`Group renamed to "${newName.trim()}"`);
+    }
+  }, [showToast]);
 
   // Save workspace title/description
   const saveWorkspaceInfo = async (title?: string, description?: string) => {
@@ -1082,7 +1470,10 @@ export default function WorkspacePage() {
                 }, 500);
               }}
             >
-              {({ zoomIn, zoomOut, resetTransform }) => (
+              {({ zoomIn, zoomOut, resetTransform, setTransform }) => {
+                // Store setTransform in ref for programmatic viewport control
+                transformRef.current = { setTransform };
+                return (
                 <>
                   {/* Zoom Controls */}
                   <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 bg-card/90 backdrop-blur border border-border rounded-lg p-1 shadow-lg">
@@ -1116,6 +1507,43 @@ export default function WorkspacePage() {
                     )}
                   </div>
 
+                  {/* Selection Actions - appears when 2+ panels selected */}
+                  {selectedPanelIds.size >= 2 && (
+                    <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 bg-card/90 backdrop-blur border border-border rounded-lg p-2 shadow-lg md:right-[420px]">
+                      <span className="text-sm text-muted-foreground">{selectedPanelIds.size} selected</span>
+                      {selectedPanelsGroup ? (
+                        <button
+                          onClick={ungroupPanels}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-colors text-sm font-medium"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                          </svg>
+                          Ungroup
+                        </button>
+                      ) : (
+                        <button
+                          onClick={createGroup}
+                          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-600 dark:text-amber-400 transition-colors text-sm font-medium"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
+                          </svg>
+                          Create Group
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setSelectedPanelIds(new Set())}
+                        className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                        title="Clear selection"
+                      >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
+
                   {/* Minimized Panels Dock */}
                   {minimizedPanels.size > 0 && (
                     <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-2 bg-card/90 backdrop-blur border border-border rounded-lg p-2 shadow-lg">
@@ -1141,11 +1569,107 @@ export default function WorkspacePage() {
                     </div>
                   )}
 
+                  {/* Canvas Hint - shows interaction tips */}
+                  {showCanvasHint && artifactPanels.length > 0 && (
+                    <div className="canvas-hint fixed top-20 left-1/2 -translate-x-1/2 z-40">
+                      <div className="flex items-center gap-3 px-4 py-2.5 bg-card/95 backdrop-blur border border-border rounded-lg shadow-lg text-sm">
+                        <span className="text-muted-foreground">
+                          <strong className="text-foreground">Click</strong> to select
+                          <span className="mx-2 text-border">|</span>
+                          <strong className="text-foreground">Double-click</strong> to chat
+                          <span className="mx-2 text-border">|</span>
+                          <strong className="text-foreground">Shift+click</strong> or drag to multi-select
+                        </span>
+                        <button
+                          onClick={() => {
+                            setShowCanvasHint(false);
+                            localStorage.setItem('canvas-hint-dismissed', 'true');
+                          }}
+                          className="p-1 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                          aria-label="Dismiss hint"
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Toast Notification */}
+                  {toast && (
+                    <div className="toast-notification fixed top-20 right-4 z-50">
+                      <div className={`flex items-center gap-2 px-4 py-2.5 rounded-lg shadow-lg text-sm ${
+                        toast.type === 'success'
+                          ? 'bg-green-500/10 border border-green-500/30 text-green-700 dark:text-green-400'
+                          : 'bg-blue-500/10 border border-blue-500/30 text-blue-700 dark:text-blue-400'
+                      }`}>
+                        {toast.type === 'success' ? (
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        ) : (
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        )}
+                        <span>{toast.message}</span>
+                      </div>
+                    </div>
+                  )}
+
                   <TransformComponent
                     wrapperStyle={{ width: '100%', height: '100%' }}
                     contentStyle={{ width: '8000px', height: '8000px' }}
                   >
-                    <div className="canvas-content relative" style={{ width: '8000px', height: '8000px' }}>
+                    <div
+                      className="canvas-content relative"
+                      style={{ width: '8000px', height: '8000px' }}
+                      onPointerDown={handleCanvasPointerDown}
+                      onPointerMove={handleCanvasPointerMove}
+                      onPointerUp={handleCanvasPointerUp}
+                      onPointerLeave={handleCanvasPointerUp}
+                    >
+                      {/* Group boundaries (render first so they're behind panels) */}
+                      {groups.map(group => (
+                        <GroupBoundary
+                          key={group.id}
+                          group={group}
+                          panelLayouts={panelLayouts}
+                          onGroupClick={(groupId) => {
+                            // Select all panels in the group
+                            const g = groups.find(grp => grp.id === groupId);
+                            if (g) {
+                              setSelectedPanelIds(new Set(g.panelIds));
+                            }
+                          }}
+                          onGroupRename={renameGroup}
+                          isEditing={editingGroupId === group.id}
+                          editValue={editingGroupId === group.id ? groupNameInput : group.name || ''}
+                          onEditChange={setGroupNameInput}
+                          onEditStart={(groupId) => {
+                            const g = groups.find(grp => grp.id === groupId);
+                            setEditingGroupId(groupId);
+                            setGroupNameInput(g?.name || '');
+                          }}
+                        />
+                      ))}
+
+                      {/* Connection lines between panels */}
+                      <ConnectionLines
+                        connections={connections}
+                        panelLayouts={panelLayouts}
+                        animatingConnectionIds={animatingConnectionIds}
+                        panelTitles={Object.fromEntries(
+                          artifactPanels.map(p => [p.id, getPanelTitle(p)])
+                        )}
+                      />
+
+                      {/* Selection box for drag-to-select */}
+                      {isSelectingBox && selectionBoxStart && selectionBoxEnd && (
+                        <SelectionBox start={selectionBoxStart} end={selectionBoxEnd} />
+                      )}
+
                       {artifactPanels.filter(p => !minimizedPanels.has(p.id)).map((panel) => {
                         const layout = panelLayouts[panel.id];
                         if (!layout) return null;
@@ -1164,6 +1688,11 @@ export default function WorkspacePage() {
                             onFocus={setFocusedPanelId}
                             onOpenMenu={setOpenMenuId}
                             isMenuOpen={openMenuId === panel.id}
+                            isSelected={selectedPanelIds.has(panel.id)}
+                            onPanelClick={handlePanelClick}
+                            onPanelDoubleClick={handlePanelDoubleClick}
+                            isChatActive={contextualChatPanelId === panel.id}
+                            isAnimating={animatingPanelIds.has(panel.id)}
                             menuContent={
                               <>
                                 {panel.type === 'table' && (
@@ -1221,10 +1750,31 @@ export default function WorkspacePage() {
                           </DraggablePanel>
                         );
                       })}
+
+                      {/* Contextual Chat Popover */}
+                      {contextualChatPanelId && panelLayouts[contextualChatPanelId] && (() => {
+                        const panel = uiState.panels.find(p => p.id === contextualChatPanelId);
+                        if (!panel) return null;
+                        return (
+                          <ContextualChatPopover
+                            isOpen={true}
+                            onClose={() => setContextualChatPanelId(null)}
+                            anchorLayout={panelLayouts[contextualChatPanelId]}
+                            panelTitle={getPanelTitle(panel)}
+                            panelType={panel.type}
+                            scale={zoomLevel}
+                            viewportOffset={currentViewport.current}
+                            onSendMessage={handleContextualMessage}
+                            isLoading={contextualChatLoading}
+                            messages={contextualChatMessages[contextualChatPanelId] || []}
+                          />
+                        );
+                      })()}
                     </div>
                   </TransformComponent>
                 </>
-              )}
+                );
+              }}
             </TransformWrapper>
             </>
           )}

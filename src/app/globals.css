@@ -618,3 +618,503 @@ hr.editorial {
   width: 24px;
   height: 24px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Contextual Chat Popover
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.contextual-chat-popover {
+  background: oklch(0.99 0.003 80 / 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid oklch(0.88 0.01 80);
+  border-radius: 16px;
+  box-shadow:
+    0 4px 16px oklch(0.2 0.02 250 / 0.1),
+    0 8px 32px oklch(0.2 0.02 250 / 0.08),
+    0 0 0 1px oklch(1 0 0 / 0.5) inset;
+  animation: popover-appear 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  z-index: 200;
+}
+
+.dark .contextual-chat-popover {
+  background: oklch(0.18 0.02 250 / 0.95);
+  border-color: oklch(0.3 0.02 250);
+  box-shadow:
+    0 4px 16px oklch(0 0 0 / 0.3),
+    0 8px 32px oklch(0 0 0 / 0.2),
+    0 0 0 1px oklch(0.3 0.02 250 / 0.5) inset;
+}
+
+@keyframes popover-appear {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.contextual-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid oklch(0.9 0.01 80);
+  gap: 8px;
+}
+
+.dark .contextual-chat-header {
+  border-bottom-color: oklch(0.25 0.02 250);
+}
+
+.contextual-chat-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: oklch(0.6 0.12 75 / 0.15);
+  color: oklch(0.5 0.12 75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.contextual-chat-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: oklch(0.5 0.02 250);
+  font-weight: 500;
+}
+
+.contextual-chat-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--foreground);
+  max-width: 200px;
+}
+
+.contextual-chat-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: oklch(0.5 0.02 250);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.contextual-chat-close:hover {
+  background: oklch(0.9 0.01 80);
+  color: var(--foreground);
+}
+
+.dark .contextual-chat-close:hover {
+  background: oklch(0.25 0.02 250);
+}
+
+.contextual-chat-messages {
+  padding: 12px 16px;
+  min-height: 120px;
+  max-height: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.contextual-chat-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  height: 100%;
+  color: oklch(0.5 0.02 250);
+  font-size: 13px;
+  padding: 16px;
+}
+
+.contextual-chat-message {
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  max-width: 85%;
+}
+
+.contextual-chat-message-user {
+  background: oklch(0.6 0.12 75);
+  color: white;
+  align-self: flex-end;
+  border-bottom-right-radius: 4px;
+}
+
+.contextual-chat-message-assistant {
+  background: oklch(0.94 0.01 80);
+  color: var(--foreground);
+  align-self: flex-start;
+  border-bottom-left-radius: 4px;
+}
+
+.dark .contextual-chat-message-assistant {
+  background: oklch(0.22 0.02 250);
+}
+
+.contextual-chat-loading {
+  display: flex;
+  gap: 4px;
+  padding: 8px 12px;
+  align-self: flex-start;
+}
+
+.contextual-chat-loading-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: oklch(0.5 0.02 250);
+  animation: loading-bounce 1.4s ease-in-out infinite;
+}
+
+.contextual-chat-loading-dot:nth-child(1) { animation-delay: 0s; }
+.contextual-chat-loading-dot:nth-child(2) { animation-delay: 0.2s; }
+.contextual-chat-loading-dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes loading-bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
+}
+
+.contextual-chat-input-container {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid oklch(0.9 0.01 80);
+}
+
+.dark .contextual-chat-input-container {
+  border-top-color: oklch(0.25 0.02 250);
+}
+
+.contextual-chat-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid oklch(0.88 0.01 80);
+  border-radius: 8px;
+  background: oklch(0.98 0.003 80);
+  font-size: 13px;
+  resize: none;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.contextual-chat-input:focus {
+  border-color: oklch(0.6 0.12 75);
+  box-shadow: 0 0 0 3px oklch(0.6 0.12 75 / 0.15);
+}
+
+.dark .contextual-chat-input {
+  background: oklch(0.14 0.02 250);
+  border-color: oklch(0.3 0.02 250);
+}
+
+.dark .contextual-chat-input:focus {
+  border-color: oklch(0.6 0.12 75);
+}
+
+.contextual-chat-send {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: oklch(0.6 0.12 75);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.contextual-chat-send:hover:not(:disabled) {
+  background: oklch(0.55 0.12 75);
+  transform: scale(1.05);
+}
+
+.contextual-chat-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Panel Selection and Animation
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Panel pop-in animation */
+@keyframes panel-pop-in {
+  0% {
+    opacity: 0;
+    transform: scale(0.8) translateY(20px);
+  }
+  70% {
+    transform: scale(1.02) translateY(-5px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.panel-entering {
+  animation: panel-pop-in 0.4s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Panel selected state */
+@keyframes selection-pulse {
+  0%, 100% {
+    box-shadow:
+      0 4px 16px oklch(0.2 0.02 250 / 0.08),
+      0 0 0 2px oklch(0.6 0.12 75 / 0.5);
+  }
+  50% {
+    box-shadow:
+      0 4px 16px oklch(0.2 0.02 250 / 0.08),
+      0 0 0 4px oklch(0.6 0.12 75 / 0.3);
+  }
+}
+
+.panel-selected {
+  animation: selection-pulse 2s ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Panel Hover Chat Indicator
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Subtle border glow on hover to indicate interactivity */
+.artifact-card:not(.dragging):not(.resizing):hover {
+  border-color: oklch(0.6 0.12 75 / 0.4);
+}
+
+.dark .artifact-card:not(.dragging):not(.resizing):hover {
+  border-color: oklch(0.6 0.12 75 / 0.5);
+}
+
+/* Chat indicator that appears on hover */
+.panel-chat-indicator {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: oklch(0.6 0.12 75);
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transform: scale(0.8);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+  z-index: 5;
+  box-shadow: 0 2px 8px oklch(0.6 0.12 75 / 0.4);
+}
+
+.artifact-card:not(.dragging):not(.resizing):not(.panel-selected):hover .panel-chat-indicator {
+  opacity: 1;
+  transform: scale(1);
+}
+
+/* Hide indicator when chat is active on this panel */
+.artifact-card.panel-chat-active .panel-chat-indicator {
+  opacity: 0 !important;
+}
+
+/* Tooltip for the chat indicator */
+.panel-chat-indicator::after {
+  content: 'Double-click to chat';
+  position: absolute;
+  bottom: 100%;
+  right: 0;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  background: oklch(0.2 0.02 250 / 0.9);
+  color: white;
+  font-size: 11px;
+  font-family: var(--font-sans);
+  white-space: nowrap;
+  border-radius: 6px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  pointer-events: none;
+}
+
+.dark .panel-chat-indicator::after {
+  background: oklch(0.95 0.01 80 / 0.95);
+  color: oklch(0.2 0.02 250);
+}
+
+.artifact-card:not(.dragging):not(.resizing):hover .panel-chat-indicator:hover::after,
+.artifact-card:not(.dragging):not(.resizing):hover .panel-chat-indicator::after {
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 0.5s;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Connection Lines
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.connection-lines {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.connection-line {
+  fill: none;
+  stroke: oklch(0.6 0.12 75 / 0.4);
+  stroke-width: 2;
+  stroke-dasharray: 8 4;
+}
+
+.dark .connection-line {
+  stroke: oklch(0.65 0.12 75 / 0.5);
+}
+
+/* Connection line draw-in animation */
+@keyframes line-draw {
+  from {
+    stroke-dashoffset: 100%;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.connection-entering {
+  stroke-dasharray: 1000;
+  stroke-dashoffset: 1000;
+  animation: line-draw 0.6s ease-out forwards;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Panel Groups
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.group-boundary {
+  position: absolute;
+  border: 2px dashed oklch(0.7 0.02 250 / 0.4);
+  border-radius: 16px;
+  background: oklch(0.94 0.01 80 / 0.3);
+  pointer-events: none;
+  transition: all 0.2s ease;
+}
+
+.dark .group-boundary {
+  border-color: oklch(0.4 0.02 250 / 0.5);
+  background: oklch(0.2 0.02 250 / 0.3);
+}
+
+.group-boundary.active {
+  border-color: oklch(0.6 0.12 75 / 0.6);
+  background: oklch(0.6 0.12 75 / 0.08);
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.group-boundary-label {
+  position: absolute;
+  top: -12px;
+  left: 16px;
+  padding: 4px 10px;
+  background: oklch(0.96 0.01 80);
+  border: 1px solid oklch(0.88 0.01 80);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: oklch(0.4 0.02 250);
+  box-shadow: 0 1px 3px oklch(0 0 0 / 0.1);
+}
+
+.dark .group-boundary-label {
+  background: oklch(0.22 0.02 250);
+  border-color: oklch(0.3 0.02 250);
+  color: oklch(0.7 0.02 80);
+}
+
+.group-name-text {
+  cursor: text;
+}
+
+.group-name-text:hover {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+
+.group-name-input {
+  width: 120px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  outline: none;
+}
+
+.group-name-input::placeholder {
+  color: oklch(0.6 0.02 250);
+}
+
+/* Selection box (drag to select) */
+.selection-box {
+  position: absolute;
+  border: 2px solid oklch(0.6 0.12 75);
+  background: oklch(0.6 0.12 75 / 0.1);
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 1000;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Toast & Canvas Hint
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.toast-notification {
+  animation: toast-in 0.2s ease-out;
+}
+
+@keyframes hint-fade-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -4px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0);
+  }
+}
+
+.canvas-hint {
+  animation: hint-fade-in 0.3s ease-out;
+}

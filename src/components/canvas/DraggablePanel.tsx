@@ -1,29 +1,29 @@
 'use client';
 
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { cn } from '@/lib/utils';
-
-interface PanelLayout {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+import type { CanvasPanelLayout } from '@/lib/storage';
 
 interface DraggablePanelProps {
   id: string;
-  layout: PanelLayout;
+  layout: CanvasPanelLayout;
   title: string;
   type: string;
   children: React.ReactNode;
   scale: number;
   zIndex?: number;
-  onLayoutChange: (id: string, layout: Partial<PanelLayout>) => void;
+  onLayoutChange: (id: string, layout: Partial<CanvasPanelLayout>) => void;
   onDragEnd: (id: string) => void;
   onFocus?: (id: string) => void;
   onOpenMenu?: (id: string) => void;
   isMenuOpen?: boolean;
   menuContent?: React.ReactNode;
+  // Selection and contextual chat
+  isSelected?: boolean;
+  onPanelClick?: (id: string, e: React.MouseEvent) => void;
+  onPanelDoubleClick?: (id: string, e: React.MouseEvent) => void;
+  isChatActive?: boolean;
+  isAnimating?: boolean;
 }
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -42,10 +42,16 @@ export function DraggablePanel({
   onOpenMenu,
   isMenuOpen,
   menuContent,
+  isSelected,
+  onPanelClick,
+  onPanelDoubleClick,
+  isChatActive,
+  isAnimating,
 }: DraggablePanelProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
   const [resizeCorner, setResizeCorner] = useState<ResizeCorner | null>(null);
+  const [didMove, setDidMove] = useState(false);
 
   const dragStartRef = useRef({ x: 0, y: 0, layoutX: 0, layoutY: 0 });
   const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0, layoutX: 0, layoutY: 0 });
@@ -62,6 +68,7 @@ export function DraggablePanel({
     e.stopPropagation();
 
     setIsDragging(true);
+    setDidMove(false);
     dragStartRef.current = {
       x: e.clientX,
       y: e.clientY,
@@ -81,6 +88,12 @@ export function DraggablePanel({
     const dx = (e.clientX - dragStartRef.current.x) / scale;
     const dy = (e.clientY - dragStartRef.current.y) / scale;
 
+    // Check if we've moved more than 5px (to distinguish click from drag)
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    if (distance > 5) {
+      setDidMove(true);
+    }
+
     onLayoutChange(id, {
       x: Math.max(0, dragStartRef.current.layoutX + dx),
       y: Math.max(0, dragStartRef.current.layoutY + dy),
@@ -94,6 +107,9 @@ export function DraggablePanel({
     setIsDragging(false);
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     onDragEnd(id);
+
+    // Reset didMove after a short delay to allow click events to check it first
+    setTimeout(() => setDidMove(false), 0);
   }, [isDragging, id, onDragEnd]);
 
   // Handle resize start
@@ -174,13 +190,37 @@ export function DraggablePanel({
     onDragEnd(id);
   }, [isResizing, id, onDragEnd]);
 
+  // Handle single click on panel - for selection
+  const handleContentClick = useCallback((e: React.MouseEvent) => {
+    // Don't trigger if we were dragging
+    if (didMove) return;
+    // Only trigger on clickable areas
+    if ((e.target as HTMLElement).closest('.no-zoom-scroll')) {
+      onPanelClick?.(id, e);
+    }
+  }, [didMove, id, onPanelClick]);
+
+  // Handle double-click on panel - for contextual chat
+  const handleContentDoubleClick = useCallback((e: React.MouseEvent) => {
+    // Don't trigger if we were dragging
+    if (didMove) return;
+    // Only trigger on clickable areas (same check as single click for consistency)
+    if ((e.target as HTMLElement).closest('.no-zoom-scroll')) {
+      e.stopPropagation();
+      onPanelDoubleClick?.(id, e);
+    }
+  }, [didMove, id, onPanelDoubleClick]);
+
   return (
     <div
       ref={panelRef}
       className={cn(
         "artifact-card absolute flex flex-col",
         isDragging && "dragging",
-        isResizing && "resizing"
+        isResizing && "resizing",
+        isSelected && "panel-selected",
+        isChatActive && "panel-chat-active",
+        isAnimating && "panel-entering"
       )}
       style={{
         left: layout.x,
@@ -190,6 +230,8 @@ export function DraggablePanel({
         zIndex: zIndex ?? 1,
       }}
       onPointerDown={() => onFocus?.(id)}
+      onClick={handleContentClick}
+      onDoubleClick={handleContentDoubleClick}
     >
       {/* Drag handle header */}
       <div
@@ -232,6 +274,13 @@ export function DraggablePanel({
         onWheel={(e) => e.stopPropagation()}
       >
         {children}
+      </div>
+
+      {/* Chat indicator - appears on hover */}
+      <div className="panel-chat-indicator">
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+        </svg>
       </div>
 
       {/* Resize handles - corners only */}
