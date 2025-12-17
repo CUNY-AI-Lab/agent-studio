@@ -95,16 +95,26 @@ export function useStreamingQuery({
     }
   }, [workspaceId, stopToolTimer]);
 
-  const executeQuery = useCallback(async (prompt: string, retryCount = 0): Promise<void> => {
+  const executeQuery = useCallback(async (
+    prompt: string,
+    retryCount = 0,
+    // Preserve state across retries to prevent duplicate tools
+    retryState?: {
+      contentBlocks: ContentBlock[];
+      processedToolIds: Set<string>;
+      toolIdMap: Map<string, ToolExecution>;
+    }
+  ): Promise<void> => {
     if (isLoadingRef.current && retryCount === 0) return;
     isLoadingRef.current = true;
 
     // Content blocks - directly store tools here (like site-studio pattern)
-    const contentBlocks: ContentBlock[] = [];
+    // On retry, reuse existing state to preserve deduplication
+    const contentBlocks: ContentBlock[] = retryState?.contentBlocks ?? [];
     let currentSectionText = '';
     let currentToolsGroup: ToolExecution[] = [];
-    const processedToolIds = new Set<string>(); // Deduplication
-    const toolIdMap = new Map<string, ToolExecution>(); // O(1) lookup for tool results
+    const processedToolIds = retryState?.processedToolIds ?? new Set<string>(); // Deduplication
+    const toolIdMap = retryState?.toolIdMap ?? new Map<string, ToolExecution>(); // O(1) lookup for tool results
     let lineBuffer = '';
 
     // Only add placeholder on first attempt
@@ -315,7 +325,12 @@ export function useStreamingQuery({
       if (isNetworkError && retryCount < MAX_RETRIES) {
         console.log(`Network error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        return executeQuery(prompt, retryCount + 1);
+        // Preserve state across retries to prevent duplicate tools
+        return executeQuery(prompt, retryCount + 1, {
+          contentBlocks,
+          processedToolIds,
+          toolIdMap,
+        });
       }
 
       // Show error message

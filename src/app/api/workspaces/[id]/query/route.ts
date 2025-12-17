@@ -88,6 +88,17 @@ export async function POST(
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Set up keepalive interval to prevent connection timeout
+      // SSE comments (lines starting with :) are ignored by clients
+      const KEEPALIVE_INTERVAL = 15000; // 15 seconds
+      const keepaliveInterval = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(': keepalive\n\n'));
+        } catch {
+          // Controller may be closed, ignore
+        }
+      }, KEEPALIVE_INTERVAL);
+
       try {
         for await (const event of runtime.query(prompt, conversationHistory, { abortController })) {
           // Check if aborted
@@ -146,8 +157,11 @@ export async function POST(
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'aborted' })}\n\n`));
         }
 
+        clearInterval(keepaliveInterval);
         controller.close();
       } catch (error) {
+        clearInterval(keepaliveInterval);
+
         // Check if this was an abort
         if (error instanceof Error && error.name === 'AbortError') {
           flushText();
