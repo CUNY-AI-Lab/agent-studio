@@ -2,6 +2,32 @@ import { readFile, writeFile, mkdir, readdir, stat, unlink } from 'fs/promises';
 import { join, resolve, sep } from 'path';
 import { getUserDataPath } from '../session';
 
+// Simple per-workspace mutex to prevent race conditions in read-modify-write operations
+const workspaceLocks = new Map<string, Promise<void>>();
+
+async function withWorkspaceLock<T>(workspaceId: string, fn: () => Promise<T>): Promise<T> {
+  const lockKey = workspaceId;
+
+  // Wait for any existing lock to release
+  while (workspaceLocks.has(lockKey)) {
+    await workspaceLocks.get(lockKey);
+  }
+
+  // Create new lock
+  let releaseLock: () => void;
+  const lockPromise = new Promise<void>(resolve => {
+    releaseLock = resolve;
+  });
+  workspaceLocks.set(lockKey, lockPromise);
+
+  try {
+    return await fn();
+  } finally {
+    workspaceLocks.delete(lockKey);
+    releaseLock!();
+  }
+}
+
 export interface TableColumn {
   key: string;
   label: string;
@@ -387,10 +413,12 @@ export function createSandboxedStorage(userId: string): SandboxedStorage {
 
     // Downloads
     async addDownload(workspaceId: string, download: DownloadRequest): Promise<void> {
-      const downloads = await this.getDownloads(workspaceId);
-      downloads.push(download);
-      const downloadsPath = join(workspacePath(workspaceId), 'downloads.json');
-      await writeFile(downloadsPath, JSON.stringify(downloads, null, 2));
+      await withWorkspaceLock(workspaceId, async () => {
+        const downloads = await this.getDownloads(workspaceId);
+        downloads.push(download);
+        const downloadsPath = join(workspacePath(workspaceId), 'downloads.json');
+        await writeFile(downloadsPath, JSON.stringify(downloads, null, 2));
+      });
     },
 
     async getDownloads(workspaceId: string): Promise<DownloadRequest[]> {
@@ -489,10 +517,12 @@ export function createSandboxedStorage(userId: string): SandboxedStorage {
     },
 
     async appendMessage(workspaceId: string, message: Message): Promise<void> {
-      const messages = await this.getConversation(workspaceId);
-      messages.push(message);
-      const convPath = join(workspacePath(workspaceId), 'conversation.json');
-      await writeFile(convPath, JSON.stringify(messages, null, 2));
+      await withWorkspaceLock(workspaceId, async () => {
+        const messages = await this.getConversation(workspaceId);
+        messages.push(message);
+        const convPath = join(workspacePath(workspaceId), 'conversation.json');
+        await writeFile(convPath, JSON.stringify(messages, null, 2));
+      });
     },
 
     async clearConversation(workspaceId: string): Promise<void> {
@@ -521,26 +551,32 @@ export function createSandboxedStorage(userId: string): SandboxedStorage {
     },
 
     async addPanel(workspaceId: string, panel: UIPanel): Promise<void> {
-      const state = await this.getUIState(workspaceId);
-      // Remove existing panel with same id if present
-      state.panels = state.panels.filter(p => p.id !== panel.id);
-      state.panels.push(panel);
-      await this.setUIState(workspaceId, state);
+      await withWorkspaceLock(workspaceId, async () => {
+        const state = await this.getUIState(workspaceId);
+        // Remove existing panel with same id if present
+        state.panels = state.panels.filter(p => p.id !== panel.id);
+        state.panels.push(panel);
+        await this.setUIState(workspaceId, state);
+      });
     },
 
     async removePanel(workspaceId: string, panelId: string): Promise<void> {
-      const state = await this.getUIState(workspaceId);
-      state.panels = state.panels.filter(p => p.id !== panelId);
-      await this.setUIState(workspaceId, state);
+      await withWorkspaceLock(workspaceId, async () => {
+        const state = await this.getUIState(workspaceId);
+        state.panels = state.panels.filter(p => p.id !== panelId);
+        await this.setUIState(workspaceId, state);
+      });
     },
 
     async updatePanel(workspaceId: string, panelId: string, updates: Partial<UIPanel>): Promise<void> {
-      const state = await this.getUIState(workspaceId);
-      const panel = state.panels.find(p => p.id === panelId);
-      if (panel) {
-        Object.assign(panel, updates);
-        await this.setUIState(workspaceId, state);
-      }
+      await withWorkspaceLock(workspaceId, async () => {
+        const state = await this.getUIState(workspaceId);
+        const panel = state.panels.find(p => p.id === panelId);
+        if (panel) {
+          Object.assign(panel, updates);
+          await this.setUIState(workspaceId, state);
+        }
+      });
     },
   };
 }

@@ -76,11 +76,39 @@ export async function PATCH(
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
   }
 
-  let updates: Record<string, unknown>;
+  let body: Record<string, unknown>;
   try {
-    updates = await request.json();
+    body = await request.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+  }
+
+  // Whitelist allowed fields to prevent overwriting protected fields like id, createdAt
+  const ALLOWED_FIELDS = ['name', 'description', 'systemPrompt', 'tools'] as const;
+  const updates: Record<string, unknown> = {};
+
+  for (const field of ALLOWED_FIELDS) {
+    if (field in body) {
+      const value = body[field];
+      // Validate field types
+      if (field === 'name' || field === 'description' || field === 'systemPrompt') {
+        if (typeof value !== 'string') {
+          return NextResponse.json({ error: `Field "${field}" must be a string` }, { status: 400 });
+        }
+        if (field === 'name' && (!value.trim() || value.length > 200)) {
+          return NextResponse.json({ error: 'Name must be 1-200 characters' }, { status: 400 });
+        }
+        if (field === 'description' && value.length > 2000) {
+          return NextResponse.json({ error: 'Description must be under 2000 characters' }, { status: 400 });
+        }
+      }
+      if (field === 'tools') {
+        if (!Array.isArray(value) || !value.every(t => typeof t === 'string')) {
+          return NextResponse.json({ error: 'Tools must be an array of strings' }, { status: 400 });
+        }
+      }
+      updates[field] = value;
+    }
   }
 
   const updated = {

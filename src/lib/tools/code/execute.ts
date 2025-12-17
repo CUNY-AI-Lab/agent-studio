@@ -509,24 +509,25 @@ export const createExecuteTool = (ctx: ToolContext) => {
     async listSkills(): Promise<{ name: string; description: string }[]> {
       try {
         const indexPath = path.join(SKILLS_DIR, 'index.json');
-        if (fs.existsSync(indexPath)) {
-          const content = fs.readFileSync(indexPath, 'utf-8');
-          return JSON.parse(content);
-        }
-        return [];
+        const content = await fs.promises.readFile(indexPath, 'utf-8');
+        return JSON.parse(content);
       } catch {
         return [];
       }
     },
 
     async readSkill(name: string): Promise<string> {
+      // Validate skill name to prevent path traversal
+      if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+        return `Invalid skill name: "${name}"`;
+      }
       try {
         const skillPath = path.join(SKILLS_DIR, `${name}.md`);
-        if (fs.existsSync(skillPath)) {
-          return fs.readFileSync(skillPath, 'utf-8');
-        }
-        return `Skill "${name}" not found`;
+        return await fs.promises.readFile(skillPath, 'utf-8');
       } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+          return `Skill "${name}" not found`;
+        }
         return `Error reading skill: ${err instanceof Error ? err.message : String(err)}`;
       }
     },

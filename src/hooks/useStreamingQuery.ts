@@ -237,72 +237,75 @@ export function useStreamingQuery({
             const data = line.slice(6);
             if (data === '[DONE]') break;
 
+            let event;
             try {
-              const event = JSON.parse(data);
-
-              if (event.type === 'text' || event.type === 'text_delta') {
-                currentSectionText += event.content;
-                updateMessage();
-              } else if (event.type === 'tool_use') {
-                // Deduplicate
-                if (processedToolIds.has(event.toolId)) continue;
-                processedToolIds.add(event.toolId);
-
-                // Flush current text before starting tools
-                flushText();
-
-                const tool: ToolExecution = {
-                  id: event.toolId,
-                  name: event.toolName,
-                  input: event.toolInput,
-                  status: 'running',
-                  startTime: Date.now(),
-                  elapsedTime: 0,
-                };
-
-                toolIdMap.set(event.toolId, tool);
-                runningToolIdsRef.current.add(event.toolId);
-                currentToolsGroup.push(tool);
-
-                startToolTimer();
-                updateMessage();
-              } else if (event.type === 'tool_result') {
-                const tool = toolIdMap.get(event.toolId);
-                if (tool) {
-                  tool.status = event.isError ? 'error' : 'success';
-                  tool.output = event.toolResult;
-                  tool.elapsedTime = Math.round((Date.now() - tool.startTime) / 100) / 10;
-                }
-
-                runningToolIdsRef.current.delete(event.toolId);
-
-                // Stop timer if no more running tools
-                if (runningToolIdsRef.current.size === 0) {
-                  stopToolTimer();
-                }
-
-                // Tool completed - flush the tools group and reset for next text section
-                flushTools();
-
-                updateMessage();
-              } else if (event.type === 'panel_update') {
-                // Handle panel updates from server
-                if (onPanelUpdate && event.panelUpdates) {
-                  onPanelUpdate(event.panelUpdates);
-                }
-              } else if (event.type === 'done' || event.type === 'aborted') {
-                stopToolTimer();
-                readerRef.current = null;
-
-                // Final update to ensure everything is captured
-                flushText();
-                flushTools();
-                updateMessage();
-
-                await onComplete();
-              }
+              event = JSON.parse(data);
             } catch {
-              // Ignore parse errors for incomplete JSON
+              // Ignore parse errors for incomplete/malformed JSON in SSE
+              continue;
+            }
+
+            // Process the parsed event
+            if (event.type === 'text' || event.type === 'text_delta') {
+              currentSectionText += event.content;
+              updateMessage();
+            } else if (event.type === 'tool_use') {
+              // Deduplicate
+              if (processedToolIds.has(event.toolId)) continue;
+              processedToolIds.add(event.toolId);
+
+              // Flush current text before starting tools
+              flushText();
+
+              const tool: ToolExecution = {
+                id: event.toolId,
+                name: event.toolName,
+                input: event.toolInput,
+                status: 'running',
+                startTime: Date.now(),
+                elapsedTime: 0,
+              };
+
+              toolIdMap.set(event.toolId, tool);
+              runningToolIdsRef.current.add(event.toolId);
+              currentToolsGroup.push(tool);
+
+              startToolTimer();
+              updateMessage();
+            } else if (event.type === 'tool_result') {
+              const tool = toolIdMap.get(event.toolId);
+              if (tool) {
+                tool.status = event.isError ? 'error' : 'success';
+                tool.output = event.toolResult;
+                tool.elapsedTime = Math.round((Date.now() - tool.startTime) / 100) / 10;
+              }
+
+              runningToolIdsRef.current.delete(event.toolId);
+
+              // Stop timer if no more running tools
+              if (runningToolIdsRef.current.size === 0) {
+                stopToolTimer();
+              }
+
+              // Tool completed - flush the tools group and reset for next text section
+              flushTools();
+
+              updateMessage();
+            } else if (event.type === 'panel_update') {
+              // Handle panel updates from server
+              if (onPanelUpdate && event.panelUpdates) {
+                onPanelUpdate(event.panelUpdates);
+              }
+            } else if (event.type === 'done' || event.type === 'aborted') {
+              stopToolTimer();
+              readerRef.current = null;
+
+              // Final update to ensure everything is captured
+              flushText();
+              flushTools();
+              updateMessage();
+
+              await onComplete();
             }
           }
         }
@@ -318,9 +321,24 @@ export function useStreamingQuery({
     } catch (error: unknown) {
       console.error('Query error:', error);
 
-      // Check for network errors and retry
-      const isNetworkError = error instanceof TypeError &&
-        (error.message?.includes('network') || error.message?.includes('fetch') || error.message?.includes('Failed'));
+      // Check for network/connection errors that are worth retrying
+      const isNetworkError = (() => {
+        if (error instanceof TypeError) {
+          // Common fetch() errors
+          const msg = error.message?.toLowerCase() || '';
+          return msg.includes('network') || msg.includes('fetch') || msg.includes('failed');
+        }
+        if (error instanceof DOMException) {
+          // AbortError from signal abort, NetworkError from connection issues
+          return error.name === 'AbortError' || error.name === 'NetworkError';
+        }
+        // Check for generic Error with network-related messages
+        if (error instanceof Error) {
+          const msg = error.message?.toLowerCase() || '';
+          return msg.includes('network') || msg.includes('connection') || msg.includes('timeout');
+        }
+        return false;
+      })();
 
       if (isNetworkError && retryCount < MAX_RETRIES) {
         console.log(`Network error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
