@@ -77,6 +77,15 @@ await setChart("distribution", {
 });
 \`\`\`
 
+### Displaying PDFs
+\`\`\`javascript
+// Show an uploaded PDF file in a viewer panel
+await setPdf("document", {
+  title: "Research Paper",
+  filePath: "paper.pdf"  // The uploaded PDF filename
+});
+\`\`\`
+
 ### Transform Functions
 \`\`\`javascript
 // Filter array by condition

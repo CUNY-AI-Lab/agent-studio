@@ -426,6 +426,49 @@ export const createExecuteTool = (ctx: ToolContext) => {
       }
     },
 
+    // === PDF ===
+    async setPdf(id: string, config: {
+      title?: string;
+      filePath: string;
+      layout?: { x?: number; y?: number; width?: number; height?: number };
+    }): Promise<void> {
+      const ui = await storage.getUIState(workspaceId);
+      const existingPanel = ui.panels.find(p => p.id === id);
+
+      // Default size for PDF viewer - x/y left undefined so frontend positions in viewport
+      const defaultSize = { width: 600, height: 800 };
+
+      if (existingPanel) {
+        // Existing panel: preserve position, update size if specified
+        const updatedLayout = {
+          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
+        };
+        const updatedPanel: UIPanel = {
+          ...existingPanel,
+          type: 'pdf',
+          title: config.title ?? existingPanel.title,
+          filePath: config.filePath,
+          layout: updatedLayout,
+        };
+        await storage.updatePanel(workspaceId, id, updatedPanel);
+        panelUpdates.push({ action: 'update', panel: updatedPanel });
+      } else {
+        // New panel: only set size, let frontend position it in the viewport
+        const panel: UIPanel = {
+          id,
+          type: 'pdf',
+          title: config.title ?? config.filePath,
+          filePath: config.filePath,
+          layout: config.layout ? { ...defaultSize, ...config.layout } : undefined,
+        };
+        await storage.addPanel(workspaceId, panel);
+        panelUpdates.push({ action: 'add', panel });
+      }
+    },
+
     // === Layout ===
     async movePanel(id: string, layout: { x?: number; y?: number; width?: number; height?: number }): Promise<void> {
       // Get current panel to merge with existing layout

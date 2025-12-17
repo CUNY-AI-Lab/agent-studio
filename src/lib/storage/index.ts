@@ -116,7 +116,7 @@ export interface PanelLayout {
 // Dynamic UI panel system
 export interface UIPanel {
   id: string;
-  type: 'chat' | 'table' | 'editor' | 'preview' | 'fileTree' | 'detail' | 'chart' | 'cards' | 'markdown';
+  type: 'chat' | 'table' | 'editor' | 'preview' | 'fileTree' | 'detail' | 'chart' | 'cards' | 'markdown' | 'pdf';
   title?: string;
   // Layout on canvas
   layout?: PanelLayout;
@@ -124,7 +124,7 @@ export interface UIPanel {
   tableId?: string;       // for type: 'table'
   chartId?: string;       // for type: 'chart'
   cardsId?: string;       // for type: 'cards'
-  filePath?: string;      // for type: 'editor' or 'preview'
+  filePath?: string;      // for type: 'editor', 'preview', or 'pdf'
   linkedTo?: string;      // for type: 'detail' (links to a table panel)
   content?: string;       // for type: 'preview' or 'markdown' with inline content
 }

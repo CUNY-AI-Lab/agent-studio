@@ -73,7 +73,7 @@ interface PanelLayout {
 
 interface UIPanel {
   id: string;
-  type: 'chat' | 'table' | 'preview' | 'fileTree' | 'detail' | 'chart' | 'cards' | 'markdown';
+  type: 'chat' | 'table' | 'preview' | 'fileTree' | 'detail' | 'chart' | 'cards' | 'markdown' | 'pdf';
   title?: string;
   layout?: PanelLayout;
   tableId?: string;
@@ -81,6 +81,7 @@ interface UIPanel {
   cardsId?: string;
   linkedTo?: string;
   content?: string;
+  filePath?: string;
 }
 
 interface UIState {
@@ -737,6 +738,8 @@ export default function WorkspacePage() {
         return <MarkdownContent content={panel.content} />;
       case 'preview':
         return <PreviewContent content={panel.content} />;
+      case 'pdf':
+        return <PDFContent workspaceId={workspaceId} filePath={panel.filePath} />;
       default:
         return <div className="text-muted-foreground text-sm">Unknown type: {panel.type}</div>;
     }
@@ -1185,6 +1188,9 @@ export default function WorkspacePage() {
                                 {panel.type === 'preview' && (
                                   <button onClick={() => { downloadPanel(panel, 'html'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download HTML</button>
                                 )}
+                                {panel.type === 'pdf' && panel.filePath && (
+                                  <button onClick={() => { window.open(`${basePath}/api/workspaces/${workspaceId}/files/${encodeURIComponent(panel.filePath!)}`, '_blank'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Open in new tab</button>
+                                )}
                                 <button
                                   onClick={() => { setMinimizedPanels(prev => new Set(prev).add(panel.id)); setOpenMenuId(null); }}
                                   className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
@@ -1607,6 +1613,27 @@ function PreviewContent({ content }: { content?: string }) {
       className="w-full h-full border-0 rounded"
       referrerPolicy="no-referrer"
       sandbox="allow-scripts"
+    />
+  );
+}
+
+function PDFContent({ workspaceId, filePath }: { workspaceId: string; filePath?: string }) {
+  if (!filePath) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+        No PDF file specified
+      </div>
+    );
+  }
+
+  // Build URL to the file serving endpoint
+  const pdfUrl = `${basePath}/api/workspaces/${workspaceId}/files/${encodeURIComponent(filePath)}`;
+
+  return (
+    <iframe
+      src={pdfUrl}
+      className="w-full h-full border-0 rounded bg-white"
+      title={filePath}
     />
   );
 }
