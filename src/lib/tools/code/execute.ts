@@ -230,28 +230,28 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.type === 'table' && p.tableId === id);
 
-      // Default layout: pixel-based infinite canvas positioning
-      const defaultLayout = { x: 50, y: 50, width: 600, height: 400 };
-      const layout = { ...defaultLayout, ...config.layout };
+      // Default size for tables - x/y left undefined so frontend positions in viewport
+      const defaultSize = { width: 600, height: 400 };
 
       if (!existingPanel) {
+        // New panel: only set size, let frontend position it in the viewport
         const panel: UIPanel = {
           id: `table-${id}`,
           type: 'table',
           tableId: id,
           title: config.title ?? id,
-          layout
+          layout: config.layout ? { ...defaultSize, ...config.layout } : undefined
         };
         await storage.addPanel(workspaceId, panel);
         // Track for streaming
         panelUpdates.push({ action: 'add', panel, data: { table: tableData } });
       } else {
-        // Track update for streaming - ensure all required layout fields are present
+        // Existing panel: preserve position, update size if specified
         const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
-          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
-          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
         };
         if (config.layout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
@@ -308,27 +308,27 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.type === 'chart' && p.chartId === id);
 
-      // Default layout: pixel-based infinite canvas positioning
-      const defaultLayout = { x: 50, y: 50, width: 500, height: 350 };
-      const layout = { ...defaultLayout, ...config.layout };
+      // Default size for charts - x/y left undefined so frontend positions in viewport
+      const defaultSize = { width: 500, height: 350 };
 
       if (!existingPanel) {
+        // New panel: only set size, let frontend position it in the viewport
         const panel: UIPanel = {
           id: `chart-${id}`,
           type: 'chart',
           chartId: id,
           title: config.title ?? id,
-          layout
+          layout: config.layout ? { ...defaultSize, ...config.layout } : undefined
         };
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { chart: chartData } });
       } else {
-        // Ensure all required layout fields are present
+        // Existing panel: preserve position, update size if specified
         const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
-          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
-          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
         };
         if (config.layout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
@@ -354,27 +354,27 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.type === 'cards' && p.cardsId === id);
 
-      // Default layout: pixel-based infinite canvas positioning
-      const defaultLayout = { x: 50, y: 50, width: 500, height: 400 };
-      const layout = { ...defaultLayout, ...config.layout };
+      // Default size for cards - x/y left undefined so frontend positions in viewport
+      const defaultSize = { width: 500, height: 400 };
 
       if (!existingPanel) {
+        // New panel: only set size, let frontend position it in the viewport
         const panel: UIPanel = {
           id: `cards-${id}`,
           type: 'cards',
           cardsId: id,
           title: config.title ?? id,
-          layout
+          layout: config.layout ? { ...defaultSize, ...config.layout } : undefined
         };
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { cards: cardsData } });
       } else {
-        // Ensure all required layout fields are present
+        // Existing panel: preserve position, update size if specified
         const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
-          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
-          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
         };
         if (config.layout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
@@ -392,16 +392,16 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.id === id);
 
-      // Default layout: pixel-based infinite canvas positioning
-      const defaultLayout = { x: 50, y: 50, width: 400, height: 300 };
+      // Default size for markdown - x/y left undefined so frontend positions in viewport
+      const defaultSize = { width: 400, height: 300 };
 
       if (existingPanel) {
-        // Ensure all required layout fields are present
+        // Existing panel: preserve position, update size if specified
         const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? defaultLayout.x,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? defaultLayout.y,
-          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultLayout.width,
-          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultLayout.height,
+          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
+          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+          width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
+          height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
         };
         const updatedPanel: UIPanel = {
           ...existingPanel,
@@ -413,18 +413,13 @@ export const createExecuteTool = (ctx: ToolContext) => {
         await storage.updatePanel(workspaceId, id, updatedPanel);
         panelUpdates.push({ action: 'update', panel: updatedPanel, data: { content: config.content } });
       } else {
-        const layout = {
-          x: config.layout?.x ?? defaultLayout.x,
-          y: config.layout?.y ?? defaultLayout.y,
-          width: config.layout?.width ?? defaultLayout.width,
-          height: config.layout?.height ?? defaultLayout.height,
-        };
+        // New panel: only set size, let frontend position it in the viewport
         const panel: UIPanel = {
           id,
           type: 'markdown',
           title: config.title ?? id,
           content: config.content,
-          layout,
+          layout: config.layout ? { ...defaultSize, ...config.layout } : undefined,
         };
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { content: config.content } });

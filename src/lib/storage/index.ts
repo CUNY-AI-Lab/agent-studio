@@ -105,8 +105,8 @@ export interface DownloadRequest {
 
 // Layout configuration for infinite canvas positioning (pixel coords)
 export interface PanelLayout {
-  x: number;        // Pixel X (world coords)
-  y: number;        // Pixel Y
+  x?: number;       // Pixel X (world coords) - optional, frontend will position if undefined
+  y?: number;       // Pixel Y - optional, frontend will position if undefined
   width: number;    // Pixel width
   height: number;   // Pixel height
   rotation?: number;
