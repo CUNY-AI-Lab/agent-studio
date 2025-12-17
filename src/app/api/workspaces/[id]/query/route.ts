@@ -155,6 +155,8 @@ export async function POST(
         // Send done or aborted event
         if (abortController.signal.aborted) {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'aborted' })}\n\n`));
+        } else {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
         }
 
         clearInterval(keepaliveInterval);
