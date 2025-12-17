@@ -46,8 +46,12 @@ export async function GET(
     }
 
     // Determine content type
-    const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase();
+    const dotIndex = filename.lastIndexOf('.');
+    const ext = dotIndex > 0 ? filename.slice(dotIndex).toLowerCase() : '';
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+    // Sanitize filename for Content-Disposition header (RFC 5987)
+    const safeFilename = filename.replace(/["\\\r\n]/g, '_');
 
     // Return file with appropriate headers
     // Convert Buffer to Uint8Array for NextResponse compatibility
@@ -56,7 +60,7 @@ export async function GET(
       headers: {
         'Content-Type': contentType,
         'Content-Length': fileBuffer.length.toString(),
-        'Content-Disposition': `inline; filename="${filename}"`,
+        'Content-Disposition': `inline; filename="${safeFilename}"`,
         // Cache for 1 hour (files don't change often)
         'Cache-Control': 'private, max-age=3600',
       },

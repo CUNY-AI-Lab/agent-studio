@@ -246,14 +246,16 @@ export const createExecuteTool = (ctx: ToolContext) => {
         // Track for streaming
         panelUpdates.push({ action: 'add', panel, data: { table: tableData } });
       } else {
-        // Existing panel: preserve position, update size if specified
-        const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+        // Existing panel: preserve position if it has one, otherwise let frontend position
+        const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
+        const updatedLayout = hasExistingPosition ? {
+          x: config.layout?.x ?? existingPanel.layout!.x,
+          y: config.layout?.y ?? existingPanel.layout!.y,
           width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
           height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
-        };
-        if (config.layout) {
+        } : config.layout ? { ...defaultSize, ...config.layout } : existingPanel.layout;
+
+        if (config.layout && updatedLayout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
         panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { table: tableData } });
@@ -323,14 +325,16 @@ export const createExecuteTool = (ctx: ToolContext) => {
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { chart: chartData } });
       } else {
-        // Existing panel: preserve position, update size if specified
-        const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+        // Existing panel: preserve position if it has one, otherwise let frontend position
+        const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
+        const updatedLayout = hasExistingPosition ? {
+          x: config.layout?.x ?? existingPanel.layout!.x,
+          y: config.layout?.y ?? existingPanel.layout!.y,
           width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
           height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
-        };
-        if (config.layout) {
+        } : config.layout ? { ...defaultSize, ...config.layout } : existingPanel.layout;
+
+        if (config.layout && updatedLayout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
         panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { chart: chartData } });
@@ -369,14 +373,16 @@ export const createExecuteTool = (ctx: ToolContext) => {
         await storage.addPanel(workspaceId, panel);
         panelUpdates.push({ action: 'add', panel, data: { cards: cardsData } });
       } else {
-        // Existing panel: preserve position, update size if specified
-        const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+        // Existing panel: preserve position if it has one, otherwise let frontend position
+        const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
+        const updatedLayout = hasExistingPosition ? {
+          x: config.layout?.x ?? existingPanel.layout!.x,
+          y: config.layout?.y ?? existingPanel.layout!.y,
           width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
           height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
-        };
-        if (config.layout) {
+        } : config.layout ? { ...defaultSize, ...config.layout } : existingPanel.layout;
+
+        if (config.layout && updatedLayout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
         panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { cards: cardsData } });
@@ -396,13 +402,15 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const defaultSize = { width: 400, height: 300 };
 
       if (existingPanel) {
-        // Existing panel: preserve position, update size if specified
-        const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+        // Existing panel: preserve position if it has one, otherwise let frontend position
+        const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
+        const updatedLayout = hasExistingPosition ? {
+          x: config.layout?.x ?? existingPanel.layout!.x,
+          y: config.layout?.y ?? existingPanel.layout!.y,
           width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
           height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
-        };
+        } : config.layout ? { ...defaultSize, ...config.layout } : existingPanel.layout;
+
         const updatedPanel: UIPanel = {
           ...existingPanel,
           type: 'markdown',
@@ -432,6 +440,12 @@ export const createExecuteTool = (ctx: ToolContext) => {
       filePath: string;
       layout?: { x?: number; y?: number; width?: number; height?: number };
     }): Promise<void> {
+      // Validate file exists before creating panel
+      const fileBuffer = await storage.readFileBuffer(workspaceId, config.filePath);
+      if (!fileBuffer) {
+        throw new Error(`File not found: ${config.filePath}`);
+      }
+
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.id === id);
 
@@ -439,13 +453,15 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const defaultSize = { width: 600, height: 800 };
 
       if (existingPanel) {
-        // Existing panel: preserve position, update size if specified
-        const updatedLayout = {
-          x: config.layout?.x ?? existingPanel.layout?.x ?? 0,
-          y: config.layout?.y ?? existingPanel.layout?.y ?? 0,
+        // Existing panel: preserve position if it has one, otherwise let frontend position
+        const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
+        const updatedLayout = hasExistingPosition ? {
+          x: config.layout?.x ?? existingPanel.layout!.x,
+          y: config.layout?.y ?? existingPanel.layout!.y,
           width: config.layout?.width ?? existingPanel.layout?.width ?? defaultSize.width,
           height: config.layout?.height ?? existingPanel.layout?.height ?? defaultSize.height,
-        };
+        } : config.layout ? { ...defaultSize, ...config.layout } : undefined;
+
         const updatedPanel: UIPanel = {
           ...existingPanel,
           type: 'pdf',
@@ -474,12 +490,15 @@ export const createExecuteTool = (ctx: ToolContext) => {
       // Get current panel to merge with existing layout
       const ui = await storage.getUIState(workspaceId);
       const existingPanel = ui.panels.find(p => p.id === id);
-      const defaultLayout = { x: 50, y: 50, width: 400, height: 300 };
+      if (!existingPanel) {
+        throw new Error(`Panel not found: ${id}`);
+      }
+      // Only update fields that are explicitly provided or already exist
       const fullLayout = {
-        x: layout.x ?? existingPanel?.layout?.x ?? defaultLayout.x,
-        y: layout.y ?? existingPanel?.layout?.y ?? defaultLayout.y,
-        width: layout.width ?? existingPanel?.layout?.width ?? defaultLayout.width,
-        height: layout.height ?? existingPanel?.layout?.height ?? defaultLayout.height,
+        x: layout.x ?? existingPanel.layout?.x ?? 0,
+        y: layout.y ?? existingPanel.layout?.y ?? 0,
+        width: layout.width ?? existingPanel.layout?.width ?? 400,
+        height: layout.height ?? existingPanel.layout?.height ?? 300,
       };
       await storage.updatePanel(workspaceId, id, { layout: fullLayout });
     },
