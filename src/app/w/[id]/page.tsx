@@ -84,12 +84,33 @@ const DEFAULT_PANEL_SIZES: Record<string, { width: number; height: number }> = {
   preview: { width: 600, height: 500 },
 };
 
-// Collision resolution helper - pushes overlapping panels apart
-// fixedPanelIds: panels that should not move (the ones being dragged)
+// Collision resolution constants
+const PANEL_GAP = 20; // Minimum gap between panels in pixels
+
+// Type for panel layouts
 type LayoutMap = Record<string, { x: number; y: number; width: number; height: number }>;
 
+// Check if any panels overlap (quick check for periodic resolution)
+function hasOverlappingPanels(layouts: LayoutMap): boolean {
+  const panelIds = Object.keys(layouts);
+  const gap = PANEL_GAP;
+  for (let i = 0; i < panelIds.length; i++) {
+    for (let j = i + 1; j < panelIds.length; j++) {
+      const a = layouts[panelIds[i]];
+      const b = layouts[panelIds[j]];
+      const overlaps = !(a.x + a.width + gap <= b.x || b.x + b.width + gap <= a.x ||
+                         a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y);
+      if (overlaps) return true;
+    }
+  }
+  return false;
+}
+
+// Collision resolution helper - pushes overlapping panels apart
+// fixedPanelIds: panels that should not move (the ones being dragged)
+// Note: This function mutates the layouts parameter for efficiency
 function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>): LayoutMap {
-  const gap = 20;
+  const gap = PANEL_GAP;
   const maxIterations = 15;
   const panelIds = Object.keys(layouts);
 
@@ -573,7 +594,7 @@ export default function WorkspacePage() {
   // Initialize panel layouts when panels change
   // New panels appear in the center of the current viewport
   useEffect(() => {
-    const gap = 20;
+    const gap = PANEL_GAP;
 
     // Calculate viewport center in canvas coordinates
     const vp = currentViewport.current;
@@ -925,29 +946,15 @@ export default function WorkspacePage() {
   }, [workspaceId, groups]);
 
   // Periodic collision check - catches edge cases where panels end up overlapping
-  // Runs every 3 seconds but only resolves if overlaps are detected
+  // Runs every 3 seconds but only resolves if overlaps are detected and not dragging
   useEffect(() => {
     const checkAndResolveCollisions = () => {
+      // Skip if user is actively dragging
+      if (draggingGroupId) return;
+
       setPanelLayouts(prev => {
-        const panelIds = Object.keys(prev);
-        if (panelIds.length < 2) return prev; // Nothing to check
-
-        const gap = 20;
-        // Quick check if any overlap exists
-        let hasOverlap = false;
-        outer: for (let i = 0; i < panelIds.length; i++) {
-          for (let j = i + 1; j < panelIds.length; j++) {
-            const a = prev[panelIds[i]];
-            const b = prev[panelIds[j]];
-            if (!(a.x + a.width + gap <= b.x || b.x + b.width + gap <= a.x ||
-                  a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y)) {
-              hasOverlap = true;
-              break outer;
-            }
-          }
-        }
-
-        if (!hasOverlap) return prev; // No overlaps, no change
+        if (Object.keys(prev).length < 2) return prev; // Nothing to check
+        if (!hasOverlappingPanels(prev)) return prev; // No overlaps
 
         // Deep copy and resolve
         const layouts: LayoutMap = {};
@@ -958,19 +965,28 @@ export default function WorkspacePage() {
         // No fixed panels - everything can move to find best arrangement
         const resolved = resolveCollisions(layouts, new Set());
 
-        // Save to server if changed
-        apiFetch(`/api/workspaces/${workspaceId}/layout`, {
-          method: 'PATCH',
-          body: JSON.stringify({ panels: resolved }),
-        }).catch(console.error);
+        // Check if anything actually changed before saving
+        const changed = Object.keys(resolved).some(id => {
+          const r = resolved[id];
+          const p = prev[id];
+          return r.x !== p.x || r.y !== p.y;
+        });
 
-        return resolved;
+        if (changed) {
+          apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+            method: 'PATCH',
+            body: JSON.stringify({ panels: resolved }),
+          }).catch(console.error);
+          return resolved;
+        }
+
+        return prev; // No change needed
       });
     };
 
     const intervalId = setInterval(checkAndResolveCollisions, 3000);
     return () => clearInterval(intervalId);
-  }, [workspaceId]);
+  }, [workspaceId, draggingGroupId]);
 
 
   // Load workspace data
