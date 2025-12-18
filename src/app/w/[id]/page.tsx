@@ -1206,11 +1206,28 @@ Note: Preview panels contain rendered HTML content`;
 
     // Get panel context (reference-based metadata)
     const panelContext = getPanelContextData(panel);
+
+    // Build connection context
+    let connectionContext = '';
+    if (panel.sourcePanel) {
+      const sourcePanel = uiState.panels.find(p => p.id === panel.sourcePanel);
+      if (sourcePanel) {
+        connectionContext += `\nDerived from: ${getPanelTitle(sourcePanel)} (${sourcePanel.type})`;
+      }
+    }
+    const derivedPanels = connections
+      .filter(c => c.sourceId === panel.id)
+      .map(c => uiState.panels.find(p => p.id === c.targetId))
+      .filter(Boolean);
+    if (derivedPanels.length > 0) {
+      connectionContext += `\nDerived panels: ${derivedPanels.map(p => `${getPanelTitle(p!)} (${p!.type})`).join(', ')}`;
+    }
+
     const contextualPrompt = `<contextual_focus>
 The user is asking about a specific panel in their workspace.
 
 Panel ID: ${panel.id}
-${panelContext}
+${panelContext}${connectionContext}
 
 To access the panel's data, use: await read("${panel.tableId ? `table:${panel.tableId}` : panel.chartId ? `chart:${panel.chartId}` : panel.cardsId ? `cards:${panel.cardsId}` : `markdown:${panel.id}`}")
 
@@ -1243,7 +1260,7 @@ User question: ${message}`;
       // Clear the source panel ref
       contextualSourcePanelRef.current = null;
     }
-  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, getPanelContextData, executeQuery, getPanelTitle]);
+  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, connections, getPanelContextData, executeQuery, getPanelTitle]);
 
   // Handle group contextual chat message
   const handleGroupContextualMessage = useCallback(async (message: string) => {
@@ -1263,6 +1280,7 @@ User question: ${message}`;
     setContextualChatLoading(true);
 
     // Build context from all panels in the group (reference-based)
+    const groupPanelIds = new Set(group.panelIds);
     const panelsContext = groupPanels.map(panel => {
       if (!panel) return '';
       const metadata = getPanelContextData(panel);
@@ -1275,12 +1293,28 @@ User question: ${message}`;
   Access: await read("${resource}")`;
     }).join('\n');
 
+    // Build connection context for the group
+    const groupConnections = connections.filter(c =>
+      groupPanelIds.has(c.sourceId) || groupPanelIds.has(c.targetId)
+    );
+    let connectionContext = '';
+    if (groupConnections.length > 0) {
+      connectionContext = '\n\nPanel relationships:\n' + groupConnections.map(c => {
+        const source = uiState.panels.find(p => p.id === c.sourceId);
+        const target = uiState.panels.find(p => p.id === c.targetId);
+        if (source && target) {
+          return `- ${getPanelTitle(source)} → ${getPanelTitle(target)}`;
+        }
+        return null;
+      }).filter(Boolean).join('\n');
+    }
+
     const contextualPrompt = `<contextual_focus>
 The user is asking about a group of related panels in their workspace.
 
 Group: ${group.name || 'Unnamed group'}
 Panels (${groupPanels.length}):
-${panelsContext}
+${panelsContext}${connectionContext}
 
 To access any panel's data, use the read() function with the resource path shown above.
 If you create any new panels based on this context, they should relate to this group's content.
@@ -1313,7 +1347,7 @@ User question: ${message}`;
       setContextualChatLoading(false);
       contextualSourceGroupRef.current = null;
     }
-  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, getPanelContextData, executeQuery, getPanelTitle]);
+  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, connections, getPanelContextData, executeQuery, getPanelTitle]);
 
   // Handle canvas pointer down for drag-to-select
   // Left-click starts selection box, middle-click allows panning (RTS style controls)
