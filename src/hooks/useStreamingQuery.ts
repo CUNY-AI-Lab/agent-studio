@@ -97,6 +97,9 @@ export function useStreamingQuery({
 
   const executeQuery = useCallback(async (
     prompt: string,
+    options?: {
+      skipMainChat?: boolean;
+    },
     retryCount = 0,
     // Preserve state across retries to prevent duplicate tools
     retryState?: {
@@ -104,8 +107,9 @@ export function useStreamingQuery({
       processedToolIds: Set<string>;
       toolIdMap: Map<string, ToolExecution>;
     }
-  ): Promise<void> => {
-    if (isLoadingRef.current && retryCount === 0) return;
+  ): Promise<string> => {
+    const skipMainChat = options?.skipMainChat ?? false;
+    if (isLoadingRef.current && retryCount === 0) return '';
     isLoadingRef.current = true;
 
     // Content blocks - directly store tools here (like site-studio pattern)
@@ -117,8 +121,8 @@ export function useStreamingQuery({
     const toolIdMap = retryState?.toolIdMap ?? new Map<string, ToolExecution>(); // O(1) lookup for tool results
     let lineBuffer = '';
 
-    // Only add placeholder on first attempt
-    if (retryCount === 0) {
+    // Only add placeholder on first attempt (skip for contextual chats)
+    if (retryCount === 0 && !skipMainChat) {
       onMessagesUpdate((prev) => [...prev, { role: 'assistant', content: '', blocks: [] }]);
     }
 
@@ -139,6 +143,9 @@ export function useStreamingQuery({
     };
 
     const updateMessage = () => {
+      // Skip main chat updates for contextual chats
+      if (skipMainChat) return;
+
       // Build full text for content field
       const fullText = contentBlocks
         .filter((b): b is ContentBlock & { type: 'text'; text: string } => b.type === 'text' && !!b.text)
@@ -187,7 +194,7 @@ export function useStreamingQuery({
         const now = Date.now();
         let hasUpdates = false;
 
-        for (const [id, tool] of toolIdMap) {
+        for (const tool of toolIdMap.values()) {
           if (tool.status === 'running') {
             tool.elapsedTime = Math.round((now - tool.startTime) / 100) / 10;
             hasUpdates = true;
@@ -315,6 +322,13 @@ export function useStreamingQuery({
         flushTools();
         updateMessage();
 
+        // Return the final text content
+        const finalText = contentBlocks
+          .filter((b): b is ContentBlock & { type: 'text'; text: string } => b.type === 'text' && !!b.text)
+          .map(b => b.text)
+          .join('');
+        return finalText;
+
       } finally {
         stopToolTimer();
       }
@@ -344,7 +358,7 @@ export function useStreamingQuery({
         console.log(`Network error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
         // Preserve state across retries to prevent duplicate tools
-        return executeQuery(prompt, retryCount + 1, {
+        return executeQuery(prompt, options, retryCount + 1, {
           contentBlocks,
           processedToolIds,
           toolIdMap,
@@ -356,14 +370,17 @@ export function useStreamingQuery({
         ? 'Connection lost. Please check your network and try again.'
         : 'Something went wrong. Please try again.';
 
-      onMessagesUpdate((prev) => {
-        if (prev.length > 0 && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
-          const updated = [...prev];
-          updated[updated.length - 1] = { role: 'assistant', content: errorMessage };
-          return updated;
-        }
-        return [...prev, { role: 'assistant', content: errorMessage }];
-      });
+      if (!skipMainChat) {
+        onMessagesUpdate((prev) => {
+          if (prev.length > 0 && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
+            const updated = [...prev];
+            updated[updated.length - 1] = { role: 'assistant', content: errorMessage };
+            return updated;
+          }
+          return [...prev, { role: 'assistant', content: errorMessage }];
+        });
+      }
+      return errorMessage;
     } finally {
       isLoadingRef.current = false;
       stopToolTimer();
@@ -381,7 +398,7 @@ export function useStreamingQuery({
       // Final update to show interrupted state
       updateMessage();
     }
-  }, [workspaceId, onMessagesUpdate, onComplete, stopToolTimer]);
+  }, [workspaceId, onMessagesUpdate, onComplete, stopToolTimer, onPanelUpdate]);
 
   return { executeQuery, stopQuery, isLoadingRef };
 }
