@@ -84,6 +84,97 @@ const DEFAULT_PANEL_SIZES: Record<string, { width: number; height: number }> = {
   preview: { width: 600, height: 500 },
 };
 
+// Collision resolution helper - pushes overlapping panels apart
+// fixedPanelIds: panels that should not move (the ones being dragged)
+type LayoutMap = Record<string, { x: number; y: number; width: number; height: number }>;
+
+function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>): LayoutMap {
+  const gap = 20;
+  const maxIterations = 15;
+  const panelIds = Object.keys(layouts);
+
+  // Helper to check if two rectangles overlap (with gap)
+  const rectsOverlap = (a: LayoutMap[string], b: LayoutMap[string]) => {
+    return !(a.x + a.width + gap <= b.x || b.x + b.width + gap <= a.x ||
+             a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y);
+  };
+
+  // Skip collision between panels that are both fixed (e.g., both in dragged group)
+  const shouldSkipCollision = (idA: string, idB: string) => {
+    return fixedPanelIds.has(idA) && fixedPanelIds.has(idB);
+  };
+
+  for (let iter = 0; iter < maxIterations; iter++) {
+    let hadCollision = false;
+
+    for (let i = 0; i < panelIds.length; i++) {
+      for (let j = i + 1; j < panelIds.length; j++) {
+        const idA = panelIds[i];
+        const idB = panelIds[j];
+        const a = layouts[idA];
+        const b = layouts[idB];
+
+        if (!rectsOverlap(a, b)) continue;
+        if (shouldSkipCollision(idA, idB)) continue;
+
+        hadCollision = true;
+
+        // Determine which panel moves: fixed panels stay put
+        let toMoveId: string;
+        let stayId: string;
+        if (fixedPanelIds.has(idA)) {
+          toMoveId = idB;
+          stayId = idA;
+        } else if (fixedPanelIds.has(idB)) {
+          toMoveId = idA;
+          stayId = idB;
+        } else {
+          // Move the one that's more bottom-right
+          if (b.y > a.y || (b.y === a.y && b.x > a.x)) {
+            toMoveId = idB;
+            stayId = idA;
+          } else {
+            toMoveId = idA;
+            stayId = idB;
+          }
+        }
+
+        const stay = layouts[stayId];
+        const move = layouts[toMoveId];
+
+        // Calculate centers to determine push direction
+        const stayCx = stay.x + stay.width / 2;
+        const stayCy = stay.y + stay.height / 2;
+        const moveCx = move.x + move.width / 2;
+        const moveCy = move.y + move.height / 2;
+
+        // Calculate edge-based push amounts
+        const pushRight = (stay.x + stay.width + gap) - move.x;
+        const pushLeft = (move.x + move.width + gap) - stay.x;
+        const pushDown = (stay.y + stay.height + gap) - move.y;
+        const pushUp = (move.y + move.height + gap) - stay.y;
+
+        // Choose minimum push in the natural direction (away from stay's center)
+        const pushX = moveCx >= stayCx ? pushRight : pushLeft;
+        const pushY = moveCy >= stayCy ? pushDown : pushUp;
+
+        // Push in the direction requiring minimum movement
+        if (pushX > 0 && pushX <= pushY) {
+          const dx = moveCx >= stayCx ? pushRight : -pushLeft;
+          layouts[toMoveId] = { ...move, x: move.x + dx };
+        } else if (pushY > 0) {
+          const dy = moveCy >= stayCy ? pushDown : -pushUp;
+          layouts[toMoveId] = { ...move, y: move.y + dy };
+        }
+      }
+    }
+
+    if (!hadCollision) break;
+  }
+
+  return layouts;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Main Component
 // ═══════════════════════════════════════════════════════════════════════════
@@ -676,24 +767,35 @@ export default function WorkspacePage() {
     });
   }, [groups]);
 
-  // Handle group drag end
+  // Handle group drag end - resolve collisions with panels outside the group
   const handleGroupDragEnd = useCallback((groupId: string) => {
-    void groupId; // mark used
     setDraggingGroupId(null);
 
-    // Save the updated layouts (avoid side-effects inside setState)
-    let payload: Record<string, { x: number; y: number; width: number; height: number }> | null = null;
+    // Find group to get its panel IDs (they're the "fixed" panels)
+    const group = groups.find(g => g.id === groupId);
+    const fixedPanelIds = new Set(group?.panelIds || []);
+
+    let savedPayload: LayoutMap | null = null;
     setPanelLayouts(prev => {
-      payload = prev;
-      return prev;
+      // Deep copy layouts
+      const layouts: LayoutMap = {};
+      for (const [id, layout] of Object.entries(prev)) {
+        layouts[id] = { ...layout };
+      }
+
+      // Resolve collisions - group panels stay fixed, others move
+      const resolved = resolveCollisions(layouts, fixedPanelIds);
+      savedPayload = resolved;
+      return resolved;
     });
-    if (payload) {
+
+    if (savedPayload) {
       apiFetch(`/api/workspaces/${workspaceId}/layout`, {
         method: 'PATCH',
-        body: JSON.stringify({ panels: payload }),
+        body: JSON.stringify({ panels: savedPayload }),
       }).catch(console.error);
     }
-  }, [workspaceId]);
+  }, [workspaceId, groups]);
 
   // Resolve collisions and save layout after drag ends (single panel drag)
   const handleDragEnd = useCallback((movedPanelId: string) => {
@@ -703,125 +805,28 @@ export default function WorkspacePage() {
     // Only the moved panel is fixed - individual panels move independently now
     const fixedPanelIds = new Set([movedPanelId]);
 
-    let savedPayload: Record<string, { x: number; y: number; width: number; height: number }> | null = null;
+    let savedPayload: LayoutMap | null = null;
     setPanelLayouts(prev => {
-      // Deep copy so we can mutate positions directly
-      const layouts: Record<string, { x: number; y: number; width: number; height: number }> = {};
+      // Deep copy layouts
+      const layouts: LayoutMap = {};
       for (const [id, layout] of Object.entries(prev)) {
         layouts[id] = { ...layout };
       }
 
-      const gap = 20;
-      const maxIterations = 15;
-      const panelIds = Object.keys(layouts);
-
-      // Helper to check if two rectangles overlap (with gap)
-      const rectsOverlap = (a: typeof layouts[string], b: typeof layouts[string]) => {
-        return !(a.x + a.width + gap <= b.x || b.x + b.width + gap <= a.x ||
-                 a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y);
-      };
-
-      // Skip collision between panels that are both in the same fixed group
-      const shouldSkipCollision = (idA: string, idB: string) => {
-        return fixedPanelIds.has(idA) && fixedPanelIds.has(idB);
-      };
-
-      for (let iter = 0; iter < maxIterations; iter++) {
-        let hadCollision = false;
-
-        for (let i = 0; i < panelIds.length; i++) {
-          for (let j = i + 1; j < panelIds.length; j++) {
-            const idA = panelIds[i];
-            const idB = panelIds[j];
-            const a = layouts[idA];
-            const b = layouts[idB];
-
-            if (!rectsOverlap(a, b)) continue;
-
-            // Skip collision between panels in the same moved group
-            if (shouldSkipCollision(idA, idB)) continue;
-
-            hadCollision = true;
-
-            // Determine which panel moves: fixed panels stay put
-            // If neither is fixed, move the one lower/righter
-            let toMoveId: string;
-            let stayId: string;
-            if (fixedPanelIds.has(idA)) {
-              toMoveId = idB;
-              stayId = idA;
-            } else if (fixedPanelIds.has(idB)) {
-              toMoveId = idA;
-              stayId = idB;
-            } else {
-              // Move the one that's more bottom-right
-              if (b.y > a.y || (b.y === a.y && b.x > a.x)) {
-                toMoveId = idB;
-                stayId = idA;
-              } else {
-                toMoveId = idA;
-                stayId = idB;
-              }
-            }
-
-            const stay = layouts[stayId];
-            const move = layouts[toMoveId];
-
-            // Calculate centers to determine push direction
-            const stayCx = stay.x + stay.width / 2;
-            const stayCy = stay.y + stay.height / 2;
-            const moveCx = move.x + move.width / 2;
-            const moveCy = move.y + move.height / 2;
-
-            // Calculate edge-based push amounts
-            let pushRight = 0, pushLeft = 0, pushDown = 0, pushUp = 0;
-
-            // How much to push right so move's left edge clears stay's right edge
-            pushRight = (stay.x + stay.width + gap) - move.x;
-            // How much to push left so move's right edge clears stay's left edge
-            pushLeft = (move.x + move.width + gap) - stay.x;
-            // How much to push down so move's top edge clears stay's bottom edge
-            pushDown = (stay.y + stay.height + gap) - move.y;
-            // How much to push up so move's bottom edge clears stay's top edge
-            pushUp = (move.y + move.height + gap) - stay.y;
-
-            // Choose minimum push in the natural direction (away from stay's center)
-            const pushX = moveCx >= stayCx ? pushRight : pushLeft;
-            const pushY = moveCy >= stayCy ? pushDown : pushUp;
-
-            // Push in the direction requiring minimum movement
-            if (pushX > 0 && pushX <= pushY) {
-              const dx = moveCx >= stayCx ? pushRight : -pushLeft;
-              layouts[toMoveId] = {
-                ...move,
-                x: move.x + dx,
-              };
-            } else if (pushY > 0) {
-              const dy = moveCy >= stayCy ? pushDown : -pushUp;
-              layouts[toMoveId] = {
-                ...move,
-                y: move.y + dy,
-              };
-            }
-          }
-        }
-
-        if (!hadCollision) break;
-      }
-
-      // Save payload after state update
-      savedPayload = layouts;
+      // Resolve collisions - moved panel stays fixed, others move
+      const resolved = resolveCollisions(layouts, fixedPanelIds);
+      savedPayload = resolved;
 
       // Check if moved panel should join or leave a group
       // Use generous padding to make groups "sticky" - panels don't accidentally leave
-      const movedLayout = layouts[movedPanelId];
+      const movedLayout = resolved[movedPanelId];
       if (movedLayout) {
         // Helper to calculate group bounds (excluding the moved panel)
         // Use different padding for leave vs join checks
         const getGroupBounds = (group: typeof groups[0], padding: number) => {
           const groupLayouts = group.panelIds
             .filter(id => id !== movedPanelId) // Exclude moved panel for bounds calculation
-            .map(id => layouts[id])
+            .map(id => resolved[id])
             .filter(Boolean);
 
           if (groupLayouts.length === 0) return null;
@@ -909,7 +914,7 @@ export default function WorkspacePage() {
         }
       }
 
-      return layouts;
+      return resolved;
     });
     if (savedPayload) {
       apiFetch(`/api/workspaces/${workspaceId}/layout`, {
@@ -918,6 +923,54 @@ export default function WorkspacePage() {
       }).catch(console.error);
     }
   }, [workspaceId, groups]);
+
+  // Periodic collision check - catches edge cases where panels end up overlapping
+  // Runs every 3 seconds but only resolves if overlaps are detected
+  useEffect(() => {
+    const checkAndResolveCollisions = () => {
+      setPanelLayouts(prev => {
+        const panelIds = Object.keys(prev);
+        if (panelIds.length < 2) return prev; // Nothing to check
+
+        const gap = 20;
+        // Quick check if any overlap exists
+        let hasOverlap = false;
+        outer: for (let i = 0; i < panelIds.length; i++) {
+          for (let j = i + 1; j < panelIds.length; j++) {
+            const a = prev[panelIds[i]];
+            const b = prev[panelIds[j]];
+            if (!(a.x + a.width + gap <= b.x || b.x + b.width + gap <= a.x ||
+                  a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y)) {
+              hasOverlap = true;
+              break outer;
+            }
+          }
+        }
+
+        if (!hasOverlap) return prev; // No overlaps, no change
+
+        // Deep copy and resolve
+        const layouts: LayoutMap = {};
+        for (const [id, layout] of Object.entries(prev)) {
+          layouts[id] = { ...layout };
+        }
+
+        // No fixed panels - everything can move to find best arrangement
+        const resolved = resolveCollisions(layouts, new Set());
+
+        // Save to server if changed
+        apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+          method: 'PATCH',
+          body: JSON.stringify({ panels: resolved }),
+        }).catch(console.error);
+
+        return resolved;
+      });
+    };
+
+    const intervalId = setInterval(checkAndResolveCollisions, 3000);
+    return () => clearInterval(intervalId);
+  }, [workspaceId]);
 
 
   // Load workspace data
