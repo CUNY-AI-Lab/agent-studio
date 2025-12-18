@@ -1144,30 +1144,45 @@ export default function WorkspacePage() {
     return panel.type.charAt(0).toUpperCase() + panel.type.slice(1);
   }, [tables, charts, cards]);
 
-  // Get panel data for context
+  // Get panel metadata for context (reference-based, not inline data)
+  // Agent should use read() tool to fetch actual data when needed
   const getPanelContextData = useCallback((panel: UIPanel) => {
-    let contextData = '';
     if (panel.type === 'table' && panel.tableId) {
       const tableData = tables[panel.tableId];
       if (tableData) {
-        contextData = `Table: ${tableData.title}\nColumns: ${tableData.columns.map(c => c.label).join(', ')}\nRows: ${tableData.data.length}\nSample data: ${JSON.stringify(tableData.data.slice(0, 3), null, 2)}`;
+        return `Type: table
+Resource: table:${panel.tableId}
+Title: "${tableData.title}"
+Columns: ${tableData.columns.map(c => c.label).join(', ')}
+Rows: ${tableData.data.length}`;
       }
     } else if (panel.type === 'chart' && panel.chartId) {
       const chartData = charts[panel.chartId];
       if (chartData) {
-        contextData = `Chart: ${chartData.title}\nType: ${chartData.type}\nData points: ${chartData.data.length}\nSample: ${JSON.stringify(chartData.data.slice(0, 3), null, 2)}`;
+        return `Type: chart
+Resource: chart:${panel.chartId}
+Title: "${chartData.title}"
+Chart Type: ${chartData.type}
+Data Points: ${chartData.data.length}`;
       }
     } else if (panel.type === 'cards' && panel.cardsId) {
       const cardsData = cards[panel.cardsId];
       if (cardsData) {
-        contextData = `Cards: ${cardsData.title}\nItems: ${cardsData.items.length}\nSample: ${JSON.stringify(cardsData.items.slice(0, 3), null, 2)}`;
+        return `Type: cards
+Resource: cards:${panel.cardsId}
+Title: "${cardsData.title}"
+Items: ${cardsData.items.length}`;
       }
-    } else if (panel.type === 'markdown' && panel.content) {
-      contextData = `Markdown content:\n${panel.content.slice(0, 1000)}${panel.content.length > 1000 ? '...' : ''}`;
-    } else if (panel.type === 'preview' && panel.content) {
-      contextData = `Preview HTML (truncated):\n${panel.content.slice(0, 500)}...`;
+    } else if (panel.type === 'markdown') {
+      const charCount = panel.content?.length || 0;
+      return `Type: markdown
+Resource: markdown:${panel.id}
+Characters: ${charCount}`;
+    } else if (panel.type === 'preview') {
+      return `Type: preview (HTML)
+Note: Preview panels contain rendered HTML content`;
     }
-    return contextData;
+    return '';
   }, [tables, charts, cards]);
 
   // Handle contextual chat message
@@ -1189,14 +1204,15 @@ export default function WorkspacePage() {
     // Set the source panel ref so new panels get connected
     contextualSourcePanelRef.current = panelId;
 
-    // Get panel context
+    // Get panel context (reference-based metadata)
     const panelContext = getPanelContextData(panel);
     const contextualPrompt = `<contextual_focus>
 The user is asking about a specific panel in their workspace.
+
 Panel ID: ${panel.id}
-Panel Type: ${panel.type}
-Panel Title: ${getPanelTitle(panel)}
-${panelContext ? `\nPanel Data:\n${panelContext}` : ''}
+${panelContext}
+
+To access the panel's data, use: await read("${panel.tableId ? `table:${panel.tableId}` : panel.chartId ? `chart:${panel.chartId}` : panel.cardsId ? `cards:${panel.cardsId}` : `markdown:${panel.id}`}")
 
 If you create any new panels based on this context, they will automatically be visually connected to this source panel.
 </contextual_focus>
@@ -1246,22 +1262,27 @@ User question: ${message}`;
     }));
     setContextualChatLoading(true);
 
-    // Build context from all panels in the group
+    // Build context from all panels in the group (reference-based)
     const panelsContext = groupPanels.map(panel => {
       if (!panel) return '';
-      const data = getPanelContextData(panel);
-      return `### ${getPanelTitle(panel)} (${panel.type})
-${data || '(no data)'}`;
-    }).join('\n\n');
+      const metadata = getPanelContextData(panel);
+      const resource = panel.tableId ? `table:${panel.tableId}`
+        : panel.chartId ? `chart:${panel.chartId}`
+        : panel.cardsId ? `cards:${panel.cardsId}`
+        : `markdown:${panel.id}`;
+      return `- ${getPanelTitle(panel)} (${panel.type})
+  ${metadata ? metadata.split('\n').slice(1).join('\n  ') : ''}
+  Access: await read("${resource}")`;
+    }).join('\n');
 
     const contextualPrompt = `<contextual_focus>
-The user is asking about a group of panels in their workspace.
-Group Name: ${group.name || 'Unnamed group'}
-Number of Panels: ${groupPanels.length}
+The user is asking about a group of related panels in their workspace.
 
-Panels in this group:
+Group: ${group.name || 'Unnamed group'}
+Panels (${groupPanels.length}):
 ${panelsContext}
 
+To access any panel's data, use the read() function with the resource path shown above.
 If you create any new panels based on this context, they should relate to this group's content.
 </contextual_focus>
 
