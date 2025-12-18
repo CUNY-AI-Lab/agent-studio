@@ -1579,7 +1579,8 @@ User question: ${message}`;
   }, []);
 
   // Create a group from selected panels
-  const createGroup = useCallback(() => {
+  // If openChat is true, opens contextual chat for the new group
+  const createGroup = useCallback((options?: { openChat?: boolean }) => {
     if (selectedPanelIds.size < 2) return;
 
     const groupId = `group-${Date.now()}`;
@@ -1674,7 +1675,14 @@ User question: ${message}`;
       }];
     });
     setSelectedPanelIds(new Set());
-    showToast(`Grouped ${panelCount} panels`);
+
+    if (options?.openChat) {
+      // Open chat for the new group
+      setContextualChatPanelId(null);
+      setContextualChatGroupId(groupId);
+    } else {
+      showToast(`Grouped ${panelCount} panels`);
+    }
   }, [selectedPanelIds, panelLayouts, showToast]);
 
   // Align selected panels to an edge/center
@@ -2696,17 +2704,7 @@ User question: ${message}`;
                               setContextualChatGroupId(selectedPanelsGroup.id);
                             } else if (selectedPanelIds.size > 1) {
                               // Auto-create a group and open chat for it
-                              const groupId = `group-${Date.now()}`;
-                              const selectedArray = Array.from(selectedPanelIds);
-                              setGroups(prev => [...prev, {
-                                id: groupId,
-                                panelIds: selectedArray,
-                              }]);
-                              // Open chat for the new group
-                              setContextualChatPanelId(null);
-                              setContextualChatGroupId(groupId);
-                              // Clear selection since they're now a group
-                              setSelectedPanelIds(new Set());
+                              createGroup({ openChat: true });
                             }
                           }}
                           onDownload={(format) => {
