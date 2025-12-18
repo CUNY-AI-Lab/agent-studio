@@ -2695,7 +2695,18 @@ User question: ${message}`;
                               setContextualChatPanelId(null);
                               setContextualChatGroupId(selectedPanelsGroup.id);
                             } else if (selectedPanelIds.size > 1) {
-                              showToast('Select a single panel or create a group to chat');
+                              // Auto-create a group and open chat for it
+                              const groupId = `group-${Date.now()}`;
+                              const selectedArray = Array.from(selectedPanelIds);
+                              setGroups(prev => [...prev, {
+                                id: groupId,
+                                panelIds: selectedArray,
+                              }]);
+                              // Open chat for the new group
+                              setContextualChatPanelId(null);
+                              setContextualChatGroupId(groupId);
+                              // Clear selection since they're now a group
+                              setSelectedPanelIds(new Set());
                             }
                           }}
                           onDownload={(format) => {
