@@ -2371,11 +2371,6 @@ User question: ${message}`;
                               setSelectedPanelIds(new Set(g.panelIds));
                             }
                           }}
-                          onGroupChatClick={(groupId) => {
-                            // Close any existing panel chat and open group chat
-                            setContextualChatPanelId(null);
-                            setContextualChatGroupId(groupId);
-                          }}
                           onGroupRename={renameGroup}
                           onGroupDrag={handleGroupDrag}
                           onGroupDragEnd={handleGroupDragEnd}
@@ -2428,11 +2423,6 @@ User question: ${message}`;
                             isSelected={selectedPanelIds.has(panel.id)}
                             onPanelClick={handlePanelClick}
                             onPanelDoubleClick={handlePanelDoubleClick}
-                            onChatClick={(id) => {
-                              setContextualChatGroupId(null);
-                              setContextualChatPanelId(id);
-                            }}
-                            isChatActive={contextualChatPanelId === panel.id}
                             isAnimating={animatingPanelIds.has(panel.id)}
                             menuContent={
                               <>

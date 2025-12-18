@@ -9,7 +9,6 @@ interface GroupBoundaryProps {
   existingPanelIds: Set<string>; // Source of truth for which panels actually exist
   scale: number; // Current zoom level for drag calculations
   onGroupClick?: (groupId: string) => void;
-  onGroupChatClick?: (groupId: string) => void;
   onGroupRename?: (groupId: string, newName: string) => void;
   onGroupDrag?: (groupId: string, dx: number, dy: number) => void;
   onGroupDragEnd?: (groupId: string) => void;
@@ -25,7 +24,6 @@ export function GroupBoundary({
   existingPanelIds,
   scale,
   onGroupClick,
-  onGroupChatClick,
   onGroupRename,
   onGroupDrag,
   onGroupDragEnd,
@@ -198,19 +196,6 @@ export function GroupBoundary({
             {group.name || `${validPanelCount} panels`}
           </span>
         )}
-        {/* Chat button */}
-        <button
-          className="group-chat-button"
-          onClick={(e) => {
-            e.stopPropagation();
-            onGroupChatClick?.(group.id);
-          }}
-          title="Chat about this group"
-        >
-          <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-          </svg>
-        </button>
       </div>
     </div>
   );

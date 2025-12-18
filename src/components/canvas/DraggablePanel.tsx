@@ -19,12 +19,10 @@ interface DraggablePanelProps {
   onOpenMenu?: (id: string) => void;
   isMenuOpen?: boolean;
   menuContent?: React.ReactNode;
-  // Selection and contextual chat
+  // Selection
   isSelected?: boolean;
   onPanelClick?: (id: string, e: React.MouseEvent) => void;
   onPanelDoubleClick?: (id: string, e: React.MouseEvent) => void;
-  onChatClick?: (id: string) => void;
-  isChatActive?: boolean;
   isAnimating?: boolean;
   // Group dragging - disables position transitions when another panel in the same group is being dragged
   isInDraggingGroup?: boolean;
@@ -50,8 +48,6 @@ export function DraggablePanel({
   isSelected,
   onPanelClick,
   onPanelDoubleClick,
-  onChatClick,
-  isChatActive,
   isAnimating,
   isInDraggingGroup,
 }: DraggablePanelProps) {
@@ -227,7 +223,6 @@ export function DraggablePanel({
         isDragging && "dragging",
         isResizing && "resizing",
         isSelected && "panel-selected",
-        isChatActive && "panel-chat-active",
         isAnimating && "panel-entering",
         isInDraggingGroup && "group-dragging"
       )}
@@ -290,20 +285,6 @@ export function DraggablePanel({
       >
         {children}
       </div>
-
-      {/* Chat indicator - clickable button on hover */}
-      <button
-        className="panel-chat-indicator"
-        onClick={(e) => {
-          e.stopPropagation();
-          onChatClick?.(id);
-        }}
-        title="Chat about this panel"
-      >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-        </svg>
-      </button>
 
       {/* Resize handles - corners only */}
       {['nw', 'ne', 'sw', 'se'].map((corner) => (
