@@ -12,6 +12,12 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Project-specific: ignore Python virtualenvs, sandbox, generated data/logs
+    "**/.venv/**",
+    "sandbox/**",
+    "data/**",
+    "logs/**",
+    "tests/dist/**",
   ]),
 ]);
 

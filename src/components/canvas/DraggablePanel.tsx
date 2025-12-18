@@ -13,6 +13,7 @@ interface DraggablePanelProps {
   scale: number;
   zIndex?: number;
   onLayoutChange: (id: string, layout: Partial<CanvasPanelLayout>) => void;
+  onDragStart?: (id: string) => void;
   onDragEnd: (id: string) => void;
   onFocus?: (id: string) => void;
   onOpenMenu?: (id: string) => void;
@@ -22,8 +23,11 @@ interface DraggablePanelProps {
   isSelected?: boolean;
   onPanelClick?: (id: string, e: React.MouseEvent) => void;
   onPanelDoubleClick?: (id: string, e: React.MouseEvent) => void;
+  onChatClick?: (id: string) => void;
   isChatActive?: boolean;
   isAnimating?: boolean;
+  // Group dragging - disables position transitions when another panel in the same group is being dragged
+  isInDraggingGroup?: boolean;
 }
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -37,6 +41,7 @@ export function DraggablePanel({
   scale,
   zIndex,
   onLayoutChange,
+  onDragStart,
   onDragEnd,
   onFocus,
   onOpenMenu,
@@ -45,8 +50,10 @@ export function DraggablePanel({
   isSelected,
   onPanelClick,
   onPanelDoubleClick,
+  onChatClick,
   isChatActive,
   isAnimating,
+  isInDraggingGroup,
 }: DraggablePanelProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
@@ -76,8 +83,9 @@ export function DraggablePanel({
       layoutY: layout.y,
     };
 
+    onDragStart?.(id);
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
-  }, [layout.x, layout.y]);
+  }, [layout.x, layout.y, id, onDragStart]);
 
   const handleDragMove = useCallback((e: React.PointerEvent) => {
     if (!isDragging) return;
@@ -95,8 +103,8 @@ export function DraggablePanel({
     }
 
     onLayoutChange(id, {
-      x: Math.max(0, dragStartRef.current.layoutX + dx),
-      y: Math.max(0, dragStartRef.current.layoutY + dy),
+      x: dragStartRef.current.layoutX + dx,
+      y: dragStartRef.current.layoutY + dy,
     });
   }, [isDragging, scale, id, onLayoutChange]);
 
@@ -173,8 +181,8 @@ export function DraggablePanel({
     }
 
     onLayoutChange(id, {
-      x: Math.max(0, newX),
-      y: Math.max(0, newY),
+      x: newX,
+      y: newY,
       width: newWidth,
       height: newHeight,
     });
@@ -220,7 +228,8 @@ export function DraggablePanel({
         isResizing && "resizing",
         isSelected && "panel-selected",
         isChatActive && "panel-chat-active",
-        isAnimating && "panel-entering"
+        isAnimating && "panel-entering",
+        isInDraggingGroup && "group-dragging"
       )}
       style={{
         left: layout.x,
@@ -240,6 +249,12 @@ export function DraggablePanel({
         onPointerMove={handleDragMove}
         onPointerUp={handleDragEnd}
         onPointerCancel={handleDragEnd}
+        onClick={(e) => {
+          // If header was clicked without dragging, treat like panel click to trigger toolbar
+          if (!didMove) {
+            onPanelClick?.(id, e as unknown as React.MouseEvent);
+          }
+        }}
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <h3 className="truncate" title={title}>{title}</h3>
@@ -276,12 +291,19 @@ export function DraggablePanel({
         {children}
       </div>
 
-      {/* Chat indicator - appears on hover */}
-      <div className="panel-chat-indicator">
+      {/* Chat indicator - clickable button on hover */}
+      <button
+        className="panel-chat-indicator"
+        onClick={(e) => {
+          e.stopPropagation();
+          onChatClick?.(id);
+        }}
+        title="Chat about this panel"
+      >
         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
         </svg>
-      </div>
+      </button>
 
       {/* Resize handles - corners only */}
       {['nw', 'ne', 'sw', 'se'].map((corner) => (

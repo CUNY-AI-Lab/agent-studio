@@ -39,7 +39,7 @@ export interface StreamEvent {
 }
 
 // Parse panel updates from tool result
-function extractPanelUpdates(toolResult: string): { cleanResult: string; panelUpdates: PanelUpdate[] } {
+export function extractPanelUpdates(toolResult: string): { cleanResult: string; panelUpdates: PanelUpdate[] } {
   const marker = /__PANEL_UPDATES_START__([\s\S]*?)__PANEL_UPDATES_END__/;
   const match = toolResult.match(marker);
   if (match) {

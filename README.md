@@ -81,6 +81,8 @@ SESSION_SECRET=<random-32-byte-hex>
 CSRF_SECRET=<random-32-byte-hex>
 ```
 
+Note: In production, the app fails to start if these are missing.
+
 Production:
 ```
 # Set to true only if using HTTPS
@@ -119,6 +121,12 @@ npm run dev
 # Production
 npm run build
 npm run start
+
+# Tests (Node built-in runner)
+npm run test
+
+# Strict typecheck for unused code (optional)
+npm run typecheck:strict
 ```
 
 Open http://localhost:3000
@@ -188,6 +196,7 @@ The agent will discover and use new skills automatically.
 - **File validation**: Uploads checked for type, extension, and size
 - **CSRF protection**: State-changing requests require tokens
 - **Signed sessions**: Cookies use HMAC-SHA256 signatures
+- **Preview isolation**: Preview HTML is served with a CSP sandbox and same-origin framing restriction; network access is allowed, but the page runs in a unique origin and cannot access site cookies.
 
 ## Limitations
 

@@ -6,15 +6,23 @@ const CACHE_TTL = 60 * 1000; // 1 minute
 const MAX_CONTENT_SIZE = 5 * 1024 * 1024; // 5MB max preview content
 const MAX_CACHE_ENTRIES = 100; // Max cached previews
 
-// Clean expired entries periodically
-setInterval(() => {
+// On-demand cache cleanup (avoid long-lived timers in serverless/runtime)
+function cleanupCache() {
   const now = Date.now();
+  // Remove expired
   for (const [key, value] of previewCache.entries()) {
-    if (value.expires < now) {
+    if (value.expires < now) previewCache.delete(key);
+  }
+  // Enforce max size by evicting oldest keys
+  if (previewCache.size > MAX_CACHE_ENTRIES) {
+    const toEvict = previewCache.size - MAX_CACHE_ENTRIES;
+    let i = 0;
+    for (const key of previewCache.keys()) {
+      if (i++ >= toEvict) break;
       previewCache.delete(key);
     }
   }
-}, 30 * 1000);
+}
 
 // Simple hash function for content
 function hashContent(content: string): string {
@@ -30,6 +38,7 @@ function hashContent(content: string): string {
 // POST: Store preview content and return a key
 export async function POST(request: NextRequest) {
   try {
+    cleanupCache();
     const { content } = await request.json();
     if (!content || typeof content !== 'string') {
       return NextResponse.json({ error: 'Content required' }, { status: 400 });
@@ -43,11 +52,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Evict oldest entries if cache is full
-    if (previewCache.size >= MAX_CACHE_ENTRIES) {
-      const oldestKey = previewCache.keys().next().value;
-      if (oldestKey) previewCache.delete(oldestKey);
-    }
+    // Enforce capacity and remove expired
+    cleanupCache();
 
     const key = hashContent(content);
     previewCache.set(key, { content, expires: Date.now() + CACHE_TTL });
@@ -65,6 +71,7 @@ export async function GET(request: NextRequest) {
     return new NextResponse('Missing key', { status: 400 });
   }
 
+  cleanupCache();
   const cached = previewCache.get(key);
   if (!cached || cached.expires < Date.now()) {
     return new NextResponse('Preview expired or not found', { status: 404 });
@@ -78,6 +85,10 @@ export async function GET(request: NextRequest) {
       'Cross-Origin-Embedder-Policy': 'unsafe-none',
       'Cross-Origin-Resource-Policy': 'cross-origin',
       'Cross-Origin-Opener-Policy': 'unsafe-none',
+      // Sandbox the preview page to isolate it even on direct navigation
+      // Allow scripts for interactive previews, but keep a unique origin
+      'Content-Security-Policy': "sandbox allow-scripts; frame-ancestors 'self'",
+      'Referrer-Policy': 'no-referrer',
     },
   });
 }

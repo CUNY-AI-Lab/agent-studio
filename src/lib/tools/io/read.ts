@@ -1,6 +1,5 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
-import { join } from 'path';
 import { PDFParse } from 'pdf-parse';
 import { ToolContext } from '../types';
 

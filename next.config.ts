@@ -1,12 +1,15 @@
 import type { NextConfig } from "next";
 
+const prod = process.env.NODE_ENV === 'production';
+
 const nextConfig: NextConfig = {
   // Base path for deployment at a subpath (e.g., /studio)
   basePath: process.env.NEXT_PUBLIC_BASE_PATH || '',
   serverExternalPackages: ["pdf-parse"],
   // Expand Turbopack's filesystem root to handle .venv symlinks
   turbopack: {
-    root: '/',
+    // Keep root scoped to the project directory to avoid scanning the entire FS
+    root: process.cwd(),
   },
   async headers() {
     return [
@@ -33,22 +36,15 @@ const nextConfig: NextConfig = {
             key: 'Permissions-Policy',
             value: 'camera=(), microphone=(), geolocation=()',
           },
-          // Allow loading cross-origin resources without CORS in iframes
-          {
-            key: 'Cross-Origin-Embedder-Policy',
-            value: 'unsafe-none',
-          },
-          {
-            key: 'Cross-Origin-Resource-Policy',
-            value: 'cross-origin',
-          },
           // Note: CSP is relaxed for Next.js inline scripts and Recharts
-          // In production, consider nonce-based CSP
+          // In production, remove unsafe-eval
           {
             key: 'Content-Security-Policy',
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net", // Required for Next.js + CDNs for preview
+              prod
+                ? "script-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net"
+                : "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net",
               "style-src 'self' 'unsafe-inline' https://unpkg.com https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://fonts.googleapis.com", // Required for Tailwind + CDNs + Google Fonts
               "img-src 'self' data: blob: https: http:", // Allow images from anywhere (maps, etc)
               "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com",
@@ -57,6 +53,7 @@ const nextConfig: NextConfig = {
               "object-src 'none'",
               "base-uri 'self'",
               "form-action 'self'",
+              "frame-ancestors 'self'",
             ].join('; '),
           },
         ],

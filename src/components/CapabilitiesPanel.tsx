@@ -68,7 +68,9 @@ function Modal({ isOpen, onClose, children }: { isOpen: boolean; onClose: () => 
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
-    setMounted(true);
+    // Defer to avoid synchronous setState warning
+    const t = setTimeout(() => setMounted(true), 0);
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {
@@ -121,7 +123,7 @@ export function CapabilitiesPanel({ skills }: CapabilitiesPanelProps) {
         onClick={() => setIsOpen(true)}
         className="text-sm text-muted-foreground hover:text-foreground transition-colors underline underline-offset-4 decoration-border/50 hover:decoration-muted-foreground"
       >
-        See what's possible
+        See what&rsquo;s possible
       </button>
 
       <Modal isOpen={isOpen} onClose={() => setIsOpen(false)}>

@@ -132,12 +132,43 @@ export function ConnectionLines({
       }[];
   }, [connections, panelLayouts, animatingConnectionIds, panelTitles]);
 
+  // Calculate SVG bounds to cover all connections with padding
+  // Must be before early return to satisfy React hooks rules
+  const svgBounds = useMemo(() => {
+    let minX = 0, minY = 0, maxX = 10000, maxY = 10000;
+    for (const conn of connections) {
+      const sourceLayout = panelLayouts[conn.sourceId];
+      const targetLayout = panelLayouts[conn.targetId];
+      if (sourceLayout) {
+        minX = Math.min(minX, sourceLayout.x - 200);
+        minY = Math.min(minY, sourceLayout.y - 200);
+        maxX = Math.max(maxX, sourceLayout.x + sourceLayout.width + 200);
+        maxY = Math.max(maxY, sourceLayout.y + sourceLayout.height + 200);
+      }
+      if (targetLayout) {
+        minX = Math.min(minX, targetLayout.x - 200);
+        minY = Math.min(minY, targetLayout.y - 200);
+        maxX = Math.max(maxX, targetLayout.x + targetLayout.width + 200);
+        maxY = Math.max(maxY, targetLayout.y + targetLayout.height + 200);
+      }
+    }
+    return { minX, minY, width: maxX - minX, height: maxY - minY };
+  }, [connections, panelLayouts]);
+
   if (paths.length === 0) return null;
 
   return (
     <svg
-      className="connection-lines absolute inset-0"
-      style={{ width: '8000px', height: '8000px', pointerEvents: 'none' }}
+      className="connection-lines absolute"
+      style={{
+        left: svgBounds.minX,
+        top: svgBounds.minY,
+        width: svgBounds.width,
+        height: svgBounds.height,
+        pointerEvents: 'none',
+        overflow: 'visible',
+      }}
+      viewBox={`${svgBounds.minX} ${svgBounds.minY} ${svgBounds.width} ${svgBounds.height}`}
     >
       <defs>
         {/* Arrow marker for line ends */}

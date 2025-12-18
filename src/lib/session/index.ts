@@ -7,10 +7,12 @@ const DATA_DIR = process.env.DATA_DIR || 'data';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'default-session-secret-change-in-production';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-interface SessionData {
-  id: string;
-  createdAt: number;
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.SESSION_SECRET || SESSION_SECRET === 'default-session-secret-change-in-production') {
+    throw new Error('SESSION_SECRET must be set in production');
+  }
 }
+
 
 // Sign a session ID
 function signSessionId(sessionId: string): string {
@@ -49,21 +51,6 @@ function verifySessionId(signedToken: string): string | null {
   return result === 0 ? sessionId : null;
 }
 
-// Parse session data with expiry check
-function parseSessionData(data: string): SessionData | null {
-  try {
-    const parsed = JSON.parse(data);
-    if (!parsed.id || !parsed.createdAt) return null;
-
-    // Check expiry
-    const age = Date.now() - parsed.createdAt;
-    if (age > SESSION_MAX_AGE) return null;
-
-    return parsed;
-  } catch {
-    return null;
-  }
-}
 
 export async function getSession(): Promise<string> {
   const cookieStore = await cookies();
@@ -97,7 +84,7 @@ export function createSignedSession(): { value: string; sessionId: string } {
 export function getSessionCookieOptions() {
   return {
     httpOnly: true,
-    secure: process.env.COOKIE_SECURE === 'true',
+    secure: process.env.COOKIE_SECURE ? process.env.COOKIE_SECURE === 'true' : process.env.NODE_ENV === 'production',
     sameSite: 'lax' as const,
     path: '/',
     maxAge: SESSION_MAX_AGE / 1000, // in seconds

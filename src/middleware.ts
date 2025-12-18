@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 
 const SESSION_SECRET = process.env.SESSION_SECRET || 'default-session-secret-change-in-production';
 const CSRF_SECRET = process.env.CSRF_SECRET || 'default-csrf-secret-change-in-production';
+if (process.env.NODE_ENV === 'production') {
+  if (!process.env.SESSION_SECRET || SESSION_SECRET === 'default-session-secret-change-in-production') {
+    throw new Error('SESSION_SECRET must be set in production');
+  }
+  if (!process.env.CSRF_SECRET || CSRF_SECRET === 'default-csrf-secret-change-in-production') {
+    throw new Error('CSRF_SECRET must be set in production');
+  }
+}
 const CSRF_HEADER_NAME = 'x-csrf-token';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
 const CSRF_COOKIE_NAME = 'csrf-token';
@@ -28,15 +36,13 @@ function checkRateLimit(ip: string): boolean {
   return true;
 }
 
-// Clean up old entries periodically
-setInterval(() => {
+// Opportunistic cleanup to avoid long-lived timers in middleware
+function cleanupRateLimit() {
   const now = Date.now();
   for (const [ip, entry] of rateLimitMap.entries()) {
-    if (now > entry.resetTime) {
-      rateLimitMap.delete(ip);
-    }
+    if (now > entry.resetTime) rateLimitMap.delete(ip);
   }
-}, 60 * 1000);
+}
 
 // Generate a signed session ID using Web Crypto API (Edge-compatible)
 async function generateSignedSession(): Promise<string> {
@@ -155,6 +161,9 @@ export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const response = NextResponse.next();
 
+  // Opportunistically clean expired rate limit entries
+  cleanupRateLimit();
+
   // Get client IP for rate limiting
   const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
              request.headers.get('x-real-ip') ||
@@ -173,9 +182,12 @@ export async function middleware(request: NextRequest) {
 
   if (needsNewSession) {
     const newSignedSession = await generateSignedSession();
+    const secureCookie = process.env.COOKIE_SECURE
+      ? process.env.COOKIE_SECURE === 'true'
+      : process.env.NODE_ENV === 'production';
     response.cookies.set('agent-studio-session', newSignedSession, {
       httpOnly: true,
-      secure: process.env.COOKIE_SECURE === 'true',
+      secure: secureCookie,
       sameSite: 'lax',
       path: '/',
       maxAge: SESSION_MAX_AGE,
@@ -188,9 +200,12 @@ export async function middleware(request: NextRequest) {
 
   if (!existingCsrfToken || !(await validateCsrfToken(existingCsrfToken))) {
     csrfToken = await generateCsrfToken();
+    const secureCookie = process.env.COOKIE_SECURE
+      ? process.env.COOKIE_SECURE === 'true'
+      : process.env.NODE_ENV === 'production';
     response.cookies.set(CSRF_COOKIE_NAME, csrfToken, {
       httpOnly: false, // Needs to be readable by JS to send in header
-      secure: process.env.COOKIE_SECURE === 'true',
+      secure: secureCookie,
       sameSite: 'strict',
       path: '/',
       maxAge: 60 * 60 * 24, // 24 hours

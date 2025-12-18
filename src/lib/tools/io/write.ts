@@ -1,7 +1,7 @@
 import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { ToolContext } from '../types';
-import { Table, TableColumn } from '../../storage';
+import { TableColumn } from '../../storage';
 
 export const createWriteTool = (ctx: ToolContext) =>
   tool(

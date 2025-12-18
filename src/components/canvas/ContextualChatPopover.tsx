@@ -35,9 +35,9 @@ export function ContextualChatPopover({
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  const POPOVER_WIDTH = 360;
-  const POPOVER_HEIGHT = 400;
-  const GAP = 16;
+  const POPOVER_WIDTH = 280;
+  const POPOVER_HEIGHT = 300;
+  const GAP = 12;
 
   // Memoized position calculation based on anchor panel
   const position = useMemo(() => {

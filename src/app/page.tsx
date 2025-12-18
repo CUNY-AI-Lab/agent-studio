@@ -1,4 +1,3 @@
-import Link from 'next/link';
 import { getSession } from '@/lib/session';
 import { createSandboxedStorage } from '@/lib/storage';
 import { listGalleryItems } from '@/lib/gallery';
