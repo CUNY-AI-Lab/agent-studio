@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react';
 
 type Theme = 'light' | 'dark' | 'system';
 
@@ -15,8 +15,12 @@ const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 const STORAGE_KEY = 'agent-studio-theme';
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [theme, setThemeState] = useState<Theme>('system');
-  const [resolvedTheme, setResolvedTheme] = useState<'light' | 'dark'>('light');
+  // Initialize from localStorage to avoid setState in effect
+  const [theme, setThemeState] = useState<Theme>(() => {
+    if (typeof window === 'undefined') return 'system';
+    const stored = (localStorage.getItem(STORAGE_KEY) as Theme | null) || 'system';
+    return stored;
+  });
   const [mounted, setMounted] = useState(false);
 
   // Get system preference
@@ -33,19 +37,32 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     } else {
       root.classList.remove('dark');
     }
-    setResolvedTheme(resolved);
   };
 
-  // Initialize on mount
-  useEffect(() => {
-    const stored = localStorage.getItem(STORAGE_KEY) as Theme | null;
-    const initial = stored || 'system';
-    setThemeState(initial);
+  // Subscribe to system theme changes (for 'system' mode) without setState in effects
+  const subscribe = (onStoreChange: () => void) => {
+    if (typeof window === 'undefined') return () => {};
+    const mql = window.matchMedia('(prefers-color-scheme: dark)');
+    const handler = () => onStoreChange();
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  };
 
-    const resolved = initial === 'system' ? getSystemTheme() : initial;
-    applyTheme(resolved);
-    setMounted(true);
-  }, []);
+  const getSnapshot = () => {
+    if (typeof window === 'undefined') return 'light' as const;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  };
+
+  const systemTheme = useSyncExternalStore(subscribe, getSnapshot, () => 'light' as const);
+  const resolvedTheme: 'light' | 'dark' = theme === 'system' ? systemTheme : (theme === 'dark' ? 'dark' : 'light');
+
+  // Apply theme on mount or when theme/system changes (no state set here)
+  useEffect(() => {
+    applyTheme(resolvedTheme);
+    // Defer mounting to avoid setState-in-effect lint while preventing theme FOUC
+    const t = setTimeout(() => setMounted(true), 0);
+    return () => clearTimeout(t);
+  }, [resolvedTheme]);
 
   // Listen for system preference changes
   useEffect(() => {

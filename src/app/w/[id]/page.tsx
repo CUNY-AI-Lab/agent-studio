@@ -3,22 +3,23 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { TransformWrapper, TransformComponent, useControls } from 'react-zoom-pan-pinch';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { DraggablePanel } from '@/components/canvas/DraggablePanel';
 import { ContextualChatPopover } from '@/components/canvas/ContextualChatPopover';
 import { ConnectionLines } from '@/components/canvas/ConnectionLines';
 import { SelectionBox } from '@/components/canvas/SelectionBox';
 import { GroupBoundary } from '@/components/canvas/GroupBoundary';
+import { SelectionToolbar } from '@/components/canvas/SelectionToolbar';
 import {
   Bar, BarChart, Line, LineChart, Pie, PieChart, Area, AreaChart,
-  XAxis, YAxis, CartesianGrid, Cell, ResponsiveContainer
+  XAxis, YAxis, CartesianGrid, Cell
 } from 'recharts';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart';
 import { SafeMarkdown } from '@/components/SafeMarkdown';
 import { toPng } from 'html-to-image';
 import { useTheme } from '@/components/ThemeProvider';
 import { apiFetch, basePath } from '@/lib/api';
-import { useStreamingQuery, type Message, type ToolExecution, type ContentBlock, type PanelUpdate } from '@/hooks/useStreamingQuery';
+import { useStreamingQuery, type Message, type ToolExecution, type PanelUpdate } from '@/hooks/useStreamingQuery';
 import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
 import skills from '@/lib/skills/index.json';
 import type { CanvasPanelLayout, UIPanel, UIState, PanelGroup, PanelConnection } from '@/lib/storage';
@@ -121,11 +122,11 @@ export default function WorkspacePage() {
   // Canvas state
   const [panelLayouts, setPanelLayouts] = useState<Record<string, CanvasPanelLayout>>({});
   const [zoomLevel, setZoomLevel] = useState(1);
-  const [viewportLoaded, setViewportLoaded] = useState(false);
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
 
-  // Contextual chat state - messages persisted per panel
+  // Contextual chat state - supports both panels and groups
   const [contextualChatPanelId, setContextualChatPanelId] = useState<string | null>(null);
+  const [contextualChatGroupId, setContextualChatGroupId] = useState<string | null>(null);
   const [contextualChatMessages, setContextualChatMessages] = useState<Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>>({});
   const [contextualChatLoading, setContextualChatLoading] = useState(false);
 
@@ -139,6 +140,16 @@ export default function WorkspacePage() {
   // Selection and grouping state
   const [selectedPanelIds, setSelectedPanelIds] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState<PanelGroup[]>([]);
+  // Selected group when all selected panels belong to the same group
+  const selectedPanelsGroup = useMemo(() => {
+    if (selectedPanelIds.size < 2) return null;
+    const selectedArray = Array.from(selectedPanelIds);
+    for (const group of groups) {
+      if (selectedArray.every(id => group.panelIds.includes(id))) return group;
+    }
+    return null;
+  }, [selectedPanelIds, groups]);
+  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [isSelectingBox, setIsSelectingBox] = useState(false);
   const [selectionBoxStart, setSelectionBoxStart] = useState<{ x: number; y: number } | null>(null);
   const [selectionBoxEnd, setSelectionBoxEnd] = useState<{ x: number; y: number } | null>(null);
@@ -152,9 +163,11 @@ export default function WorkspacePage() {
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const viewportSaveTimeout = useRef<NodeJS.Timeout | null>(null);
-  const currentViewport = useRef<{ x: number; y: number; scale: number }>({ x: -3100, y: -3400, scale: 1 });
+  // Initial viewport: looking at canvas area around (4000, 4000) at 75% zoom
+  const currentViewport = useRef<{ x: number; y: number; scale: number }>({ x: -2500, y: -2000, scale: 0.75 });
   const canvasContainerRef = useRef<HTMLDivElement>(null);
   const contextualSourcePanelRef = useRef<string | null>(null);
+  const contextualSourceGroupRef = useRef<string | null>(null);
   const transformRef = useRef<{ setTransform: (x: number, y: number, scale: number, duration?: number) => void } | null>(null);
   const groupsSaveTimeout = useRef<NodeJS.Timeout | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -165,6 +178,11 @@ export default function WorkspacePage() {
   // Load workspace callback (forward declared for hook)
   const loadWorkspaceRef = useRef<((options?: { skipMessages?: boolean }) => Promise<void>) | undefined>(undefined);
 
+  // Track panels that need auto-focus after layout is computed
+  const pendingAutoFocusRef = useRef<Set<string>>(new Set());
+  // Track which source panel a new panel should be positioned near
+  const panelSourceRef = useRef<Record<string, string>>({});
+
   // Handle panel updates from streaming
   const handlePanelUpdates = useCallback((updates: PanelUpdate[]) => {
     for (const update of updates) {
@@ -173,6 +191,9 @@ export default function WorkspacePage() {
       const typedPanel = panel as unknown as UIPanel;
 
       if (action === 'add') {
+        // Get source panel ID for connection (read ref at call time, not definition time)
+        const sourceId = typedPanel.sourcePanel || contextualSourcePanelRef.current;
+
         // Add new panel to UI state
         setUIState(prev => {
           // Check if panel already exists
@@ -202,7 +223,6 @@ export default function WorkspacePage() {
         }
 
         // Create connection if panel has a source or was created during contextual chat
-        const sourceId = typedPanel.sourcePanel || contextualSourcePanelRef.current;
         if (sourceId && sourceId !== typedPanel.id) {
           const connectionId = `conn-${sourceId}-${typedPanel.id}`;
           setConnections(prev => {
@@ -236,21 +256,22 @@ export default function WorkspacePage() {
           });
         }, 400);
 
-        // Auto-focus viewport on new panel (with delay to let layout settle)
-        setTimeout(() => {
-          const layout = typedPanel.layout;
-          if (layout && layout.x !== undefined && layout.y !== undefined && transformRef.current && canvasContainerRef.current) {
-            const container = canvasContainerRef.current;
-            const viewportWidth = container.clientWidth;
-            const viewportHeight = container.clientHeight;
-            // Calculate position to center the panel
-            const centerX = layout.x + layout.width / 2;
-            const centerY = layout.y + layout.height / 2;
-            const newX = viewportWidth / 2 - centerX * zoomLevel;
-            const newY = viewportHeight / 2 - centerY * zoomLevel;
-            transformRef.current.setTransform(newX, newY, zoomLevel, 300);
-          }
-        }, 100);
+        // Mark panel for auto-focus (will be handled by useEffect after layout is computed)
+        pendingAutoFocusRef.current.add(typedPanel.id);
+        // Track source panel for positioning near it
+        if (sourceId) {
+          panelSourceRef.current[typedPanel.id] = sourceId;
+        }
+
+        // If created from a group contextual chat, add to that group
+        const sourceGroupId = contextualSourceGroupRef.current;
+        if (sourceGroupId) {
+          setGroups(prev => prev.map(g =>
+            g.id === sourceGroupId && !g.panelIds.includes(typedPanel.id)
+              ? { ...g, panelIds: [...g.panelIds, typedPanel.id] }
+              : g
+          ));
+        }
       } else if (action === 'update') {
         // Update existing panel
         setUIState(prev => ({
@@ -285,12 +306,25 @@ export default function WorkspacePage() {
           ...g,
           panelIds: g.panelIds.filter(pid => pid !== typedPanel.id)
         })).filter(g => g.panelIds.length >= 2)); // Remove groups with less than 2 panels
+
+        // Clean up panel ref to avoid memory leak
+        delete panelRefs.current[typedPanel.id];
+
+        // Clean up contextual chat messages
+        setContextualChatMessages(prev => {
+          const rest = { ...prev } as Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>;
+          delete rest[typedPanel.id];
+          return rest;
+        });
+
+        // Close panel chat if it was for this panel
+        setContextualChatPanelId(prev => prev === typedPanel.id ? null : prev);
       }
     }
   }, []);
 
   // Streaming query hook
-  const { executeQuery, stopQuery, isLoadingRef } = useStreamingQuery({
+  const { executeQuery, stopQuery } = useStreamingQuery({
     workspaceId,
     onMessagesUpdate: setMessages,
     onComplete: async () => {
@@ -351,6 +385,8 @@ export default function WorkspacePage() {
       if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
       if (groupsSaveTimeout.current) clearTimeout(groupsSaveTimeout.current);
       if (viewportSaveTimeout.current) clearTimeout(viewportSaveTimeout.current);
+      // Clear drag state on unmount to prevent stuck state
+      setDraggingGroupId(null);
     };
   }, []);
 
@@ -364,25 +400,100 @@ export default function WorkspacePage() {
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [publishModalOpen]);
 
+  // (moved) Global Escape & keyboard shortcuts effect is defined later after handler functions
+
+  // Auto-pan when opening group contextual chat
+  useEffect(() => {
+    if (!contextualChatGroupId) return;
+    const group = groups.find(g => g.id === contextualChatGroupId);
+    if (!group || !transformRef.current || !canvasContainerRef.current) return;
+    const groupLayouts = group.panelIds.map(id => panelLayouts[id]).filter(Boolean);
+    if (groupLayouts.length === 0) return;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const l of groupLayouts) {
+      minX = Math.min(minX, l.x);
+      minY = Math.min(minY, l.y);
+      maxX = Math.max(maxX, l.x + l.width);
+      maxY = Math.max(maxY, l.y + l.height);
+    }
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const container = canvasContainerRef.current;
+    const viewportWidth = container.clientWidth;
+    const viewportHeight = container.clientHeight;
+    const currentScale = currentViewport.current.scale;
+    const targetX = viewportWidth / 2 - centerX * currentScale;
+    const targetY = viewportHeight / 2 - centerY * currentScale;
+    transformRef.current.setTransform(targetX, targetY, currentScale, 400);
+  }, [contextualChatGroupId, groups, panelLayouts]);
+
   // Get artifact panels (everything except chat)
   const artifactPanels = useMemo(() =>
     uiState.panels.filter(p => p.type !== 'chat'),
     [uiState.panels]
   );
 
+  // Source of truth for which panels actually exist (used for group cleanup)
+  const existingPanelIds = useMemo(() => new Set(artifactPanels.map(p => p.id)), [artifactPanels]);
+
+  // Clean up stale panel IDs and invalid groups
+  useEffect(() => {
+    let needsUpdate = false;
+    const groupsToRemove: string[] = [];
+
+    // Check for stale panel IDs or groups that became invalid
+    for (const g of groups) {
+      const validPanels = g.panelIds.filter(id => existingPanelIds.has(id));
+      if (validPanels.length !== g.panelIds.length) {
+        needsUpdate = true;
+      }
+      if (validPanels.length < 2) {
+        needsUpdate = true;
+        groupsToRemove.push(g.id);
+      }
+    }
+
+    if (needsUpdate) {
+      setGroups(prev => prev
+        .map(g => ({
+          ...g,
+          panelIds: g.panelIds.filter(id => existingPanelIds.has(id)) // Remove stale IDs
+        }))
+        .filter(g => g.panelIds.length >= 2) // Remove invalid groups
+      );
+
+      // Clean up contextual chat messages for removed groups
+      if (groupsToRemove.length > 0) {
+        setContextualChatMessages(prev => {
+          const updated = { ...prev };
+          for (const groupId of groupsToRemove) {
+            delete updated[groupId];
+          }
+          return updated;
+        });
+        // Close group chat if it was for a removed group
+        if (contextualChatGroupId && groupsToRemove.includes(contextualChatGroupId)) {
+          setContextualChatGroupId(null);
+        }
+      }
+    }
+  }, [groups, existingPanelIds, contextualChatGroupId]);
+
   // Initialize panel layouts when panels change
   // New panels appear in the center of the current viewport
   useEffect(() => {
-    const gap = 40;
+    const gap = 20;
 
     // Calculate viewport center in canvas coordinates
     const vp = currentViewport.current;
     const container = canvasContainerRef.current;
     const viewportWidth = container?.clientWidth || 1200;
     const viewportHeight = container?.clientHeight || 700;
-    const startX = Math.round((-vp.x + viewportWidth / 2) / vp.scale - 250); // offset to center panel
+    // Place new panels near the center of the current viewport
+    const startX = Math.round((-vp.x + viewportWidth / 2) / vp.scale - 250);
     const startY = Math.round((-vp.y + viewportHeight / 2) / vp.scale - 200);
 
+    const added: Record<string, { x: number; y: number; width: number; height: number }> = {};
     setPanelLayouts(prev => {
       const newLayouts = { ...prev };
       const occupiedRects: { x: number; y: number; width: number; height: number }[] = [];
@@ -437,13 +548,39 @@ export default function WorkspacePage() {
             x = panel.layout.x;
             y = panel.layout.y;
           } else {
-            const pos = findPosition(width, height);
-            x = pos.x;
-            y = pos.y;
+            // Check if this panel has a source panel to position near
+            const sourceId = panelSourceRef.current[panel.id];
+            const sourceLayout = sourceId ? newLayouts[sourceId] : null;
+
+            if (sourceLayout) {
+              // Position to the right of source panel
+              x = sourceLayout.x + sourceLayout.width + gap;
+              y = sourceLayout.y;
+              // Check for collisions and adjust if needed
+              if (overlaps(x, y, width, height)) {
+                // Try below source
+                x = sourceLayout.x;
+                y = sourceLayout.y + sourceLayout.height + gap;
+                if (overlaps(x, y, width, height)) {
+                  // Fall back to find position
+                  const pos = findPosition(width, height);
+                  x = pos.x;
+                  y = pos.y;
+                }
+              }
+              // Clean up the source reference
+              delete panelSourceRef.current[panel.id];
+            } else {
+              const pos = findPosition(width, height);
+              x = pos.x;
+              y = pos.y;
+            }
           }
 
-          newLayouts[panel.id] = { x, y, width, height };
-          occupiedRects.push(newLayouts[panel.id]);
+          const layout = { x, y, width, height };
+          newLayouts[panel.id] = layout;
+          occupiedRects.push(layout);
+          added[panel.id] = layout;
         }
       }
 
@@ -455,47 +592,118 @@ export default function WorkspacePage() {
 
       return newLayouts;
     });
-  }, [artifactPanels]);
+    if (Object.keys(added).length > 0) {
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        body: JSON.stringify({ panels: added }),
+      }).catch(console.error);
+    }
+  }, [artifactPanels, workspaceId]);
+
+  // Auto-focus viewport on new panels after layout is computed
+  useEffect(() => {
+    if (pendingAutoFocusRef.current.size === 0) return;
+    if (!transformRef.current) return;
+
+    // Process pending auto-focus panels
+    const pendingIds = Array.from(pendingAutoFocusRef.current);
+    pendingAutoFocusRef.current.clear();
+
+    // Focus on the last added panel (most recent)
+    const panelId = pendingIds[pendingIds.length - 1];
+    const layout = panelLayouts[panelId];
+    if (!layout) return;
+
+    // Calculate viewport position to center the panel
+    const container = canvasContainerRef.current;
+    if (!container) return;
+    const viewportWidth = container.clientWidth;
+    const viewportHeight = container.clientHeight;
+    const currentScale = currentViewport.current.scale;
+
+    // Center the panel in the viewport
+    const panelCenterX = layout.x + layout.width / 2;
+    const panelCenterY = layout.y + layout.height / 2;
+    const targetX = viewportWidth / 2 - panelCenterX * currentScale;
+    const targetY = viewportHeight / 2 - panelCenterY * currentScale;
+
+    // Animate to the new position with smooth easing
+    transformRef.current.setTransform(targetX, targetY, currentScale, 500);
+  }, [panelLayouts]);
+
+  // Handle panel drag start - individual panels can now move independently
+  // (draggingGroupId is only set when dragging the group boundary)
+  const handlePanelDragStart = useCallback((id: string) => {
+    void id; // mark used
+    // No longer set draggingGroupId here - panels move independently
+    // Group boundary drag handles moving all panels together via handleGroupDrag
+  }, []);
 
   // Handle panel layout change (during drag/resize)
+  // Individual panels move independently - use group boundary drag to move the whole group
   const handleLayoutChange = useCallback((id: string, layout: Partial<{ x: number; y: number; width: number; height: number }>) => {
     setPanelLayouts(prev => {
       const prevLayout = prev[id];
       if (!prevLayout) return prev;
 
-      // Check if this panel is in a group
-      const group = groups.find(g => g.panelIds.includes(id));
-
-      // If panel is in a group and we're moving (not resizing), move all panels in group
-      if (group && layout.x !== undefined && layout.y !== undefined &&
-          layout.width === undefined && layout.height === undefined) {
-        const dx = layout.x - prevLayout.x;
-        const dy = layout.y - prevLayout.y;
-
-        // Move all panels in the group by the same delta
-        const newLayouts = { ...prev };
-        for (const panelId of group.panelIds) {
-          if (newLayouts[panelId]) {
-            newLayouts[panelId] = {
-              ...newLayouts[panelId],
-              x: Math.max(0, newLayouts[panelId].x + dx),
-              y: Math.max(0, newLayouts[panelId].y + dy),
-            };
-          }
-        }
-        return newLayouts;
-      }
-
-      // Otherwise just update this panel
       return {
         ...prev,
         [id]: { ...prevLayout, ...layout },
       };
     });
+  }, []);
+
+  // Handle group drag (dragging the group boundary moves all panels)
+  const handleGroupDrag = useCallback((groupId: string, dx: number, dy: number) => {
+    const group = groups.find(g => g.id === groupId);
+    if (!group) return;
+
+    // Set dragging state for CSS (disable transitions)
+    setDraggingGroupId(groupId);
+
+    setPanelLayouts(prev => {
+      const newLayouts = { ...prev };
+      for (const panelId of group.panelIds) {
+        if (newLayouts[panelId]) {
+          newLayouts[panelId] = {
+            ...newLayouts[panelId],
+            x: newLayouts[panelId].x + dx,
+            y: newLayouts[panelId].y + dy,
+          };
+        }
+      }
+      return newLayouts;
+    });
   }, [groups]);
 
-  // Resolve collisions and save layout after drag ends
+  // Handle group drag end
+  const handleGroupDragEnd = useCallback((groupId: string) => {
+    void groupId; // mark used
+    setDraggingGroupId(null);
+
+    // Save the updated layouts (avoid side-effects inside setState)
+    let payload: Record<string, { x: number; y: number; width: number; height: number }> | null = null;
+    setPanelLayouts(prev => {
+      payload = prev;
+      return prev;
+    });
+    if (payload) {
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        body: JSON.stringify({ panels: payload }),
+      }).catch(console.error);
+    }
+  }, [workspaceId]);
+
+  // Resolve collisions and save layout after drag ends (single panel drag)
   const handleDragEnd = useCallback((movedPanelId: string) => {
+    // Clear any group dragging state (shouldn't be set for individual drags, but just in case)
+    setDraggingGroupId(null);
+
+    // Only the moved panel is fixed - individual panels move independently now
+    const fixedPanelIds = new Set([movedPanelId]);
+
+    let savedPayload: Record<string, { x: number; y: number; width: number; height: number }> | null = null;
     setPanelLayouts(prev => {
       // Deep copy so we can mutate positions directly
       const layouts: Record<string, { x: number; y: number; width: number; height: number }> = {};
@@ -513,6 +721,11 @@ export default function WorkspacePage() {
                  a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y);
       };
 
+      // Skip collision between panels that are both in the same fixed group
+      const shouldSkipCollision = (idA: string, idB: string) => {
+        return fixedPanelIds.has(idA) && fixedPanelIds.has(idB);
+      };
+
       for (let iter = 0; iter < maxIterations; iter++) {
         let hadCollision = false;
 
@@ -524,16 +737,20 @@ export default function WorkspacePage() {
             const b = layouts[idB];
 
             if (!rectsOverlap(a, b)) continue;
+
+            // Skip collision between panels in the same moved group
+            if (shouldSkipCollision(idA, idB)) continue;
+
             hadCollision = true;
 
-            // Determine which panel moves: the moved panel stays put
-            // If neither is the moved panel, move the one lower/righter
+            // Determine which panel moves: fixed panels stay put
+            // If neither is fixed, move the one lower/righter
             let toMoveId: string;
             let stayId: string;
-            if (idA === movedPanelId) {
+            if (fixedPanelIds.has(idA)) {
               toMoveId = idB;
               stayId = idA;
-            } else if (idB === movedPanelId) {
+            } else if (fixedPanelIds.has(idB)) {
               toMoveId = idA;
               stayId = idB;
             } else {
@@ -577,13 +794,13 @@ export default function WorkspacePage() {
               const dx = moveCx >= stayCx ? pushRight : -pushLeft;
               layouts[toMoveId] = {
                 ...move,
-                x: Math.max(0, move.x + dx),
+                x: move.x + dx,
               };
             } else if (pushY > 0) {
               const dy = moveCy >= stayCy ? pushDown : -pushUp;
               layouts[toMoveId] = {
                 ...move,
-                y: Math.max(0, move.y + dy),
+                y: move.y + dy,
               };
             }
           }
@@ -592,15 +809,115 @@ export default function WorkspacePage() {
         if (!hadCollision) break;
       }
 
-      // Save to server
-      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
-        method: 'PATCH',
-        body: JSON.stringify({ panels: layouts }),
-      }).catch(console.error);
+      // Save payload after state update
+      savedPayload = layouts;
+
+      // Check if moved panel should join or leave a group
+      // Use generous padding to make groups "sticky" - panels don't accidentally leave
+      const movedLayout = layouts[movedPanelId];
+      if (movedLayout) {
+        // Helper to calculate group bounds (excluding the moved panel)
+        // Use different padding for leave vs join checks
+        const getGroupBounds = (group: typeof groups[0], padding: number) => {
+          const groupLayouts = group.panelIds
+            .filter(id => id !== movedPanelId) // Exclude moved panel for bounds calculation
+            .map(id => layouts[id])
+            .filter(Boolean);
+
+          if (groupLayouts.length === 0) return null;
+
+          let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+          for (const gl of groupLayouts) {
+            minX = Math.min(minX, gl.x);
+            minY = Math.min(minY, gl.y);
+            maxX = Math.max(maxX, gl.x + gl.width);
+            maxY = Math.max(maxY, gl.y + gl.height);
+          }
+
+          return {
+            x: minX - padding,
+            y: minY - padding,
+            width: maxX - minX + padding * 2,
+            height: maxY - minY + padding * 2,
+          };
+        };
+
+        // Check if panel overlaps with bounds
+        const panelOverlaps = (bounds: { x: number; y: number; width: number; height: number }) => {
+          return !(
+            movedLayout.x + movedLayout.width < bounds.x ||
+            movedLayout.x > bounds.x + bounds.width ||
+            movedLayout.y + movedLayout.height < bounds.y ||
+            movedLayout.y > bounds.y + bounds.height
+          );
+        };
+
+        // Find current group (if any) and check group membership changes
+        const currentGroup = groups.find(g => g.panelIds.includes(movedPanelId));
+        let leaveGroupId: string | null = null;
+        let joinGroupId: string | null = null;
+
+        if (currentGroup) {
+          // Check if panel moved outside its current group
+          // Use LARGE padding (100px) - panels need to be dragged far to leave a group
+          const bounds = getGroupBounds(currentGroup, 100);
+          if (bounds && !panelOverlaps(bounds)) {
+            leaveGroupId = currentGroup.id;
+          }
+        }
+
+        // Check if panel moved into a different group (only if left current or wasn't in one)
+        if (leaveGroupId || !currentGroup) {
+          for (const group of groups) {
+            if (group.id === currentGroup?.id) continue; // Skip current group
+            // Use smaller padding (16px) for joining - need to be close to join
+            const bounds = getGroupBounds(group, 16);
+            if (bounds && panelOverlaps(bounds)) {
+              joinGroupId = group.id;
+              break;
+            }
+          }
+        }
+
+        // Apply group changes outside the state updater to avoid side effects
+        if (leaveGroupId || joinGroupId) {
+          setTimeout(() => {
+            setGroups(prev => {
+              let updated = prev;
+
+              // Leave old group
+              if (leaveGroupId) {
+                updated = updated.map(g =>
+                  g.id === leaveGroupId
+                    ? { ...g, panelIds: g.panelIds.filter(id => id !== movedPanelId) }
+                    : g
+                ).filter(g => g.panelIds.length >= 2); // Remove groups with <2 panels
+              }
+
+              // Join new group (avoid duplicates)
+              if (joinGroupId) {
+                updated = updated.map(g =>
+                  g.id === joinGroupId && !g.panelIds.includes(movedPanelId)
+                    ? { ...g, panelIds: [...g.panelIds, movedPanelId] }
+                    : g
+                );
+              }
+
+              return updated;
+            });
+          }, 0);
+        }
+      }
 
       return layouts;
     });
-  }, [workspaceId]);
+    if (savedPayload) {
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        body: JSON.stringify({ panels: savedPayload }),
+      }).catch(console.error);
+    }
+  }, [workspaceId, groups]);
 
 
   // Load workspace data
@@ -634,13 +951,14 @@ export default function WorkspacePage() {
         };
       }
       // Load groups and connections from UIState
+      // Reset initial flag to prevent immediate re-save of loaded data
       if (data.uiState.groups) {
+        isInitialGroupsLoad.current = true;
         setGroups(data.uiState.groups);
       }
       if (data.uiState.connections) {
         setConnections(data.uiState.connections);
       }
-      setViewportLoaded(true);
     }
   }, [workspaceId]);
 
@@ -795,8 +1113,36 @@ export default function WorkspacePage() {
     } else {
       setContextualChatPanelId(panelId);
       // Don't clear messages - they persist per panel
+      // Auto-pan so the panel and chat are in view
+      setTimeout(() => {
+        const layout = panelLayouts[panelId];
+        if (!layout || !transformRef.current || !canvasContainerRef.current) return;
+        const viewportWidth = canvasContainerRef.current.clientWidth;
+        const viewportHeight = canvasContainerRef.current.clientHeight;
+        const currentScale = currentViewport.current.scale;
+        const panelCenterX = layout.x + layout.width / 2;
+        const panelCenterY = layout.y + layout.height / 2;
+        const targetX = viewportWidth / 2 - panelCenterX * currentScale;
+        const targetY = viewportHeight / 2 - panelCenterY * currentScale;
+        transformRef.current.setTransform(targetX, targetY, currentScale, 400);
+      }, 0);
     }
-  }, [contextualChatPanelId]);
+  }, [contextualChatPanelId, panelLayouts]);
+
+  // Get panel title (needed for contextual prompts, menu labels, etc.)
+  const getPanelTitle = useCallback((panel: UIPanel): string => {
+    if (panel.title) return panel.title;
+    if (panel.type === 'table' && panel.tableId && tables[panel.tableId]) {
+      return tables[panel.tableId].title;
+    }
+    if (panel.type === 'chart' && panel.chartId && charts[panel.chartId]) {
+      return charts[panel.chartId].title;
+    }
+    if (panel.type === 'cards' && panel.cardsId && cards[panel.cardsId]) {
+      return cards[panel.cardsId].title;
+    }
+    return panel.type.charAt(0).toUpperCase() + panel.type.slice(1);
+  }, [tables, charts, cards]);
 
   // Get panel data for context
   const getPanelContextData = useCallback((panel: UIPanel) => {
@@ -858,14 +1204,13 @@ If you create any new panels based on this context, they will automatically be v
 User question: ${message}`;
 
     try {
-      await executeQuery(contextualPrompt);
-      // The response will be handled by the streaming hook and added to main messages
-      // Add a note that response is in main chat
+      const responseText = await executeQuery(contextualPrompt, { skipMainChat: true });
+      // Add the assistant's response to contextual chat messages
       setContextualChatMessages(prev => ({
         ...prev,
         [panelId]: [...(prev[panelId] || []), {
           role: 'assistant',
-          content: 'Response added to main chat. Check the chat panel for the full response.'
+          content: responseText || 'Done! Check the canvas for any new panels created.'
         }]
       }));
     } catch (error) {
@@ -882,14 +1227,123 @@ User question: ${message}`;
       // Clear the source panel ref
       contextualSourcePanelRef.current = null;
     }
-  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, getPanelContextData, executeQuery]);
+  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, getPanelContextData, executeQuery, getPanelTitle]);
 
-  // Handle canvas mouse down for drag-to-select
+  // Handle group contextual chat message
+  const handleGroupContextualMessage = useCallback(async (message: string) => {
+    if (!contextualChatGroupId || contextualChatLoading) return;
+
+    const group = groups.find(g => g.id === contextualChatGroupId);
+    if (!group) return;
+
+    const groupId = contextualChatGroupId;
+    const groupPanels = group.panelIds.map(pid => uiState.panels.find(p => p.id === pid)).filter(Boolean);
+
+    // Add user message to this group's chat history
+    setContextualChatMessages(prev => ({
+      ...prev,
+      [groupId]: [...(prev[groupId] || []), { role: 'user', content: message }]
+    }));
+    setContextualChatLoading(true);
+
+    // Build context from all panels in the group
+    const panelsContext = groupPanels.map(panel => {
+      if (!panel) return '';
+      const data = getPanelContextData(panel);
+      return `### ${getPanelTitle(panel)} (${panel.type})
+${data || '(no data)'}`;
+    }).join('\n\n');
+
+    const contextualPrompt = `<contextual_focus>
+The user is asking about a group of panels in their workspace.
+Group Name: ${group.name || 'Unnamed group'}
+Number of Panels: ${groupPanels.length}
+
+Panels in this group:
+${panelsContext}
+
+If you create any new panels based on this context, they should relate to this group's content.
+</contextual_focus>
+
+User question: ${message}`;
+
+    // Set the source group ref so new panels get added to this group
+    contextualSourceGroupRef.current = groupId;
+
+    try {
+      const responseText = await executeQuery(contextualPrompt, { skipMainChat: true });
+      setContextualChatMessages(prev => ({
+        ...prev,
+        [groupId]: [...(prev[groupId] || []), {
+          role: 'assistant',
+          content: responseText || 'Done! Check the canvas for any new panels created.'
+        }]
+      }));
+    } catch (error) {
+      console.error('Group contextual query error:', error);
+      setContextualChatMessages(prev => ({
+        ...prev,
+        [groupId]: [...(prev[groupId] || []), {
+          role: 'assistant',
+          content: 'Sorry, there was an error processing your request.'
+        }]
+      }));
+    } finally {
+      setContextualChatLoading(false);
+      contextualSourceGroupRef.current = null;
+    }
+  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, getPanelContextData, executeQuery, getPanelTitle]);
+
+  // Handle canvas pointer down for drag-to-select
+  // Left-click starts selection box, middle-click allows panning (RTS style controls)
+  const [spacePanning, setSpacePanning] = useState(false);
+
+  // Spacebar to pan with left mouse
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !e.repeat) {
+        // Ignore if focused on input/textarea/contenteditable
+        const el = document.activeElement as HTMLElement | null;
+        if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+        setSpacePanning(true);
+        e.preventDefault();
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        setSpacePanning(false);
+        e.preventDefault();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+    };
+  }, []);
+
   const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
-    // Only start selection if clicking directly on canvas (not on a panel)
-    if ((e.target as HTMLElement).closest('.artifact-card')) return;
-    if ((e.target as HTMLElement).closest('.contextual-chat-popover')) return;
-    if ((e.target as HTMLElement).closest('.group-boundary')) return;
+    // Only handle left mouse button for selection
+    // Middle mouse (button 1) passes through for panning
+    if (e.button !== 0) return;
+
+    // If space-panning, don't start a selection
+    if (spacePanning) return;
+
+    const target = e.target as HTMLElement;
+
+    // Don't intercept clicks on interactive elements - let them handle their own events
+    if (target.closest('.artifact-card')) return;
+    if (target.closest('.contextual-chat-popover')) return;
+    if (target.closest('.group-boundary')) return;
+    if (target.closest('button')) return;  // All buttons should work normally
+    if (target.closest('.fixed')) return;  // Fixed UI elements (zoom controls, selection actions, etc.)
+    if (target.closest('input')) return;
+    if (target.closest('textarea')) return;
+
+    // Stop event from reaching TransformWrapper (prevents any panning interference)
+    e.stopPropagation();
 
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -902,7 +1356,7 @@ User question: ${message}`;
     setSelectionBoxStart({ x: canvasX, y: canvasY });
     setSelectionBoxEnd({ x: canvasX, y: canvasY });
     setIsSelectingBox(true);
-  }, []);
+  }, [spacePanning]);
 
   const handleCanvasPointerMove = useCallback((e: React.PointerEvent) => {
     if (!isSelectingBox || !selectionBoxStart) return;
@@ -920,6 +1374,8 @@ User question: ${message}`;
   const handleCanvasPointerUp = useCallback(() => {
     if (!isSelectingBox || !selectionBoxStart || !selectionBoxEnd) {
       setIsSelectingBox(false);
+      setSelectionBoxStart(null);
+      setSelectionBoxEnd(null);
       return;
     }
 
@@ -929,8 +1385,11 @@ User question: ${message}`;
     const top = Math.min(selectionBoxStart.y, selectionBoxEnd.y);
     const bottom = Math.max(selectionBoxStart.y, selectionBoxEnd.y);
 
-    // Only select if box is large enough
-    if (right - left > 10 && bottom - top > 10) {
+    const boxWidth = right - left;
+    const boxHeight = bottom - top;
+
+    // If box is large enough, select panels within it
+    if (boxWidth > 10 && boxHeight > 10) {
       // Find panels that intersect with selection box
       const selected = new Set<string>();
       for (const panel of artifactPanels) {
@@ -948,12 +1407,25 @@ User question: ${message}`;
         }
       }
       setSelectedPanelIds(selected);
+    } else {
+      // Click (not drag) on empty canvas - clear selection
+      setSelectedPanelIds(new Set());
     }
 
     setIsSelectingBox(false);
     setSelectionBoxStart(null);
     setSelectionBoxEnd(null);
   }, [isSelectingBox, selectionBoxStart, selectionBoxEnd, artifactPanels, panelLayouts]);
+
+  // Ensure selection ends even if pointer is released outside the canvas
+  useEffect(() => {
+    if (!isSelectingBox) return;
+    const onWindowPointerUp = () => {
+      handleCanvasPointerUp();
+    };
+    window.addEventListener('pointerup', onWindowPointerUp);
+    return () => window.removeEventListener('pointerup', onWindowPointerUp);
+  }, [isSelectingBox, handleCanvasPointerUp]);
 
   // Show toast notification
   const showToast = useCallback((message: string, type: 'success' | 'info' = 'success') => {
@@ -971,34 +1443,227 @@ User question: ${message}`;
 
     const groupId = `group-${Date.now()}`;
     const panelCount = selectedPanelIds.size;
-    setGroups(prev => [...prev, {
-      id: groupId,
-      panelIds: Array.from(selectedPanelIds),
-    }]);
-    setSelectedPanelIds(new Set());
-    showToast(`Grouped ${panelCount} panels`);
-  }, [selectedPanelIds, showToast]);
-
-  // Check if all selected panels belong to the same group
-  const selectedPanelsGroup = useMemo(() => {
-    if (selectedPanelIds.size < 2) return null;
     const selectedArray = Array.from(selectedPanelIds);
-    for (const group of groups) {
-      if (selectedArray.every(id => group.panelIds.includes(id))) {
-        return group;
+
+    // Get current layouts for selected panels
+    const selectedLayouts = selectedArray.map(id => ({ id, layout: panelLayouts[id] })).filter(p => p.layout);
+
+    if (selectedLayouts.length >= 2) {
+      // Calculate centroid of all selected panels
+      let centerX = 0, centerY = 0;
+      for (const { layout } of selectedLayouts) {
+        centerX += layout.x + layout.width / 2;
+        centerY += layout.y + layout.height / 2;
+      }
+      centerX /= selectedLayouts.length;
+      centerY /= selectedLayouts.length;
+
+      // Helper to check if two rectangles overlap
+      const rectsOverlap = (a: CanvasPanelLayout, b: CanvasPanelLayout, gap = 16) => {
+        return !(a.x + a.width + gap <= b.x || b.x + b.width + gap <= a.x ||
+                 a.y + a.height + gap <= b.y || b.y + b.height + gap <= a.y);
+      };
+
+      // Try pulling with decreasing factors until no overlap
+      const pullFactors = [0.25, 0.15, 0.08, 0];
+      let finalLayouts: Record<string, CanvasPanelLayout> | null = null;
+
+      for (const pullFactor of pullFactors) {
+        const testLayouts: Record<string, CanvasPanelLayout> = {};
+
+        // Calculate proposed positions
+        for (const { id, layout } of selectedLayouts) {
+          const panelCenterX = layout.x + layout.width / 2;
+          const panelCenterY = layout.y + layout.height / 2;
+          const dx = centerX - panelCenterX;
+          const dy = centerY - panelCenterY;
+
+          testLayouts[id] = {
+            ...layout,
+            x: layout.x + dx * pullFactor,
+            y: layout.y + dy * pullFactor,
+          };
+        }
+
+        // Check for overlaps between any pair
+        let hasOverlap = false;
+        const ids = Object.keys(testLayouts);
+        outer: for (let i = 0; i < ids.length; i++) {
+          for (let j = i + 1; j < ids.length; j++) {
+            if (rectsOverlap(testLayouts[ids[i]], testLayouts[ids[j]])) {
+              hasOverlap = true;
+              break outer;
+            }
+          }
+        }
+
+        if (!hasOverlap) {
+          finalLayouts = testLayouts;
+          break;
+        }
+      }
+
+      // Apply the safe positions (or original if all factors cause overlap)
+      if (finalLayouts) {
+        setPanelLayouts(prev => {
+          const updated = { ...prev };
+          for (const [id, layout] of Object.entries(finalLayouts!)) {
+            if (updated[id]) {
+              updated[id] = layout;
+            }
+          }
+          return updated;
+        });
       }
     }
+
+    setGroups(prev => {
+      // First, remove selected panels from any existing groups
+      const updatedGroups = prev
+        .map(g => ({
+          ...g,
+          panelIds: g.panelIds.filter(id => !selectedPanelIds.has(id))
+        }))
+        .filter(g => g.panelIds.length >= 2); // Remove groups that become too small
+
+      // Then add the new group
+      return [...updatedGroups, {
+        id: groupId,
+        panelIds: selectedArray,
+      }];
+    });
+    setSelectedPanelIds(new Set());
+    showToast(`Grouped ${panelCount} panels`);
+  }, [selectedPanelIds, panelLayouts, showToast]);
+
+  // Align selected panels to an edge/center
+  const alignSelected = useCallback((mode: 'left' | 'right' | 'centerX' | 'top' | 'bottom' | 'centerY') => {
+    if (selectedPanelIds.size < 2) return;
+    const ids = Array.from(selectedPanelIds).filter(id => panelLayouts[id]);
+    if (ids.length < 2) return;
+    const rects = ids.map(id => ({ id, l: panelLayouts[id] }));
+    const minX = Math.min(...rects.map(r => r.l.x));
+    const maxX = Math.max(...rects.map(r => r.l.x + r.l.width));
+    const minY = Math.min(...rects.map(r => r.l.y));
+    const maxY = Math.max(...rects.map(r => r.l.y + r.l.height));
+    const centerX = (minX + maxX) / 2;
+    const centerY = (minY + maxY) / 2;
+    const changed: Record<string, { x: number; y: number; width: number; height: number }> = {};
+    setPanelLayouts(prev => {
+      const next = { ...prev };
+      for (const id of ids) {
+        const l = next[id]!;
+        let x = l.x, y = l.y;
+        if (mode === 'left') x = minX;
+        if (mode === 'right') x = maxX - l.width;
+        if (mode === 'centerX') x = Math.round(centerX - l.width / 2);
+        if (mode === 'top') y = minY;
+        if (mode === 'bottom') y = maxY - l.height;
+        if (mode === 'centerY') y = Math.round(centerY - l.height / 2);
+        const nl = { ...l, x, y };
+        next[id] = nl;
+        changed[id] = nl;
+      }
+      return next;
+    });
+    if (Object.keys(changed).length > 0) {
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        body: JSON.stringify({ panels: changed }),
+      }).catch(console.error);
+    }
+  }, [selectedPanelIds, panelLayouts, workspaceId]);
+
+  // Distribute selected panels evenly along axis by center points
+  const distributeSelected = useCallback((axis: 'horizontal' | 'vertical') => {
+    if (selectedPanelIds.size < 3) return;
+    const ids = Array.from(selectedPanelIds).filter(id => panelLayouts[id]);
+    if (ids.length < 3) return;
+    const sorted = [...ids].sort((a, b) => {
+      const la = panelLayouts[a]!;
+      const lb = panelLayouts[b]!;
+      const ca = axis === 'horizontal' ? la.x + la.width / 2 : la.y + la.height / 2;
+      const cb = axis === 'horizontal' ? lb.x + lb.width / 2 : lb.y + lb.height / 2;
+      return ca - cb;
+    });
+    const first = panelLayouts[sorted[0]]!;
+    const last = panelLayouts[sorted[sorted.length - 1]]!;
+    const start = axis === 'horizontal' ? first.x + first.width / 2 : first.y + first.height / 2;
+    const end = axis === 'horizontal' ? last.x + last.width / 2 : last.y + last.height / 2;
+    const step = (end - start) / (sorted.length - 1);
+    const changed: Record<string, { x: number; y: number; width: number; height: number }> = {};
+    setPanelLayouts(prev => {
+      const next = { ...prev };
+      sorted.forEach((id, idx) => {
+        if (idx === 0 || idx === sorted.length - 1) return;
+        const l = next[id]!;
+        const center = start + step * idx;
+        const nl = axis === 'horizontal' ? { ...l, x: Math.round(center - l.width / 2) } : { ...l, y: Math.round(center - l.height / 2) };
+        next[id] = nl as typeof l;
+        changed[id] = next[id]!;
+      });
+      return next;
+    });
+    if (Object.keys(changed).length > 0) {
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        body: JSON.stringify({ panels: changed }),
+      }).catch(console.error);
+    }
+  }, [selectedPanelIds, panelLayouts, workspaceId]);
+
+  // Calculate selection bounds for toolbar positioning
+  const selectionBounds = useMemo(() => {
+    // Priority: selected group > multiple selected panels > single focused panel
+    if (selectedPanelIds.size > 0) {
+      const selectedArray = Array.from(selectedPanelIds);
+      const layouts = selectedArray.map(id => panelLayouts[id]).filter(Boolean);
+      if (layouts.length === 0) return null;
+
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      for (const layout of layouts) {
+        minX = Math.min(minX, layout.x);
+        minY = Math.min(minY, layout.y);
+        maxX = Math.max(maxX, layout.x + layout.width);
+        maxY = Math.max(maxY, layout.y + layout.height);
+      }
+      return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    }
     return null;
-  }, [selectedPanelIds, groups]);
+  }, [selectedPanelIds, panelLayouts]);
+
+  // Get info about single selected panel for toolbar
+  const singleSelectedPanel = useMemo(() => {
+    if (selectedPanelIds.size !== 1) return null;
+    const panelId = Array.from(selectedPanelIds)[0];
+    return artifactPanels.find(p => p.id === panelId) || null;
+  }, [selectedPanelIds, artifactPanels]);
+
+  // Check if single selected panel is in a group
+  const singleSelectedPanelGroup = useMemo(() => {
+    if (!singleSelectedPanel) return null;
+    return groups.find(g => g.panelIds.includes(singleSelectedPanel.id)) || null;
+  }, [singleSelectedPanel, groups]);
 
   // Ungroup selected panels
   const ungroupPanels = useCallback(() => {
     if (!selectedPanelsGroup) return;
+    const groupId = selectedPanelsGroup.id;
     const groupName = selectedPanelsGroup.name || 'Group';
-    setGroups(prev => prev.filter(g => g.id !== selectedPanelsGroup.id));
+    setGroups(prev => prev.filter(g => g.id !== groupId));
     setSelectedPanelIds(new Set());
+    // Clean up contextual chat messages for the removed group
+    setContextualChatMessages(prev => {
+      const rest = { ...prev } as Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>;
+      delete rest[groupId];
+      return rest;
+    });
+    // Close group chat if it was open
+    if (contextualChatGroupId === groupId) {
+      setContextualChatGroupId(null);
+    }
     showToast(`Ungrouped "${groupName}"`);
-  }, [selectedPanelsGroup, showToast]);
+  }, [selectedPanelsGroup, contextualChatGroupId, showToast]);
 
   // Rename a group
   const renameGroup = useCallback((groupId: string, newName: string) => {
@@ -1011,6 +1676,20 @@ User question: ${message}`;
       showToast(`Group renamed to "${newName.trim()}"`);
     }
   }, [showToast]);
+
+  // Remove a single panel from its group
+  const removeFromGroup = useCallback((panelId: string) => {
+    const group = groups.find(g => g.panelIds.includes(panelId));
+    if (!group) return;
+
+    setGroups(prev => prev.map(g =>
+      g.id === group.id
+        ? { ...g, panelIds: g.panelIds.filter(id => id !== panelId) }
+        : g
+    ).filter(g => g.panelIds.length >= 2)); // Remove groups with <2 panels
+
+    showToast('Removed from group');
+  }, [groups, showToast]);
 
   // Save workspace title/description
   const saveWorkspaceInfo = async (title?: string, description?: string) => {
@@ -1133,20 +1812,7 @@ User question: ${message}`;
     }
   };
 
-  // Get panel title
-  const getPanelTitle = (panel: UIPanel): string => {
-    if (panel.title) return panel.title;
-    if (panel.type === 'table' && panel.tableId && tables[panel.tableId]) {
-      return tables[panel.tableId].title;
-    }
-    if (panel.type === 'chart' && panel.chartId && charts[panel.chartId]) {
-      return charts[panel.chartId].title;
-    }
-    if (panel.type === 'cards' && panel.cardsId && cards[panel.cardsId]) {
-      return cards[panel.cardsId].title;
-    }
-    return panel.type.charAt(0).toUpperCase() + panel.type.slice(1);
-  };
+  // (moved) getPanelTitle is defined earlier above
 
   // Download utilities
   const escapeCSV = (value: unknown): string => {
@@ -1242,7 +1908,7 @@ User question: ${message}`;
     }
   };
 
-  const removePanel = async (panelId: string) => {
+  const removePanel = useCallback(async (panelId: string) => {
     try {
       await apiFetch(`/api/workspaces/${workspaceId}/panels/${panelId}`, { method: 'DELETE' });
       // Clean up panel ref to avoid memory leak
@@ -1251,10 +1917,104 @@ User question: ${message}`;
         ...prev,
         panels: prev.panels.filter(p => p.id !== panelId)
       }));
+      // Remove from groups and delete empty groups
+      setGroups(prev => prev
+        .map(g => ({ ...g, panelIds: g.panelIds.filter(id => id !== panelId) }))
+        .filter(g => g.panelIds.length >= 2)
+      );
+      // Remove from connections
+      setConnections(prev => prev.filter(c => c.sourceId !== panelId && c.targetId !== panelId));
+      // Clean up layout
+      setPanelLayouts(prev => {
+        const rest = { ...prev } as Record<string, { x: number; y: number; width: number; height: number }>;
+        delete rest[panelId];
+        return rest;
+      });
+      // Clean up contextual chat messages
+      setContextualChatMessages(prev => {
+        const rest = { ...prev } as Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>;
+        delete rest[panelId];
+        return rest;
+      });
     } catch (error) {
       console.error('Failed to remove panel:', error);
     }
-  };
+  }, [workspaceId]);
+
+  // Global Escape to clear selection and keyboard shortcuts (after handlers are defined)
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Avoid interfering with text inputs
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+
+      // Clear selection / close chats
+      if (e.key === 'Escape') {
+        setSelectedPanelIds(new Set());
+        setContextualChatPanelId(null);
+        setContextualChatGroupId(null);
+        return;
+      }
+
+      // Delete selected panels
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedPanelIds.size > 0) {
+        e.preventDefault();
+        const ids = Array.from(selectedPanelIds);
+        if (ids.length === 1) {
+          removePanel(ids[0]);
+        } else {
+          ids.forEach(id => removePanel(id));
+        }
+        setSelectedPanelIds(new Set());
+        return;
+      }
+
+      // Group (Cmd/Ctrl + G)
+      const isMeta = e.metaKey || e.ctrlKey;
+      if (isMeta && e.key.toLowerCase() === 'g') {
+        e.preventDefault();
+        if (e.shiftKey) {
+          // Ungroup
+          if (selectedPanelsGroup) ungroupPanels();
+        } else {
+          // Group
+          if (selectedPanelIds.size >= 2) createGroup();
+        }
+        return;
+      }
+
+      // Nudge with arrow keys
+      const step = e.shiftKey ? 20 : 5;
+      let dx = 0, dy = 0;
+      if (e.key === 'ArrowLeft') dx = -step;
+      else if (e.key === 'ArrowRight') dx = step;
+      else if (e.key === 'ArrowUp') dy = -step;
+      else if (e.key === 'ArrowDown') dy = step;
+      if ((dx !== 0 || dy !== 0) && selectedPanelIds.size > 0) {
+        e.preventDefault();
+        const changed: Record<string, { x: number; y: number; width: number; height: number }> = {};
+        setPanelLayouts(prev => {
+          const next = { ...prev };
+          for (const id of selectedPanelIds) {
+            const l = next[id];
+            if (!l) continue;
+            const nl = { ...l, x: l.x + dx, y: l.y + dy };
+            next[id] = nl;
+            changed[id] = nl;
+          }
+          return next;
+        });
+        if (Object.keys(changed).length > 0) {
+          apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+            method: 'PATCH',
+            body: JSON.stringify({ panels: changed }),
+          }).catch(console.error);
+        }
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [selectedPanelIds, selectedPanelsGroup, removePanel, createGroup, ungroupPanels, workspaceId]);
 
   // Loading state
   if (!workspace) {
@@ -1435,6 +2195,9 @@ User question: ${message}`;
         <div
           ref={canvasContainerRef}
           className={`flex-1 canvas-bg overflow-hidden transition-all duration-300 ${chatOpen ? 'md:mr-[400px]' : ''}`}
+          onPointerDownCapture={handleCanvasPointerDown}
+          onPointerMoveCapture={handleCanvasPointerMove}
+          onPointerUpCapture={handleCanvasPointerUp}
         >
           {artifactPanels.length === 0 ? (
             <div className="canvas-empty">
@@ -1442,18 +2205,21 @@ User question: ${message}`;
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
               </svg>
               <h3>Your canvas is empty</h3>
-              <p>Chat with the agent to create tables, charts, and other artifacts. They'll appear here as draggable cards.</p>
+              <p>Chat with the agent to create tables, charts, and other artifacts. They&rsquo;ll appear here as draggable cards.</p>
             </div>
           ) : (
             <>
             <TransformWrapper
-              initialScale={uiState.viewport?.zoom || 1}
-              initialPositionX={uiState.viewport?.x ?? -3100}
-              initialPositionY={uiState.viewport?.y ?? -3400}
-              minScale={0.5}
-              maxScale={2.5}
+              initialScale={uiState.viewport?.zoom ?? 0.75}
+              initialPositionX={uiState.viewport?.x ?? -2500}
+              initialPositionY={uiState.viewport?.y ?? -2000}
+              minScale={0.1}
+              maxScale={3}
+              limitToBounds={false}
+              centerZoomedOut={false}
+              disabled={isSelectingBox}
               wheel={{ step: 0.1, excluded: ['no-zoom-scroll'] }}
-              panning={{ velocityDisabled: true }}
+              panning={{ velocityDisabled: true, allowLeftClickPan: spacePanning, allowMiddleClickPan: true }}
               doubleClick={{ disabled: true }}
               alignmentAnimation={{ disabled: true }}
               onTransformed={(_, state) => {
@@ -1506,43 +2272,7 @@ User question: ${message}`;
                       </button>
                     )}
                   </div>
-
-                  {/* Selection Actions - appears when 2+ panels selected */}
-                  {selectedPanelIds.size >= 2 && (
-                    <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 bg-card/90 backdrop-blur border border-border rounded-lg p-2 shadow-lg md:right-[420px]">
-                      <span className="text-sm text-muted-foreground">{selectedPanelIds.size} selected</span>
-                      {selectedPanelsGroup ? (
-                        <button
-                          onClick={ungroupPanels}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted hover:bg-muted/80 text-muted-foreground hover:text-foreground transition-colors text-sm font-medium"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
-                          </svg>
-                          Ungroup
-                        </button>
-                      ) : (
-                        <button
-                          onClick={createGroup}
-                          className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-amber-500/20 hover:bg-amber-500/30 text-amber-600 dark:text-amber-400 transition-colors text-sm font-medium"
-                        >
-                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M18 18.72a9.094 9.094 0 003.741-.479 3 3 0 00-4.682-2.72m.94 3.198l.001.031c0 .225-.012.447-.037.666A11.944 11.944 0 0112 21c-2.17 0-4.207-.576-5.963-1.584A6.062 6.062 0 016 18.719m12 0a5.971 5.971 0 00-.941-3.197m0 0A5.995 5.995 0 0012 12.75a5.995 5.995 0 00-5.058 2.772m0 0a3 3 0 00-4.681 2.72 8.986 8.986 0 003.74.477m.94-3.197a5.971 5.971 0 00-.94 3.197M15 6.75a3 3 0 11-6 0 3 3 0 016 0zm6 3a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0zm-13.5 0a2.25 2.25 0 11-4.5 0 2.25 2.25 0 014.5 0z" />
-                          </svg>
-                          Create Group
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setSelectedPanelIds(new Set())}
-                        className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
-                        title="Clear selection"
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  )}
+                  
 
                   {/* Minimized Panels Dock */}
                   {minimizedPanels.size > 0 && (
@@ -1574,11 +2304,11 @@ User question: ${message}`;
                     <div className="canvas-hint fixed top-20 left-1/2 -translate-x-1/2 z-40">
                       <div className="flex items-center gap-3 px-4 py-2.5 bg-card/95 backdrop-blur border border-border rounded-lg shadow-lg text-sm">
                         <span className="text-muted-foreground">
-                          <strong className="text-foreground">Click</strong> to select
+                          <strong className="text-foreground">Drag</strong> to select
                           <span className="mx-2 text-border">|</span>
-                          <strong className="text-foreground">Double-click</strong> to chat
+                          <strong className="text-foreground">Space + drag</strong> (or middle-click) to pan
                           <span className="mx-2 text-border">|</span>
-                          <strong className="text-foreground">Shift+click</strong> or drag to multi-select
+                          <strong className="text-foreground">Scroll</strong> to zoom
                         </span>
                         <button
                           onClick={() => {
@@ -1625,10 +2355,6 @@ User question: ${message}`;
                     <div
                       className="canvas-content relative"
                       style={{ width: '8000px', height: '8000px' }}
-                      onPointerDown={handleCanvasPointerDown}
-                      onPointerMove={handleCanvasPointerMove}
-                      onPointerUp={handleCanvasPointerUp}
-                      onPointerLeave={handleCanvasPointerUp}
                     >
                       {/* Group boundaries (render first so they're behind panels) */}
                       {groups.map(group => (
@@ -1636,6 +2362,8 @@ User question: ${message}`;
                           key={group.id}
                           group={group}
                           panelLayouts={panelLayouts}
+                          existingPanelIds={existingPanelIds}
+                          scale={zoomLevel}
                           onGroupClick={(groupId) => {
                             // Select all panels in the group
                             const g = groups.find(grp => grp.id === groupId);
@@ -1643,7 +2371,14 @@ User question: ${message}`;
                               setSelectedPanelIds(new Set(g.panelIds));
                             }
                           }}
+                          onGroupChatClick={(groupId) => {
+                            // Close any existing panel chat and open group chat
+                            setContextualChatPanelId(null);
+                            setContextualChatGroupId(groupId);
+                          }}
                           onGroupRename={renameGroup}
+                          onGroupDrag={handleGroupDrag}
+                          onGroupDragEnd={handleGroupDragEnd}
                           isEditing={editingGroupId === group.id}
                           editValue={editingGroupId === group.id ? groupNameInput : group.name || ''}
                           onEditChange={setGroupNameInput}
@@ -1684,13 +2419,19 @@ User question: ${message}`;
                             scale={zoomLevel}
                             zIndex={focusedPanelId === panel.id ? 100 : 1}
                             onLayoutChange={handleLayoutChange}
+                            onDragStart={handlePanelDragStart}
                             onDragEnd={handleDragEnd}
+                            isInDraggingGroup={draggingGroupId !== null && groups.find(g => g.id === draggingGroupId)?.panelIds.includes(panel.id)}
                             onFocus={setFocusedPanelId}
                             onOpenMenu={setOpenMenuId}
                             isMenuOpen={openMenuId === panel.id}
                             isSelected={selectedPanelIds.has(panel.id)}
                             onPanelClick={handlePanelClick}
                             onPanelDoubleClick={handlePanelDoubleClick}
+                            onChatClick={(id) => {
+                              setContextualChatGroupId(null);
+                              setContextualChatPanelId(id);
+                            }}
                             isChatActive={contextualChatPanelId === panel.id}
                             isAnimating={animatingPanelIds.has(panel.id)}
                             menuContent={
@@ -1751,7 +2492,7 @@ User question: ${message}`;
                         );
                       })}
 
-                      {/* Contextual Chat Popover */}
+                      {/* Contextual Chat Popover for Panels */}
                       {contextualChatPanelId && panelLayouts[contextualChatPanelId] && (() => {
                         const panel = uiState.panels.find(p => p.id === contextualChatPanelId);
                         if (!panel) return null;
@@ -1770,6 +2511,105 @@ User question: ${message}`;
                           />
                         );
                       })()}
+
+                      {/* Contextual Chat Popover for Groups */}
+                      {contextualChatGroupId && (() => {
+                        const group = groups.find(g => g.id === contextualChatGroupId);
+                        if (!group) return null;
+                        // Calculate group label position (top-left of group + offset)
+                        const groupLayouts = group.panelIds
+                          .map(pid => panelLayouts[pid])
+                          .filter(Boolean);
+                        if (groupLayouts.length === 0) return null;
+                        let minX = Infinity, minY = Infinity;
+                        for (const layout of groupLayouts) {
+                          minX = Math.min(minX, layout.x);
+                          minY = Math.min(minY, layout.y);
+                        }
+                        // Position popover near the group label (small anchor at top-left)
+                        const labelAnchor = { x: minX, y: minY - 20, width: 100, height: 30 };
+                        return (
+                          <ContextualChatPopover
+                            isOpen={true}
+                            onClose={() => setContextualChatGroupId(null)}
+                            anchorLayout={labelAnchor}
+                            panelTitle={group.name || `${groupLayouts.length} panels`}
+                            panelType="group"
+                            scale={zoomLevel}
+                            viewportOffset={currentViewport.current}
+                            onSendMessage={handleGroupContextualMessage}
+                            isLoading={contextualChatLoading}
+                            messages={contextualChatMessages[contextualChatGroupId] || []}
+                          />
+                        );
+                      })()}
+
+                      {/* Selection Toolbar - Figma-style floating toolbar */}
+                      {selectionBounds && selectedPanelIds.size > 0 && (
+                        <SelectionToolbar
+                          selectedPanelId={selectedPanelIds.size === 1 ? Array.from(selectedPanelIds)[0] : null}
+                          selectedGroupId={selectedPanelsGroup?.id ?? null}
+                          selectedPanelIds={selectedPanelIds}
+                          panelType={singleSelectedPanel?.type}
+                          panelTitle={singleSelectedPanel ? getPanelTitle(singleSelectedPanel) : undefined}
+                          groupName={selectedPanelsGroup?.name}
+                          selectionBounds={selectionBounds}
+                          canvasScale={zoomLevel}
+                          onChat={() => {
+                            if (singleSelectedPanel) {
+                              setContextualChatGroupId(null);
+                              setContextualChatPanelId(singleSelectedPanel.id);
+                            } else if (selectedPanelsGroup) {
+                              // Chat about the group
+                              setContextualChatPanelId(null);
+                              setContextualChatGroupId(selectedPanelsGroup.id);
+                            } else if (selectedPanelIds.size > 1) {
+                              showToast('Select a single panel or create a group to chat');
+                            }
+                          }}
+                          onDownload={(format) => {
+                            if (singleSelectedPanel) {
+                              if (format === 'png') {
+                                downloadPanelAsPng(singleSelectedPanel.id, getPanelTitle(singleSelectedPanel));
+                              } else {
+                                downloadPanel(singleSelectedPanel, format);
+                              }
+                            }
+                          }}
+                          onMinimize={() => {
+                            if (singleSelectedPanel) {
+                              setMinimizedPanels(prev => new Set([...prev, singleSelectedPanel.id]));
+                              setSelectedPanelIds(new Set());
+                            }
+                          }}
+                          onRemove={() => {
+                            if (singleSelectedPanel) {
+                              removePanel(singleSelectedPanel.id);
+                              setSelectedPanelIds(new Set());
+                            } else if (selectedPanelIds.size > 1) {
+                              selectedPanelIds.forEach(id => removePanel(id));
+                              setSelectedPanelIds(new Set());
+                            }
+                          }}
+                          onGroup={selectedPanelIds.size >= 2 && !selectedPanelsGroup ? createGroup : undefined}
+                          onUngroup={selectedPanelsGroup ? ungroupPanels : undefined}
+                          onRemoveFromGroup={singleSelectedPanelGroup ? () => {
+                            if (singleSelectedPanel) {
+                              removeFromGroup(singleSelectedPanel.id);
+                              setSelectedPanelIds(new Set());
+                            }
+                          } : undefined}
+                          isInGroup={!!singleSelectedPanelGroup}
+                          canDownload={singleSelectedPanel?.type === 'table' || singleSelectedPanel?.type === 'chart'}
+                          downloadFormats={
+                            singleSelectedPanel?.type === 'table' ? ['csv', 'json'] :
+                            singleSelectedPanel?.type === 'chart' ? ['png'] :
+                            []
+                          }
+                          onAlign={alignSelected}
+                          onDistribute={distributeSelected}
+                        />
+                      )}
                     </div>
                   </TransformComponent>
                 </>
@@ -1909,14 +2749,6 @@ function TableContent({ table }: { table: TableData | null }) {
   const [sortKey, setSortKey] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
-  if (!table || table.data.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        No data
-      </div>
-    );
-  }
-
   const handleSort = (key: string) => {
     if (sortKey === key) {
       setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
@@ -1927,9 +2759,9 @@ function TableContent({ table }: { table: TableData | null }) {
   };
 
   const sortedData = useMemo(() => {
-    if (!sortKey) return table.data;
-
-    return [...table.data].sort((a, b) => {
+    const data = table?.data ?? [];
+    if (!sortKey) return data;
+    return [...data].sort((a, b) => {
       const aVal = a[sortKey];
       const bVal = b[sortKey];
 
@@ -1950,7 +2782,15 @@ function TableContent({ table }: { table: TableData | null }) {
       if (aStr > bStr) return sortDir === 'asc' ? 1 : -1;
       return 0;
     });
-  }, [table.data, sortKey, sortDir]);
+  }, [table, sortKey, sortDir]);
+
+  if (!table || table.data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+        No data
+      </div>
+    );
+  }
 
   const renderCell = (col: TableData['columns'][0], value: unknown) => {
     if (value === null || value === undefined || value === '') {
@@ -2124,10 +2964,7 @@ function PreviewContent({ content }: { content?: string }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!content) {
-      setPreviewUrl(null);
-      return;
-    }
+    if (!content) return;
 
     // Upload content to preview API and get a URL
     // This gives the iframe a real origin with proper CORS/COEP headers

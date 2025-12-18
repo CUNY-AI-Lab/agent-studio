@@ -419,7 +419,8 @@ hr.editorial {
 
 /* Disable transitions during drag/resize for responsive feel */
 .artifact-card.dragging,
-.artifact-card.resizing {
+.artifact-card.resizing,
+.artifact-card.group-dragging {
   transition: box-shadow 0.2s ease;
 }
 
@@ -901,7 +902,7 @@ hr.editorial {
   border-color: oklch(0.6 0.12 75 / 0.5);
 }
 
-/* Chat indicator that appears on hover */
+/* Chat indicator button that appears on hover */
 .panel-chat-indicator {
   position: absolute;
   bottom: 12px;
@@ -916,52 +917,28 @@ hr.editorial {
   justify-content: center;
   opacity: 0;
   transform: scale(0.8);
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity 0.2s ease, transform 0.2s ease, background 0.15s ease;
   pointer-events: none;
-  z-index: 5;
+  z-index: 20;
   box-shadow: 0 2px 8px oklch(0.6 0.12 75 / 0.4);
+  border: none;
+  cursor: pointer;
 }
 
-.artifact-card:not(.dragging):not(.resizing):not(.panel-selected):hover .panel-chat-indicator {
+.panel-chat-indicator:hover {
+  background: oklch(0.55 0.14 75);
+}
+
+.artifact-card:not(.dragging):not(.resizing):hover .panel-chat-indicator {
   opacity: 1;
   transform: scale(1);
+  pointer-events: auto;
 }
 
 /* Hide indicator when chat is active on this panel */
 .artifact-card.panel-chat-active .panel-chat-indicator {
   opacity: 0 !important;
-}
-
-/* Tooltip for the chat indicator */
-.panel-chat-indicator::after {
-  content: 'Double-click to chat';
-  position: absolute;
-  bottom: 100%;
-  right: 0;
-  margin-bottom: 8px;
-  padding: 6px 10px;
-  background: oklch(0.2 0.02 250 / 0.9);
-  color: white;
-  font-size: 11px;
-  font-family: var(--font-sans);
-  white-space: nowrap;
-  border-radius: 6px;
-  opacity: 0;
-  transform: translateY(4px);
-  transition: opacity 0.15s ease, transform 0.15s ease;
-  pointer-events: none;
-}
-
-.dark .panel-chat-indicator::after {
-  background: oklch(0.95 0.01 80 / 0.95);
-  color: oklch(0.2 0.02 250);
-}
-
-.artifact-card:not(.dragging):not(.resizing):hover .panel-chat-indicator:hover::after,
-.artifact-card:not(.dragging):not(.resizing):hover .panel-chat-indicator::after {
-  opacity: 1;
-  transform: translateY(0);
-  transition-delay: 0.5s;
+  pointer-events: none !important;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1011,21 +988,41 @@ hr.editorial {
 
 .group-boundary {
   position: absolute;
-  border: 2px dashed oklch(0.7 0.02 250 / 0.4);
+  border: 2px dashed oklch(0.7 0.02 250 / 0.3);
   border-radius: 16px;
-  background: oklch(0.94 0.01 80 / 0.3);
-  pointer-events: none;
-  transition: all 0.2s ease;
+  background: oklch(0.94 0.01 80 / 0.15);
+  /* Smooth transitions for position/size changes when panels move */
+  transition:
+    left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    height 0.3s cubic-bezier(0.4, 0, 0.2, 1),
+    border-color 0.2s ease,
+    background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.group-boundary:hover {
+  border-color: oklch(0.6 0.12 75 / 0.5);
+  background: oklch(0.6 0.12 75 / 0.06);
+  box-shadow: 0 0 0 4px oklch(0.6 0.12 75 / 0.08);
 }
 
 .dark .group-boundary {
-  border-color: oklch(0.4 0.02 250 / 0.5);
-  background: oklch(0.2 0.02 250 / 0.3);
+  border-color: oklch(0.4 0.02 250 / 0.4);
+  background: oklch(0.2 0.02 250 / 0.2);
+}
+
+.dark .group-boundary:hover {
+  border-color: oklch(0.6 0.12 75 / 0.6);
+  background: oklch(0.6 0.12 75 / 0.1);
+  box-shadow: 0 0 0 4px oklch(0.6 0.12 75 / 0.1);
 }
 
 .group-boundary.active {
   border-color: oklch(0.6 0.12 75 / 0.6);
   background: oklch(0.6 0.12 75 / 0.08);
+  box-shadow: 0 0 0 4px oklch(0.6 0.12 75 / 0.12);
   pointer-events: auto;
   cursor: pointer;
 }
@@ -1042,6 +1039,38 @@ hr.editorial {
   font-weight: 500;
   color: oklch(0.4 0.02 250);
   box-shadow: 0 1px 3px oklch(0 0 0 / 0.1);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.group-chat-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  border-radius: 4px;
+  background: oklch(0.6 0.12 75 / 0.15);
+  color: oklch(0.5 0.12 75);
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.group-chat-button:hover {
+  background: oklch(0.6 0.12 75 / 0.3);
+  color: oklch(0.4 0.12 75);
+}
+
+.dark .group-chat-button {
+  background: oklch(0.6 0.12 75 / 0.2);
+  color: oklch(0.7 0.12 75);
+}
+
+.dark .group-chat-button:hover {
+  background: oklch(0.6 0.12 75 / 0.35);
+  color: oklch(0.8 0.12 75);
 }
 
 .dark .group-boundary-label {
@@ -1117,4 +1146,192 @@ hr.editorial {
 
 .canvas-hint {
   animation: hint-fade-in 0.3s ease-out;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Selection Toolbar (Floating Figma-style)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.selection-toolbar {
+  z-index: 10000;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: oklch(0.99 0.003 80 / 0.95);
+  backdrop-filter: blur(12px) saturate(1.4);
+  -webkit-backdrop-filter: blur(12px) saturate(1.4);
+  border: 1px solid oklch(0.88 0.01 80);
+  border-radius: 10px;
+  box-shadow:
+    0 2px 8px oklch(0 0 0 / 0.08),
+    0 4px 16px oklch(0 0 0 / 0.06);
+  animation: toolbar-appear 0.15s ease-out;
+}
+
+.dark .selection-toolbar {
+  background: oklch(0.16 0.02 250 / 0.95);
+  border-color: oklch(0.3 0.02 250);
+  box-shadow:
+    0 2px 8px oklch(0 0 0 / 0.25),
+    0 4px 16px oklch(0 0 0 / 0.2);
+}
+
+@keyframes toolbar-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Toolbar buttons */
+.selection-toolbar .toolbar-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border: none;
+  background: transparent;
+  color: oklch(0.4 0.02 250);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.selection-toolbar .toolbar-btn:hover {
+  background: oklch(0.92 0.01 80);
+  color: oklch(0.2 0.02 250);
+}
+
+.selection-toolbar .toolbar-btn:active {
+  transform: scale(0.95);
+}
+
+.dark .selection-toolbar .toolbar-btn {
+  color: oklch(0.7 0.02 80);
+}
+
+.dark .selection-toolbar .toolbar-btn:hover {
+  background: oklch(0.26 0.02 250);
+  color: oklch(0.92 0.01 80);
+}
+
+/* Primary action (Chat) */
+.selection-toolbar .toolbar-btn-primary {
+  background: oklch(0.6 0.12 75 / 0.15);
+  color: oklch(0.5 0.12 75);
+}
+
+.selection-toolbar .toolbar-btn-primary:hover {
+  background: oklch(0.6 0.12 75 / 0.25);
+  color: oklch(0.4 0.14 75);
+}
+
+.dark .selection-toolbar .toolbar-btn-primary {
+  background: oklch(0.6 0.12 75 / 0.2);
+  color: oklch(0.7 0.12 75);
+}
+
+.dark .selection-toolbar .toolbar-btn-primary:hover {
+  background: oklch(0.6 0.12 75 / 0.35);
+  color: oklch(0.8 0.12 75);
+}
+
+/* Danger action (Delete) */
+.selection-toolbar .toolbar-btn-danger {
+  color: oklch(0.55 0.18 25);
+}
+
+.selection-toolbar .toolbar-btn-danger:hover {
+  background: oklch(0.6 0.18 25 / 0.15);
+  color: oklch(0.5 0.2 25);
+}
+
+.dark .selection-toolbar .toolbar-btn-danger {
+  color: oklch(0.65 0.16 25);
+}
+
+.dark .selection-toolbar .toolbar-btn-danger:hover {
+  background: oklch(0.55 0.18 25 / 0.2);
+  color: oklch(0.7 0.18 25);
+}
+
+/* Divider between button groups */
+.selection-toolbar .toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: oklch(0.85 0.01 80);
+  margin: 0 2px;
+}
+
+.dark .selection-toolbar .toolbar-divider {
+  background: oklch(0.32 0.02 250);
+}
+
+/* Dropdown menu */
+.selection-toolbar .toolbar-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 80px;
+  padding: 4px;
+  background: oklch(0.995 0.002 80);
+  border: 1px solid oklch(0.88 0.01 80);
+  border-radius: 8px;
+  box-shadow:
+    0 4px 12px oklch(0 0 0 / 0.1),
+    0 8px 24px oklch(0 0 0 / 0.06);
+  animation: dropdown-appear 0.12s ease-out;
+  z-index: 10;
+}
+
+.dark .selection-toolbar .toolbar-dropdown-menu {
+  background: oklch(0.18 0.02 250);
+  border-color: oklch(0.3 0.02 250);
+  box-shadow:
+    0 4px 12px oklch(0 0 0 / 0.3),
+    0 8px 24px oklch(0 0 0 / 0.2);
+}
+
+@keyframes dropdown-appear {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.selection-toolbar .toolbar-dropdown-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  color: oklch(0.3 0.02 250);
+  border-radius: 5px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.1s ease;
+}
+
+.selection-toolbar .toolbar-dropdown-menu button:hover {
+  background: oklch(0.94 0.01 80);
+}
+
+.dark .selection-toolbar .toolbar-dropdown-menu button {
+  color: oklch(0.85 0.01 80);
+}
+
+.dark .selection-toolbar .toolbar-dropdown-menu button:hover {
+  background: oklch(0.26 0.02 250);
 }

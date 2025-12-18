@@ -1,5 +1,6 @@
 "use client";
 
+import React from "react";
 import { Button } from "@/components/ui/button";
 import {
   ButtonGroup,
@@ -188,14 +189,16 @@ export const MessageBranchContent = ({
   ...props
 }: MessageBranchContentProps) => {
   const { currentBranch, setBranches, branches } = useMessageBranch();
-  const childrenArray = Array.isArray(children) ? children : [children];
+  // Memoize array reference to avoid changing deps on every render
+  const memoChildren = React.useMemo(() => (Array.isArray(children) ? children : [children]) as ReactElement[], [children]);
+  const childrenArray = memoChildren;
 
   // Use useEffect to update branches when they change
   useEffect(() => {
-    if (branches.length !== childrenArray.length) {
-      setBranches(childrenArray);
+    if (branches.length !== memoChildren.length) {
+      setBranches(memoChildren as ReactElement[]);
     }
-  }, [childrenArray, branches, setBranches]);
+  }, [memoChildren, branches, setBranches]);
 
   return childrenArray.map((branch, index) => (
     <div
@@ -217,7 +220,6 @@ export type MessageBranchSelectorProps = HTMLAttributes<HTMLDivElement> & {
 
 export const MessageBranchSelector = ({
   className,
-  from,
   ...props
 }: MessageBranchSelectorProps) => {
   const { totalBranches } = useMessageBranch();
@@ -229,7 +231,7 @@ export const MessageBranchSelector = ({
 
   return (
     <ButtonGroup
-      className="[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md"
+      className={cn("[&>*:not(:first-child)]:rounded-l-md [&>*:not(:last-child)]:rounded-r-md", className)}
       orientation="horizontal"
       {...props}
     />
@@ -270,6 +272,7 @@ export const MessageBranchNext = ({
 
   return (
     <Button
+      className={className}
       aria-label="Next branch"
       disabled={totalBranches <= 1}
       onClick={goToNext}
