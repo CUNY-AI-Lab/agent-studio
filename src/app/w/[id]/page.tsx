@@ -1144,46 +1144,65 @@ export default function WorkspacePage() {
     return panel.type.charAt(0).toUpperCase() + panel.type.slice(1);
   }, [tables, charts, cards]);
 
+  // Get resource path for a panel (used in read() instructions)
+  const getPanelResource = useCallback((panel: UIPanel): string | null => {
+    if (panel.type === 'table' && panel.tableId) return `table:${panel.tableId}`;
+    if (panel.type === 'chart' && panel.chartId) return `chart:${panel.chartId}`;
+    if (panel.type === 'cards' && panel.cardsId) return `cards:${panel.cardsId}`;
+    if (panel.type === 'markdown') return `markdown:${panel.id}`;
+    if ((panel.type === 'editor' || panel.type === 'pdf') && panel.filePath) return `file:${panel.filePath}`;
+    // preview, chat, fileTree, detail have no readable resource
+    return null;
+  }, []);
+
   // Get panel metadata for context (reference-based, not inline data)
   // Agent should use read() tool to fetch actual data when needed
   const getPanelContextData = useCallback((panel: UIPanel) => {
+    const resource = getPanelResource(panel);
+
     if (panel.type === 'table' && panel.tableId) {
       const tableData = tables[panel.tableId];
       if (tableData) {
-        return `Type: table
-Resource: table:${panel.tableId}
-Title: "${tableData.title}"
-Columns: ${tableData.columns.map(c => c.label).join(', ')}
-Rows: ${tableData.data.length}`;
+        return {
+          resource,
+          details: `Title: "${tableData.title}"\nColumns: ${tableData.columns.map(c => c.label).join(', ')}\nRows: ${tableData.data.length}`,
+        };
       }
     } else if (panel.type === 'chart' && panel.chartId) {
       const chartData = charts[panel.chartId];
       if (chartData) {
-        return `Type: chart
-Resource: chart:${panel.chartId}
-Title: "${chartData.title}"
-Chart Type: ${chartData.type}
-Data Points: ${chartData.data.length}`;
+        return {
+          resource,
+          details: `Title: "${chartData.title}"\nChart Type: ${chartData.type}\nData Points: ${chartData.data.length}`,
+        };
       }
     } else if (panel.type === 'cards' && panel.cardsId) {
       const cardsData = cards[panel.cardsId];
       if (cardsData) {
-        return `Type: cards
-Resource: cards:${panel.cardsId}
-Title: "${cardsData.title}"
-Items: ${cardsData.items.length}`;
+        return {
+          resource,
+          details: `Title: "${cardsData.title}"\nItems: ${cardsData.items.length}`,
+        };
       }
     } else if (panel.type === 'markdown') {
       const charCount = panel.content?.length || 0;
-      return `Type: markdown
-Resource: markdown:${panel.id}
-Characters: ${charCount}`;
+      return {
+        resource,
+        details: `Characters: ${charCount}`,
+      };
     } else if (panel.type === 'preview') {
-      return `Type: preview (HTML)
-Note: Preview panels contain rendered HTML content`;
+      return {
+        resource: null,
+        details: 'HTML content (inline, not readable via read())',
+      };
+    } else if ((panel.type === 'editor' || panel.type === 'pdf') && panel.filePath) {
+      return {
+        resource,
+        details: `File: ${panel.filePath}`,
+      };
     }
-    return '';
-  }, [tables, charts, cards]);
+    return null;
+  }, [tables, charts, cards, getPanelResource]);
 
   // Handle contextual chat message
   const handleContextualMessage = useCallback(async (message: string) => {
@@ -1206,6 +1225,7 @@ Note: Preview panels contain rendered HTML content`;
 
     // Get panel context (reference-based metadata)
     const panelContext = getPanelContextData(panel);
+    const resource = getPanelResource(panel);
 
     // Build connection context
     let connectionContext = '';
@@ -1227,10 +1247,9 @@ Note: Preview panels contain rendered HTML content`;
 The user is asking about a specific panel in their workspace.
 
 Panel ID: ${panel.id}
-${panelContext}${connectionContext}
-
-To access the panel's data, use: await read("${panel.tableId ? `table:${panel.tableId}` : panel.chartId ? `chart:${panel.chartId}` : panel.cardsId ? `cards:${panel.cardsId}` : `markdown:${panel.id}`}")
-
+Type: ${panel.type}
+${panelContext?.details || ''}${connectionContext}
+${resource ? `\nTo access the panel's data, use: await read("${resource}")` : ''}
 If you create any new panels based on this context, they will automatically be visually connected to this source panel.
 </contextual_focus>
 
@@ -1260,7 +1279,7 @@ User question: ${message}`;
       // Clear the source panel ref
       contextualSourcePanelRef.current = null;
     }
-  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, connections, getPanelContextData, executeQuery, getPanelTitle]);
+  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, connections, getPanelContextData, getPanelResource, executeQuery, getPanelTitle]);
 
   // Handle group contextual chat message
   const handleGroupContextualMessage = useCallback(async (message: string) => {
@@ -1283,14 +1302,12 @@ User question: ${message}`;
     const groupPanelIds = new Set(group.panelIds);
     const panelsContext = groupPanels.map(panel => {
       if (!panel) return '';
-      const metadata = getPanelContextData(panel);
-      const resource = panel.tableId ? `table:${panel.tableId}`
-        : panel.chartId ? `chart:${panel.chartId}`
-        : panel.cardsId ? `cards:${panel.cardsId}`
-        : `markdown:${panel.id}`;
+      const context = getPanelContextData(panel);
+      const resource = getPanelResource(panel);
+      const accessLine = resource ? `Access: await read("${resource}")` : '(no data resource)';
       return `- ${getPanelTitle(panel)} (${panel.type})
-  ${metadata ? metadata.split('\n').slice(1).join('\n  ') : ''}
-  Access: await read("${resource}")`;
+  ${context?.details?.split('\n').join('\n  ') || ''}
+  ${accessLine}`;
     }).join('\n');
 
     // Build connection context for the group
@@ -1347,7 +1364,7 @@ User question: ${message}`;
       setContextualChatLoading(false);
       contextualSourceGroupRef.current = null;
     }
-  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, connections, getPanelContextData, executeQuery, getPanelTitle]);
+  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, connections, getPanelContextData, getPanelResource, executeQuery, getPanelTitle]);
 
   // Handle canvas pointer down for drag-to-select
   // Left-click starts selection box, middle-click allows panning (RTS style controls)
