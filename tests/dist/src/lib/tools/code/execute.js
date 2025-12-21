@@ -39,15 +39,65 @@ const zod_1 = require("zod");
 const vm = __importStar(require("vm"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const promises_1 = require("dns/promises");
+const net = __importStar(require("net"));
 const pdf_parse_1 = require("pdf-parse");
 const minimatch_1 = require("minimatch");
 const fast_xml_parser_1 = require("fast-xml-parser");
 // Skills directory location
 const SKILLS_DIR = path.join(process.cwd(), 'src/lib/skills');
+const FETCH_TIMEOUT_MS = 15000;
 // Python venv path - computed lazily to avoid Turbopack static analysis
 function getPythonBin() {
     const venv = process.env.PYTHON_VENV_PATH || `${process.cwd()}/.venv`;
     return `${venv}/bin/python3`;
+}
+function isPrivateIpv4(ip) {
+    const parts = ip.split('.').map(Number);
+    if (parts.length !== 4 || parts.some(Number.isNaN))
+        return false;
+    const [a, b] = parts;
+    if (a === 0 || a === 10 || a === 127)
+        return true;
+    if (a === 169 && b === 254)
+        return true;
+    if (a === 192 && b === 168)
+        return true;
+    if (a === 172 && b >= 16 && b <= 31)
+        return true;
+    return false;
+}
+function normalizeHostForIp(host) {
+    const normalized = host.toLowerCase();
+    const debracketed = normalized.startsWith('[') && normalized.endsWith(']')
+        ? normalized.slice(1, -1)
+        : normalized;
+    const zoneIndex = debracketed.indexOf('%');
+    return zoneIndex >= 0 ? debracketed.slice(0, zoneIndex) : debracketed;
+}
+function isPrivateHost(host) {
+    const normalized = host.toLowerCase();
+    if (normalized === 'localhost')
+        return true;
+    const hostForIp = normalizeHostForIp(normalized);
+    const ipVersion = net.isIP(hostForIp);
+    if (ipVersion === 4) {
+        return isPrivateIpv4(hostForIp);
+    }
+    if (ipVersion === 6) {
+        if (hostForIp === '::' || hostForIp === '::1')
+            return true;
+        if (hostForIp.startsWith('fe80:'))
+            return true; // Link-local
+        if (hostForIp.startsWith('fc') || hostForIp.startsWith('fd'))
+            return true; // ULA
+        if (hostForIp.startsWith('::ffff:')) {
+            const v4 = hostForIp.slice('::ffff:'.length);
+            if (net.isIP(v4) === 4)
+                return isPrivateIpv4(v4);
+        }
+    }
+    return false;
 }
 /**
  * Execute tool - runs agent-generated JavaScript with Unix-style tools available.
@@ -59,6 +109,20 @@ const createExecuteTool = (ctx) => {
     const { storage, workspaceId } = ctx;
     // Track panel updates during execution for streaming to client
     const panelUpdates = [];
+    const shouldEmbedPanelUpdates = !ctx.emitPanelUpdates;
+    const emitPanelUpdate = (update) => {
+        if (ctx.emitPanelUpdates) {
+            try {
+                ctx.emitPanelUpdates([update]);
+            }
+            catch (error) {
+                console.error('Failed to emit panel update:', error);
+            }
+        }
+        if (shouldEmbedPanelUpdates) {
+            panelUpdates.push(update);
+        }
+    };
     // Create wrapper functions that call the actual storage/tool operations
     // These are the Unix-style primitives exposed to agent code
     const toolFunctions = {
@@ -244,7 +308,7 @@ const createExecuteTool = (ctx) => {
                 };
                 await storage.addPanel(workspaceId, panel);
                 // Track for streaming
-                panelUpdates.push({ action: 'add', panel, data: { table: tableData } });
+                emitPanelUpdate({ action: 'add', panel, data: { table: tableData } });
             }
             else {
                 // Existing panel: preserve position if it has one, otherwise let frontend position
@@ -258,24 +322,31 @@ const createExecuteTool = (ctx) => {
                 if (config.layout && updatedLayout) {
                     await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
                 }
-                panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { table: tableData } });
+                emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { table: tableData } });
             }
         },
         async addPanel(panel) {
             const typedPanel = panel;
             await storage.addPanel(workspaceId, typedPanel);
-            panelUpdates.push({ action: 'add', panel: typedPanel });
+            emitPanelUpdate({ action: 'add', panel: typedPanel });
         },
         async removePanel(id) {
             const ui = await storage.getUIState(workspaceId);
             const panel = ui.panels.find(p => p.id === id);
             await storage.removePanel(workspaceId, id);
             if (panel) {
-                panelUpdates.push({ action: 'remove', panel });
+                emitPanelUpdate({ action: 'remove', panel });
             }
         },
         async updatePanel(id, updates) {
+            const ui = await storage.getUIState(workspaceId);
+            const existingPanel = ui.panels.find(p => p.id === id);
+            if (!existingPanel) {
+                return;
+            }
+            const updatedPanel = { ...existingPanel, ...updates };
             await storage.updatePanel(workspaceId, id, updates);
+            emitPanelUpdate({ action: 'update', panel: updatedPanel });
         },
         // === Charts ===
         async setChart(id, config) {
@@ -308,7 +379,7 @@ const createExecuteTool = (ctx) => {
                     layout: config.layout ? { ...defaultSize, ...config.layout } : undefined
                 };
                 await storage.addPanel(workspaceId, panel);
-                panelUpdates.push({ action: 'add', panel, data: { chart: chartData } });
+                emitPanelUpdate({ action: 'add', panel, data: { chart: chartData } });
             }
             else {
                 // Existing panel: preserve position if it has one, otherwise let frontend position
@@ -322,7 +393,7 @@ const createExecuteTool = (ctx) => {
                 if (config.layout && updatedLayout) {
                     await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
                 }
-                panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { chart: chartData } });
+                emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { chart: chartData } });
             }
         },
         // === Cards ===
@@ -349,7 +420,7 @@ const createExecuteTool = (ctx) => {
                     layout: config.layout ? { ...defaultSize, ...config.layout } : undefined
                 };
                 await storage.addPanel(workspaceId, panel);
-                panelUpdates.push({ action: 'add', panel, data: { cards: cardsData } });
+                emitPanelUpdate({ action: 'add', panel, data: { cards: cardsData } });
             }
             else {
                 // Existing panel: preserve position if it has one, otherwise let frontend position
@@ -363,7 +434,7 @@ const createExecuteTool = (ctx) => {
                 if (config.layout && updatedLayout) {
                     await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
                 }
-                panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { cards: cardsData } });
+                emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { cards: cardsData } });
             }
         },
         // === Markdown ===
@@ -390,7 +461,7 @@ const createExecuteTool = (ctx) => {
                     layout: updatedLayout,
                 };
                 await storage.updatePanel(workspaceId, id, updatedPanel);
-                panelUpdates.push({ action: 'update', panel: updatedPanel, data: { content: config.content } });
+                emitPanelUpdate({ action: 'update', panel: updatedPanel, data: { content: config.content } });
             }
             else {
                 // New panel: only set size, let frontend position it in the viewport
@@ -402,7 +473,7 @@ const createExecuteTool = (ctx) => {
                     layout: config.layout ? { ...defaultSize, ...config.layout } : undefined,
                 };
                 await storage.addPanel(workspaceId, panel);
-                panelUpdates.push({ action: 'add', panel, data: { content: config.content } });
+                emitPanelUpdate({ action: 'add', panel, data: { content: config.content } });
             }
         },
         // === PDF ===
@@ -434,7 +505,7 @@ const createExecuteTool = (ctx) => {
                     layout: updatedLayout,
                 };
                 await storage.updatePanel(workspaceId, id, updatedPanel);
-                panelUpdates.push({ action: 'update', panel: updatedPanel });
+                emitPanelUpdate({ action: 'update', panel: updatedPanel });
             }
             else {
                 // New panel: only set size, let frontend position it in the viewport
@@ -446,7 +517,7 @@ const createExecuteTool = (ctx) => {
                     layout: config.layout ? { ...defaultSize, ...config.layout } : undefined,
                 };
                 await storage.addPanel(workspaceId, panel);
-                panelUpdates.push({ action: 'add', panel });
+                emitPanelUpdate({ action: 'add', panel });
             }
         },
         // === Layout ===
@@ -466,6 +537,7 @@ const createExecuteTool = (ctx) => {
                 height: (_m = (_k = layout.height) !== null && _k !== void 0 ? _k : (_l = existingPanel.layout) === null || _l === void 0 ? void 0 : _l.height) !== null && _m !== void 0 ? _m : 300,
             };
             await storage.updatePanel(workspaceId, id, { layout: fullLayout });
+            emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: fullLayout } });
         },
         // === Downloads ===
         async download(filename, data, format = 'json') {
@@ -509,15 +581,58 @@ const createExecuteTool = (ctx) => {
         },
         // === HTTP ===
         async fetch(url, options) {
-            // SSRF protection: block internal networks and cloud metadata
+            var _a;
+            // SSRF protection: block internal networks and localhost
             const parsed = new URL(url);
+            if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+                throw new Error('Only HTTP(S) requests are allowed');
+            }
             const host = parsed.hostname.toLowerCase();
-            if (host === 'localhost' ||
-                host === '169.254.169.254' ||
-                /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)) {
+            if (isPrivateHost(host)) {
                 throw new Error('Access to internal networks is not allowed');
             }
-            return globalThis.fetch(url, options);
+            const hostForIp = normalizeHostForIp(host);
+            if (net.isIP(hostForIp) === 0) {
+                let addresses = [];
+                try {
+                    addresses = await (0, promises_1.lookup)(hostForIp, { all: true, verbatim: true });
+                }
+                catch {
+                    throw new Error('Failed to resolve host');
+                }
+                if (addresses.length === 0) {
+                    throw new Error('Failed to resolve host');
+                }
+                for (const addr of addresses) {
+                    if (isPrivateHost(addr.address)) {
+                        throw new Error('Access to internal networks is not allowed');
+                    }
+                }
+            }
+            const timeoutController = new AbortController();
+            const timeoutId = setTimeout(() => timeoutController.abort(), FETCH_TIMEOUT_MS);
+            let abortListener;
+            if (options === null || options === void 0 ? void 0 : options.signal) {
+                if (options.signal.aborted) {
+                    timeoutController.abort();
+                }
+                else {
+                    abortListener = () => timeoutController.abort();
+                    options.signal.addEventListener('abort', abortListener, { once: true });
+                }
+            }
+            try {
+                return await globalThis.fetch(url, {
+                    ...options,
+                    signal: timeoutController.signal,
+                });
+            }
+            finally {
+                clearTimeout(timeoutId);
+                if (abortListener) {
+                    (_a = options === null || options === void 0 ? void 0 : options.signal) === null || _a === void 0 ? void 0 : _a.removeEventListener('abort', abortListener);
+                }
+            }
         },
         // === Skills Discovery ===
         async listSkills() {
@@ -712,6 +827,7 @@ Use async/await for I/O. Return a value to see results.`, zod_1.z.object({
     }).shape, async ({ code }) => {
         // Clear logs from previous execution
         toolFunctions.__logs = [];
+        panelUpdates.length = 0;
         const sandbox = {
             ...toolFunctions,
             console: { log: toolFunctions.log, error: toolFunctions.log },
@@ -759,16 +875,24 @@ Use async/await for I/O. Return a value to see results.`, zod_1.z.object({
             AbortController,
             __result: undefined,
             __error: undefined,
+            __done: false,
         };
         // Wrap in async IIFE
         const wrappedCode = `
         (async () => {
           try {
-            ${code}
+            const __ret = await (async () => {
+              ${code}
+            })();
+            if (__ret !== undefined) {
+              __result = __ret;
+            }
           } catch (e) {
             __error = e.message || String(e);
+          } finally {
+            __done = true;
           }
-        })().then(r => { if (r !== undefined) __result = r; });
+        })();
       `;
         try {
             const context = vm.createContext(sandbox);
@@ -776,10 +900,13 @@ Use async/await for I/O. Return a value to see results.`, zod_1.z.object({
             script.runInContext(context, { timeout: 30000 });
             // Wait for async completion with proper timeout
             const ASYNC_TIMEOUT = 30000; // 30 seconds for async operations
-            const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve('timeout'), ASYNC_TIMEOUT));
+            let asyncTimeoutId = null;
+            const timeoutPromise = new Promise((resolve) => {
+                asyncTimeoutId = setTimeout(() => resolve('timeout'), ASYNC_TIMEOUT);
+            });
             const completionPromise = new Promise((resolve) => {
                 const check = () => {
-                    if (sandbox.__result !== undefined || sandbox.__error !== undefined) {
+                    if (sandbox.__done || sandbox.__error !== undefined) {
                         resolve('done');
                     }
                     else {
@@ -789,6 +916,9 @@ Use async/await for I/O. Return a value to see results.`, zod_1.z.object({
                 check();
             });
             const raceResult = await Promise.race([completionPromise, timeoutPromise]);
+            if (asyncTimeoutId) {
+                clearTimeout(asyncTimeoutId);
+            }
             if (raceResult === 'timeout') {
                 sandbox.__error = 'Execution timed out after 30 seconds';
             }
@@ -796,7 +926,7 @@ Use async/await for I/O. Return a value to see results.`, zod_1.z.object({
             const logs = toolFunctions.__logs;
             const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
             // Include panel updates in output for runtime to extract
-            const panelUpdateOutput = panelUpdates.length > 0
+            const panelUpdateOutput = shouldEmbedPanelUpdates && panelUpdates.length > 0
                 ? `\n__PANEL_UPDATES_START__${JSON.stringify(panelUpdates)}__PANEL_UPDATES_END__`
                 : '';
             if (sandbox.__error) {
@@ -816,7 +946,7 @@ Use async/await for I/O. Return a value to see results.`, zod_1.z.object({
         catch (error) {
             const logs = toolFunctions.__logs;
             const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
-            const panelUpdateOutput = panelUpdates.length > 0
+            const panelUpdateOutput = shouldEmbedPanelUpdates && panelUpdates.length > 0
                 ? `\n__PANEL_UPDATES_START__${JSON.stringify(panelUpdates)}__PANEL_UPDATES_END__`
                 : '';
             return {

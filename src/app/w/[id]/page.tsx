@@ -19,8 +19,9 @@ import { SafeMarkdown } from '@/components/SafeMarkdown';
 import { toPng } from 'html-to-image';
 import { useTheme } from '@/components/ThemeProvider';
 import { apiFetch, basePath } from '@/lib/api';
-import { useStreamingQuery, type Message, type ToolExecution, type PanelUpdate } from '@/hooks/useStreamingQuery';
+import { useStreamingQuery, type Message, type ToolExecution, type PanelUpdate, type StreamStatusEvent } from '@/hooks/useStreamingQuery';
 import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
+import { OnboardingTour, type TourStep } from '@/components/OnboardingTour';
 import skills from '@/lib/skills/index.json';
 import type { CanvasPanelLayout, UIPanel, UIState, PanelGroup, PanelConnection } from '@/lib/storage';
 
@@ -86,6 +87,10 @@ const DEFAULT_PANEL_SIZES: Record<string, { width: number; height: number }> = {
 
 // Collision resolution constants
 const PANEL_GAP = 20; // Minimum gap between panels in pixels
+const AUTO_FOCUS_DELAY = 150;
+const AUTO_FOCUS_DURATION = 650;
+const AUTO_FOCUS_EASING = 'easeInOutQuint';
+const AUTO_FOCUS_PADDING = 40;
 
 // Type for panel layouts
 type LayoutMap = Record<string, { x: number; y: number; width: number; height: number }>;
@@ -215,7 +220,9 @@ export default function WorkspacePage() {
   const [uiState, setUIState] = useState<UIState>({ panels: [{ id: 'chat', type: 'chat' }], viewport: { x: 0, y: 0, zoom: 1 } });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [chatOpen, setChatOpen] = useState(true);
+  const [tourOpen, setTourOpen] = useState(false);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [publishTitle, setPublishTitle] = useState('');
   const [publishDescription, setPublishDescription] = useState('');
@@ -230,6 +237,7 @@ export default function WorkspacePage() {
   const [uploadedFiles, setUploadedFiles] = useState<{ name: string; path: string }[]>([]);
   const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
   const [minimizedPanels, setMinimizedPanels] = useState<Set<string>>(new Set());
+  const [workspaceLoaded, setWorkspaceLoaded] = useState(false);
 
   // Canvas state
   const [panelLayouts, setPanelLayouts] = useState<Record<string, CanvasPanelLayout>>({});
@@ -239,8 +247,9 @@ export default function WorkspacePage() {
   // Contextual chat state - supports both panels and groups
   const [contextualChatPanelId, setContextualChatPanelId] = useState<string | null>(null);
   const [contextualChatGroupId, setContextualChatGroupId] = useState<string | null>(null);
-  const [contextualChatMessages, setContextualChatMessages] = useState<Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>>({});
-  const [contextualChatLoading, setContextualChatLoading] = useState(false);
+  const [contextualChatMessages, setContextualChatMessages] = useState<Record<string, Array<{ id: string; role: 'user' | 'assistant'; content: string }>>>({});
+  const [contextualChatLoading, setContextualChatLoading] = useState<Record<string, boolean>>({});
+  const [contextualChatStatus, setContextualChatStatus] = useState<Record<string, string | null>>({});
 
   // Connection lines state
   const [connections, setConnections] = useState<PanelConnection[]>([]);
@@ -251,7 +260,19 @@ export default function WorkspacePage() {
 
   // Selection and grouping state
   const [selectedPanelIds, setSelectedPanelIds] = useState<Set<string>>(new Set());
+  const [hoveredPanelId, setHoveredPanelId] = useState<string | null>(null);
+  const [hoveredToolbarPanelId, setHoveredToolbarPanelId] = useState<string | null>(null);
+  const hoverClearTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoveredPanelIdRef = useRef<string | null>(null);
+  const hoveredToolbarPanelIdRef = useRef<string | null>(null);
   const [groups, setGroups] = useState<PanelGroup[]>([]);
+  const latestGroupsRef = useRef<PanelGroup[]>([]);
+  const latestConnectionsRef = useRef<PanelConnection[]>([]);
+
+  useEffect(() => {
+    latestGroupsRef.current = groups;
+    latestConnectionsRef.current = connections;
+  }, [groups, connections]);
   // Selected group when all selected panels belong to the same group
   const selectedPanelsGroup = useMemo(() => {
     if (selectedPanelIds.size < 2) return null;
@@ -278,14 +299,18 @@ export default function WorkspacePage() {
   // Initial viewport: looking at canvas area around (4000, 4000) at 75% zoom
   const currentViewport = useRef<{ x: number; y: number; scale: number }>({ x: -2500, y: -2000, scale: 0.75 });
   const canvasContainerRef = useRef<HTMLDivElement>(null);
-  const contextualSourcePanelRef = useRef<string | null>(null);
-  const contextualSourceGroupRef = useRef<string | null>(null);
-  const transformRef = useRef<{ setTransform: (x: number, y: number, scale: number, duration?: number) => void } | null>(null);
+  const transformRef = useRef<{ setTransform: (x: number, y: number, scale: number, duration?: number, animationType?: string) => void } | null>(null);
   const groupsSaveTimeout = useRef<NodeJS.Timeout | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const autoFocusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingQueryProcessed = useRef(false);
   const panelRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const lastLayoutInteractionRef = useRef(0);
+  const messageIdRef = useRef(0);
+  const selectionPendingRef = useRef<{ x: number; y: number } | null>(null);
+  const selectionSuppressClickRef = useRef(false);
+  const selectionPointerIdRef = useRef<number | null>(null);
 
   // Load workspace callback (forward declared for hook)
   const loadWorkspaceRef = useRef<((options?: { skipMessages?: boolean }) => Promise<void>) | undefined>(undefined);
@@ -295,16 +320,80 @@ export default function WorkspacePage() {
   // Track which source panel a new panel should be positioned near
   const panelSourceRef = useRef<Record<string, string>>({});
 
+  const tourSteps = useMemo<TourStep[]>(() => [
+    {
+      id: 'chat',
+      title: 'Ask the agent',
+      description: 'Type your request here. The agent will create tables, charts, and tools on the canvas.',
+      selector: '[data-tour="chat-input"]',
+    },
+    {
+      id: 'upload',
+      title: 'Add files',
+      description: 'Upload PDFs, CSVs, or images and reference them in your prompt.',
+      selector: '[data-tour="upload-button"]',
+    },
+    {
+      id: 'canvas',
+      title: 'Your workspace canvas',
+      description: 'Results appear here as draggable panels you can move and resize.',
+      selector: '[data-tour="canvas"]',
+    },
+    {
+      id: 'zoom',
+      title: 'Navigate the space',
+      description: 'Scroll to zoom, Space + drag (or middle-click) to pan.',
+      selector: '[data-tour="zoom-controls"]',
+    },
+  ], []);
+
+  const makeMessageId = useCallback(() => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    messageIdRef.current += 1;
+    return `msg-${Date.now()}-${messageIdRef.current}`;
+  }, []);
+
   // Handle panel updates from streaming
-  const handlePanelUpdates = useCallback((updates: PanelUpdate[]) => {
+  const handlePanelUpdates = useCallback((updates: PanelUpdate[], context?: { sourcePanelId?: string | null; sourceGroupId?: string | null }) => {
+    const syncPanelLayout = (panel: UIPanel) => {
+      const layout = panel.layout;
+      if (!layout) return;
+      const hasAnyLayoutValue = layout.x !== undefined || layout.y !== undefined || layout.width !== undefined || layout.height !== undefined;
+      if (!hasAnyLayoutValue) return;
+
+      setPanelLayouts(prev => {
+        const prevLayout = prev[panel.id];
+        const hasFullLayout = layout.x !== undefined && layout.y !== undefined && layout.width !== undefined && layout.height !== undefined;
+        if (!prevLayout && !hasFullLayout) return prev;
+
+        const nextLayout: CanvasPanelLayout = {
+          x: layout.x ?? prevLayout?.x ?? 0,
+          y: layout.y ?? prevLayout?.y ?? 0,
+          width: layout.width ?? prevLayout?.width ?? (DEFAULT_PANEL_SIZES[panel.type]?.width ?? 500),
+          height: layout.height ?? prevLayout?.height ?? (DEFAULT_PANEL_SIZES[panel.type]?.height ?? 400),
+        };
+
+        if (prevLayout &&
+          prevLayout.x === nextLayout.x &&
+          prevLayout.y === nextLayout.y &&
+          prevLayout.width === nextLayout.width &&
+          prevLayout.height === nextLayout.height) {
+          return prev;
+        }
+
+        return { ...prev, [panel.id]: nextLayout };
+      });
+    };
+
     for (const update of updates) {
       const { action, panel, data } = update;
       // Cast panel to UIPanel since we know server sends valid types
       const typedPanel = panel as unknown as UIPanel;
 
       if (action === 'add') {
-        // Get source panel ID for connection (read ref at call time, not definition time)
-        const sourceId = typedPanel.sourcePanel || contextualSourcePanelRef.current;
+        const sourceId = typedPanel.sourcePanel || context?.sourcePanelId || null;
 
         // Add new panel to UI state
         setUIState(prev => {
@@ -376,14 +465,14 @@ export default function WorkspacePage() {
         }
 
         // If created from a group contextual chat, add to that group
-        const sourceGroupId = contextualSourceGroupRef.current;
-        if (sourceGroupId) {
+        if (context?.sourceGroupId) {
           setGroups(prev => prev.map(g =>
-            g.id === sourceGroupId && !g.panelIds.includes(typedPanel.id)
+            g.id === context.sourceGroupId && !g.panelIds.includes(typedPanel.id)
               ? { ...g, panelIds: [...g.panelIds, typedPanel.id] }
               : g
           ));
         }
+        syncPanelLayout(typedPanel);
       } else if (action === 'update') {
         // Update existing panel
         setUIState(prev => ({
@@ -401,6 +490,7 @@ export default function WorkspacePage() {
         if (data?.cards && typedPanel.cardsId) {
           setCards(prev => ({ ...prev, [typedPanel.cardsId!]: data.cards as CardsData }));
         }
+        syncPanelLayout(typedPanel);
       } else if (action === 'remove') {
         // Remove panel from UI state
         setUIState(prev => ({
@@ -419,12 +509,31 @@ export default function WorkspacePage() {
           panelIds: g.panelIds.filter(pid => pid !== typedPanel.id)
         })).filter(g => g.panelIds.length >= 2)); // Remove groups with less than 2 panels
 
+        setMinimizedPanels(prev => {
+          if (!prev.has(typedPanel.id)) return prev;
+          const next = new Set(prev);
+          next.delete(typedPanel.id);
+          return next;
+        });
+
         // Clean up panel ref to avoid memory leak
         delete panelRefs.current[typedPanel.id];
 
         // Clean up contextual chat messages
         setContextualChatMessages(prev => {
-          const rest = { ...prev } as Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>;
+          const rest = { ...prev } as Record<string, Array<{ id: string; role: 'user' | 'assistant'; content: string }>>;
+          delete rest[typedPanel.id];
+          return rest;
+        });
+        setContextualChatLoading(prev => {
+          if (!(typedPanel.id in prev)) return prev;
+          const rest = { ...prev };
+          delete rest[typedPanel.id];
+          return rest;
+        });
+        setContextualChatStatus(prev => {
+          if (!(typedPanel.id in prev)) return prev;
+          const rest = { ...prev };
           delete rest[typedPanel.id];
           return rest;
         });
@@ -433,6 +542,14 @@ export default function WorkspacePage() {
         setContextualChatPanelId(prev => prev === typedPanel.id ? null : prev);
       }
     }
+  }, []);
+
+  const getStatusLabel = useCallback((event: StreamStatusEvent): string | null => {
+    if (event.status === 'complete') return null;
+    if (event.label) return event.label;
+    if (event.status === 'tool_running') return 'Running tools...';
+    if (event.status === 'responding') return 'Responding...';
+    return 'Thinking...';
   }, []);
 
   // Streaming query hook
@@ -445,7 +562,30 @@ export default function WorkspacePage() {
       }
     },
     onPanelUpdate: handlePanelUpdates,
+    onStatusUpdate: (event) => {
+      setStreamStatus(getStatusLabel(event));
+    },
   });
+
+  useEffect(() => {
+    const seen = localStorage.getItem('agent-studio-tour-seen');
+    if (seen !== 'true') {
+      setTourOpen(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tourOpen) {
+      setChatOpen(true);
+    }
+  }, [tourOpen]);
+
+  const handleTourClose = useCallback((markSeen: boolean) => {
+    setTourOpen(false);
+    if (markSeen) {
+      localStorage.setItem('agent-studio-tour-seen', 'true');
+    }
+  }, []);
 
   // Load canvas hint dismissal from localStorage
   useEffect(() => {
@@ -481,6 +621,7 @@ export default function WorkspacePage() {
       isInitialGroupsLoad.current = false;
       return;
     }
+    if (!workspaceLoaded) return;
 
     if (groupsSaveTimeout.current) clearTimeout(groupsSaveTimeout.current);
     groupsSaveTimeout.current = setTimeout(() => {
@@ -489,7 +630,34 @@ export default function WorkspacePage() {
         body: JSON.stringify({ groups, connections }),
       }).catch(console.error);
     }, 500);
-  }, [groups, connections, workspaceId]);
+  }, [groups, connections, workspaceId, workspaceLoaded]);
+
+  useEffect(() => {
+    if (!workspaceLoaded) return;
+    const flushGroups = () => {
+      apiFetch(`/api/workspaces/${workspaceId}/layout`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          groups: latestGroupsRef.current,
+          connections: latestConnectionsRef.current,
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    };
+
+    const handlePageHide = () => flushGroups();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') flushGroups();
+    };
+
+    window.addEventListener('pagehide', handlePageHide);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [workspaceId, workspaceLoaded]);
 
   // Cleanup timeouts on unmount
   useEffect(() => {
@@ -514,12 +682,114 @@ export default function WorkspacePage() {
 
   // (moved) Global Escape & keyboard shortcuts effect is defined later after handler functions
 
+  // Get artifact panels (everything except chat)
+  const artifactPanels = useMemo(() =>
+    uiState.panels.filter(p => p.type !== 'chat'),
+    [uiState.panels]
+  );
+
+  // Source of truth for which panels actually exist (used for group cleanup)
+  const existingPanelIds = useMemo(() => new Set(artifactPanels.map(p => p.id)), [artifactPanels]);
+
+  const visiblePanels = useMemo(
+    () => artifactPanels.filter(p => !minimizedPanels.has(p.id)),
+    [artifactPanels, minimizedPanels]
+  );
+
+  const visiblePanelIds = useMemo(() => new Set(visiblePanels.map(p => p.id)), [visiblePanels]);
+
+  useEffect(() => {
+    if (selectedPanelIds.size > 0) {
+      setHoveredPanelId(null);
+      setHoveredToolbarPanelId(null);
+    }
+  }, [selectedPanelIds]);
+
+  useEffect(() => {
+    hoveredPanelIdRef.current = hoveredPanelId;
+  }, [hoveredPanelId]);
+
+  useEffect(() => {
+    hoveredToolbarPanelIdRef.current = hoveredToolbarPanelId;
+  }, [hoveredToolbarPanelId]);
+
+  useEffect(() => {
+    if (hoveredPanelId && !visiblePanelIds.has(hoveredPanelId)) {
+      setHoveredPanelId(null);
+    }
+    if (hoveredToolbarPanelId && !visiblePanelIds.has(hoveredToolbarPanelId)) {
+      setHoveredToolbarPanelId(null);
+    }
+  }, [hoveredPanelId, hoveredToolbarPanelId, visiblePanelIds]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverClearTimeoutRef.current) {
+        clearTimeout(hoverClearTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (autoFocusTimeoutRef.current) {
+        clearTimeout(autoFocusTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const visibleConnections = useMemo(
+    () => connections.filter(c => visiblePanelIds.has(c.sourceId) && visiblePanelIds.has(c.targetId)),
+    [connections, visiblePanelIds]
+  );
+
+  useEffect(() => {
+    setMinimizedPanels(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Set(Array.from(prev).filter(id => existingPanelIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [existingPanelIds]);
+
+  useEffect(() => {
+    setSelectedPanelIds(prev => {
+      if (prev.size === 0) return prev;
+      const next = new Set(Array.from(prev).filter(id => visiblePanelIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [visiblePanelIds]);
+
+  useEffect(() => {
+    if (focusedPanelId && minimizedPanels.has(focusedPanelId)) {
+      setFocusedPanelId(null);
+    }
+  }, [focusedPanelId, minimizedPanels]);
+
+  useEffect(() => {
+    if (contextualChatPanelId && minimizedPanels.has(contextualChatPanelId)) {
+      setContextualChatPanelId(null);
+    }
+  }, [contextualChatPanelId, minimizedPanels]);
+
+  useEffect(() => {
+    if (!contextualChatGroupId) return;
+    const group = groups.find(g => g.id === contextualChatGroupId);
+    if (!group) return;
+    const hasVisiblePanels = group.panelIds.some(id => visiblePanelIds.has(id));
+    if (!hasVisiblePanels) {
+      setContextualChatGroupId(null);
+    }
+  }, [contextualChatGroupId, groups, visiblePanelIds]);
+
   // Auto-pan when opening group contextual chat
   useEffect(() => {
     if (!contextualChatGroupId) return;
     const group = groups.find(g => g.id === contextualChatGroupId);
     if (!group || !transformRef.current || !canvasContainerRef.current) return;
-    const groupLayouts = group.panelIds.map(id => panelLayouts[id]).filter(Boolean);
+    const groupLayouts = group.panelIds
+      .filter(id => visiblePanelIds.has(id))
+      .map(id => panelLayouts[id])
+      .filter(Boolean);
     if (groupLayouts.length === 0) return;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
     for (const l of groupLayouts) {
@@ -537,19 +807,11 @@ export default function WorkspacePage() {
     const targetX = viewportWidth / 2 - centerX * currentScale;
     const targetY = viewportHeight / 2 - centerY * currentScale;
     transformRef.current.setTransform(targetX, targetY, currentScale, 400);
-  }, [contextualChatGroupId, groups, panelLayouts]);
-
-  // Get artifact panels (everything except chat)
-  const artifactPanels = useMemo(() =>
-    uiState.panels.filter(p => p.type !== 'chat'),
-    [uiState.panels]
-  );
-
-  // Source of truth for which panels actually exist (used for group cleanup)
-  const existingPanelIds = useMemo(() => new Set(artifactPanels.map(p => p.id)), [artifactPanels]);
+  }, [contextualChatGroupId, groups, panelLayouts, visiblePanelIds]);
 
   // Clean up stale panel IDs and invalid groups
   useEffect(() => {
+    if (!workspaceLoaded) return;
     let needsUpdate = false;
     const groupsToRemove: string[] = [];
 
@@ -583,13 +845,27 @@ export default function WorkspacePage() {
           }
           return updated;
         });
+        setContextualChatLoading(prev => {
+          const updated = { ...prev };
+          for (const groupId of groupsToRemove) {
+            delete updated[groupId];
+          }
+          return updated;
+        });
+        setContextualChatStatus(prev => {
+          const updated = { ...prev };
+          for (const groupId of groupsToRemove) {
+            delete updated[groupId];
+          }
+          return updated;
+        });
         // Close group chat if it was for a removed group
         if (contextualChatGroupId && groupsToRemove.includes(contextualChatGroupId)) {
           setContextualChatGroupId(null);
         }
       }
     }
-  }, [groups, existingPanelIds, contextualChatGroupId]);
+  }, [groups, existingPanelIds, contextualChatGroupId, workspaceLoaded]);
 
   // Initialize panel layouts when panels change
   // New panels appear in the center of the current viewport
@@ -610,8 +886,12 @@ export default function WorkspacePage() {
       const newLayouts = { ...prev };
       const occupiedRects: { x: number; y: number; width: number; height: number }[] = [];
 
-      // Collect existing layouts
-      Object.values(newLayouts).forEach(layout => occupiedRects.push(layout));
+      // Collect existing layouts (ignore minimized panels)
+      Object.entries(newLayouts).forEach(([id, layout]) => {
+        if (visiblePanelIds.has(id)) {
+          occupiedRects.push(layout);
+        }
+      });
 
       // Check if a rectangle overlaps
       const overlaps = (x: number, y: number, w: number, h: number): boolean => {
@@ -649,7 +929,7 @@ export default function WorkspacePage() {
       };
 
       // Add layouts for new panels
-      for (const panel of artifactPanels) {
+      for (const panel of visiblePanels) {
         if (!newLayouts[panel.id]) {
           const defaultSize = DEFAULT_PANEL_SIZES[panel.type] || { width: 500, height: 400 };
           const width = panel.layout?.width ?? defaultSize.width;
@@ -710,38 +990,73 @@ export default function WorkspacePage() {
         body: JSON.stringify({ panels: added }),
       }).catch(console.error);
     }
-  }, [artifactPanels, workspaceId]);
+  }, [artifactPanels, workspaceId, visiblePanelIds, visiblePanels]);
 
   // Auto-focus viewport on new panels after layout is computed
   useEffect(() => {
     if (pendingAutoFocusRef.current.size === 0) return;
     if (!transformRef.current) return;
+    if (!canvasContainerRef.current) return;
 
-    // Process pending auto-focus panels
-    const pendingIds = Array.from(pendingAutoFocusRef.current);
-    pendingAutoFocusRef.current.clear();
+    if (autoFocusTimeoutRef.current) {
+      clearTimeout(autoFocusTimeoutRef.current);
+    }
 
-    // Focus on the last added panel (most recent)
-    const panelId = pendingIds[pendingIds.length - 1];
-    const layout = panelLayouts[panelId];
-    if (!layout) return;
+    autoFocusTimeoutRef.current = setTimeout(() => {
+      autoFocusTimeoutRef.current = null;
 
-    // Calculate viewport position to center the panel
-    const container = canvasContainerRef.current;
-    if (!container) return;
-    const viewportWidth = container.clientWidth;
-    const viewportHeight = container.clientHeight;
-    const currentScale = currentViewport.current.scale;
+      const pendingIds = Array.from(pendingAutoFocusRef.current);
+      if (pendingIds.length === 0) return;
 
-    // Center the panel in the viewport
-    const panelCenterX = layout.x + layout.width / 2;
-    const panelCenterY = layout.y + layout.height / 2;
-    const targetX = viewportWidth / 2 - panelCenterX * currentScale;
-    const targetY = viewportHeight / 2 - panelCenterY * currentScale;
+      const readyLayouts: Array<{ id: string; layout: CanvasPanelLayout }> = [];
+      const missingIds: string[] = [];
+      for (const panelId of pendingIds) {
+        const layout = panelLayouts[panelId];
+        if (layout) {
+          readyLayouts.push({ id: panelId, layout });
+        } else {
+          missingIds.push(panelId);
+        }
+      }
+      pendingAutoFocusRef.current = new Set(missingIds);
+      if (readyLayouts.length === 0) return;
 
-    // Animate to the new position with smooth easing
-    transformRef.current.setTransform(targetX, targetY, currentScale, 500);
-  }, [panelLayouts]);
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const { layout } of readyLayouts) {
+        minX = Math.min(minX, layout.x);
+        minY = Math.min(minY, layout.y);
+        maxX = Math.max(maxX, layout.x + layout.width);
+        maxY = Math.max(maxY, layout.y + layout.height);
+      }
+
+      minX -= AUTO_FOCUS_PADDING;
+      minY -= AUTO_FOCUS_PADDING;
+      maxX += AUTO_FOCUS_PADDING;
+      maxY += AUTO_FOCUS_PADDING;
+
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+
+      const container = canvasContainerRef.current;
+      if (!container) return;
+      const viewportWidth = container.clientWidth;
+      const viewportHeight = container.clientHeight;
+      const currentScale = currentViewport.current.scale;
+
+      const targetX = viewportWidth / 2 - centerX * currentScale;
+      const targetY = viewportHeight / 2 - centerY * currentScale;
+
+      transformRef.current?.setTransform(targetX, targetY, currentScale, AUTO_FOCUS_DURATION, AUTO_FOCUS_EASING);
+
+      const focusId = readyLayouts[readyLayouts.length - 1]?.id;
+      if (focusId && selectedPanelIds.size === 0 && !focusedPanelId) {
+        setFocusedPanelId(focusId);
+      }
+    }, AUTO_FOCUS_DELAY);
+  }, [focusedPanelId, panelLayouts, selectedPanelIds]);
 
   // Handle panel drag start - individual panels can now move independently
   // (draggingGroupId is only set when dragging the group boundary)
@@ -754,6 +1069,7 @@ export default function WorkspacePage() {
   // Handle panel layout change (during drag/resize)
   // Individual panels move independently - use group boundary drag to move the whole group
   const handleLayoutChange = useCallback((id: string, layout: Partial<{ x: number; y: number; width: number; height: number }>) => {
+    lastLayoutInteractionRef.current = Date.now();
     setPanelLayouts(prev => {
       const prevLayout = prev[id];
       if (!prevLayout) return prev;
@@ -772,6 +1088,7 @@ export default function WorkspacePage() {
 
     // Set dragging state for CSS (disable transitions)
     setDraggingGroupId(groupId);
+    lastLayoutInteractionRef.current = Date.now();
 
     setPanelLayouts(prev => {
       const newLayouts = { ...prev };
@@ -794,20 +1111,26 @@ export default function WorkspacePage() {
 
     // Find group to get its panel IDs (they're the "fixed" panels)
     const group = groups.find(g => g.id === groupId);
-    const fixedPanelIds = new Set(group?.panelIds || []);
+    const visibleFixedPanelIds = new Set((group?.panelIds || []).filter(id => visiblePanelIds.has(id)));
 
     let savedPayload: LayoutMap | null = null;
     setPanelLayouts(prev => {
-      // Deep copy layouts
-      const layouts: LayoutMap = {};
-      for (const [id, layout] of Object.entries(prev)) {
-        layouts[id] = { ...layout };
+      const visibleLayouts: LayoutMap = {};
+      const merged: LayoutMap = { ...prev };
+      for (const id of visiblePanelIds) {
+        const layout = prev[id];
+        if (layout) {
+          visibleLayouts[id] = { ...layout };
+        }
       }
 
       // Resolve collisions - group panels stay fixed, others move
-      const resolved = resolveCollisions(layouts, fixedPanelIds);
-      savedPayload = resolved;
-      return resolved;
+      const resolved = resolveCollisions(visibleLayouts, visibleFixedPanelIds);
+      for (const [id, layout] of Object.entries(resolved)) {
+        merged[id] = layout;
+      }
+      savedPayload = merged;
+      return merged;
     });
 
     if (savedPayload) {
@@ -816,7 +1139,7 @@ export default function WorkspacePage() {
         body: JSON.stringify({ panels: savedPayload }),
       }).catch(console.error);
     }
-  }, [workspaceId, groups]);
+  }, [workspaceId, groups, visiblePanelIds]);
 
   // Resolve collisions and save layout after drag ends (single panel drag)
   const handleDragEnd = useCallback((movedPanelId: string) => {
@@ -824,19 +1147,25 @@ export default function WorkspacePage() {
     setDraggingGroupId(null);
 
     // Only the moved panel is fixed - individual panels move independently now
-    const fixedPanelIds = new Set([movedPanelId]);
+    const visibleFixedPanelIds = new Set([movedPanelId].filter(id => visiblePanelIds.has(id)));
 
     let savedPayload: LayoutMap | null = null;
     setPanelLayouts(prev => {
-      // Deep copy layouts
-      const layouts: LayoutMap = {};
-      for (const [id, layout] of Object.entries(prev)) {
-        layouts[id] = { ...layout };
+      const visibleLayouts: LayoutMap = {};
+      const merged: LayoutMap = { ...prev };
+      for (const id of visiblePanelIds) {
+        const layout = prev[id];
+        if (layout) {
+          visibleLayouts[id] = { ...layout };
+        }
       }
 
       // Resolve collisions - moved panel stays fixed, others move
-      const resolved = resolveCollisions(layouts, fixedPanelIds);
-      savedPayload = resolved;
+      const resolved = resolveCollisions(visibleLayouts, visibleFixedPanelIds);
+      for (const [id, layout] of Object.entries(resolved)) {
+        merged[id] = layout;
+      }
+      savedPayload = merged;
 
       // Check if moved panel should join or leave a group
       // Use generous padding to make groups "sticky" - panels don't accidentally leave
@@ -935,7 +1264,7 @@ export default function WorkspacePage() {
         }
       }
 
-      return resolved;
+      return merged;
     });
     if (savedPayload) {
       apiFetch(`/api/workspaces/${workspaceId}/layout`, {
@@ -943,7 +1272,7 @@ export default function WorkspacePage() {
         body: JSON.stringify({ panels: savedPayload }),
       }).catch(console.error);
     }
-  }, [workspaceId, groups]);
+  }, [workspaceId, groups, visiblePanelIds]);
 
   // Periodic collision check - catches edge cases where panels end up overlapping
   // Runs every 3 seconds but only resolves if overlaps are detected and not dragging
@@ -951,19 +1280,24 @@ export default function WorkspacePage() {
     const checkAndResolveCollisions = () => {
       // Skip if user is actively dragging
       if (draggingGroupId) return;
+      if (Date.now() - lastLayoutInteractionRef.current < 1500) return;
 
       setPanelLayouts(prev => {
-        if (Object.keys(prev).length < 2) return prev; // Nothing to check
-        if (!hasOverlappingPanels(prev)) return prev; // No overlaps
+        if (visiblePanelIds.size < 2) return prev; // Nothing visible to check
 
-        // Deep copy and resolve
-        const layouts: LayoutMap = {};
-        for (const [id, layout] of Object.entries(prev)) {
-          layouts[id] = { ...layout };
+        const visibleLayouts: LayoutMap = {};
+        for (const id of visiblePanelIds) {
+          const layout = prev[id];
+          if (layout) {
+            visibleLayouts[id] = { ...layout };
+          }
         }
+        if (Object.keys(visibleLayouts).length < 2) return prev;
+        if (!hasOverlappingPanels(visibleLayouts)) return prev; // No overlaps
 
         // No fixed panels - everything can move to find best arrangement
-        const resolved = resolveCollisions(layouts, new Set());
+        const resolved = resolveCollisions(visibleLayouts, new Set());
+        const merged = { ...prev, ...resolved };
 
         // Check if anything actually changed before saving
         const changed = Object.keys(resolved).some(id => {
@@ -975,9 +1309,9 @@ export default function WorkspacePage() {
         if (changed) {
           apiFetch(`/api/workspaces/${workspaceId}/layout`, {
             method: 'PATCH',
-            body: JSON.stringify({ panels: resolved }),
+            body: JSON.stringify({ panels: merged }),
           }).catch(console.error);
-          return resolved;
+          return merged;
         }
 
         return prev; // No change needed
@@ -986,7 +1320,7 @@ export default function WorkspacePage() {
 
     const intervalId = setInterval(checkAndResolveCollisions, 3000);
     return () => clearInterval(intervalId);
-  }, [workspaceId, draggingGroupId]);
+  }, [workspaceId, draggingGroupId, visiblePanelIds]);
 
 
   // Load workspace data
@@ -1008,7 +1342,11 @@ export default function WorkspacePage() {
       });
       apiFetch(`/api/workspaces/${workspaceId}/downloads`, { method: 'DELETE' });
     }
-    if (!options?.skipMessages && data.messages) setMessages(data.messages);
+    if (!options?.skipMessages && data.messages) {
+      setMessages(data.messages.map((msg) => (
+        msg.id ? msg : { ...msg, id: makeMessageId() }
+      )));
+    }
     if (data.uiState) {
       setUIState(data.uiState);
       // Sync currentViewport ref with loaded viewport so new panels appear in view
@@ -1029,7 +1367,8 @@ export default function WorkspacePage() {
         setConnections(data.uiState.connections);
       }
     }
-  }, [workspaceId]);
+    setWorkspaceLoaded(true);
+  }, [workspaceId, makeMessageId]);
 
   // Set the ref so hook can access loadWorkspace
   loadWorkspaceRef.current = loadWorkspace;
@@ -1076,11 +1415,13 @@ export default function WorkspacePage() {
   // Auto-process pending user message (from initial prompt)
   const processPendingMessage = useCallback(async (userMessage: string) => {
     if (isLoading) return;
+    setStreamStatus('Thinking...');
     setIsLoading(true);
     try {
       await executeQuery(userMessage);
     } finally {
       setIsLoading(false);
+      setStreamStatus(null);
     }
   }, [isLoading, executeQuery]);
 
@@ -1102,8 +1443,9 @@ export default function WorkspacePage() {
 
   // Scroll to bottom on new messages
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    const behavior = isLoading ? 'auto' : 'smooth';
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  }, [messages, isLoading]);
 
   // Auto-resize textarea
   const handleTextareaChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -1130,13 +1472,15 @@ export default function WorkspacePage() {
 
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
-    setMessages((prev) => [...prev, { role: 'user', content: userMessage }]);
+    setMessages((prev) => [...prev, { id: makeMessageId(), role: 'user', content: userMessage }]);
+    setStreamStatus('Thinking...');
     setIsLoading(true);
 
     try {
       await executeQuery(userMessage);
     } finally {
       setIsLoading(false);
+      setStreamStatus(null);
     }
   };
 
@@ -1150,6 +1494,7 @@ export default function WorkspacePage() {
   // Handle single click on panel - for selection
   const handlePanelClick = useCallback((panelId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (selectionSuppressClickRef.current) return;
 
     // Shift+click or Cmd/Ctrl+click for multi-select toggle
     if (e.shiftKey || e.metaKey || e.ctrlKey) {
@@ -1172,6 +1517,7 @@ export default function WorkspacePage() {
   // Handle double-click on panel - for contextual chat
   const handlePanelDoubleClick = useCallback((panelId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (selectionSuppressClickRef.current) return;
 
     // Clear selection when opening chat
     setSelectedPanelIds(new Set());
@@ -1197,6 +1543,28 @@ export default function WorkspacePage() {
       }, 0);
     }
   }, [contextualChatPanelId, panelLayouts]);
+
+  const minimizePanel = useCallback((panelId: string, options?: { clearSelection?: boolean }) => {
+    setMinimizedPanels(prev => {
+      const next = new Set(prev);
+      next.add(panelId);
+      return next;
+    });
+    setSelectedPanelIds(prev => {
+      if (options?.clearSelection) return new Set();
+      if (!prev.has(panelId)) return prev;
+      const next = new Set(prev);
+      next.delete(panelId);
+      return next;
+    });
+    setOpenMenuId(null);
+    if (focusedPanelId === panelId) {
+      setFocusedPanelId(null);
+    }
+    if (contextualChatPanelId === panelId) {
+      setContextualChatPanelId(null);
+    }
+  }, [contextualChatPanelId, focusedPanelId]);
 
   // Get panel title (needed for contextual prompts, menu labels, etc.)
   const getPanelTitle = useCallback((panel: UIPanel): string => {
@@ -1224,216 +1592,167 @@ export default function WorkspacePage() {
     return null;
   }, []);
 
-  // Get panel metadata for context (reference-based, not inline data)
-  // Agent should use read() tool to fetch actual data when needed
-  const getPanelContextData = useCallback((panel: UIPanel) => {
-    const resource = getPanelResource(panel);
-
-    if (panel.type === 'table' && panel.tableId) {
-      const tableData = tables[panel.tableId];
-      if (tableData) {
-        return {
-          resource,
-          details: `Title: "${tableData.title}"\nColumns: ${tableData.columns.map(c => c.label).join(', ')}\nRows: ${tableData.data.length}`,
-        };
-      }
-    } else if (panel.type === 'chart' && panel.chartId) {
-      const chartData = charts[panel.chartId];
-      if (chartData) {
-        return {
-          resource,
-          details: `Title: "${chartData.title}"\nChart Type: ${chartData.type}\nData Points: ${chartData.data.length}`,
-        };
-      }
-    } else if (panel.type === 'cards' && panel.cardsId) {
-      const cardsData = cards[panel.cardsId];
-      if (cardsData) {
-        return {
-          resource,
-          details: `Title: "${cardsData.title}"\nItems: ${cardsData.items.length}`,
-        };
-      }
-    } else if (panel.type === 'markdown') {
-      const charCount = panel.content?.length || 0;
-      return {
-        resource,
-        details: `Characters: ${charCount}`,
-      };
-    } else if (panel.type === 'preview') {
-      return {
-        resource: null,
-        details: 'HTML content (inline, not readable via read())',
-      };
-    } else if ((panel.type === 'editor' || panel.type === 'pdf') && panel.filePath) {
-      return {
-        resource,
-        details: `File: ${panel.filePath}`,
-      };
-    }
-    return null;
-  }, [tables, charts, cards, getPanelResource]);
-
   // Handle contextual chat message
   const handleContextualMessage = useCallback(async (message: string) => {
-    if (!contextualChatPanelId || contextualChatLoading) return;
+    if (!contextualChatPanelId) return;
 
     const panel = uiState.panels.find(p => p.id === contextualChatPanelId);
     if (!panel) return;
 
     const panelId = contextualChatPanelId;
+    if (contextualChatLoading[panelId]) return;
 
-    // Add user message to this panel's chat history
+    // Add user message and placeholder assistant message for streaming updates
     setContextualChatMessages(prev => ({
       ...prev,
-      [panelId]: [...(prev[panelId] || []), { role: 'user', content: message }]
+      [panelId]: [
+        ...(prev[panelId] || []),
+        { id: makeMessageId(), role: 'user', content: message },
+        { id: makeMessageId(), role: 'assistant', content: '' },
+      ]
     }));
-    setContextualChatLoading(true);
+    setContextualChatLoading(prev => ({ ...prev, [panelId]: true }));
+    setContextualChatStatus(prev => ({ ...prev, [panelId]: 'Thinking...' }));
 
-    // Set the source panel ref so new panels get connected
-    contextualSourcePanelRef.current = panelId;
-
-    // Get panel context (reference-based metadata)
-    const panelContext = getPanelContextData(panel);
     const resource = getPanelResource(panel);
-
-    // Build connection context
-    let connectionContext = '';
-    if (panel.sourcePanel) {
-      const sourcePanel = uiState.panels.find(p => p.id === panel.sourcePanel);
-      if (sourcePanel) {
-        connectionContext += `\nDerived from: ${getPanelTitle(sourcePanel)} (${sourcePanel.type})`;
-      }
-    }
-    const derivedPanels = connections
-      .filter(c => c.sourceId === panel.id)
-      .map(c => uiState.panels.find(p => p.id === c.targetId))
-      .filter(Boolean);
-    if (derivedPanels.length > 0) {
-      connectionContext += `\nDerived panels: ${derivedPanels.map(p => `${getPanelTitle(p!)} (${p!.type})`).join(', ')}`;
-    }
 
     const contextualPrompt = `<contextual_focus>
 The user is asking about a specific panel in their workspace.
+This block is internal context. Do not repeat it in your reply.
+Scope: Only this panel is in context. Other panels are out of scope unless explicitly provided.
+Panels are isolated. A preview panel cannot access other panels' data at runtime.
 
 Panel ID: ${panel.id}
+Title: "${getPanelTitle(panel)}"
 Type: ${panel.type}
-${panelContext?.details || ''}${connectionContext}
-${resource ? `\nTo access the panel's data, use: await read("${resource}")` : ''}
-If you create any new panels based on this context, they will automatically be visually connected to this source panel.
+${resource ? `Data: await read("${resource}")` : 'Data: (no readable data resource)'}
 </contextual_focus>
 
 User question: ${message}`;
 
+    const updateAssistantMessage = (content: string) => {
+      setContextualChatMessages(prev => {
+        const history = [...(prev[panelId] || [])];
+        const lastIndex = history.length - 1;
+        if (lastIndex >= 0 && history[lastIndex].role === 'assistant') {
+          history[lastIndex] = { ...history[lastIndex], content };
+        } else {
+          history.push({ id: makeMessageId(), role: 'assistant', content });
+        }
+        return { ...prev, [panelId]: history };
+      });
+    };
+
+    let sawText = false;
     try {
-      const responseText = await executeQuery(contextualPrompt, { skipMainChat: true });
-      // Add the assistant's response to contextual chat messages
-      setContextualChatMessages(prev => ({
-        ...prev,
-        [panelId]: [...(prev[panelId] || []), {
-          role: 'assistant',
-          content: responseText || 'Done! Check the canvas for any new panels created.'
-        }]
-      }));
+      const responseText = await executeQuery(contextualPrompt, {
+        skipMainChat: true,
+        onTextDelta: (_delta, fullText) => {
+          sawText = true;
+          updateAssistantMessage(fullText);
+        },
+        onStatusUpdate: (event) => {
+          setContextualChatStatus(prev => ({ ...prev, [panelId]: getStatusLabel(event) }));
+        },
+        panelContext: { sourcePanelId: panelId },
+      });
+      if (responseText?.trim()) {
+        updateAssistantMessage(responseText);
+      } else if (!sawText) {
+        updateAssistantMessage('No response received. Please try again.');
+      }
     } catch (error) {
       console.error('Contextual query error:', error);
-      setContextualChatMessages(prev => ({
-        ...prev,
-        [panelId]: [...(prev[panelId] || []), {
-          role: 'assistant',
-          content: 'Sorry, there was an error processing your request.'
-        }]
-      }));
+      updateAssistantMessage('Sorry, there was an error processing your request.');
     } finally {
-      setContextualChatLoading(false);
-      // Clear the source panel ref
-      contextualSourcePanelRef.current = null;
+      setContextualChatLoading(prev => ({ ...prev, [panelId]: false }));
+      setContextualChatStatus(prev => ({ ...prev, [panelId]: null }));
     }
-  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, connections, getPanelContextData, getPanelResource, executeQuery, getPanelTitle]);
+  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, getPanelResource, executeQuery, getPanelTitle, getStatusLabel, makeMessageId]);
 
   // Handle group contextual chat message
   const handleGroupContextualMessage = useCallback(async (message: string) => {
-    if (!contextualChatGroupId || contextualChatLoading) return;
+    if (!contextualChatGroupId) return;
 
     const group = groups.find(g => g.id === contextualChatGroupId);
     if (!group) return;
 
     const groupId = contextualChatGroupId;
+    if (contextualChatLoading[groupId]) return;
     const groupPanels = group.panelIds.map(pid => uiState.panels.find(p => p.id === pid)).filter(Boolean);
 
-    // Add user message to this group's chat history
+    // Add user message and placeholder assistant message for streaming updates
     setContextualChatMessages(prev => ({
       ...prev,
-      [groupId]: [...(prev[groupId] || []), { role: 'user', content: message }]
+      [groupId]: [
+        ...(prev[groupId] || []),
+        { id: makeMessageId(), role: 'user', content: message },
+        { id: makeMessageId(), role: 'assistant', content: '' },
+      ]
     }));
-    setContextualChatLoading(true);
+    setContextualChatLoading(prev => ({ ...prev, [groupId]: true }));
+    setContextualChatStatus(prev => ({ ...prev, [groupId]: 'Thinking...' }));
 
-    // Build context from all panels in the group (reference-based)
-    const groupPanelIds = new Set(group.panelIds);
+    // Build context from all panels in the group (minimal, reference-based)
     const panelsContext = groupPanels.map(panel => {
       if (!panel) return '';
-      const context = getPanelContextData(panel);
       const resource = getPanelResource(panel);
-      const accessLine = resource ? `Access: await read("${resource}")` : '(no data resource)';
-      return `- ${getPanelTitle(panel)} (${panel.type})
-  ${context?.details?.split('\n').join('\n  ') || ''}
-  ${accessLine}`;
+      const accessLine = resource ? `Data: await read("${resource}")` : 'Data: (no readable data resource)';
+      return `- ID: ${panel.id}\n  Title: "${getPanelTitle(panel)}"\n  Type: ${panel.type}\n  ${accessLine}`;
     }).join('\n');
-
-    // Build connection context for the group
-    const groupConnections = connections.filter(c =>
-      groupPanelIds.has(c.sourceId) || groupPanelIds.has(c.targetId)
-    );
-    let connectionContext = '';
-    if (groupConnections.length > 0) {
-      connectionContext = '\n\nPanel relationships:\n' + groupConnections.map(c => {
-        const source = uiState.panels.find(p => p.id === c.sourceId);
-        const target = uiState.panels.find(p => p.id === c.targetId);
-        if (source && target) {
-          return `- ${getPanelTitle(source)} → ${getPanelTitle(target)}`;
-        }
-        return null;
-      }).filter(Boolean).join('\n');
-    }
 
     const contextualPrompt = `<contextual_focus>
 The user is asking about a group of related panels in their workspace.
+This block is internal context. Do not repeat it in your reply.
+Scope: Only the panels listed below are in context. Other panels are out of scope unless explicitly provided.
+Panels are isolated. A preview panel cannot access other panels' data at runtime.
 
 Group: ${group.name || 'Unnamed group'}
 Panels (${groupPanels.length}):
-${panelsContext}${connectionContext}
-
-To access any panel's data, use the read() function with the resource path shown above.
-If you create any new panels based on this context, they should relate to this group's content.
+${panelsContext}
 </contextual_focus>
 
 User question: ${message}`;
 
-    // Set the source group ref so new panels get added to this group
-    contextualSourceGroupRef.current = groupId;
+    const updateAssistantMessage = (content: string) => {
+      setContextualChatMessages(prev => {
+        const history = [...(prev[groupId] || [])];
+        const lastIndex = history.length - 1;
+        if (lastIndex >= 0 && history[lastIndex].role === 'assistant') {
+          history[lastIndex] = { ...history[lastIndex], content };
+        } else {
+          history.push({ id: makeMessageId(), role: 'assistant', content });
+        }
+        return { ...prev, [groupId]: history };
+      });
+    };
 
+    let sawText = false;
     try {
-      const responseText = await executeQuery(contextualPrompt, { skipMainChat: true });
-      setContextualChatMessages(prev => ({
-        ...prev,
-        [groupId]: [...(prev[groupId] || []), {
-          role: 'assistant',
-          content: responseText || 'Done! Check the canvas for any new panels created.'
-        }]
-      }));
+      const responseText = await executeQuery(contextualPrompt, {
+        skipMainChat: true,
+        onTextDelta: (_delta, fullText) => {
+          sawText = true;
+          updateAssistantMessage(fullText);
+        },
+        onStatusUpdate: (event) => {
+          setContextualChatStatus(prev => ({ ...prev, [groupId]: getStatusLabel(event) }));
+        },
+        panelContext: { sourceGroupId: groupId },
+      });
+      if (responseText?.trim()) {
+        updateAssistantMessage(responseText);
+      } else if (!sawText) {
+        updateAssistantMessage('No response received. Please try again.');
+      }
     } catch (error) {
       console.error('Group contextual query error:', error);
-      setContextualChatMessages(prev => ({
-        ...prev,
-        [groupId]: [...(prev[groupId] || []), {
-          role: 'assistant',
-          content: 'Sorry, there was an error processing your request.'
-        }]
-      }));
+      updateAssistantMessage('Sorry, there was an error processing your request.');
     } finally {
-      setContextualChatLoading(false);
-      contextualSourceGroupRef.current = null;
+      setContextualChatLoading(prev => ({ ...prev, [groupId]: false }));
+      setContextualChatStatus(prev => ({ ...prev, [groupId]: null }));
     }
-  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, connections, getPanelContextData, getPanelResource, executeQuery, getPanelTitle]);
+  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, getPanelResource, executeQuery, getPanelTitle, getStatusLabel, makeMessageId]);
 
   // Handle canvas pointer down for drag-to-select
   // Left-click starts selection box, middle-click allows panning (RTS style controls)
@@ -1464,6 +1783,16 @@ User question: ${message}`;
     };
   }, []);
 
+  const releaseSelectionCapture = useCallback((pointerId?: number) => {
+    const id = pointerId ?? selectionPointerIdRef.current;
+    if (id == null) return;
+    const el = canvasContainerRef.current;
+    if (el && el.hasPointerCapture(id)) {
+      el.releasePointerCapture(id);
+    }
+    selectionPointerIdRef.current = null;
+  }, []);
+
   const handleCanvasPointerDown = useCallback((e: React.PointerEvent) => {
     // Only handle left mouse button for selection
     // Middle mouse (button 1) passes through for panning
@@ -1475,13 +1804,18 @@ User question: ${message}`;
     const target = e.target as HTMLElement;
 
     // Don't intercept clicks on interactive elements - let them handle their own events
-    if (target.closest('.artifact-card')) return;
     if (target.closest('.contextual-chat-popover')) return;
     if (target.closest('.group-boundary')) return;
     if (target.closest('button')) return;  // All buttons should work normally
     if (target.closest('.fixed')) return;  // Fixed UI elements (zoom controls, selection actions, etc.)
     if (target.closest('input')) return;
     if (target.closest('textarea')) return;
+    if (target.closest('.panel-menu') || target.closest('.panel-menu-trigger')) return;
+
+    const isPanel = !!target.closest('.artifact-card');
+    if (isPanel) {
+      if (target.closest('.artifact-header') || target.closest('.resize-handle')) return;
+    }
 
     // Stop event from reaching TransformWrapper (prevents any panning interference)
     e.stopPropagation();
@@ -1494,14 +1828,22 @@ User question: ${message}`;
     const canvasX = (e.clientX - rect.left - vp.x) / vp.scale;
     const canvasY = (e.clientY - rect.top - vp.y) / vp.scale;
 
+    if (isPanel) {
+      selectionPendingRef.current = { x: canvasX, y: canvasY };
+      return;
+    }
+
+    e.stopPropagation();
+    if (canvasContainerRef.current) {
+      canvasContainerRef.current.setPointerCapture(e.pointerId);
+      selectionPointerIdRef.current = e.pointerId;
+    }
     setSelectionBoxStart({ x: canvasX, y: canvasY });
     setSelectionBoxEnd({ x: canvasX, y: canvasY });
     setIsSelectingBox(true);
   }, [spacePanning]);
 
   const handleCanvasPointerMove = useCallback((e: React.PointerEvent) => {
-    if (!isSelectingBox || !selectionBoxStart) return;
-
     const rect = canvasContainerRef.current?.getBoundingClientRect();
     if (!rect) return;
 
@@ -1509,14 +1851,36 @@ User question: ${message}`;
     const canvasX = (e.clientX - rect.left - vp.x) / vp.scale;
     const canvasY = (e.clientY - rect.top - vp.y) / vp.scale;
 
+    if (isSelectingBox && selectionBoxStart) {
+      setSelectionBoxEnd({ x: canvasX, y: canvasY });
+      return;
+    }
+
+    const pending = selectionPendingRef.current;
+    if (!pending) return;
+
+    const dx = canvasX - pending.x;
+    const dy = canvasY - pending.y;
+    if (Math.hypot(dx, dy) < 6) return;
+
+    selectionPendingRef.current = null;
+    if (canvasContainerRef.current) {
+      canvasContainerRef.current.setPointerCapture(e.pointerId);
+      selectionPointerIdRef.current = e.pointerId;
+    }
+    setSelectionBoxStart({ x: pending.x, y: pending.y });
     setSelectionBoxEnd({ x: canvasX, y: canvasY });
+    setIsSelectingBox(true);
   }, [isSelectingBox, selectionBoxStart]);
 
-  const handleCanvasPointerUp = useCallback(() => {
+  const handleCanvasPointerUp = useCallback((e?: React.PointerEvent | PointerEvent) => {
+    const pointerId = e && 'pointerId' in e ? e.pointerId : undefined;
+    releaseSelectionCapture(pointerId);
     if (!isSelectingBox || !selectionBoxStart || !selectionBoxEnd) {
       setIsSelectingBox(false);
       setSelectionBoxStart(null);
       setSelectionBoxEnd(null);
+      selectionPendingRef.current = null;
       return;
     }
 
@@ -1530,10 +1894,11 @@ User question: ${message}`;
     const boxHeight = bottom - top;
 
     // If box is large enough, select panels within it
-    if (boxWidth > 10 && boxHeight > 10) {
+    const isDragSelection = boxWidth > 10 && boxHeight > 10;
+    if (isDragSelection) {
       // Find panels that intersect with selection box
       const selected = new Set<string>();
-      for (const panel of artifactPanels) {
+      for (const panel of visiblePanels) {
         const layout = panelLayouts[panel.id];
         if (!layout) continue;
 
@@ -1556,13 +1921,20 @@ User question: ${message}`;
     setIsSelectingBox(false);
     setSelectionBoxStart(null);
     setSelectionBoxEnd(null);
-  }, [isSelectingBox, selectionBoxStart, selectionBoxEnd, artifactPanels, panelLayouts]);
+    selectionPendingRef.current = null;
+    if (isDragSelection) {
+      selectionSuppressClickRef.current = true;
+      setTimeout(() => {
+        selectionSuppressClickRef.current = false;
+      }, 0);
+    }
+  }, [isSelectingBox, selectionBoxStart, selectionBoxEnd, visiblePanels, panelLayouts, releaseSelectionCapture]);
 
   // Ensure selection ends even if pointer is released outside the canvas
   useEffect(() => {
     if (!isSelectingBox) return;
-    const onWindowPointerUp = () => {
-      handleCanvasPointerUp();
+    const onWindowPointerUp = (event: PointerEvent) => {
+      handleCanvasPointerUp(event);
     };
     window.addEventListener('pointerup', onWindowPointerUp);
     return () => window.removeEventListener('pointerup', onWindowPointerUp);
@@ -1688,6 +2060,7 @@ User question: ${message}`;
   // Align selected panels to an edge/center
   const alignSelected = useCallback((mode: 'left' | 'right' | 'centerX' | 'top' | 'bottom' | 'centerY') => {
     if (selectedPanelIds.size < 2) return;
+    lastLayoutInteractionRef.current = Date.now();
     const ids = Array.from(selectedPanelIds).filter(id => panelLayouts[id]);
     if (ids.length < 2) return;
     const rects = ids.map(id => ({ id, l: panelLayouts[id] }));
@@ -1726,6 +2099,7 @@ User question: ${message}`;
   // Distribute selected panels evenly along axis by center points
   const distributeSelected = useCallback((axis: 'horizontal' | 'vertical') => {
     if (selectedPanelIds.size < 3) return;
+    lastLayoutInteractionRef.current = Date.now();
     const ids = Array.from(selectedPanelIds).filter(id => panelLayouts[id]);
     if (ids.length < 3) return;
     const sorted = [...ids].sort((a, b) => {
@@ -1765,7 +2139,7 @@ User question: ${message}`;
   const selectionBounds = useMemo(() => {
     // Priority: selected group > multiple selected panels > single focused panel
     if (selectedPanelIds.size > 0) {
-      const selectedArray = Array.from(selectedPanelIds);
+      const selectedArray = Array.from(selectedPanelIds).filter(id => visiblePanelIds.has(id));
       const layouts = selectedArray.map(id => panelLayouts[id]).filter(Boolean);
       if (layouts.length === 0) return null;
 
@@ -1779,20 +2153,52 @@ User question: ${message}`;
       return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
     }
     return null;
-  }, [selectedPanelIds, panelLayouts]);
+  }, [selectedPanelIds, panelLayouts, visiblePanelIds]);
+
+  const canvasViewport = canvasContainerRef.current
+    ? { width: canvasContainerRef.current.clientWidth, height: canvasContainerRef.current.clientHeight }
+    : undefined;
 
   // Get info about single selected panel for toolbar
   const singleSelectedPanel = useMemo(() => {
     if (selectedPanelIds.size !== 1) return null;
     const panelId = Array.from(selectedPanelIds)[0];
-    return artifactPanels.find(p => p.id === panelId) || null;
-  }, [selectedPanelIds, artifactPanels]);
+    return visiblePanels.find(p => p.id === panelId) || null;
+  }, [selectedPanelIds, visiblePanels]);
 
   // Check if single selected panel is in a group
   const singleSelectedPanelGroup = useMemo(() => {
     if (!singleSelectedPanel) return null;
     return groups.find(g => g.panelIds.includes(singleSelectedPanel.id)) || null;
   }, [singleSelectedPanel, groups]);
+
+  const hoveredPanel = useMemo(() => {
+    if (selectedPanelIds.size > 0) return null;
+    const targetId = hoveredToolbarPanelId ?? hoveredPanelId;
+    if (!targetId) return null;
+    return visiblePanels.find(p => p.id === targetId) || null;
+  }, [selectedPanelIds, hoveredPanelId, hoveredToolbarPanelId, visiblePanels]);
+
+  const hoveredPanelBounds = useMemo(() => {
+    if (!hoveredPanel) return null;
+    const layout = panelLayouts[hoveredPanel.id];
+    if (!layout) return null;
+    return { x: layout.x, y: layout.y, width: layout.width, height: layout.height };
+  }, [hoveredPanel, panelLayouts]);
+
+  const hoveredPanelGroup = useMemo(() => {
+    if (!hoveredPanel) return null;
+    return groups.find(g => g.panelIds.includes(hoveredPanel.id)) || null;
+  }, [hoveredPanel, groups]);
+
+  const toolbarPanel = selectedPanelIds.size > 0 ? singleSelectedPanel : hoveredPanel;
+  const toolbarBounds = selectedPanelIds.size > 0 ? selectionBounds : hoveredPanelBounds;
+  const toolbarPanelIds = selectedPanelIds.size > 0
+    ? selectedPanelIds
+    : (hoveredPanel ? new Set([hoveredPanel.id]) : new Set<string>());
+  const toolbarGroup = selectedPanelIds.size > 0 ? selectedPanelsGroup : null;
+  const toolbarSinglePanelGroup = selectedPanelIds.size > 0 ? singleSelectedPanelGroup : hoveredPanelGroup;
+  const showToolbar = !!toolbarBounds && (selectedPanelIds.size > 0 || !!hoveredPanel);
 
   // Ungroup selected panels
   const ungroupPanels = useCallback(() => {
@@ -1803,7 +2209,19 @@ User question: ${message}`;
     setSelectedPanelIds(new Set());
     // Clean up contextual chat messages for the removed group
     setContextualChatMessages(prev => {
-      const rest = { ...prev } as Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>;
+      const rest = { ...prev } as Record<string, Array<{ id: string; role: 'user' | 'assistant'; content: string }>>;
+      delete rest[groupId];
+      return rest;
+    });
+    setContextualChatLoading(prev => {
+      if (!(groupId in prev)) return prev;
+      const rest = { ...prev };
+      delete rest[groupId];
+      return rest;
+    });
+    setContextualChatStatus(prev => {
+      if (!(groupId in prev)) return prev;
+      const rest = { ...prev };
       delete rest[groupId];
       return rest;
     });
@@ -2071,6 +2489,12 @@ User question: ${message}`;
         .map(g => ({ ...g, panelIds: g.panelIds.filter(id => id !== panelId) }))
         .filter(g => g.panelIds.length >= 2)
       );
+      setMinimizedPanels(prev => {
+        if (!prev.has(panelId)) return prev;
+        const next = new Set(prev);
+        next.delete(panelId);
+        return next;
+      });
       // Remove from connections
       setConnections(prev => prev.filter(c => c.sourceId !== panelId && c.targetId !== panelId));
       // Clean up layout
@@ -2081,7 +2505,19 @@ User question: ${message}`;
       });
       // Clean up contextual chat messages
       setContextualChatMessages(prev => {
-        const rest = { ...prev } as Record<string, Array<{ role: 'user' | 'assistant'; content: string }>>;
+        const rest = { ...prev } as Record<string, Array<{ id: string; role: 'user' | 'assistant'; content: string }>>;
+        delete rest[panelId];
+        return rest;
+      });
+      setContextualChatLoading(prev => {
+        if (!(panelId in prev)) return prev;
+        const rest = { ...prev };
+        delete rest[panelId];
+        return rest;
+      });
+      setContextualChatStatus(prev => {
+        if (!(panelId in prev)) return prev;
+        const rest = { ...prev };
         delete rest[panelId];
         return rest;
       });
@@ -2302,6 +2738,15 @@ User question: ${message}`;
               </button>
             ) : null}
             <button
+              onClick={() => setTourOpen(true)}
+              className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title="Start tutorial"
+            >
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.32-.67.414-.74.295-1.338.987-1.338 1.796v.406M12 17.25h.008M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </button>
+            <button
               onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
               className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
               title={resolvedTheme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -2343,22 +2788,13 @@ User question: ${message}`;
         {/* Canvas Area */}
         <div
           ref={canvasContainerRef}
-          className={`flex-1 canvas-bg overflow-hidden transition-all duration-300 ${chatOpen ? 'md:mr-[400px]' : ''}`}
+          data-tour="canvas"
+          className={`flex-1 canvas-bg overflow-hidden transition-all duration-300 relative ${chatOpen ? 'md:mr-[400px]' : ''}`}
           onPointerDownCapture={handleCanvasPointerDown}
           onPointerMoveCapture={handleCanvasPointerMove}
           onPointerUpCapture={handleCanvasPointerUp}
         >
-          {artifactPanels.length === 0 ? (
-            <div className="canvas-empty">
-              <svg className="canvas-empty-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
-              </svg>
-              <h3>Your canvas is empty</h3>
-              <p>Chat with the agent to create tables, charts, and other artifacts. They&rsquo;ll appear here as draggable cards.</p>
-            </div>
-          ) : (
-            <>
-            <TransformWrapper
+          <TransformWrapper
               initialScale={uiState.viewport?.zoom ?? 0.75}
               initialPositionX={uiState.viewport?.x ?? -2500}
               initialPositionY={uiState.viewport?.y ?? -2000}
@@ -2391,7 +2827,7 @@ User question: ${message}`;
                 return (
                 <>
                   {/* Zoom Controls */}
-                  <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 bg-card/90 backdrop-blur border border-border rounded-lg p-1 shadow-lg">
+                  <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 bg-card/90 backdrop-blur border border-border rounded-lg p-1 shadow-lg" data-tour="zoom-controls">
                     <button
                       onClick={() => zoomOut(0.1)}
                       className="p-1.5 rounded hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
@@ -2449,7 +2885,7 @@ User question: ${message}`;
                   )}
 
                   {/* Canvas Hint - shows interaction tips */}
-                  {showCanvasHint && artifactPanels.length > 0 && (
+                  {showCanvasHint && visiblePanels.length > 0 && (
                     <div className="canvas-hint fixed top-20 left-1/2 -translate-x-1/2 z-40">
                       <div className="flex items-center gap-3 px-4 py-2.5 bg-card/95 backdrop-blur border border-border rounded-lg shadow-lg text-sm">
                         <span className="text-muted-foreground">
@@ -2512,12 +2948,14 @@ User question: ${message}`;
                           group={group}
                           panelLayouts={panelLayouts}
                           existingPanelIds={existingPanelIds}
+                          visiblePanelIds={visiblePanelIds}
                           scale={zoomLevel}
                           onGroupClick={(groupId) => {
                             // Select all panels in the group
                             const g = groups.find(grp => grp.id === groupId);
                             if (g) {
-                              setSelectedPanelIds(new Set(g.panelIds));
+                              const selected = g.panelIds.filter(id => visiblePanelIds.has(id));
+                              setSelectedPanelIds(new Set(selected));
                             }
                           }}
                           onGroupRename={renameGroup}
@@ -2536,20 +2974,15 @@ User question: ${message}`;
 
                       {/* Connection lines between panels */}
                       <ConnectionLines
-                        connections={connections}
+                        connections={visibleConnections}
                         panelLayouts={panelLayouts}
                         animatingConnectionIds={animatingConnectionIds}
                         panelTitles={Object.fromEntries(
-                          artifactPanels.map(p => [p.id, getPanelTitle(p)])
+                          visiblePanels.map(p => [p.id, getPanelTitle(p)])
                         )}
                       />
 
-                      {/* Selection box for drag-to-select */}
-                      {isSelectingBox && selectionBoxStart && selectionBoxEnd && (
-                        <SelectionBox start={selectionBoxStart} end={selectionBoxEnd} />
-                      )}
-
-                      {artifactPanels.filter(p => !minimizedPanels.has(p.id)).map((panel) => {
+                      {visiblePanels.map((panel) => {
                         const layout = panelLayouts[panel.id];
                         if (!layout) return null;
 
@@ -2573,6 +3006,24 @@ User question: ${message}`;
                             onPanelClick={handlePanelClick}
                             onPanelDoubleClick={handlePanelDoubleClick}
                             isAnimating={animatingPanelIds.has(panel.id)}
+                            onHoverChange={(panelId) => {
+                              if (selectedPanelIds.size > 0) return;
+                              if (hoverClearTimeoutRef.current) {
+                                clearTimeout(hoverClearTimeoutRef.current);
+                                hoverClearTimeoutRef.current = null;
+                              }
+                              if (panelId) {
+                                hoveredPanelIdRef.current = panelId;
+                                setHoveredPanelId(panelId);
+                                return;
+                              }
+                              const lastPanelId = hoveredPanelIdRef.current;
+                              hoverClearTimeoutRef.current = setTimeout(() => {
+                                if (hoveredToolbarPanelIdRef.current === lastPanelId) return;
+                                hoveredPanelIdRef.current = null;
+                                setHoveredPanelId(null);
+                              }, 120);
+                            }}
                             menuContent={
                               <>
                                 {panel.type === 'table' && (
@@ -2601,7 +3052,7 @@ User question: ${message}`;
                                   <button onClick={() => { window.open(`${basePath}/api/workspaces/${workspaceId}/files/${encodeURIComponent(panel.filePath!)}`, '_blank'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Open in new tab</button>
                                 )}
                                 <button
-                                  onClick={() => { setMinimizedPanels(prev => new Set(prev).add(panel.id)); setOpenMenuId(null); }}
+                                  onClick={() => minimizePanel(panel.id)}
                                   className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
                                 >
                                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12h-15" /></svg>
@@ -2631,8 +3082,13 @@ User question: ${message}`;
                         );
                       })}
 
+                      {/* Selection box for drag-to-select */}
+                      {isSelectingBox && selectionBoxStart && selectionBoxEnd && (
+                        <SelectionBox start={selectionBoxStart} end={selectionBoxEnd} />
+                      )}
+
                       {/* Contextual Chat Popover for Panels */}
-                      {contextualChatPanelId && panelLayouts[contextualChatPanelId] && (() => {
+                      {contextualChatPanelId && panelLayouts[contextualChatPanelId] && !minimizedPanels.has(contextualChatPanelId) && (() => {
                         const panel = uiState.panels.find(p => p.id === contextualChatPanelId);
                         if (!panel) return null;
                         return (
@@ -2643,10 +3099,12 @@ User question: ${message}`;
                             panelTitle={getPanelTitle(panel)}
                             panelType={panel.type}
                             scale={zoomLevel}
-                            viewportOffset={currentViewport.current}
+                            viewportOffset={{ x: currentViewport.current.x, y: currentViewport.current.y }}
+                            viewportSize={canvasViewport}
                             onSendMessage={handleContextualMessage}
-                            isLoading={contextualChatLoading}
+                            isLoading={!!contextualChatLoading[contextualChatPanelId]}
                             messages={contextualChatMessages[contextualChatPanelId] || []}
+                            statusLabel={contextualChatStatus[contextualChatPanelId] || null}
                           />
                         );
                       })()}
@@ -2657,6 +3115,7 @@ User question: ${message}`;
                         if (!group) return null;
                         // Calculate group label position (top-left of group + offset)
                         const groupLayouts = group.panelIds
+                          .filter(pid => visiblePanelIds.has(pid))
                           .map(pid => panelLayouts[pid])
                           .filter(Boolean);
                         if (groupLayouts.length === 0) return null;
@@ -2675,79 +3134,100 @@ User question: ${message}`;
                             panelTitle={group.name || `${groupLayouts.length} panels`}
                             panelType="group"
                             scale={zoomLevel}
-                            viewportOffset={currentViewport.current}
+                            viewportOffset={{ x: currentViewport.current.x, y: currentViewport.current.y }}
+                            viewportSize={canvasViewport}
                             onSendMessage={handleGroupContextualMessage}
-                            isLoading={contextualChatLoading}
+                            isLoading={!!contextualChatLoading[contextualChatGroupId]}
                             messages={contextualChatMessages[contextualChatGroupId] || []}
+                            statusLabel={contextualChatStatus[contextualChatGroupId] || null}
                           />
                         );
                       })()}
 
                       {/* Selection Toolbar - Figma-style floating toolbar */}
-                      {selectionBounds && selectedPanelIds.size > 0 && (
+                      {showToolbar && (
                         <SelectionToolbar
-                          selectedPanelId={selectedPanelIds.size === 1 ? Array.from(selectedPanelIds)[0] : null}
-                          selectedGroupId={selectedPanelsGroup?.id ?? null}
-                          selectedPanelIds={selectedPanelIds}
-                          panelType={singleSelectedPanel?.type}
-                          panelTitle={singleSelectedPanel ? getPanelTitle(singleSelectedPanel) : undefined}
-                          groupName={selectedPanelsGroup?.name}
-                          selectionBounds={selectionBounds}
+                          selectedPanelId={toolbarPanel?.id ?? null}
+                          selectedGroupId={toolbarGroup?.id ?? null}
+                          selectedPanelIds={toolbarPanelIds}
+                          panelTitle={toolbarPanel ? getPanelTitle(toolbarPanel) : undefined}
+                          groupName={toolbarGroup?.name}
+                          selectionBounds={toolbarBounds}
                           canvasScale={zoomLevel}
+                          viewportOffset={{ x: currentViewport.current.x, y: currentViewport.current.y }}
+                          viewportSize={canvasViewport}
                           onChat={() => {
-                            if (singleSelectedPanel) {
-                              setContextualChatGroupId(null);
-                              setContextualChatPanelId(singleSelectedPanel.id);
-                            } else if (selectedPanelsGroup) {
-                              // Chat about the group
-                              setContextualChatPanelId(null);
-                              setContextualChatGroupId(selectedPanelsGroup.id);
-                            } else if (selectedPanelIds.size > 1) {
-                              // Auto-create a group and open chat for it
-                              createGroup({ openChat: true });
-                            }
-                          }}
-                          onDownload={(format) => {
-                            if (singleSelectedPanel) {
-                              if (format === 'png') {
-                                downloadPanelAsPng(singleSelectedPanel.id, getPanelTitle(singleSelectedPanel));
-                              } else {
-                                downloadPanel(singleSelectedPanel, format);
+                            if (selectedPanelIds.size > 0) {
+                              if (singleSelectedPanel) {
+                                setContextualChatGroupId(null);
+                                setContextualChatPanelId(singleSelectedPanel.id);
+                              } else if (selectedPanelsGroup) {
+                                // Chat about the group
+                                setContextualChatPanelId(null);
+                                setContextualChatGroupId(selectedPanelsGroup.id);
+                              } else if (selectedPanelIds.size > 1) {
+                                // Auto-create a group and open chat for it
+                                createGroup({ openChat: true });
                               }
+                              return;
                             }
+                            setContextualChatGroupId(null);
+                            setContextualChatPanelId(toolbarPanel.id);
                           }}
+                          onDownload={toolbarPanel ? (format) => {
+                            if (format === 'png') {
+                              downloadPanelAsPng(toolbarPanel.id, getPanelTitle(toolbarPanel));
+                            } else {
+                              downloadPanel(toolbarPanel, format);
+                            }
+                          } : undefined}
                           onMinimize={() => {
-                            if (singleSelectedPanel) {
-                              setMinimizedPanels(prev => new Set([...prev, singleSelectedPanel.id]));
-                              setSelectedPanelIds(new Set());
+                            if (toolbarPanel) {
+                              minimizePanel(toolbarPanel.id, { clearSelection: selectedPanelIds.size > 0 });
                             }
                           }}
                           onRemove={() => {
-                            if (singleSelectedPanel) {
-                              removePanel(singleSelectedPanel.id);
-                              setSelectedPanelIds(new Set());
-                            } else if (selectedPanelIds.size > 1) {
-                              selectedPanelIds.forEach(id => removePanel(id));
-                              setSelectedPanelIds(new Set());
+                            if (selectedPanelIds.size > 0) {
+                              if (singleSelectedPanel) {
+                                removePanel(singleSelectedPanel.id);
+                                setSelectedPanelIds(new Set());
+                              } else if (selectedPanelIds.size > 1) {
+                                selectedPanelIds.forEach(id => removePanel(id));
+                                setSelectedPanelIds(new Set());
+                              }
+                              return;
+                            }
+                            if (toolbarPanel) {
+                              removePanel(toolbarPanel.id);
                             }
                           }}
                           onGroup={selectedPanelIds.size >= 2 && !selectedPanelsGroup ? createGroup : undefined}
                           onUngroup={selectedPanelsGroup ? ungroupPanels : undefined}
-                          onRemoveFromGroup={singleSelectedPanelGroup ? () => {
-                            if (singleSelectedPanel) {
-                              removeFromGroup(singleSelectedPanel.id);
+                          onRemoveFromGroup={toolbarSinglePanelGroup && selectedPanelIds.size <= 1 ? () => {
+                            if (toolbarPanel) {
+                              removeFromGroup(toolbarPanel.id);
                               setSelectedPanelIds(new Set());
                             }
                           } : undefined}
-                          isInGroup={!!singleSelectedPanelGroup}
-                          canDownload={singleSelectedPanel?.type === 'table' || singleSelectedPanel?.type === 'chart'}
+                          isInGroup={!!toolbarSinglePanelGroup}
+                          canDownload={!!toolbarPanel && (toolbarPanel.type === 'table' || toolbarPanel.type === 'chart')}
                           downloadFormats={
-                            singleSelectedPanel?.type === 'table' ? ['csv', 'json'] :
-                            singleSelectedPanel?.type === 'chart' ? ['png'] :
+                            toolbarPanel?.type === 'table' ? ['csv', 'json'] :
+                            toolbarPanel?.type === 'chart' ? ['png'] :
                             []
                           }
-                          onAlign={alignSelected}
-                          onDistribute={distributeSelected}
+                          onAlign={selectedPanelIds.size > 0 ? alignSelected : undefined}
+                          onDistribute={selectedPanelIds.size > 0 ? distributeSelected : undefined}
+                          onHoverChange={(hovering) => {
+                            if (selectedPanelIds.size > 0 || !hoveredPanel) return;
+                            if (hovering) {
+                              hoveredToolbarPanelIdRef.current = hoveredPanel.id;
+                              setHoveredToolbarPanelId(hoveredPanel.id);
+                            } else {
+                              hoveredToolbarPanelIdRef.current = null;
+                              setHoveredToolbarPanelId(null);
+                            }
+                          }}
                         />
                       )}
                     </div>
@@ -2756,7 +3236,23 @@ User question: ${message}`;
                 );
               }}
             </TransformWrapper>
-            </>
+          {visiblePanels.length === 0 && (
+            <div className="canvas-empty absolute inset-0 pointer-events-none">
+              <svg className="canvas-empty-icon" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+              </svg>
+              {artifactPanels.length === 0 ? (
+                <>
+                  <h3>Your canvas is empty</h3>
+                  <p>Chat with the agent to create tables, charts, and other artifacts. They&rsquo;ll appear here as draggable cards.</p>
+                </>
+              ) : (
+                <>
+                  <h3>All panels are minimized</h3>
+                  <p>Restore panels from the dock below to continue working on the canvas.</p>
+                </>
+              )}
+            </div>
           )}
         </div>
 
@@ -2768,6 +3264,7 @@ User question: ${message}`;
             messages={messages}
             input={input}
             isLoading={isLoading}
+            statusLabel={streamStatus}
             messagesEndRef={messagesEndRef}
             textareaRef={textareaRef}
             onInputChange={handleTextareaChange}
@@ -2876,6 +3373,14 @@ User question: ${message}`;
             </div>
           </div>
         </div>
+      )}
+
+      {tourOpen && (
+        <OnboardingTour
+          steps={tourSteps}
+          isOpen={tourOpen}
+          onClose={handleTourClose}
+        />
       )}
     </div>
   );
@@ -3004,12 +3509,25 @@ function ChartContent({ chart }: { chart: ChartData | null }) {
 
   const xKey = chart.config.xKey || chart.config.labelKey || 'label';
   const yKey = chart.config.yKey || chart.config.valueKey || 'value';
-  const COLORS = ['oklch(var(--chart-1))', 'oklch(var(--chart-2))', 'oklch(var(--chart-3))', 'oklch(var(--chart-4))', 'oklch(var(--chart-5))'];
+  // Use hex colors for Recharts SVG compatibility
+  const COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+  // Sanitize data: remove React-specific props that break SVG rendering
+  const RESERVED_PROPS = ['style', 'className', 'key', 'ref', 'children'];
+  const sanitizedData = chart.data.map(item => {
+    const clean: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(item)) {
+      if (!RESERVED_PROPS.includes(k)) {
+        clean[k] = v;
+      }
+    }
+    return clean;
+  });
 
   const chartConfig = {
     [yKey]: {
       label: yKey.charAt(0).toUpperCase() + yKey.slice(1),
-      color: 'oklch(var(--chart-1))',
+      color: COLORS[0],
     },
   };
 
@@ -3017,34 +3535,34 @@ function ChartContent({ chart }: { chart: ChartData | null }) {
     <div className="h-full w-full bg-card rounded-lg">
       <ChartContainer config={chartConfig} className="h-full w-full">
         {chart.type === 'bar' ? (
-          <BarChart data={chart.data} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
+          <BarChart data={sanitizedData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Bar dataKey={yKey} fill="oklch(var(--chart-1))" radius={[4, 4, 0, 0]} />
+            <Bar dataKey={yKey} fill={COLORS[0]} radius={[4, 4, 0, 0]} />
           </BarChart>
         ) : chart.type === 'line' ? (
-          <LineChart data={chart.data} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
+          <LineChart data={sanitizedData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Line type="monotone" dataKey={yKey} stroke="oklch(var(--chart-1))" strokeWidth={2} dot={{ fill: 'oklch(var(--chart-1))' }} />
+            <Line type="monotone" dataKey={yKey} stroke={COLORS[0]} strokeWidth={2} dot={{ fill: COLORS[0] }} />
           </LineChart>
         ) : chart.type === 'area' ? (
-          <AreaChart data={chart.data} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
+          <AreaChart data={sanitizedData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Area type="monotone" dataKey={yKey} stroke="oklch(var(--chart-2))" strokeWidth={2} fill="oklch(var(--chart-2) / 0.5)" />
+            <Area type="monotone" dataKey={yKey} stroke={COLORS[1]} strokeWidth={2} fill={`${COLORS[1]}80`} />
           </AreaChart>
         ) : chart.type === 'pie' ? (
           <PieChart>
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Pie data={chart.data} dataKey={yKey} nameKey={xKey} cx="50%" cy="50%" outerRadius="70%" label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`} labelLine={false}>
-              {chart.data.map((_, index) => (
+            <Pie data={sanitizedData} dataKey={yKey} nameKey={xKey} cx="50%" cy="50%" outerRadius="70%" label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`} labelLine={false}>
+              {sanitizedData.map((_, index) => (
                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
               ))}
             </Pie>
@@ -3351,10 +3869,11 @@ function ToolCard({ tool }: { tool: ToolExecution }) {
   );
 }
 
-function ChatPanel({ messages, input, isLoading, messagesEndRef, textareaRef, onInputChange, onSubmit, onStop, onKeyDown, workspaceId, uploadedFiles, setUploadedFiles }: {
+function ChatPanel({ messages, input, isLoading, statusLabel, messagesEndRef, textareaRef, onInputChange, onSubmit, onStop, onKeyDown, workspaceId, uploadedFiles, setUploadedFiles }: {
   messages: Message[];
   input: string;
   isLoading: boolean;
+  statusLabel?: string | null;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
@@ -3439,7 +3958,7 @@ function ChatPanel({ messages, input, isLoading, messagesEndRef, textareaRef, on
             </div>
           )}
           {messages.map((message, i) => (
-            <div key={i} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+            <div key={message.id ?? i} className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {message.role === 'user' ? (
                 <div className="max-w-[90%] rounded-2xl px-4 py-2.5 bg-primary text-primary-foreground rounded-br-sm">
                   <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
@@ -3473,10 +3992,14 @@ function ChatPanel({ messages, input, isLoading, messagesEndRef, textareaRef, on
               )}
             </div>
           ))}
-          {isLoading && (() => {
-            const lastMsg = messages[messages.length - 1];
-            const hasContent = lastMsg?.role === 'assistant' && (lastMsg.content || (lastMsg.blocks && lastMsg.blocks.length > 0));
-            if (hasContent) return null;
+          {(() => {
+            if (!isLoading) return null;
+            const lastAssistant = [...messages].reverse().find((msg) => msg.role === 'assistant');
+            const hasRunningTools = !!lastAssistant?.blocks?.some(
+              (block) => block.type === 'tools' && block.tools?.some((tool) => tool.status === 'running')
+            );
+            const inferredLabel = hasRunningTools ? 'Running tools...' : 'Thinking...';
+            const activeLabel = statusLabel && statusLabel.trim() ? statusLabel : inferredLabel;
             return (
               <div className="flex justify-start">
                 <div className="bg-muted rounded-2xl rounded-bl-sm px-4 py-2.5">
@@ -3485,7 +4008,7 @@ function ChatPanel({ messages, input, isLoading, messagesEndRef, textareaRef, on
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                     </svg>
-                    <span>Thinking...</span>
+                    <span>{activeLabel}</span>
                   </div>
                 </div>
               </div>
@@ -3518,7 +4041,7 @@ function ChatPanel({ messages, input, isLoading, messagesEndRef, textareaRef, on
         )}
 
         <form onSubmit={onSubmit}>
-          <div className="relative flex items-end gap-2 rounded-xl border border-border bg-card p-2 focus-within:border-primary/50 transition-colors">
+          <div className="relative flex items-end gap-2 rounded-xl border border-border bg-card p-2 focus-within:border-primary/50 transition-colors" data-tour="chat-input">
             <input ref={fileInputRef} type="file" multiple className="hidden" onChange={(e) => handleFileUpload(e.target.files)} />
             <button
               type="button"
@@ -3526,6 +4049,7 @@ function ChatPanel({ messages, input, isLoading, messagesEndRef, textareaRef, on
               disabled={isUploading}
               className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-50"
               title="Upload files"
+              data-tour="upload-button"
             >
               {isUploading ? (
                 <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">

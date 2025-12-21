@@ -30,25 +30,25 @@ export async function PATCH(
 
   // Update groups and connections if provided
   if (body.groups || body.connections) {
-    const uiState = await storage.getUIState(id) || { panels: [] };
-    if (body.groups) {
-      // Validate groups
-      const validGroups = body.groups.filter(g =>
-        typeof g.id === 'string' && g.id.length > 0 && g.id.length < 64 &&
-        Array.isArray(g.panelIds) && g.panelIds.every(pid => typeof pid === 'string')
-      );
-      (uiState as { panels: unknown[]; groups?: unknown[] }).groups = validGroups;
-    }
-    if (body.connections) {
-      // Validate connections
-      const validConnections = body.connections.filter(c =>
-        typeof c.id === 'string' && c.id.length > 0 && c.id.length < 128 &&
-        typeof c.sourceId === 'string' && typeof c.targetId === 'string'
-      );
-      (uiState as { panels: unknown[]; connections?: unknown[] }).connections = validConnections;
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await storage.setUIState(id, uiState as any);
+    await storage.updateUIState(id, (uiState) => {
+      if (body.groups) {
+        // Validate groups
+        const validGroups = body.groups.filter(g =>
+          typeof g.id === 'string' && g.id.length > 0 && g.id.length < 64 &&
+          Array.isArray(g.panelIds) && g.panelIds.every(pid => typeof pid === 'string')
+        );
+        uiState.groups = validGroups;
+      }
+      if (body.connections) {
+        // Validate connections
+        const validConnections = body.connections.filter(c =>
+          typeof c.id === 'string' && c.id.length > 0 && c.id.length < 128 &&
+          typeof c.sourceId === 'string' && typeof c.targetId === 'string'
+        );
+        uiState.connections = validConnections;
+      }
+      return uiState;
+    });
   }
 
   // Update panel layouts: { panels: { panelId: { x, y, width, height }, ... } }

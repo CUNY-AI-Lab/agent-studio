@@ -18,7 +18,6 @@ function randomUserId() {
     const wsId = 'testws';
     (0, node_test_1.after)(async () => {
         // Cleanup user data directory
-        const userPath = path_1.default.join(storage.basePath, 'workspaces');
         await (0, promises_1.rm)(path_1.default.join(storage.basePath), { recursive: true, force: true }).catch(() => { });
     });
     (0, node_test_1.it)('prevents path traversal when writing files', async () => {

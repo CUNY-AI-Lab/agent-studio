@@ -50,6 +50,15 @@ export const createTableTool = (ctx: ToolContext) =>
       }
 
       await ctx.storage.setTable(ctx.workspaceId, id, table);
+      const uiState = await ctx.storage.getUIState(ctx.workspaceId);
+      const tablePanels = uiState.panels.filter(p => p.type === 'table' && p.tableId === id);
+      if (tablePanels.length > 0) {
+        ctx.emitPanelUpdates?.(tablePanels.map(panel => ({
+          action: 'update',
+          panel,
+          data: { table },
+        })));
+      }
 
       return {
         content: [

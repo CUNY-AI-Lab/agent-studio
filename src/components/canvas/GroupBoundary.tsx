@@ -7,6 +7,7 @@ interface GroupBoundaryProps {
   group: PanelGroup;
   panelLayouts: Record<string, CanvasPanelLayout>;
   existingPanelIds: Set<string>; // Source of truth for which panels actually exist
+  visiblePanelIds?: Set<string>; // Optional filter for panels visible on canvas
   scale: number; // Current zoom level for drag calculations
   onGroupClick?: (groupId: string) => void;
   onGroupRename?: (groupId: string, newName: string) => void;
@@ -22,6 +23,7 @@ export function GroupBoundary({
   group,
   panelLayouts,
   existingPanelIds,
+  visiblePanelIds,
   scale,
   onGroupClick,
   onGroupRename,
@@ -34,12 +36,15 @@ export function GroupBoundary({
 }: GroupBoundaryProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const clickTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const didDragRef = useRef(false);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartRef = useRef({ x: 0, y: 0 });
   // Calculate bounding box around all panels in the group
   // Only include panels that actually exist (existingPanelIds) AND have layouts
   const { bounds, validPanelCount } = useMemo(() => {
-    const validIds = group.panelIds.filter(id => existingPanelIds.has(id));
+    const validIds = group.panelIds.filter(id =>
+      existingPanelIds.has(id) && (!visiblePanelIds || visiblePanelIds.has(id))
+    );
     const layouts = validIds
       .map(id => panelLayouts[id])
       .filter(Boolean);
@@ -65,7 +70,7 @@ export function GroupBoundary({
       },
       validPanelCount: layouts.length,
     };
-  }, [group.panelIds, panelLayouts, existingPanelIds]);
+  }, [group.panelIds, panelLayouts, existingPanelIds, visiblePanelIds]);
 
   // Focus input when editing starts
   useEffect(() => {
@@ -88,12 +93,12 @@ export function GroupBoundary({
   const handleClick = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
     // Don't trigger click if editing
-    if (isEditing) return;
+    if (isEditing || isDragging || didDragRef.current) return;
     // Set a timeout - if double-click happens, this will be cancelled
     clickTimeoutRef.current = setTimeout(() => {
       onGroupClick?.(group.id);
     }, 200);
-  }, [group.id, isEditing, onGroupClick]);
+  }, [group.id, isEditing, isDragging, onGroupClick]);
 
   // Handle double-click - cancel pending click and start editing
   const handleDoubleClick = useCallback((e: React.MouseEvent) => {
@@ -123,10 +128,16 @@ export function GroupBoundary({
     // Don't start drag if clicking on label or buttons
     if ((e.target as HTMLElement).closest('.group-boundary-label')) return;
 
+    if (clickTimeoutRef.current) {
+      clearTimeout(clickTimeoutRef.current);
+      clickTimeoutRef.current = null;
+    }
+
     e.preventDefault();
     e.stopPropagation();
 
     setIsDragging(true);
+    didDragRef.current = false;
     dragStartRef.current = { x: e.clientX, y: e.clientY };
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
   }, []);
@@ -139,6 +150,9 @@ export function GroupBoundary({
 
     const dx = (e.clientX - dragStartRef.current.x) / scale;
     const dy = (e.clientY - dragStartRef.current.y) / scale;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      didDragRef.current = true;
+    }
 
     // Update start position for continuous dragging
     dragStartRef.current = { x: e.clientX, y: e.clientY };
@@ -153,6 +167,9 @@ export function GroupBoundary({
     setIsDragging(false);
     (e.target as HTMLElement).releasePointerCapture(e.pointerId);
     onGroupDragEnd?.(group.id);
+    setTimeout(() => {
+      didDragRef.current = false;
+    }, 0);
   }, [isDragging, group.id, onGroupDragEnd]);
 
   // Don't render if no bounds or fewer than 2 valid panels

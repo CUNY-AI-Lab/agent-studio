@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import {
   MessageSquare,
   Download as DownloadIcon,
@@ -18,13 +18,14 @@ interface SelectionToolbarProps {
   selectedPanelIds?: Set<string>;
 
   // Panel info (for context)
-  panelType?: string;
   panelTitle?: string;
   groupName?: string;
 
   // Position reference (bounding box of selection in canvas coordinates)
   selectionBounds: { x: number; y: number; width: number; height: number } | null;
   canvasScale: number;
+  viewportOffset?: { x: number; y: number };
+  viewportSize?: { width: number; height: number };
 
   // Actions
   onChat?: () => void;
@@ -33,7 +34,6 @@ interface SelectionToolbarProps {
   onRemove?: () => void;
   onGroup?: () => void;
   onUngroup?: () => void;
-  onRename?: () => void;
   onRemoveFromGroup?: () => void;
   onAlign?: (mode: 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom') => void;
   onDistribute?: (axis: 'horizontal' | 'vertical') => void;
@@ -42,6 +42,7 @@ interface SelectionToolbarProps {
   isInGroup?: boolean;
   canDownload?: boolean;
   downloadFormats?: ('csv' | 'json' | 'png')[];
+  onHoverChange?: (hovering: boolean) => void;
 }
 
 export function SelectionToolbar({
@@ -52,6 +53,8 @@ export function SelectionToolbar({
   groupName,
   selectionBounds,
   canvasScale,
+  viewportOffset,
+  viewportSize,
   onChat,
   onDownload,
   onMinimize,
@@ -62,9 +65,12 @@ export function SelectionToolbar({
   isInGroup,
   canDownload,
   downloadFormats = [],
+  onHoverChange,
 }: SelectionToolbarProps) {
   const [showDownloadMenu, setShowDownloadMenu] = useState(false);
   const downloadRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarSize, setToolbarSize] = useState({ width: 0, height: 0 });
 
   // Close download menu when clicking outside
   useEffect(() => {
@@ -80,25 +86,80 @@ export function SelectionToolbar({
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showDownloadMenu]);
 
-  // Don't render if nothing selected or no bounds
+  // Selection types
   const hasSelection = selectedPanelId || selectedGroupId || (selectedPanelIds && selectedPanelIds.size > 0);
+  const isGroupSelection = !!selectedGroupId;
+  const isMultiSelection = selectedPanelIds && selectedPanelIds.size > 1 && !selectedGroupId;
+  const isSinglePanel = !!selectedPanelId && !isGroupSelection;
+
+  const toolbarKey = [
+    isGroupSelection ? 'group' : 'panel',
+    isMultiSelection ? 'multi' : 'single',
+    isInGroup ? 'in-group' : 'no-group',
+    canDownload ? `download-${downloadFormats.join(',')}` : 'no-download',
+    onMinimize ? 'minimize' : 'no-minimize',
+    onRemove ? 'remove' : 'no-remove',
+    onGroup ? 'group-action' : 'no-group-action',
+    onUngroup ? 'ungroup' : 'no-ungroup',
+    onRemoveFromGroup ? 'remove-from-group' : 'no-remove-from-group',
+    showDownloadMenu ? 'menu-open' : 'menu-closed',
+  ].join('|');
+
+  useLayoutEffect(() => {
+    if (!hasSelection || !selectionBounds) return;
+    if (!toolbarRef.current) return;
+    const rect = toolbarRef.current.getBoundingClientRect();
+    setToolbarSize(prev => (
+      prev.width === rect.width && prev.height === rect.height
+        ? prev
+        : { width: rect.width, height: rect.height }
+    ));
+  }, [hasSelection, selectionBounds, canvasScale, toolbarKey]);
+
   if (!hasSelection || !selectionBounds) return null;
 
   // Toolbar dimensions (at scale 1)
   const TOOLBAR_HEIGHT = 36;
   const GAP = 8;
+  const MARGIN = 8;
 
   // Position in canvas coordinates - center-top of selection bounds
-  const canvasX = selectionBounds.x + selectionBounds.width / 2;
-  const canvasY = selectionBounds.y - GAP / canvasScale - TOOLBAR_HEIGHT / canvasScale;
+  const initialCanvasX = selectionBounds.x + selectionBounds.width / 2;
+  const initialCanvasY = selectionBounds.y - GAP / canvasScale - TOOLBAR_HEIGHT / canvasScale;
 
-  // Determine what type of selection we have
-  const isGroupSelection = !!selectedGroupId;
-  const isMultiSelection = selectedPanelIds && selectedPanelIds.size > 1 && !selectedGroupId;
-  const isSinglePanel = !!selectedPanelId && !isGroupSelection;
+  const offsetX = viewportOffset?.x ?? 0;
+  const offsetY = viewportOffset?.y ?? 0;
+  const viewportWidth = viewportSize?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1920);
+  const viewportHeight = viewportSize?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 1080);
+
+  const toolbarWidth = toolbarSize.width || 200;
+  const toolbarHeight = toolbarSize.height || TOOLBAR_HEIGHT;
+
+  const screenX = initialCanvasX * canvasScale + offsetX;
+  let screenY = initialCanvasY * canvasScale + offsetY;
+
+  // If toolbar would be above the viewport, place it below the selection instead.
+  if (screenY < MARGIN) {
+    screenY = (selectionBounds.y + selectionBounds.height + GAP / canvasScale) * canvasScale + offsetY;
+  }
+
+  const minCenterX = MARGIN + toolbarWidth / 2;
+  const maxCenterX = viewportWidth - MARGIN - toolbarWidth / 2;
+  const minTopY = MARGIN;
+  const maxTopY = viewportHeight - MARGIN - toolbarHeight;
+
+  const safeMaxCenterX = Math.max(minCenterX, maxCenterX);
+  const safeMaxTopY = Math.max(minTopY, maxTopY);
+
+  const clampedScreenX = Math.min(Math.max(screenX, minCenterX), safeMaxCenterX);
+  const clampedScreenY = Math.min(Math.max(screenY, minTopY), safeMaxTopY);
+
+  const canvasX = (clampedScreenX - offsetX) / canvasScale;
+  const canvasY = (clampedScreenY - offsetY) / canvasScale;
 
   return (
     <div
+      ref={toolbarRef}
       className="selection-toolbar absolute"
       style={{
         left: canvasX,
@@ -115,6 +176,8 @@ export function SelectionToolbar({
       }}
       onClick={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
+      onPointerEnter={() => onHoverChange?.(true)}
+      onPointerLeave={() => onHoverChange?.(false)}
     >
       {/* Chat button */}
       <button

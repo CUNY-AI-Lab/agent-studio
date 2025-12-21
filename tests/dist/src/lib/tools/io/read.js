@@ -25,7 +25,7 @@ const createReadTool = (ctx) => (0, claude_agent_sdk_1.tool)('read', 'Read data 
         let data = table.data;
         // Simple filter parsing
         if (where) {
-            const match = where.match(/(\w+)\s*(==|!=|>|<|>=|<=)\s*(.+)/);
+            const match = where.match(/(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)/);
             if (match) {
                 const [, field, op, value] = match;
                 const parsedValue = value.replace(/['"]/g, '');

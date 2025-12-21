@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, readdir, stat, unlink } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, unlink, rename } from 'fs/promises';
 import { join, resolve, sep } from 'path';
 import { getUserDataPath } from '../session';
 
@@ -229,6 +229,10 @@ export interface SandboxedStorage {
   // UI State
   getUIState(workspaceId: string): Promise<UIState>;
   setUIState(workspaceId: string, state: UIState): Promise<void>;
+  updateUIState(
+    workspaceId: string,
+    updater: (state: UIState) => UIState | void | Promise<UIState | void>
+  ): Promise<UIState>;
   addPanel(workspaceId: string, panel: UIPanel): Promise<void>;
   removePanel(workspaceId: string, panelId: string): Promise<void>;
   updatePanel(workspaceId: string, panelId: string, updates: Partial<UIPanel>): Promise<void>;
@@ -573,7 +577,21 @@ export function createSandboxedStorage(userId: string): SandboxedStorage {
 
     async setUIState(workspaceId: string, state: UIState): Promise<void> {
       const uiPath = join(workspacePath(workspaceId), 'ui.json');
-      await writeFile(uiPath, JSON.stringify(state, null, 2));
+      const tmpPath = `${uiPath}.tmp`;
+      await writeFile(tmpPath, JSON.stringify(state, null, 2));
+      await rename(tmpPath, uiPath);
+    },
+
+    async updateUIState(
+      workspaceId: string,
+      updater: (state: UIState) => UIState | void | Promise<UIState | void>
+    ): Promise<UIState> {
+      return withWorkspaceLock(workspaceId, async () => {
+        const state = await this.getUIState(workspaceId);
+        const next = (await updater(state)) ?? state;
+        await this.setUIState(workspaceId, next);
+        return next;
+      });
     },
 
     async addPanel(workspaceId: string, panel: UIPanel): Promise<void> {

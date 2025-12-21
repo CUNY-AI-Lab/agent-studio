@@ -2,12 +2,23 @@ import { tool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import type { ToolContext } from '../index';
 
-const panelTypeSchema = z.enum(['table', 'editor', 'preview', 'fileTree', 'detail']);
+const panelTypeSchema = z.enum([
+  'chat',
+  'table',
+  'editor',
+  'preview',
+  'fileTree',
+  'detail',
+  'chart',
+  'cards',
+  'markdown',
+  'pdf',
+]);
 
 export const createAddPanelTool = (ctx: ToolContext) =>
   tool(
     'ui_add_panel',
-    'Add a new panel to the workspace UI. Panels can be tables, editors, previews, file trees, or detail views.',
+    'Add a new panel to the workspace UI. Panels can be tables, charts, cards, editors, previews, file trees, detail views, markdown, or PDFs.',
     z.object({
       id: z.string().describe('Unique ID for this panel'),
       type: panelTypeSchema.describe('Panel type'),
@@ -18,7 +29,7 @@ export const createAddPanelTool = (ctx: ToolContext) =>
       content: z.string().optional().describe('For preview panels: inline HTML/content'),
     }).shape,
     async ({ id, type, title, tableId, filePath, linkedTo, content }) => {
-      await ctx.storage.addPanel(ctx.workspaceId, {
+      const panel = {
         id,
         type,
         title,
@@ -26,7 +37,9 @@ export const createAddPanelTool = (ctx: ToolContext) =>
         filePath,
         linkedTo,
         content,
-      });
+      };
+      await ctx.storage.addPanel(ctx.workspaceId, panel);
+      ctx.emitPanelUpdates?.([{ action: 'add', panel }]);
 
       return {
         content: [{ type: 'text' as const, text: `Added ${type} panel "${id}" to workspace UI` }],
@@ -42,7 +55,12 @@ export const createRemovePanelTool = (ctx: ToolContext) =>
       id: z.string().describe('ID of the panel to remove'),
     }).shape,
     async ({ id }) => {
+      const ui = await ctx.storage.getUIState(ctx.workspaceId);
+      const panel = ui.panels.find(p => p.id === id);
       await ctx.storage.removePanel(ctx.workspaceId, id);
+      if (panel) {
+        ctx.emitPanelUpdates?.([{ action: 'remove', panel }]);
+      }
 
       return {
         content: [{ type: 'text' as const, text: `Removed panel "${id}" from workspace UI` }],
@@ -67,7 +85,13 @@ export const createUpdatePanelTool = (ctx: ToolContext) =>
         Object.entries(updates).filter(([, v]) => v !== undefined)
       );
 
+      const ui = await ctx.storage.getUIState(ctx.workspaceId);
+      const existingPanel = ui.panels.find(p => p.id === id);
       await ctx.storage.updatePanel(ctx.workspaceId, id, cleanUpdates);
+      if (existingPanel) {
+        const updatedPanel = { ...existingPanel, ...cleanUpdates };
+        ctx.emitPanelUpdates?.([{ action: 'update', panel: updatedPanel }]);
+      }
 
       return {
         content: [{ type: 'text' as const, text: `Updated panel "${id}"` }],
@@ -83,9 +107,10 @@ export const createSetLayoutTool = (ctx: ToolContext) =>
       zoom: z.number().min(0.5).max(2.4).optional().describe('Zoom level (0.5-2.4, default 1)'),
     }).shape,
     async ({ zoom = 1 }) => {
-      const state = await ctx.storage.getUIState(ctx.workspaceId);
-      state.viewport = { x: state.viewport?.x ?? 0, y: state.viewport?.y ?? 0, zoom };
-      await ctx.storage.setUIState(ctx.workspaceId, state);
+      await ctx.storage.updateUIState(ctx.workspaceId, (state) => {
+        state.viewport = { x: state.viewport?.x ?? 0, y: state.viewport?.y ?? 0, zoom };
+        return state;
+      });
 
       return {
         content: [{ type: 'text' as const, text: `Set canvas zoom to ${zoom * 100}%` }],

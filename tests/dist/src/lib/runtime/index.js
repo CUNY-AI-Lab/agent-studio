@@ -20,15 +20,58 @@ function extractPanelUpdates(toolResult) {
     }
     return { cleanResult: toolResult, panelUpdates: [] };
 }
+function createAsyncQueue() {
+    let closed = false;
+    const items = [];
+    let resolver = null;
+    return {
+        push(value) {
+            if (closed)
+                return;
+            if (resolver) {
+                const resolve = resolver;
+                resolver = null;
+                resolve({ value, done: false });
+            }
+            else {
+                items.push(value);
+            }
+        },
+        next() {
+            if (items.length > 0) {
+                return Promise.resolve({ value: items.shift(), done: false });
+            }
+            if (closed) {
+                return Promise.resolve({ value: null, done: true });
+            }
+            return new Promise((resolve) => {
+                resolver = resolve;
+            });
+        },
+        drain() {
+            return items.splice(0, items.length);
+        },
+        close() {
+            closed = true;
+            if (resolver) {
+                const resolve = resolver;
+                resolver = null;
+                resolve({ value: null, done: true });
+            }
+        },
+    };
+}
 function createWorkspaceRuntime(config, storage) {
     return {
         config,
         storage,
         async *query(prompt, conversationHistory, options) {
             var _a;
+            const panelQueue = createAsyncQueue();
             const ctx = {
                 storage,
                 workspaceId: config.id,
+                emitPanelUpdates: (updates) => panelQueue.push(updates),
             };
             const tools = (0, tools_1.getTools)(config.tools, ctx);
             const server = (0, claude_agent_sdk_1.createSdkMcpServer)({
@@ -47,46 +90,48 @@ function createWorkspaceRuntime(config, storage) {
                 }
                 contextPrompt += '</conversation_history>\n\n';
             }
-            // Add current workspace state
-            const uiState = await storage.getUIState(config.id);
-            const tables = await storage.listTables(config.id);
-            const charts = await storage.listCharts(config.id);
-            const cards = await storage.listCards(config.id);
-            if (uiState || tables.length > 0 || charts.length > 0 || cards.length > 0) {
-                contextPrompt += '<current_workspace_state>\n';
-                if (uiState) {
-                    contextPrompt += `Panels: ${uiState.panels.map(p => `${p.type}${p.id ? `:${p.id}` : ''}${p.tableId ? ` (table:${p.tableId})` : ''}${p.chartId ? ` (chart:${p.chartId})` : ''}${p.cardsId ? ` (cards:${p.cardsId})` : ''}`).join(', ')}\n`;
-                }
-                if (tables.length > 0) {
-                    contextPrompt += `Tables: ${tables.map(t => `${t.id} ("${t.title}", ${t.data.length} rows)`).join(', ')}\n`;
-                }
-                if (charts.length > 0) {
-                    contextPrompt += `Charts: ${charts.map(c => `${c.id} ("${c.title}", type: ${c.type})`).join(', ')}\n`;
-                }
-                if (cards.length > 0) {
-                    contextPrompt += `Cards: ${cards.map(c => `${c.id} ("${c.title}")`).join(', ')}\n`;
-                }
-                // Include panel groups if any exist
-                if ((uiState === null || uiState === void 0 ? void 0 : uiState.groups) && uiState.groups.length > 0) {
-                    contextPrompt += '\n<panel_groups>\n';
-                    for (const group of uiState.groups) {
-                        contextPrompt += `<group id="${group.id}"${group.name ? ` name="${group.name}"` : ''}>`;
-                        contextPrompt += group.panelIds.join(', ');
-                        contextPrompt += '</group>\n';
+            if ((options === null || options === void 0 ? void 0 : options.includeWorkspaceState) !== false) {
+                // Add current workspace state
+                const uiState = await storage.getUIState(config.id);
+                const tables = await storage.listTables(config.id);
+                const charts = await storage.listCharts(config.id);
+                const cards = await storage.listCards(config.id);
+                if (uiState || tables.length > 0 || charts.length > 0 || cards.length > 0) {
+                    contextPrompt += '<current_workspace_state>\n';
+                    if (uiState) {
+                        contextPrompt += `Panels: ${uiState.panels.map(p => `${p.type}${p.id ? `:${p.id}` : ''}${p.tableId ? ` (table:${p.tableId})` : ''}${p.chartId ? ` (chart:${p.chartId})` : ''}${p.cardsId ? ` (cards:${p.cardsId})` : ''}`).join(', ')}\n`;
                     }
-                    contextPrompt += '</panel_groups>\n';
-                    contextPrompt += 'Note: The user has grouped some panels together. Operations on one panel in a group may be relevant to others in the same group.\n';
-                }
-                // Include panel connections if any exist
-                if ((uiState === null || uiState === void 0 ? void 0 : uiState.connections) && uiState.connections.length > 0) {
-                    contextPrompt += '\n<panel_connections>\n';
-                    for (const conn of uiState.connections) {
-                        contextPrompt += `${conn.sourceId} -> ${conn.targetId}\n`;
+                    if (tables.length > 0) {
+                        contextPrompt += `Tables: ${tables.map(t => `${t.id} ("${t.title}", ${t.data.length} rows)`).join(', ')}\n`;
                     }
-                    contextPrompt += '</panel_connections>\n';
-                    contextPrompt += 'Note: These panels are connected - the target was created from context of the source.\n';
+                    if (charts.length > 0) {
+                        contextPrompt += `Charts: ${charts.map(c => `${c.id} ("${c.title}", type: ${c.type})`).join(', ')}\n`;
+                    }
+                    if (cards.length > 0) {
+                        contextPrompt += `Cards: ${cards.map(c => `${c.id} ("${c.title}")`).join(', ')}\n`;
+                    }
+                    // Include panel groups if any exist
+                    if ((uiState === null || uiState === void 0 ? void 0 : uiState.groups) && uiState.groups.length > 0) {
+                        contextPrompt += '\n<panel_groups>\n';
+                        for (const group of uiState.groups) {
+                            contextPrompt += `<group id="${group.id}"${group.name ? ` name="${group.name}"` : ''}>`;
+                            contextPrompt += group.panelIds.join(', ');
+                            contextPrompt += '</group>\n';
+                        }
+                        contextPrompt += '</panel_groups>\n';
+                        contextPrompt += 'Note: The user has grouped some panels together. Operations on one panel in a group may be relevant to others in the same group.\n';
+                    }
+                    // Include panel connections if any exist
+                    if ((uiState === null || uiState === void 0 ? void 0 : uiState.connections) && uiState.connections.length > 0) {
+                        contextPrompt += '\n<panel_connections>\n';
+                        for (const conn of uiState.connections) {
+                            contextPrompt += `${conn.sourceId} -> ${conn.targetId}\n`;
+                        }
+                        contextPrompt += '</panel_connections>\n';
+                        contextPrompt += 'Note: These panels are connected - the target was created from context of the source.\n';
+                    }
+                    contextPrompt += '</current_workspace_state>\n\n';
                 }
-                contextPrompt += '</current_workspace_state>\n\n';
             }
             contextPrompt += `<user_message>${prompt}</user_message>`;
             // Build allowed tools list:
@@ -105,7 +150,7 @@ function createWorkspaceRuntime(config, storage) {
                     prompt: contextPrompt,
                     options: {
                         systemPrompt: config.systemPrompt,
-                        model: 'claude-sonnet-4-20250514', // Use Sonnet to avoid Haiku overload
+                        model: 'claude-opus-4-5-20251101',
                         permissionMode: 'bypassPermissions',
                         allowDangerouslySkipPermissions: true,
                         mcpServers: { [config.id]: server },
@@ -120,62 +165,76 @@ function createWorkspaceRuntime(config, storage) {
                         },
                     },
                 });
-                for await (const event of messages) {
-                    // Handle streaming deltas (token-level streaming)
-                    if (event.type === 'stream_event') {
-                        const streamEvent = event.event;
-                        if (streamEvent.type === 'content_block_delta' && ((_a = streamEvent.delta) === null || _a === void 0 ? void 0 : _a.type) === 'text_delta') {
-                            yield { type: 'text_delta', content: streamEvent.delta.text };
+                const iterator = messages[Symbol.asyncIterator]();
+                let nextMessage = iterator.next();
+                let nextPanel = panelQueue.next();
+                while (true) {
+                    const race = await Promise.race([
+                        nextMessage.then((result) => ({ source: 'llm', result })),
+                        nextPanel.then((result) => ({ source: 'panel', result })),
+                    ]);
+                    if (race.source === 'panel') {
+                        if (!race.result.done && race.result.value) {
+                            yield {
+                                type: 'panel_update',
+                                panelUpdates: race.result.value,
+                            };
                         }
+                        nextPanel = panelQueue.next();
+                        continue;
                     }
-                    else if (event.type === 'assistant') {
-                        // Full message (for tool use blocks which aren't streamed as deltas)
-                        for (const block of event.message.content) {
-                            if (block.type === 'tool_use') {
-                                yield {
-                                    type: 'tool_use',
-                                    toolId: block.id,
-                                    toolName: block.name,
-                                    toolInput: block.input,
-                                };
-                            }
-                            // Don't yield text here - we get it from stream_event deltas
-                        }
-                    }
-                    else if (event.type === 'user') {
-                        // Tool results come back as user messages
-                        for (const block of event.message.content) {
-                            if (typeof block === 'string')
-                                continue; // Skip string content
-                            if (block.type === 'tool_result') {
-                                const rawResultText = typeof block.content === 'string'
+                    const { value: event, done } = race.result;
+                    if (done)
+                        break;
+                    const isResultEvent = event.type === 'result';
+                    if (event.type === 'user' && Array.isArray((_a = event.message) === null || _a === void 0 ? void 0 : _a.content)) {
+                        const panelUpdates = [];
+                        const nextContent = event.message.content.map((block) => {
+                            if (typeof block === 'string' || block.type !== 'tool_result')
+                                return block;
+                            const rawResultText = typeof block.content === 'string'
+                                ? block.content
+                                : Array.isArray(block.content)
                                     ? block.content
-                                    : Array.isArray(block.content)
-                                        ? block.content
-                                            .filter((c) => c.type === 'text')
-                                            .map((c) => c.text)
-                                            .join('\n')
-                                        : '';
-                                // Extract panel updates from result
-                                const { cleanResult, panelUpdates } = extractPanelUpdates(rawResultText);
-                                yield {
-                                    type: 'tool_result',
-                                    toolId: block.tool_use_id,
-                                    toolResult: cleanResult,
-                                    isError: block.is_error,
-                                };
-                                // Emit panel updates as separate event if any
-                                if (panelUpdates.length > 0) {
-                                    yield {
-                                        type: 'panel_update',
-                                        panelUpdates,
-                                    };
-                                }
+                                        .filter((c) => c.type === 'text')
+                                        .map((c) => c.text)
+                                        .join('\n')
+                                    : '';
+                            if (!rawResultText)
+                                return block;
+                            const { cleanResult, panelUpdates: extracted } = extractPanelUpdates(rawResultText);
+                            if (extracted.length > 0) {
+                                panelUpdates.push(...extracted);
                             }
+                            return { ...block, content: cleanResult };
+                        });
+                        if (panelUpdates.length > 0) {
+                            yield { type: 'panel_update', panelUpdates };
                         }
+                        yield {
+                            ...event,
+                            message: {
+                                ...event.message,
+                                content: nextContent,
+                            },
+                        };
                     }
+                    else {
+                        yield event;
+                    }
+                    if (isResultEvent) {
+                        break;
+                    }
+                    nextMessage = iterator.next();
                 }
-                yield { type: 'done' };
+                panelQueue.close();
+                const pendingPanelUpdates = panelQueue.drain();
+                for (const updates of pendingPanelUpdates) {
+                    yield {
+                        type: 'panel_update',
+                        panelUpdates: updates,
+                    };
+                }
             }
             catch (error) {
                 yield {

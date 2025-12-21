@@ -85,9 +85,16 @@ export async function GET(request: NextRequest) {
       'Cross-Origin-Embedder-Policy': 'unsafe-none',
       'Cross-Origin-Resource-Policy': 'cross-origin',
       'Cross-Origin-Opener-Policy': 'unsafe-none',
-      // Sandbox the preview page to isolate it even on direct navigation
-      // Allow scripts for interactive previews, but keep a unique origin
-      'Content-Security-Policy': "sandbox allow-scripts; frame-ancestors 'self'",
+      // Allow CDNs for scripts, styles, fonts while keeping frame isolation
+      'Content-Security-Policy': [
+        "default-src 'self'",
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net https://esm.sh",
+        "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com",
+        "font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
+        "img-src 'self' data: blob: https: http:",
+        "connect-src 'self' https: http:",
+        "frame-ancestors 'self'",
+      ].join('; '),
       'Referrer-Policy': 'no-referrer',
     },
   });

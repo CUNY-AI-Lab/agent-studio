@@ -2,6 +2,7 @@
 
 import { useCallback, useRef } from 'react';
 import { apiFetch } from '@/lib/api';
+import { parseSseEvents } from '@/lib/streaming/sse';
 
 export interface ToolExecution {
   id: string;
@@ -23,6 +24,13 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   blocks?: ContentBlock[];
+  id?: string;
+}
+
+export interface StreamStatusEvent {
+  status: 'thinking' | 'tool_running' | 'responding' | 'complete';
+  label?: string;
+  toolName?: string;
 }
 
 // Panel update type matching runtime
@@ -36,7 +44,7 @@ export interface PanelUpdate {
     chartId?: string;
     cardsId?: string;
     content?: string;
-    layout?: { x?: number; y?: number; w?: number; h?: number };
+    layout?: { x?: number; y?: number; width?: number; height?: number };
   };
   data?: {
     table?: unknown;
@@ -46,11 +54,17 @@ export interface PanelUpdate {
   };
 }
 
+export interface PanelUpdateContext {
+  sourcePanelId?: string | null;
+  sourceGroupId?: string | null;
+}
+
 interface UseStreamingQueryOptions {
   workspaceId: string;
   onMessagesUpdate: (updater: (prev: Message[]) => Message[]) => void;
   onComplete: () => Promise<void>;
-  onPanelUpdate?: (updates: PanelUpdate[]) => void;
+  onPanelUpdate?: (updates: PanelUpdate[], context?: PanelUpdateContext) => void;
+  onStatusUpdate?: (event: StreamStatusEvent) => void;
 }
 
 const MAX_RETRIES = 2;
@@ -61,12 +75,22 @@ export function useStreamingQuery({
   onMessagesUpdate,
   onComplete,
   onPanelUpdate,
+  onStatusUpdate,
 }: UseStreamingQueryOptions) {
+  const messageIdRef = useRef(0);
   const isLoadingRef = useRef(false);
   const readerRef = useRef<ReadableStreamDefaultReader<Uint8Array> | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // Track running tools separately from tool data - only used for timer and cancellation
   const runningToolIdsRef = useRef<Set<string>>(new Set());
+
+  const makeMessageId = useCallback(() => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    messageIdRef.current += 1;
+    return `msg-${Date.now()}-${messageIdRef.current}`;
+  }, []);
 
   // Stop timer
   const stopToolTimer = useCallback(() => {
@@ -99,6 +123,9 @@ export function useStreamingQuery({
     prompt: string,
     options?: {
       skipMainChat?: boolean;
+      onTextDelta?: (delta: string, fullText: string) => void;
+      onStatusUpdate?: (event: StreamStatusEvent) => void;
+      panelContext?: PanelUpdateContext;
     },
     retryCount = 0,
     // Preserve state across retries to prevent duplicate tools
@@ -109,8 +136,12 @@ export function useStreamingQuery({
     }
   ): Promise<string> => {
     const skipMainChat = options?.skipMainChat ?? false;
-    if (isLoadingRef.current && retryCount === 0) return '';
-    isLoadingRef.current = true;
+    const trackLoading = !skipMainChat;
+    const statusHandler = options?.onStatusUpdate ?? (trackLoading ? onStatusUpdate : undefined);
+    if (trackLoading && isLoadingRef.current && retryCount === 0) return '';
+    if (trackLoading) {
+      isLoadingRef.current = true;
+    }
 
     // Content blocks - directly store tools here (like site-studio pattern)
     // On retry, reuse existing state to preserve deduplication
@@ -119,11 +150,28 @@ export function useStreamingQuery({
     let currentToolsGroup: ToolExecution[] = [];
     const processedToolIds = retryState?.processedToolIds ?? new Set<string>(); // Deduplication
     const toolIdMap = retryState?.toolIdMap ?? new Map<string, ToolExecution>(); // O(1) lookup for tool results
+    const runningToolIds = trackLoading ? runningToolIdsRef.current : new Set<string>();
     let lineBuffer = '';
+    let completionTriggered = false;
+    let streamErrorMessage: string | null = null;
+    let terminalEvent: 'done' | 'aborted' | null = null;
+    let receivedStreamEvents = false;
+
+    const triggerComplete = () => {
+      if (completionTriggered) return;
+      completionTriggered = true;
+      if (!trackLoading) return;
+      void onComplete().catch((error) => {
+        console.error('onComplete error:', error);
+      });
+    };
 
     // Only add placeholder on first attempt (skip for contextual chats)
     if (retryCount === 0 && !skipMainChat) {
-      onMessagesUpdate((prev) => [...prev, { role: 'assistant', content: '', blocks: [] }]);
+      onMessagesUpdate((prev) => [
+        ...prev,
+        { id: makeMessageId(), role: 'assistant', content: '', blocks: [] },
+      ]);
     }
 
     // Flush current text into blocks
@@ -140,6 +188,98 @@ export function useStreamingQuery({
         contentBlocks.push({ type: 'tools', tools: [...currentToolsGroup] });
         currentToolsGroup = [];
       }
+    };
+
+    const flushToolsBeforeText = () => {
+      if (currentToolsGroup.length > 0) {
+        flushTools();
+      }
+    };
+
+    const formatToolName = (name?: string) => {
+      if (!name) return 'tool';
+      const base = name.split('__').pop() || name;
+      return base.replace(/_/g, ' ');
+    };
+
+    const setStatus = (status: StreamStatusEvent['status'], label?: string, toolName?: string) => {
+      if (!statusHandler) return;
+      statusHandler({ status, label, toolName });
+    };
+
+    const appendText = (text: string, options?: { fromStream?: boolean }) => {
+      if (!text) return;
+      flushToolsBeforeText();
+      currentSectionText += text;
+      if (options?.fromStream) {
+        receivedStreamEvents = true;
+      }
+      setStatus('responding', 'Responding...');
+      if (options?.onTextDelta) {
+        options.onTextDelta(text, buildFullText());
+      }
+      updateMessage();
+    };
+
+    const handleToolUse = (toolId?: string, toolName?: string, toolInput?: unknown) => {
+      if (!toolId) return;
+      const existingTool = toolIdMap.get(toolId);
+      if (existingTool) {
+        let updated = false;
+        if (toolName && existingTool.name !== toolName) {
+          existingTool.name = toolName;
+          updated = true;
+        }
+        if (toolInput !== undefined && existingTool.input !== toolInput) {
+          existingTool.input = toolInput;
+          updated = true;
+        }
+        if (updated) {
+          updateMessage();
+        }
+        return;
+      }
+
+      processedToolIds.add(toolId);
+      flushText();
+      receivedStreamEvents = false;
+
+      const tool: ToolExecution = {
+        id: toolId,
+        name: toolName || 'tool',
+        input: toolInput,
+        status: 'running',
+        startTime: Date.now(),
+        elapsedTime: 0,
+      };
+
+      toolIdMap.set(toolId, tool);
+      runningToolIds.add(toolId);
+      currentToolsGroup.push(tool);
+
+      setStatus('tool_running', `Using ${formatToolName(toolName)}...`, toolName);
+      startToolTimer();
+      updateMessage();
+    };
+
+    const handleToolResult = (toolId?: string, isError?: boolean, output?: string) => {
+      if (!toolId) return;
+      const tool = toolIdMap.get(toolId);
+      if (tool) {
+        tool.status = isError ? 'error' : 'success';
+        tool.output = output;
+        tool.elapsedTime = Math.round((Date.now() - tool.startTime) / 100) / 10;
+      }
+
+      runningToolIds.delete(toolId);
+      if (runningToolIds.size === 0) {
+        if (trackLoading) {
+          stopToolTimer();
+        }
+        setStatus('thinking', 'Thinking...');
+      }
+
+      updateMessage();
     };
 
     const updateMessage = () => {
@@ -178,7 +318,9 @@ export function useStreamingQuery({
 
       onMessagesUpdate((prev) => {
         const updated = [...prev];
+        const lastMessage = updated[updated.length - 1];
         updated[updated.length - 1] = {
+          id: lastMessage?.id ?? makeMessageId(),
           role: 'assistant',
           content: fullText,
           blocks: blocks.length > 0 ? blocks : undefined
@@ -187,8 +329,34 @@ export function useStreamingQuery({
       });
     };
 
+    const buildFullText = () => (
+      contentBlocks
+        .filter((b): b is ContentBlock & { type: 'text'; text: string } => b.type === 'text' && !!b.text)
+        .map(b => b.text)
+        .join('') + currentSectionText
+    );
+
+    const appendErrorNote = (message: string) => {
+      const note = `\n\n*[Error: ${message}]*`;
+      if (currentSectionText.trim()) {
+        currentSectionText += note;
+        return;
+      }
+
+      for (let i = contentBlocks.length - 1; i >= 0; i -= 1) {
+        const block = contentBlocks[i];
+        if (block.type === 'text' && block.text) {
+          block.text += note;
+          return;
+        }
+      }
+
+      currentSectionText = `*[Error: ${message}]*`;
+    };
+
     // Start timer for elapsed time updates
     const startToolTimer = () => {
+      if (!trackLoading) return;
       if (timerRef.current) return;
       timerRef.current = setInterval(() => {
         const now = Date.now();
@@ -214,12 +382,14 @@ export function useStreamingQuery({
       const response = await apiFetch(`/api/workspaces/${workspaceId}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, skipConversation: skipMainChat }),
       });
 
       const reader = response.body?.getReader();
       if (!reader) throw new Error('No reader');
-      readerRef.current = reader;
+      if (trackLoading) {
+        readerRef.current = reader;
+      }
 
       const decoder = new TextDecoder();
       try {
@@ -228,93 +398,114 @@ export function useStreamingQuery({
           if (done) break;
 
           const chunk = decoder.decode(value, { stream: true });
-          const fullChunk = lineBuffer + chunk;
-          lineBuffer = '';
-
-          const lines = fullChunk.split('\n');
-
-          // If chunk doesn't end with newline, last line is incomplete
-          if (!fullChunk.endsWith('\n')) {
-            lineBuffer = lines.pop() || '';
-          }
-
-          for (const line of lines) {
-            if (!line.startsWith('data: ')) continue;
-
-            const data = line.slice(6);
-            if (data === '[DONE]') break;
-
-            let event;
-            try {
-              event = JSON.parse(data);
-            } catch {
-              // Ignore parse errors for incomplete/malformed JSON in SSE
-              continue;
-            }
+          const { events, rest } = parseSseEvents(lineBuffer, chunk);
+          lineBuffer = rest;
+          let shouldStop = false;
+          for (const event of events) {
+            if (!event || typeof event !== 'object') continue;
+            const typedEvent = event as {
+              type?: string;
+              event?: {
+                type?: string;
+                delta?: { type?: string; text?: string };
+                content_block?: { type?: string; id?: string; name?: string; input?: unknown; text?: string };
+              };
+              message?: { content?: Array<{ type?: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; is_error?: boolean; content?: unknown }> };
+              panelUpdates?: PanelUpdate[];
+              error?: string;
+            };
 
             // Process the parsed event
-            if (event.type === 'text' || event.type === 'text_delta') {
-              currentSectionText += event.content;
-              updateMessage();
-            } else if (event.type === 'tool_use') {
-              // Deduplicate
-              if (processedToolIds.has(event.toolId)) continue;
-              processedToolIds.add(event.toolId);
-
-              // Flush current text before starting tools
-              flushText();
-
-              const tool: ToolExecution = {
-                id: event.toolId,
-                name: event.toolName,
-                input: event.toolInput,
-                status: 'running',
-                startTime: Date.now(),
-                elapsedTime: 0,
-              };
-
-              toolIdMap.set(event.toolId, tool);
-              runningToolIdsRef.current.add(event.toolId);
-              currentToolsGroup.push(tool);
-
-              startToolTimer();
-              updateMessage();
-            } else if (event.type === 'tool_result') {
-              const tool = toolIdMap.get(event.toolId);
-              if (tool) {
-                tool.status = event.isError ? 'error' : 'success';
-                tool.output = event.toolResult;
-                tool.elapsedTime = Math.round((Date.now() - tool.startTime) / 100) / 10;
+            if (typedEvent.type === 'stream_event' && typedEvent.event) {
+              const streamEvent = typedEvent.event;
+              if (streamEvent.type === 'content_block_delta' && streamEvent.delta?.type === 'text_delta') {
+                appendText(streamEvent.delta.text || '', { fromStream: true });
+              } else if (streamEvent.type === 'content_block_start' && streamEvent.content_block?.type === 'text') {
+                appendText(streamEvent.content_block.text || '', { fromStream: true });
+              } else if (streamEvent.type === 'content_block_start' && streamEvent.content_block?.type === 'tool_use') {
+                handleToolUse(
+                  streamEvent.content_block.id,
+                  streamEvent.content_block.name,
+                  streamEvent.content_block.input
+                );
               }
-
-              runningToolIdsRef.current.delete(event.toolId);
-
-              // Stop timer if no more running tools
-              if (runningToolIdsRef.current.size === 0) {
-                stopToolTimer();
+            } else if (typedEvent.type === 'tool_approval_request') {
+              setStatus('thinking', 'Waiting for approval...');
+            } else if (typedEvent.type === 'assistant' && typedEvent.message?.content) {
+              const skipText = receivedStreamEvents;
+              for (const block of typedEvent.message.content) {
+                if (block.type === 'tool_use') {
+                  handleToolUse(block.id, block.name, block.input);
+                } else if (!skipText && block.type === 'text' && typeof block.text === 'string') {
+                  appendText(block.text);
+                }
               }
-
-              // Tool completed - flush the tools group and reset for next text section
-              flushTools();
-
-              updateMessage();
-            } else if (event.type === 'panel_update') {
+            } else if (typedEvent.type === 'user' && typedEvent.message?.content) {
+              for (const block of typedEvent.message.content) {
+                if (block.type === 'tool_result') {
+                  const output = Array.isArray(block.content)
+                    ? block.content
+                        .filter((c: { type: string }): c is { type: 'text'; text: string } => c.type === 'text')
+                        .map((c: { type: 'text'; text: string }) => c.text)
+                        .join('\n')
+                    : block.content;
+                  handleToolResult(block.tool_use_id, block.is_error, typeof output === 'string' ? output : '');
+                }
+              }
+            } else if (typedEvent.type === 'panel_update') {
               // Handle panel updates from server
-              if (onPanelUpdate && event.panelUpdates) {
-                onPanelUpdate(event.panelUpdates);
+              if (onPanelUpdate && typedEvent.panelUpdates) {
+                onPanelUpdate(typedEvent.panelUpdates, options?.panelContext);
               }
-            } else if (event.type === 'done' || event.type === 'aborted') {
-              stopToolTimer();
-              readerRef.current = null;
+            } else if (typedEvent.type === 'error') {
+              streamErrorMessage = typedEvent.error || 'Something went wrong. Please try again.';
+              shouldStop = true;
+              break;
+            } else if (typedEvent.type === 'done' || typedEvent.type === 'aborted') {
+              terminalEvent = typedEvent.type;
+              if (trackLoading) {
+                stopToolTimer();
+                readerRef.current = null;
+              }
 
               // Final update to ensure everything is captured
               flushText();
               flushTools();
               updateMessage();
 
-              await onComplete();
+              if (statusHandler) {
+                statusHandler({ status: 'complete' });
+              }
+              triggerComplete();
+              shouldStop = true;
+              break;
             }
           }
+
+          if (shouldStop) {
+            void reader.cancel();
+            break;
+          }
+        }
+
+        if (streamErrorMessage) {
+          appendErrorNote(streamErrorMessage);
+
+          if (trackLoading) {
+            stopToolTimer();
+            readerRef.current = null;
+          }
+
+          flushText();
+          flushTools();
+          updateMessage();
+          triggerComplete();
+
+          return buildFullText();
+        }
+
+        if (terminalEvent) {
+          return buildFullText();
         }
 
         // Stream ended - final flush
@@ -330,7 +521,9 @@ export function useStreamingQuery({
         return finalText;
 
       } finally {
-        stopToolTimer();
+        if (trackLoading) {
+          stopToolTimer();
+        }
       }
     } catch (error: unknown) {
       console.error('Query error:', error);
@@ -374,31 +567,40 @@ export function useStreamingQuery({
         onMessagesUpdate((prev) => {
           if (prev.length > 0 && prev[prev.length - 1].role === 'assistant' && !prev[prev.length - 1].content) {
             const updated = [...prev];
-            updated[updated.length - 1] = { role: 'assistant', content: errorMessage };
+            const lastMessage = updated[updated.length - 1];
+            updated[updated.length - 1] = {
+              id: lastMessage?.id ?? makeMessageId(),
+              role: 'assistant',
+              content: errorMessage,
+            };
             return updated;
           }
-          return [...prev, { role: 'assistant', content: errorMessage }];
+          return [...prev, { id: makeMessageId(), role: 'assistant', content: errorMessage }];
         });
       }
       return errorMessage;
     } finally {
-      isLoadingRef.current = false;
-      stopToolTimer();
-
-      // Mark any still-running tools as interrupted (but don't clear toolIdMap!)
-      for (const id of runningToolIdsRef.current) {
-        const tool = toolIdMap.get(id);
-        if (tool && tool.status === 'running') {
-          tool.status = 'error';
-          tool.output = tool.output || 'Operation interrupted';
-        }
+      if (trackLoading) {
+        isLoadingRef.current = false;
+        stopToolTimer();
       }
-      runningToolIdsRef.current.clear();
 
-      // Final update to show interrupted state
-      updateMessage();
+      if (trackLoading) {
+        // Mark any still-running tools as interrupted (but don't clear toolIdMap!)
+          for (const id of runningToolIdsRef.current) {
+            const tool = toolIdMap.get(id);
+            if (tool && tool.status === 'running') {
+              tool.status = 'error';
+              tool.output = tool.output || 'Operation interrupted';
+            }
+        }
+        runningToolIdsRef.current.clear();
+
+        // Final update to show interrupted state
+        updateMessage();
+      }
     }
-  }, [workspaceId, onMessagesUpdate, onComplete, stopToolTimer, onPanelUpdate]);
+  }, [workspaceId, onMessagesUpdate, onComplete, stopToolTimer, onPanelUpdate, onStatusUpdate, makeMessageId]);
 
   return { executeQuery, stopQuery, isLoadingRef };
 }

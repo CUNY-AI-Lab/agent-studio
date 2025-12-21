@@ -33,7 +33,7 @@ export const createReadTool = (ctx: ToolContext) =>
 
         // Simple filter parsing
         if (where) {
-          const match = where.match(/(\w+)\s*(==|!=|>|<|>=|<=)\s*(.+)/);
+          const match = where.match(/(\w+)\s*(==|!=|>=|<=|>|<)\s*(.+)/);
           if (match) {
             const [, field, op, value] = match;
             const parsedValue = value.replace(/['"]/g, '');

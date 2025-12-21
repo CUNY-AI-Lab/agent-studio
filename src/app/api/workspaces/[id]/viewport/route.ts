@@ -25,9 +25,10 @@ export async function PATCH(
   }
 
   // Update viewport in UI state
-  const uiState = await storage.getUIState(id);
-  uiState.viewport = viewport;
-  await storage.setUIState(id, uiState);
+  await storage.updateUIState(id, (uiState) => {
+    uiState.viewport = viewport;
+    return uiState;
+  });
 
   return NextResponse.json({ success: true });
 }

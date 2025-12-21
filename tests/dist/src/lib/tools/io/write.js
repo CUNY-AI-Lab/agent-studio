@@ -17,6 +17,7 @@ const createWriteTool = (ctx) => (0, claude_agent_sdk_1.tool)('write', 'Write da
         .optional()
         .describe('Column definitions for new tables'),
 }).shape, async ({ data, to, mode, title, columns }) => {
+    var _a;
     const [type, name] = to.split(':');
     if (type === 'table') {
         let table = await ctx.storage.getTable(ctx.workspaceId, name);
@@ -45,6 +46,15 @@ const createWriteTool = (ctx) => (0, claude_agent_sdk_1.tool)('write', 'Write da
             table.data = [...table.data, ...newData];
         }
         await ctx.storage.setTable(ctx.workspaceId, name, table);
+        const uiState = await ctx.storage.getUIState(ctx.workspaceId);
+        const tablePanels = uiState.panels.filter(p => p.type === 'table' && p.tableId === name);
+        if (tablePanels.length > 0) {
+            (_a = ctx.emitPanelUpdates) === null || _a === void 0 ? void 0 : _a.call(ctx, tablePanels.map(panel => ({
+                action: 'update',
+                panel,
+                data: { table },
+            })));
+        }
         return {
             content: [
                 {

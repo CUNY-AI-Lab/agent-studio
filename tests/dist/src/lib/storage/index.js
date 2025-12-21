@@ -368,7 +368,18 @@ function createSandboxedStorage(userId) {
         },
         async setUIState(workspaceId, state) {
             const uiPath = (0, path_1.join)(workspacePath(workspaceId), 'ui.json');
-            await (0, promises_1.writeFile)(uiPath, JSON.stringify(state, null, 2));
+            const tmpPath = `${uiPath}.tmp`;
+            await (0, promises_1.writeFile)(tmpPath, JSON.stringify(state, null, 2));
+            await (0, promises_1.rename)(tmpPath, uiPath);
+        },
+        async updateUIState(workspaceId, updater) {
+            return withWorkspaceLock(workspaceId, async () => {
+                var _a;
+                const state = await this.getUIState(workspaceId);
+                const next = (_a = (await updater(state))) !== null && _a !== void 0 ? _a : state;
+                await this.setUIState(workspaceId, next);
+                return next;
+            });
         },
         async addPanel(workspaceId, panel) {
             await withWorkspaceLock(workspaceId, async () => {

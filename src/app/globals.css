@@ -620,6 +620,145 @@ hr.editorial {
   height: 24px;
 }
 
+/* Onboarding tour */
+.tour-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+}
+
+.tour-backdrop {
+  position: absolute;
+  inset: 0;
+  background: oklch(0.2 0.02 250 / 0.55);
+}
+
+.tour-spotlight {
+  position: fixed;
+  border-radius: 16px;
+  box-shadow: 0 0 0 9999px oklch(0.2 0.02 250 / 0.55);
+  border: 1px solid oklch(0.95 0.01 250 / 0.4);
+  pointer-events: none;
+}
+
+.tour-tooltip {
+  position: fixed;
+  z-index: 1;
+  max-width: 340px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow:
+    0 6px 24px oklch(0.2 0.02 250 / 0.25),
+    0 16px 48px oklch(0.2 0.02 250 / 0.2);
+  --tour-arrow-offset: 24px;
+}
+
+.tour-tooltip::after {
+  content: "";
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  transform: rotate(45deg);
+}
+
+.tour-tooltip[data-has-target="false"]::after {
+  display: none;
+}
+
+.tour-tooltip[data-placement="bottom"]::after {
+  top: -7px;
+  left: var(--tour-arrow-offset);
+}
+
+.tour-tooltip[data-placement="top"]::after {
+  bottom: -7px;
+  left: var(--tour-arrow-offset);
+}
+
+.tour-tooltip[data-placement="right"]::after {
+  left: -7px;
+  top: var(--tour-arrow-offset);
+}
+
+.tour-tooltip[data-placement="left"]::after {
+  right: -7px;
+  top: var(--tour-arrow-offset);
+}
+
+.tour-step-count {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  margin-bottom: 6px;
+}
+
+.tour-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.tour-description {
+  font-size: 0.875rem;
+  color: var(--muted-foreground);
+  margin-bottom: 12px;
+}
+
+.tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.tour-nav {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tour-primary,
+.tour-secondary {
+  font-size: 0.8125rem;
+  border-radius: 10px;
+  padding: 6px 12px;
+  transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
+}
+
+.tour-primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.tour-primary:hover {
+  opacity: 0.9;
+}
+
+.tour-secondary {
+  background: transparent;
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+}
+
+.tour-secondary:hover {
+  color: var(--foreground);
+  background: var(--muted);
+}
+
+.tour-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tour-hint {
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+}
+
 /* ═══════════════════════════════════════════════════════════════════════════
    Contextual Chat Popover
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -767,9 +906,15 @@ hr.editorial {
 
 .contextual-chat-loading {
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  gap: 6px;
   padding: 8px 12px;
   align-self: flex-start;
+}
+
+.contextual-chat-loading-dots {
+  display: flex;
+  gap: 4px;
 }
 
 .contextual-chat-loading-dot {
@@ -778,6 +923,15 @@ hr.editorial {
   border-radius: 50%;
   background: oklch(0.5 0.02 250);
   animation: loading-bounce 1.4s ease-in-out infinite;
+}
+
+.contextual-chat-loading-label {
+  font-size: 12px;
+  color: oklch(0.45 0.02 250);
+}
+
+.dark .contextual-chat-loading-label {
+  color: oklch(0.7 0.02 250);
 }
 
 .contextual-chat-loading-dot:nth-child(1) { animation-delay: 0s; }
@@ -1041,7 +1195,7 @@ hr.editorial {
   background: oklch(0.6 0.12 75 / 0.1);
   border-radius: 4px;
   pointer-events: none;
-  z-index: 1000;
+  z-index: 5000;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

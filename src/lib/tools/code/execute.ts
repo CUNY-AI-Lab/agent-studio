@@ -3,6 +3,8 @@ import { z } from 'zod';
 import * as vm from 'vm';
 import * as fs from 'fs';
 import * as path from 'path';
+import { lookup } from 'dns/promises';
+import * as net from 'net';
 import { PDFParse } from 'pdf-parse';
 import { minimatch } from 'minimatch';
 import { XMLParser } from 'fast-xml-parser';
@@ -23,11 +25,58 @@ export interface PanelUpdate {
 
 // Skills directory location
 const SKILLS_DIR = path.join(process.cwd(), 'src/lib/skills');
+const FETCH_TIMEOUT_MS = 30000;
+const VM_TIMEOUT_MS = 30000;
+const ASYNC_TIMEOUT_MS = 120000;
+const SANDBOX_TIMER_LIMIT_MS = 120000;
 
 // Python venv path - computed lazily to avoid Turbopack static analysis
 function getPythonBin(): string {
   const venv = process.env.PYTHON_VENV_PATH || `${process.cwd()}/.venv`;
   return `${venv}/bin/python3`;
+}
+
+function isPrivateIpv4(ip: string): boolean {
+  const parts = ip.split('.').map(Number);
+  if (parts.length !== 4 || parts.some(Number.isNaN)) return false;
+  const [a, b] = parts;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  return false;
+}
+
+function normalizeHostForIp(host: string): string {
+  const normalized = host.toLowerCase();
+  const debracketed = normalized.startsWith('[') && normalized.endsWith(']')
+    ? normalized.slice(1, -1)
+    : normalized;
+  const zoneIndex = debracketed.indexOf('%');
+  return zoneIndex >= 0 ? debracketed.slice(0, zoneIndex) : debracketed;
+}
+
+function isPrivateHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  if (normalized === 'localhost') return true;
+
+  const hostForIp = normalizeHostForIp(normalized);
+
+  const ipVersion = net.isIP(hostForIp);
+  if (ipVersion === 4) {
+    return isPrivateIpv4(hostForIp);
+  }
+  if (ipVersion === 6) {
+    if (hostForIp === '::' || hostForIp === '::1') return true;
+    if (hostForIp.startsWith('fe80:')) return true; // Link-local
+    if (hostForIp.startsWith('fc') || hostForIp.startsWith('fd')) return true; // ULA
+    if (hostForIp.startsWith('::ffff:')) {
+      const v4 = hostForIp.slice('::ffff:'.length);
+      if (net.isIP(v4) === 4) return isPrivateIpv4(v4);
+    }
+  }
+
+  return false;
 }
 
 /**
@@ -41,6 +90,19 @@ export const createExecuteTool = (ctx: ToolContext) => {
 
   // Track panel updates during execution for streaming to client
   const panelUpdates: PanelUpdate[] = [];
+  const shouldEmbedPanelUpdates = !ctx.emitPanelUpdates;
+  const emitPanelUpdate = (update: PanelUpdate) => {
+    if (ctx.emitPanelUpdates) {
+      try {
+        ctx.emitPanelUpdates([update]);
+      } catch (error) {
+        console.error('Failed to emit panel update:', error);
+      }
+    }
+    if (shouldEmbedPanelUpdates) {
+      panelUpdates.push(update);
+    }
+  };
 
   // Create wrapper functions that call the actual storage/tool operations
   // These are the Unix-style primitives exposed to agent code
@@ -244,7 +306,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
         };
         await storage.addPanel(workspaceId, panel);
         // Track for streaming
-        panelUpdates.push({ action: 'add', panel, data: { table: tableData } });
+        emitPanelUpdate({ action: 'add', panel, data: { table: tableData } });
       } else {
         // Existing panel: preserve position if it has one, otherwise let frontend position
         const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
@@ -258,14 +320,14 @@ export const createExecuteTool = (ctx: ToolContext) => {
         if (config.layout && updatedLayout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
-        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { table: tableData } });
+        emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { table: tableData } });
       }
     },
 
     async addPanel(panel: Omit<UIPanel, 'type'> & { type: string }): Promise<void> {
       const typedPanel = panel as UIPanel;
       await storage.addPanel(workspaceId, typedPanel);
-      panelUpdates.push({ action: 'add', panel: typedPanel });
+      emitPanelUpdate({ action: 'add', panel: typedPanel });
     },
 
     async removePanel(id: string): Promise<void> {
@@ -273,12 +335,19 @@ export const createExecuteTool = (ctx: ToolContext) => {
       const panel = ui.panels.find(p => p.id === id);
       await storage.removePanel(workspaceId, id);
       if (panel) {
-        panelUpdates.push({ action: 'remove', panel });
+        emitPanelUpdate({ action: 'remove', panel });
       }
     },
 
     async updatePanel(id: string, updates: Partial<UIPanel>): Promise<void> {
+      const ui = await storage.getUIState(workspaceId);
+      const existingPanel = ui.panels.find(p => p.id === id);
+      if (!existingPanel) {
+        return;
+      }
+      const updatedPanel: UIPanel = { ...existingPanel, ...updates };
       await storage.updatePanel(workspaceId, id, updates);
+      emitPanelUpdate({ action: 'update', panel: updatedPanel });
     },
 
     // === Charts ===
@@ -323,7 +392,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
           layout: config.layout ? { ...defaultSize, ...config.layout } : undefined
         };
         await storage.addPanel(workspaceId, panel);
-        panelUpdates.push({ action: 'add', panel, data: { chart: chartData } });
+        emitPanelUpdate({ action: 'add', panel, data: { chart: chartData } });
       } else {
         // Existing panel: preserve position if it has one, otherwise let frontend position
         const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
@@ -337,7 +406,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
         if (config.layout && updatedLayout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
-        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { chart: chartData } });
+        emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { chart: chartData } });
       }
     },
 
@@ -371,7 +440,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
           layout: config.layout ? { ...defaultSize, ...config.layout } : undefined
         };
         await storage.addPanel(workspaceId, panel);
-        panelUpdates.push({ action: 'add', panel, data: { cards: cardsData } });
+        emitPanelUpdate({ action: 'add', panel, data: { cards: cardsData } });
       } else {
         // Existing panel: preserve position if it has one, otherwise let frontend position
         const hasExistingPosition = existingPanel.layout?.x !== undefined && existingPanel.layout?.y !== undefined;
@@ -385,7 +454,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
         if (config.layout && updatedLayout) {
           await storage.updatePanel(workspaceId, existingPanel.id, { layout: updatedLayout });
         }
-        panelUpdates.push({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { cards: cardsData } });
+        emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: updatedLayout }, data: { cards: cardsData } });
       }
     },
 
@@ -419,7 +488,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
           layout: updatedLayout,
         };
         await storage.updatePanel(workspaceId, id, updatedPanel);
-        panelUpdates.push({ action: 'update', panel: updatedPanel, data: { content: config.content } });
+        emitPanelUpdate({ action: 'update', panel: updatedPanel, data: { content: config.content } });
       } else {
         // New panel: only set size, let frontend position it in the viewport
         const panel: UIPanel = {
@@ -430,7 +499,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
           layout: config.layout ? { ...defaultSize, ...config.layout } : undefined,
         };
         await storage.addPanel(workspaceId, panel);
-        panelUpdates.push({ action: 'add', panel, data: { content: config.content } });
+        emitPanelUpdate({ action: 'add', panel, data: { content: config.content } });
       }
     },
 
@@ -470,7 +539,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
           layout: updatedLayout,
         };
         await storage.updatePanel(workspaceId, id, updatedPanel);
-        panelUpdates.push({ action: 'update', panel: updatedPanel });
+        emitPanelUpdate({ action: 'update', panel: updatedPanel });
       } else {
         // New panel: only set size, let frontend position it in the viewport
         const panel: UIPanel = {
@@ -481,7 +550,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
           layout: config.layout ? { ...defaultSize, ...config.layout } : undefined,
         };
         await storage.addPanel(workspaceId, panel);
-        panelUpdates.push({ action: 'add', panel });
+        emitPanelUpdate({ action: 'add', panel });
       }
     },
 
@@ -501,6 +570,7 @@ export const createExecuteTool = (ctx: ToolContext) => {
         height: layout.height ?? existingPanel.layout?.height ?? 300,
       };
       await storage.updatePanel(workspaceId, id, { layout: fullLayout });
+      emitPanelUpdate({ action: 'update', panel: { ...existingPanel, layout: fullLayout } });
     },
 
     // === Downloads ===
@@ -547,19 +617,59 @@ export const createExecuteTool = (ctx: ToolContext) => {
 
     // === HTTP ===
     async fetch(url: string, options?: RequestInit): Promise<Response> {
-      // SSRF protection: block internal networks and cloud metadata
+      // SSRF protection: block internal networks and localhost
       const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('Only HTTP(S) requests are allowed');
+      }
       const host = parsed.hostname.toLowerCase();
 
-      if (
-        host === 'localhost' ||
-        host === '169.254.169.254' ||
-        /^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host)
-      ) {
+      if (isPrivateHost(host)) {
         throw new Error('Access to internal networks is not allowed');
       }
 
-      return globalThis.fetch(url, options);
+      const hostForIp = normalizeHostForIp(host);
+      if (net.isIP(hostForIp) === 0) {
+        let addresses: { address: string }[] = [];
+        try {
+          addresses = await lookup(hostForIp, { all: true, verbatim: true });
+        } catch {
+          throw new Error('Failed to resolve host');
+        }
+        if (addresses.length === 0) {
+          throw new Error('Failed to resolve host');
+        }
+        for (const addr of addresses) {
+          if (isPrivateHost(addr.address)) {
+            throw new Error('Access to internal networks is not allowed');
+          }
+        }
+      }
+
+      const timeoutController = new AbortController();
+      const timeoutId = setTimeout(() => timeoutController.abort(), FETCH_TIMEOUT_MS);
+      let abortListener: (() => void) | undefined;
+
+      if (options?.signal) {
+        if (options.signal.aborted) {
+          timeoutController.abort();
+        } else {
+          abortListener = () => timeoutController.abort();
+          options.signal.addEventListener('abort', abortListener, { once: true });
+        }
+      }
+
+      try {
+        return await globalThis.fetch(url, {
+          ...options,
+          signal: timeoutController.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+        if (abortListener) {
+          options?.signal?.removeEventListener('abort', abortListener);
+        }
+      }
     },
 
     // === Skills Discovery ===
@@ -772,6 +882,7 @@ Use async/await for I/O. Return a value to see results.`,
     async ({ code }) => {
       // Clear logs from previous execution
       toolFunctions.__logs = [];
+      panelUpdates.length = 0;
 
       const sandbox = {
         ...toolFunctions,
@@ -803,8 +914,7 @@ Use async/await for I/O. Return a value to see results.`,
         atob: (str: string) => Buffer.from(str, 'base64').toString('utf-8'),
         // Safe timer wrappers with limits
         setTimeout: (fn: (...args: unknown[]) => void, ms?: number, ...args: unknown[]) => {
-          const maxMs = 30000; // Max 30 seconds
-          return setTimeout(fn, Math.min(ms ?? 0, maxMs), ...args);
+          return setTimeout(fn, Math.min(ms ?? 0, SANDBOX_TIMER_LIMIT_MS), ...args);
         },
         clearTimeout,
         // setInterval is not allowed - too dangerous for DoS
@@ -820,32 +930,40 @@ Use async/await for I/O. Return a value to see results.`,
         AbortController,
         __result: undefined as unknown,
         __error: undefined as string | undefined,
+        __done: false as boolean,
       };
 
       // Wrap in async IIFE
       const wrappedCode = `
         (async () => {
           try {
-            ${code}
+            const __ret = await (async () => {
+              ${code}
+            })();
+            if (__ret !== undefined) {
+              __result = __ret;
+            }
           } catch (e) {
             __error = e.message || String(e);
+          } finally {
+            __done = true;
           }
-        })().then(r => { if (r !== undefined) __result = r; });
+        })();
       `;
 
       try {
         const context = vm.createContext(sandbox);
         const script = new vm.Script(wrappedCode);
-        script.runInContext(context, { timeout: 30000 });
+        script.runInContext(context, { timeout: VM_TIMEOUT_MS });
 
         // Wait for async completion with proper timeout
-        const ASYNC_TIMEOUT = 30000; // 30 seconds for async operations
-        const timeoutPromise = new Promise<'timeout'>((resolve) =>
-          setTimeout(() => resolve('timeout'), ASYNC_TIMEOUT)
-        );
+        let asyncTimeoutId: ReturnType<typeof setTimeout> | null = null;
+        const timeoutPromise = new Promise<'timeout'>((resolve) => {
+          asyncTimeoutId = setTimeout(() => resolve('timeout'), ASYNC_TIMEOUT_MS);
+        });
         const completionPromise = new Promise<'done'>((resolve) => {
           const check = () => {
-            if (sandbox.__result !== undefined || sandbox.__error !== undefined) {
+            if (sandbox.__done || sandbox.__error !== undefined) {
               resolve('done');
             } else {
               setTimeout(check, 100);
@@ -855,8 +973,11 @@ Use async/await for I/O. Return a value to see results.`,
         });
 
         const raceResult = await Promise.race([completionPromise, timeoutPromise]);
+        if (asyncTimeoutId) {
+          clearTimeout(asyncTimeoutId);
+        }
         if (raceResult === 'timeout') {
-          sandbox.__error = 'Execution timed out after 30 seconds';
+          sandbox.__error = `Execution timed out after ${Math.round(ASYNC_TIMEOUT_MS / 1000)} seconds`;
         }
 
         // Build output with logs
@@ -864,7 +985,7 @@ Use async/await for I/O. Return a value to see results.`,
         const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
 
         // Include panel updates in output for runtime to extract
-        const panelUpdateOutput = panelUpdates.length > 0
+        const panelUpdateOutput = shouldEmbedPanelUpdates && panelUpdates.length > 0
           ? `\n__PANEL_UPDATES_START__${JSON.stringify(panelUpdates)}__PANEL_UPDATES_END__`
           : '';
 
@@ -885,7 +1006,7 @@ Use async/await for I/O. Return a value to see results.`,
       } catch (error) {
         const logs = toolFunctions.__logs;
         const logOutput = logs.length > 0 ? `Logs:\n${logs.join('\n')}\n\n` : '';
-        const panelUpdateOutput = panelUpdates.length > 0
+        const panelUpdateOutput = shouldEmbedPanelUpdates && panelUpdates.length > 0
           ? `\n__PANEL_UPDATES_START__${JSON.stringify(panelUpdates)}__PANEL_UPDATES_END__`
           : '';
         return {

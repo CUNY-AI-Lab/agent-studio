@@ -3,6 +3,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { cn } from '@/lib/utils';
 import type { CanvasPanelLayout } from '@/lib/storage';
+import { SafeMarkdown } from '@/components/SafeMarkdown';
 
 interface ContextualChatPopoverProps {
   isOpen: boolean;
@@ -12,9 +13,11 @@ interface ContextualChatPopoverProps {
   panelType: string;
   scale: number;
   viewportOffset: { x: number; y: number };
+  viewportSize?: { width: number; height: number };
   onSendMessage: (message: string) => void;
   isLoading?: boolean;
-  messages?: Array<{ role: 'user' | 'assistant'; content: string }>;
+  messages?: Array<{ id: string; role: 'user' | 'assistant'; content: string }>;
+  statusLabel?: string | null;
 }
 
 type Placement = 'right' | 'left' | 'bottom';
@@ -27,13 +30,16 @@ export function ContextualChatPopover({
   panelType,
   scale,
   viewportOffset,
+  viewportSize,
   onSendMessage,
   isLoading,
   messages = [],
+  statusLabel,
 }: ContextualChatPopoverProps) {
   const [inputValue, setInputValue] = useState('');
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const POPOVER_WIDTH = 280;
   const POPOVER_HEIGHT = 300;
@@ -42,37 +48,50 @@ export function ContextualChatPopover({
   // Memoized position calculation based on anchor panel
   const position = useMemo(() => {
     // Get viewport dimensions
-    const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1920;
+    const viewportWidth = viewportSize?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1920);
+    const viewportHeight = viewportSize?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 1080);
 
     // Convert anchor to screen coordinates
     const screenRight = (anchorLayout.x + anchorLayout.width) * scale + viewportOffset.x;
     const screenLeft = anchorLayout.x * scale + viewportOffset.x;
+    const screenTop = anchorLayout.y * scale + viewportOffset.y;
+    const screenBottom = (anchorLayout.y + anchorLayout.height) * scale + viewportOffset.y;
+
+    const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+    const maxX = Math.max(GAP, viewportWidth - POPOVER_WIDTH - GAP);
+    const maxY = Math.max(GAP, viewportHeight - POPOVER_HEIGHT - GAP);
 
     // Try right side first
     if (screenRight + GAP + POPOVER_WIDTH < viewportWidth) {
+      const screenX = screenRight + GAP;
+      const screenY = clamp(screenTop, GAP, maxY);
       return {
-        x: anchorLayout.x + anchorLayout.width + GAP / scale,
-        y: anchorLayout.y,
+        x: (screenX - viewportOffset.x) / scale,
+        y: (screenY - viewportOffset.y) / scale,
         placement: 'right' as Placement,
       };
     }
 
     // Try left side
     if (screenLeft - GAP - POPOVER_WIDTH > 0) {
+      const screenX = screenLeft - GAP - POPOVER_WIDTH;
+      const screenY = clamp(screenTop, GAP, maxY);
       return {
-        x: anchorLayout.x - POPOVER_WIDTH / scale - GAP / scale,
-        y: anchorLayout.y,
+        x: (screenX - viewportOffset.x) / scale,
+        y: (screenY - viewportOffset.y) / scale,
         placement: 'left' as Placement,
       };
     }
 
     // Fall back to bottom
+    const screenX = clamp(screenLeft, GAP, maxX);
+    const screenY = clamp(screenBottom + GAP, GAP, maxY);
     return {
-      x: anchorLayout.x,
-      y: anchorLayout.y + anchorLayout.height + GAP / scale,
+      x: (screenX - viewportOffset.x) / scale,
+      y: (screenY - viewportOffset.y) / scale,
       placement: 'bottom' as Placement,
     };
-  }, [anchorLayout, scale, viewportOffset]);
+  }, [anchorLayout, scale, viewportOffset, viewportSize]);
 
   // Focus input when opened
   useEffect(() => {
@@ -80,6 +99,12 @@ export function ContextualChatPopover({
       setTimeout(() => inputRef.current?.focus(), 100);
     }
   }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const behavior = isLoading ? 'auto' : 'smooth';
+    messagesEndRef.current?.scrollIntoView({ behavior, block: 'end' });
+  }, [messages, isLoading, isOpen]);
 
   // Handle click outside to close
   useEffect(() => {
@@ -135,8 +160,8 @@ export function ContextualChatPopover({
       style={{
         left: position.x,
         top: position.y,
-        width: POPOVER_WIDTH / scale,
-        maxHeight: POPOVER_HEIGHT / scale,
+        width: POPOVER_WIDTH,
+        maxHeight: POPOVER_HEIGHT,
         transform: `scale(${1 / scale})`,
         transformOrigin: position.placement === 'right' ? 'left top' : position.placement === 'left' ? 'right top' : 'top left',
       }}
@@ -175,25 +200,38 @@ export function ContextualChatPopover({
             <p className="text-xs opacity-60 mt-1">New panels created will be connected to this one.</p>
           </div>
         ) : (
-          messages.map((msg, i) => (
-            <div
-              key={i}
-              className={cn(
-                "contextual-chat-message",
-                msg.role === 'user' ? "contextual-chat-message-user" : "contextual-chat-message-assistant"
-              )}
-            >
-              {msg.content}
-            </div>
-          ))
+          messages.map((msg) => {
+            if (msg.role === 'assistant' && !msg.content) return null;
+            return (
+              <div
+                key={msg.id}
+                className={cn(
+                  "contextual-chat-message",
+                  msg.role === 'user' ? "contextual-chat-message-user" : "contextual-chat-message-assistant"
+                )}
+              >
+                {msg.role === 'user' ? (
+                  <div className="whitespace-pre-wrap">{msg.content}</div>
+                ) : (
+                  <SafeMarkdown className="prose prose-sm max-w-none text-[13px] leading-relaxed prose-p:my-1 prose-headings:my-1 prose-ul:my-1 prose-li:my-0 dark:prose-invert">
+                    {msg.content}
+                  </SafeMarkdown>
+                )}
+              </div>
+            );
+          })
         )}
         {isLoading && (
           <div className="contextual-chat-loading">
-            <span className="contextual-chat-loading-dot" />
-            <span className="contextual-chat-loading-dot" />
-            <span className="contextual-chat-loading-dot" />
+            <div className="contextual-chat-loading-dots">
+              <span className="contextual-chat-loading-dot" />
+              <span className="contextual-chat-loading-dot" />
+              <span className="contextual-chat-loading-dot" />
+            </div>
+            {statusLabel && <span className="contextual-chat-loading-label">{statusLabel}</span>}
           </div>
         )}
+        <div ref={messagesEndRef} />
       </div>
 
       {/* Input */}

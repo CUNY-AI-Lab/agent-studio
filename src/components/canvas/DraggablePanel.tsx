@@ -26,6 +26,7 @@ interface DraggablePanelProps {
   isAnimating?: boolean;
   // Group dragging - disables position transitions when another panel in the same group is being dragged
   isInDraggingGroup?: boolean;
+  onHoverChange?: (id: string | null) => void;
 }
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
@@ -50,6 +51,7 @@ export function DraggablePanel({
   onPanelDoubleClick,
   isAnimating,
   isInDraggingGroup,
+  onHoverChange,
 }: DraggablePanelProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
@@ -234,6 +236,8 @@ export function DraggablePanel({
         zIndex: zIndex ?? 1,
       }}
       onPointerDown={() => onFocus?.(id)}
+      onPointerEnter={() => onHoverChange?.(id)}
+      onPointerLeave={() => onHoverChange?.(null)}
       onClick={handleContentClick}
       onDoubleClick={handleContentDoubleClick}
     >

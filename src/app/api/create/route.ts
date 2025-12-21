@@ -225,7 +225,8 @@ await addPanel({
 const designDocs = await readSkill('frontend-design');
 // Then follow the design guidelines to create distinctive, polished interfaces
 \`\`\`
-
+Panels are isolated. A preview panel cannot access other panels' data at runtime.
+If you need data in a preview, read it in execute and embed it in the HTML, or present it as a table/chart panel.
 ## Python Execution (via Bash)
 
 For Python data processing, use the **Bash** tool. First get the file path using execute, then run Python:

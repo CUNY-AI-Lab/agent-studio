@@ -16,6 +16,7 @@ const createTableTool = (ctx) => (0, claude_agent_sdk_1.tool)('ui_table', 'Creat
         .describe('Column definitions (required for new tables)'),
     data: zod_1.z.array(zod_1.z.any()).optional().describe('Table data'),
 }).shape, async ({ id, title, columns, data }) => {
+    var _a;
     let table = await ctx.storage.getTable(ctx.workspaceId, id);
     if (!table && !columns) {
         return {
@@ -43,6 +44,15 @@ const createTableTool = (ctx) => (0, claude_agent_sdk_1.tool)('ui_table', 'Creat
             table.data = data;
     }
     await ctx.storage.setTable(ctx.workspaceId, id, table);
+    const uiState = await ctx.storage.getUIState(ctx.workspaceId);
+    const tablePanels = uiState.panels.filter(p => p.type === 'table' && p.tableId === id);
+    if (tablePanels.length > 0) {
+        (_a = ctx.emitPanelUpdates) === null || _a === void 0 ? void 0 : _a.call(ctx, tablePanels.map(panel => ({
+            action: 'update',
+            panel,
+            data: { table },
+        })));
+    }
     return {
         content: [
             {

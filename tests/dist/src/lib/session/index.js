@@ -47,22 +47,6 @@ function verifySessionId(signedToken) {
     }
     return result === 0 ? sessionId : null;
 }
-// Parse session data with expiry check
-function parseSessionData(data) {
-    try {
-        const parsed = JSON.parse(data);
-        if (!parsed.id || !parsed.createdAt)
-            return null;
-        // Check expiry
-        const age = Date.now() - parsed.createdAt;
-        if (age > SESSION_MAX_AGE)
-            return null;
-        return parsed;
-    }
-    catch {
-        return null;
-    }
-}
 async function getSession() {
     var _a;
     const cookieStore = await (0, headers_1.cookies)();

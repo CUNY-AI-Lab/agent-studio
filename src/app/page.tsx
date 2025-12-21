@@ -66,6 +66,7 @@ export default async function Home() {
                 placeholder="Ask anything or describe what you want to build..."
                 className="w-full px-5 py-4 pr-14 text-base rounded-2xl border border-border bg-card transition-all focus:outline-none focus:border-primary/50 focus:shadow-lg focus:shadow-primary/5 placeholder:text-muted-foreground/50"
                 autoFocus
+                required
               />
               <button
                 type="submit"

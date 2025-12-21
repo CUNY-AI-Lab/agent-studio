@@ -72,6 +72,16 @@ cp .env.example .env
 # Edit .env with your API keys
 ```
 
+Optional (faster Python setup with uv):
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install pandas numpy scipy scikit-learn matplotlib seaborn \
+    pypdf pdfplumber openpyxl xlsxwriter pillow \
+    python-docx python-pptx tqdm python-dateutil pytz
+```
+
 ### Environment variables
 
 Required:
@@ -110,6 +120,9 @@ PYTHON_VENV_PATH=/path/to/venv
 
 # Base path for deployment at a subpath (e.g., /studio)
 NEXT_PUBLIC_BASE_PATH=/studio
+
+# Override data directory (defaults to ./data)
+DATA_DIR=/path/to/data
 ```
 
 ### Running
@@ -136,8 +149,9 @@ Open http://localhost:3000
 1. **You describe what you want** in the chat panel
 2. **The agent reads skill documents** to learn available APIs
 3. **The agent writes JavaScript** to fetch data and transform it
-4. **Code runs in a sandbox** with a 30-second timeout
-5. **Results appear as panels** - tables, charts, cards, or custom HTML
+4. **Code runs in a sandbox** with a 30-second CPU limit and a 2-minute async cap
+5. **Results stream back** over SSE (tokens, tool status, panel updates)
+6. **Results appear as panels** - tables, charts, cards, or custom HTML
 
 The agent can also run Python for data processing (pandas, numpy, matplotlib) and Bash commands in a sandboxed environment.
 
@@ -145,6 +159,10 @@ The agent can also run Python for data processing (pandas, numpy, matplotlib) an
 
 - **Infinite canvas** - Pan and zoom, arrange panels anywhere
 - **Draggable panels** - Resize and reposition tables, charts, etc.
+- **Contextual chat** - Ask about a specific panel or group in a side popover
+- **Grouping** - Group panels, rename groups, and move them together
+- **Connections** - New panels can be linked to the panel that spawned them
+- **Minimize** - Hide panels to a dock and restore them later
 - **File uploads** - Upload CSVs, PDFs, images (10MB limit per file)
 - **Downloads** - Export results as CSV or JSON
 - **Gallery** - Share workspaces publicly for others to clone
@@ -164,7 +182,7 @@ Files include:
 - `charts/*.json` - Chart configurations
 - `files/*` - Uploaded files
 
-Sessions last 7 days. There's no account system - your browser cookie identifies you.
+Sessions last 7 days. There's no account system - your browser cookie identifies you. Contextual chat messages are not persisted in `conversation.json`.
 
 ## Adding new skills
 
@@ -200,7 +218,7 @@ The agent will discover and use new skills automatically.
 
 ## Limitations
 
-- 30-second timeout on code execution
+- 30-second CPU limit with a 2-minute async cap on code execution
 - 10MB per uploaded file, 50MB total per workspace
 - No persistent accounts (session-based only)
 - Some APIs require authentication keys

@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { getSession } from '@/lib/session';
-import { createSandboxedStorage, type ContentBlock, type ToolExecution } from '@/lib/storage';
+import { createSandboxedStorage } from '@/lib/storage';
 import { createWorkspaceRuntime } from '@/lib/runtime';
+import { createStreamAccumulator, type StreamAccumulatorState } from '@/lib/streaming/accumulator';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,9 +35,11 @@ export async function POST(
   }
 
   let prompt: string | undefined;
+  let skipConversation = false;
   try {
     const body = await request.json();
     prompt = body.prompt;
+    skipConversation = Boolean(body.skipConversation);
   } catch {
     return new Response(
       JSON.stringify({ error: 'Invalid JSON body' }),
@@ -52,10 +55,12 @@ export async function POST(
   }
 
   // Get conversation history before adding new message
-  const conversationHistory = await storage.getConversation(id);
+  const conversationHistory = skipConversation ? [] : await storage.getConversation(id);
 
-  // Save user message
-  await storage.appendMessage(id, { role: 'user', content: prompt });
+  // Save user message unless it's a contextual (side) chat
+  if (!skipConversation) {
+    await storage.appendMessage(id, { role: 'user', content: prompt });
+  }
 
   // Create runtime and stream response
   const runtime = createWorkspaceRuntime(workspace, storage);
@@ -63,33 +68,26 @@ export async function POST(
   // Create AbortController for this query
   const abortController = new AbortController();
   const queryKey = `${sessionId}:${id}`;
-  activeQueries.set(queryKey, abortController);
+  if (!skipConversation) {
+    activeQueries.set(queryKey, abortController);
+  }
 
   const encoder = new TextEncoder();
-  let fullResponse = '';
+  const accumulator = createStreamAccumulator();
+  let finalState: StreamAccumulatorState | null = null;
 
-  // Track tool executions for block persistence
-  const contentBlocks: ContentBlock[] = [];
-  let currentTextBlock = '';
-  const currentToolsGroup: ToolExecution[] = [];
-  const toolMap = new Map<string, ToolExecution>();
-
-  const flushText = () => {
-    if (currentTextBlock.trim()) {
-      contentBlocks.push({ type: 'text', text: currentTextBlock });
-      currentTextBlock = '';
+  const finalizeAccumulator = () => {
+    if (!finalState) {
+      finalState = accumulator.finalize();
     }
-  };
-
-  const flushTools = () => {
-    if (currentToolsGroup.length > 0) {
-      contentBlocks.push({ type: 'tools', tools: [...currentToolsGroup] });
-      currentToolsGroup.length = 0;
-    }
+    return finalState;
   };
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Initial comment to force headers/body to flush in some proxies.
+      controller.enqueue(encoder.encode(': ready\n\n'));
+
       // Set up keepalive interval to prevent connection timeout
       // SSE comments (lines starting with :) are ignored by clients
       const KEEPALIVE_INTERVAL = 15000; // 15 seconds
@@ -102,49 +100,38 @@ export async function POST(
       }, KEEPALIVE_INTERVAL);
 
       try {
-        for await (const event of runtime.query(prompt, conversationHistory, { abortController })) {
+        for await (const event of runtime.query(prompt, conversationHistory, {
+          abortController,
+          includeWorkspaceState: !skipConversation,
+        })) {
           // Check if aborted
           if (abortController.signal.aborted) {
             break;
           }
 
+          if (event.type === 'done') {
+            continue;
+          }
+
           const data = `data: ${JSON.stringify(event)}\n\n`;
           controller.enqueue(encoder.encode(data));
 
-          // Capture both full text and deltas for the final message
-          if ((event.type === 'text' || event.type === 'text_delta') && event.content) {
-            fullResponse += event.content;
-            currentTextBlock += event.content;
-          } else if (event.type === 'tool_use' && event.toolId && event.toolName) {
-            // Flush text before tools
-            flushText();
-
-            const tool: ToolExecution = {
-              id: event.toolId,
-              name: event.toolName,
-              input: event.toolInput,
-              status: 'running',
-            };
-            toolMap.set(event.toolId, tool);
-            currentToolsGroup.push(tool);
-          } else if (event.type === 'tool_result' && event.toolId) {
-            const tool = toolMap.get(event.toolId);
-            if (tool) {
-              tool.status = event.isError ? 'error' : 'success';
-              tool.output = event.toolResult;
-            }
-            // Flush tools after result
-            flushTools();
-          }
+          accumulator.ingest(event);
         }
 
-        // Final flush
-        flushText();
-        flushTools();
+        const { fullResponse, contentBlocks } = finalizeAccumulator();
 
-        // Save assistant message with blocks
-        if (fullResponse) {
-          const content = abortController.signal.aborted
+        // Send done or aborted event before persistence to avoid UI stalls.
+        const wasAborted = abortController.signal.aborted;
+        if (wasAborted) {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'aborted' })}\n\n`));
+        } else {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+        }
+
+        // Save assistant message with blocks (if this isn't a contextual query)
+        if (fullResponse && !skipConversation) {
+          const content = wasAborted
             ? fullResponse + '\n\n*[Response stopped by user]*'
             : fullResponse;
           await storage.appendMessage(id, {
@@ -154,13 +141,6 @@ export async function POST(
           });
         }
 
-        // Send done or aborted event
-        if (abortController.signal.aborted) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'aborted' })}\n\n`));
-        } else {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
-        }
-
         clearInterval(keepaliveInterval);
         controller.close();
       } catch (error) {
@@ -168,9 +148,8 @@ export async function POST(
 
         // Check if this was an abort
         if (error instanceof Error && error.name === 'AbortError') {
-          flushText();
-          flushTools();
-          if (fullResponse) {
+          const { fullResponse, contentBlocks } = finalizeAccumulator();
+          if (fullResponse && !skipConversation) {
             await storage.appendMessage(id, {
               role: 'assistant',
               content: fullResponse + '\n\n*[Response stopped by user]*',
@@ -190,16 +169,19 @@ export async function POST(
         controller.close();
       } finally {
         // Clean up
-        activeQueries.delete(queryKey);
+        if (!skipConversation) {
+          activeQueries.delete(queryKey);
+        }
       }
     },
   });
 
   return new Response(stream, {
     headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
     },
   });
 }
