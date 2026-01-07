@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "CommonJS",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "strict": true,
+    "noEmit": false,
+    "skipLibCheck": true,
+    "outDir": "dist",
+    "rootDir": "..",
+    "types": ["node"]
+  },
+  "include": [
+    "../tests/**/*.ts"
+  ],
+  "exclude": [
+    "./dist"
+  ]
+}
