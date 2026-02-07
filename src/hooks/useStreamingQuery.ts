@@ -156,6 +156,7 @@ export function useStreamingQuery({
     let streamErrorMessage: string | null = null;
     let terminalEvent: 'done' | 'aborted' | null = null;
     let receivedStreamEvents = false;
+    let willRetry = false;
 
     const triggerComplete = () => {
       if (completionTriggered) return;
@@ -549,8 +550,12 @@ export function useStreamingQuery({
 
       if (isNetworkError && retryCount < MAX_RETRIES) {
         console.log(`Network error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
+        // Preserve in-progress content/tool groups before retrying.
+        flushText();
+        flushTools();
+        updateMessage();
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        // Preserve state across retries to prevent duplicate tools
+        willRetry = true;
         return executeQuery(prompt, options, retryCount + 1, {
           contentBlocks,
           processedToolIds,
@@ -580,12 +585,12 @@ export function useStreamingQuery({
       }
       return errorMessage;
     } finally {
-      if (trackLoading) {
+      if (trackLoading && !willRetry) {
         isLoadingRef.current = false;
         stopToolTimer();
       }
 
-      if (trackLoading) {
+      if (trackLoading && !willRetry) {
         // Mark any still-running tools as interrupted (but don't clear toolIdMap!)
           for (const id of runningToolIdsRef.current) {
             const tool = toolIdMap.get(id);

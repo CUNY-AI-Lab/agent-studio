@@ -1,7 +1,5 @@
 'use client';
 
-import React from 'react';
-
 interface SelectionBoxProps {
   start: { x: number; y: number };
   end: { x: number; y: number };

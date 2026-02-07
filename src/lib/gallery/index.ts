@@ -10,6 +10,7 @@ export interface GalleryItem {
   title: string;
   description: string;
   prompt?: string;
+  systemPrompt?: string;
   authorId: string;
   publishedAt: string;
   artifactCount: number;
@@ -204,6 +205,7 @@ export async function publishWorkspace(
     title,
     description,
     prompt: workspace.description,
+    systemPrompt: workspace.systemPrompt,
     authorId: userId,
     publishedAt: new Date().toISOString(),
     artifactCount,
@@ -235,7 +237,7 @@ export async function cloneGalleryItem(
     description: `Cloned from gallery: ${galleryItem.description}`,
     createdAt: now,
     updatedAt: now,
-    systemPrompt: '', // Will use default from query route
+    systemPrompt: galleryItem.systemPrompt || 'You are a helpful assistant that helps users accomplish tasks by writing code and building interfaces.',
     tools: [
       'execute',
       'read', 'write',

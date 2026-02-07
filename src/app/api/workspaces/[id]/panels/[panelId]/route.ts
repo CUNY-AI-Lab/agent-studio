@@ -3,7 +3,7 @@ import { getSession } from '@/lib/session';
 import { createSandboxedStorage } from '@/lib/storage';
 
 export async function DELETE(
-  request: NextRequest,
+  _request: NextRequest,
   { params }: { params: Promise<{ id: string; panelId: string }> }
 ) {
   try {

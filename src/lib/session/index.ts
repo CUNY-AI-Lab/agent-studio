@@ -53,24 +53,7 @@ function verifySessionId(signedToken: string): string | null {
 
 
 export async function getSession(): Promise<string> {
-  const cookieStore = await cookies();
-  const signedSession = cookieStore.get('agent-studio-session')?.value;
-
-  if (!signedSession) {
-    throw new Error('No session found');
-  }
-
-  // Verify signature
-  const sessionId = verifySessionId(signedSession);
-  if (!sessionId) {
-    throw new Error('Invalid session signature');
-  }
-
-  // Ensure user directory exists
-  const userDir = join(process.cwd(), DATA_DIR, 'users', sessionId, 'workspaces');
-  await mkdir(userDir, { recursive: true });
-
-  return sessionId;
+  return getOrCreateSession();
 }
 
 // Get existing session or create a new one if invalid/missing
