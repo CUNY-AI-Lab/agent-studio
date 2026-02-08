@@ -15,6 +15,7 @@ build/
 
 # Testing
 coverage/
+tests/dist/
 
 # Environment
 .env
