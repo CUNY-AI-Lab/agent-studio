@@ -1,6 +1,6 @@
 import assert from 'assert';
 import { describe, it } from 'node:test';
-import { extractPanelUpdates } from '../../src/lib/runtime';
+import { extractPanelUpdates } from '../../src/lib/runtime/in-process';
 
 describe('runtime.extractPanelUpdates', () => {
   it('extracts and strips panel updates from tool result', () => {
@@ -20,4 +20,3 @@ describe('runtime.extractPanelUpdates', () => {
     assert.equal(panelUpdates.length, 0);
   });
 });
-

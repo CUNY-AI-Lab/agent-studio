@@ -43,7 +43,15 @@ describe('ui panel tools', () => {
   it('adds a panel and emits update', async () => {
     updates.length = 0;
     const addTool = createAddPanelTool(makeContext());
-    await addTool.handler({ id: 'panel-add', type: 'markdown', title: 'Notes' }, {});
+    await addTool.handler({
+      id: 'panel-add',
+      type: 'markdown',
+      title: 'Notes',
+      tableId: undefined,
+      filePath: undefined,
+      linkedTo: undefined,
+      content: undefined,
+    }, {});
 
     assert.equal(updates.length, 1);
     assert.equal(updates[0].action, 'add');
@@ -62,7 +70,13 @@ describe('ui panel tools', () => {
     });
 
     const updateTool = createUpdatePanelTool(makeContext());
-    await updateTool.handler({ id: 'panel-update', title: 'New title' }, {});
+    await updateTool.handler({
+      id: 'panel-update',
+      title: 'New title',
+      tableId: undefined,
+      filePath: undefined,
+      content: undefined,
+    }, {});
 
     assert.equal(updates.length, 1);
     assert.equal(updates[0].action, 'update');

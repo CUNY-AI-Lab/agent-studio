@@ -37,7 +37,13 @@ describe('ui table tool', () => {
       emitPanelUpdates: (next) => updates.push(...next),
     });
 
-    const result = await tableTool.handler({ id: 't1', title: 'Table 1' }, {});
+    const result = await tableTool.handler({
+      id: 't1',
+      title: 'Table 1',
+      columns: undefined,
+      data: undefined,
+      layout: undefined,
+    }, {});
     const text = result?.content?.[0]?.text ?? '';
     assert.match(text, /Columns are required/);
     assert.equal(updates.length, 0);
@@ -65,6 +71,7 @@ describe('ui table tool', () => {
       title: 'Table 2',
       columns: [{ key: 'name', label: 'Name', type: 'text' }],
       data: [{ name: 'Ada' }],
+      layout: undefined,
     }, {});
 
     assert.equal(updates.length, 1);

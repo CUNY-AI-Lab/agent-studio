@@ -1,5 +1,5 @@
 import { getSession } from '@/lib/session';
-import { createSandboxedStorage, type WorkspaceConfig } from '@/lib/storage';
+import { createSandboxedStorage } from '@/lib/storage';
 import { listGalleryItems } from '@/lib/gallery';
 import { WorkspaceCard } from '@/components/WorkspaceCard';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -17,15 +17,14 @@ const EXAMPLE_PROMPTS = [
 ];
 
 export default async function Home() {
-  // Only read the session - proxy.ts handles session creation.
-  // On first visit, the cookie isn't available yet (set on response), so gracefully show no workspaces.
-  let workspaces: WorkspaceConfig[] = [];
+  // Session may not exist on first visit (cookie set by middleware isn't available until next request)
+  let workspaces: Awaited<ReturnType<ReturnType<typeof createSandboxedStorage>['listWorkspaces']>> = [];
   try {
     const sessionId = await getSession();
     const storage = createSandboxedStorage(sessionId);
     workspaces = await storage.listWorkspaces();
   } catch {
-    // No valid session yet - proxy will set the cookie, available on next request
+    // No session yet - first visit. Workspaces will be empty.
   }
   const galleryItems = await listGalleryItems();
 

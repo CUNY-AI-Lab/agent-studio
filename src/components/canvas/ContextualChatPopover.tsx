@@ -9,8 +9,8 @@ interface ContextualChatPopoverProps {
   isOpen: boolean;
   onClose: () => void;
   anchorLayout: CanvasPanelLayout;
-  panelTitle: string;
-  panelType: string;
+  tileTitle: string;
+  tileType: string;
   scale: number;
   viewportOffset: { x: number; y: number };
   viewportSize?: { width: number; height: number };
@@ -26,8 +26,8 @@ export function ContextualChatPopover({
   isOpen,
   onClose,
   anchorLayout,
-  panelTitle,
-  panelType,
+  tileTitle,
+  tileType,
   scale,
   viewportOffset,
   viewportSize,
@@ -178,7 +178,7 @@ export function ContextualChatPopover({
           </div>
           <div className="min-w-0">
             <span className="contextual-chat-label">Ask about</span>
-            <span className="contextual-chat-title truncate block">{panelTitle}</span>
+            <span className="contextual-chat-title truncate block">{tileTitle}</span>
           </div>
         </div>
         <button
@@ -196,8 +196,8 @@ export function ContextualChatPopover({
       <div className="contextual-chat-messages flex-1 overflow-y-auto">
         {messages.length === 0 ? (
           <div className="contextual-chat-empty">
-            <p>Ask a question about this {panelType}.</p>
-            <p className="text-xs opacity-60 mt-1">New panels created will be connected to this one.</p>
+            <p>Ask a question about this {tileType} tile.</p>
+            <p className="text-xs opacity-60 mt-1">New tiles created here will be connected to this one.</p>
           </div>
         ) : (
           messages.map((msg) => {
@@ -241,7 +241,7 @@ export function ContextualChatPopover({
           value={inputValue}
           onChange={(e) => setInputValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={`Ask about this ${panelType}...`}
+          placeholder={`Ask about this ${tileType} tile...`}
           className="contextual-chat-input"
           rows={1}
           disabled={isLoading}

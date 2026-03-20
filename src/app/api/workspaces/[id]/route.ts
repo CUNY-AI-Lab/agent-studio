@@ -1,10 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSession } from '@/lib/session';
-import { createSandboxedStorage } from '@/lib/storage';
+import { createSandboxedStorage, type FileInfo } from '@/lib/storage';
 import { audit, getRequestMeta } from '@/lib/audit';
+import { normalizeWorkspaceConfig } from '@/lib/workspace/defaults';
 
 // Disable caching - workspace data changes frequently
 export const dynamic = 'force-dynamic';
+
+async function listWorkspaceEntries(
+  storage: ReturnType<typeof createSandboxedStorage>,
+  workspaceId: string,
+  dir = ''
+): Promise<FileInfo[]> {
+  const entries = await storage.listFiles(workspaceId, dir);
+  const nested = await Promise.all(
+    entries
+      .filter(entry => entry.isDirectory)
+      .map(entry => listWorkspaceEntries(storage, workspaceId, entry.path))
+  );
+  return [...entries, ...nested.flat()];
+}
 
 export async function GET(
   _request: NextRequest,
@@ -17,6 +32,10 @@ export async function GET(
   const workspace = await storage.getWorkspace(id);
   if (!workspace) {
     return NextResponse.json({ error: 'Workspace not found' }, { status: 404 });
+  }
+  const normalizedWorkspace = normalizeWorkspaceConfig(workspace);
+  if (normalizedWorkspace !== workspace) {
+    await storage.setWorkspace(id, normalizedWorkspace);
   }
 
   // Get tables
@@ -54,14 +73,16 @@ export async function GET(
 
   // Get pending downloads
   const downloads = await storage.getDownloads(id);
+  const files = await listWorkspaceEntries(storage, id);
 
   return NextResponse.json({
-    workspace,
+    workspace: normalizedWorkspace,
     tables: tables.filter(Boolean),
     messages,
     uiState,
     charts: chartsMap,
     cards: cardsMap,
+    files,
     downloads,
   });
 }
@@ -114,11 +135,12 @@ export async function PATCH(
     }
   }
 
-  const updated = {
-    ...workspace,
+  const normalizedWorkspace = normalizeWorkspaceConfig(workspace);
+  const updated = normalizeWorkspaceConfig({
+    ...normalizedWorkspace,
     ...updates,
     updatedAt: new Date().toISOString(),
-  };
+  });
 
   await storage.setWorkspace(id, updated);
 

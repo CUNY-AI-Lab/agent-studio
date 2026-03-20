@@ -5,11 +5,14 @@ import {
   MessageSquare,
   Download as DownloadIcon,
   Minus,
+  Maximize2,
   Link as LinkIcon,
   Unlink as UnlinkIcon,
   LogOut,
   Trash2,
 } from 'lucide-react';
+
+type ToolbarDownloadFormat = 'file' | 'csv' | 'json' | 'png';
 
 interface SelectionToolbarProps {
   // What's selected
@@ -28,9 +31,11 @@ interface SelectionToolbarProps {
   viewportSize?: { width: number; height: number };
 
   // Actions
+  canChat?: boolean;
   onChat?: () => void;
-  onDownload?: (format: 'csv' | 'json' | 'png') => void;
+  onDownload?: (format: ToolbarDownloadFormat) => void;
   onMinimize?: () => void;
+  onMaximize?: () => void;
   onRemove?: () => void;
   onGroup?: () => void;
   onUngroup?: () => void;
@@ -41,7 +46,7 @@ interface SelectionToolbarProps {
   // State
   isInGroup?: boolean;
   canDownload?: boolean;
-  downloadFormats?: ('csv' | 'json' | 'png')[];
+  downloadFormats?: ToolbarDownloadFormat[];
   onHoverChange?: (hovering: boolean) => void;
 }
 
@@ -55,9 +60,11 @@ export function SelectionToolbar({
   canvasScale,
   viewportOffset,
   viewportSize,
+  canChat = true,
   onChat,
   onDownload,
   onMinimize,
+  onMaximize,
   onRemove,
   onGroup,
   onUngroup,
@@ -96,8 +103,10 @@ export function SelectionToolbar({
     isGroupSelection ? 'group' : 'panel',
     isMultiSelection ? 'multi' : 'single',
     isInGroup ? 'in-group' : 'no-group',
+    canChat ? 'chat' : 'no-chat',
     canDownload ? `download-${downloadFormats.join(',')}` : 'no-download',
     onMinimize ? 'minimize' : 'no-minimize',
+    onMaximize ? 'maximize' : 'no-maximize',
     onRemove ? 'remove' : 'no-remove',
     onGroup ? 'group-action' : 'no-group-action',
     onUngroup ? 'ungroup' : 'no-ungroup',
@@ -134,6 +143,14 @@ export function SelectionToolbar({
 
   const toolbarWidth = toolbarSize.width || 200;
   const toolbarHeight = toolbarSize.height || TOOLBAR_HEIGHT;
+  const showChatButton = canChat;
+  const showDownloadSection = isSinglePanel && canDownload && downloadFormats.length > 0;
+  const showMinimizeSection = isSinglePanel && !!onMinimize;
+  const showMaximizeSection = isSinglePanel && !!onMaximize;
+  const showGroupSection = isMultiSelection && !!onGroup;
+  const showUngroupSection = isGroupSelection && !!onUngroup;
+  const showRemoveFromGroupSection = isSinglePanel && isInGroup && !!onRemoveFromGroup;
+  const showRemoveSection = !!onRemove;
 
   const screenX = initialCanvasX * canvasScale + offsetX;
   let screenY = initialCanvasY * canvasScale + offsetY;
@@ -180,28 +197,41 @@ export function SelectionToolbar({
       onPointerLeave={() => onHoverChange?.(false)}
     >
       {/* Chat button */}
-      <button
-        className="toolbar-btn toolbar-btn-primary"
-        onClick={onChat}
-        title={`Chat about ${isGroupSelection ? (groupName || 'group') : (panelTitle || 'panel')}`}
-      >
-        <MessageSquare className="w-4 h-4" />
-      </button>
+      {showChatButton && (
+        <button
+          className="toolbar-btn toolbar-btn-primary"
+          onClick={onChat}
+          title={
+            isGroupSelection
+              ? `Chat about ${groupName || 'group'}`
+              : isMultiSelection
+                ? 'Chat about selected tiles'
+                : `Chat about ${panelTitle || 'tile'}`
+          }
+        >
+          <MessageSquare className="w-4 h-4" />
+        </button>
+      )}
 
       {/* Download dropdown - for single panels with downloadable content */}
-      {isSinglePanel && canDownload && downloadFormats.length > 0 && (
+      {showDownloadSection && (
         <>
-          <div className="toolbar-divider" />
+          {showChatButton && <div className="toolbar-divider" />}
           <div className="relative" ref={downloadRef}>
             <button
               className="toolbar-btn"
               onClick={() => setShowDownloadMenu(!showDownloadMenu)}
-              title="Download"
+              title="Download or export"
             >
               <DownloadIcon className="w-4 h-4" />
             </button>
             {showDownloadMenu && (
               <div className="toolbar-dropdown-menu">
+                {downloadFormats.includes('file') && (
+                  <button onClick={() => { onDownload?.('file'); setShowDownloadMenu(false); }}>
+                    File
+                  </button>
+                )}
                 {downloadFormats.includes('csv') && (
                   <button onClick={() => { onDownload?.('csv'); setShowDownloadMenu(false); }}>
                     CSV
@@ -214,7 +244,7 @@ export function SelectionToolbar({
                 )}
                 {downloadFormats.includes('png') && (
                   <button onClick={() => { onDownload?.('png'); setShowDownloadMenu(false); }}>
-                    PNG
+                    PNG Snapshot
                   </button>
                 )}
               </div>
@@ -224,29 +254,39 @@ export function SelectionToolbar({
       )}
 
       {/* Minimize - for single panels */}
-      {isSinglePanel && onMinimize && (
+      {showMinimizeSection && (
         <>
-          <div className="toolbar-divider" />
+          {(showChatButton || showDownloadSection) && <div className="toolbar-divider" />}
           <button className="toolbar-btn" onClick={onMinimize} title="Minimize">
             <Minus className="w-4 h-4" />
           </button>
         </>
       )}
 
-      {/* Group actions - for multi-selection */}
-      {isMultiSelection && onGroup && (
+      {/* Maximize - for single panels */}
+      {showMaximizeSection && (
         <>
-          <div className="toolbar-divider" />
-          <button className="toolbar-btn" onClick={onGroup} title="Group panels">
+          {(showChatButton || showDownloadSection || showMinimizeSection) && <div className="toolbar-divider" />}
+          <button className="toolbar-btn" onClick={onMaximize} title="Maximize tile">
+            <Maximize2 className="w-4 h-4" />
+          </button>
+        </>
+      )}
+
+      {/* Group actions - for multi-selection */}
+      {showGroupSection && (
+        <>
+          {(showChatButton || showDownloadSection || showMinimizeSection || showMaximizeSection) && <div className="toolbar-divider" />}
+          <button className="toolbar-btn" onClick={onGroup} title="Group tiles">
             <LinkIcon className="w-4 h-4" />
           </button>
         </>
       )}
 
       {/* Ungroup - for groups */}
-      {isGroupSelection && onUngroup && (
+      {showUngroupSection && (
         <>
-          <div className="toolbar-divider" />
+          {(showChatButton || showDownloadSection || showMinimizeSection || showMaximizeSection || showGroupSection) && <div className="toolbar-divider" />}
           <button className="toolbar-btn" onClick={onUngroup} title="Ungroup">
             <UnlinkIcon className="w-4 h-4" />
           </button>
@@ -254,9 +294,9 @@ export function SelectionToolbar({
       )}
 
       {/* Remove from group - for single panel in a group */}
-      {isSinglePanel && isInGroup && onRemoveFromGroup && (
+      {showRemoveFromGroupSection && (
         <>
-          <div className="toolbar-divider" />
+          {(showChatButton || showDownloadSection || showMinimizeSection || showMaximizeSection || showGroupSection || showUngroupSection) && <div className="toolbar-divider" />}
           <button className="toolbar-btn" onClick={onRemoveFromGroup} title="Remove from group">
             <LogOut className="w-4 h-4" />
           </button>
@@ -264,14 +304,18 @@ export function SelectionToolbar({
       )}
 
       {/* Delete/Remove */}
-      <div className="toolbar-divider" />
-      <button
-        className="toolbar-btn toolbar-btn-danger"
-        onClick={onRemove}
-        title={isGroupSelection ? 'Delete group' : 'Remove panel'}
-      >
-        <Trash2 className="w-4 h-4" />
-      </button>
+      {showRemoveSection && (
+        <>
+          {(showChatButton || showDownloadSection || showMinimizeSection || showMaximizeSection || showGroupSection || showUngroupSection || showRemoveFromGroupSection) && <div className="toolbar-divider" />}
+          <button
+            className="toolbar-btn toolbar-btn-danger"
+            onClick={onRemove}
+            title={isGroupSelection ? 'Delete group' : isMultiSelection ? 'Remove selected tiles' : 'Remove tile'}
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </>
+      )}
     </div>
   );
 }

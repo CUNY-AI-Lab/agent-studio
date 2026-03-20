@@ -76,7 +76,7 @@
   --secondary-foreground: oklch(0.25 0.05 250);
 
   --muted: oklch(0.94 0.008 80);
-  --muted-foreground: oklch(0.38 0.02 250);
+  --muted-foreground: oklch(0.33 0.02 250);
 
   /* Amber accent for highlights */
   --accent: oklch(0.75 0.15 75);
@@ -358,6 +358,7 @@ hr.editorial {
   letter-spacing: 0.04em;
   color: var(--muted-foreground);
   background: var(--muted);
+  border: 1px solid var(--border);
   padding: 3px 8px;
   border-radius: 4px;
 }
@@ -371,10 +372,10 @@ hr.editorial {
 
 /* Floating chat panel - glass morphism */
 .chat-panel {
-  background: oklch(0.99 0.003 80 / 0.85);
+  background: oklch(0.99 0.003 80 / 0.94);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-left: 1px solid oklch(0.88 0.01 80 / 0.6);
+  border-left: 1px solid oklch(0.84 0.01 80 / 0.75);
   box-shadow:
     -4px 0 24px oklch(0.2 0.02 250 / 0.08),
     -8px 0 48px oklch(0.2 0.02 250 / 0.04);
@@ -572,8 +573,8 @@ hr.editorial {
   width: 64px;
   height: 64px;
   margin-bottom: 24px;
-  color: var(--muted-foreground);
-  opacity: 0.6;
+  color: var(--primary);
+  opacity: 0.35;
 }
 
 .canvas-empty h3 {
@@ -585,6 +586,7 @@ hr.editorial {
 
 .canvas-empty p {
   color: var(--muted-foreground);
+  font-size: 0.95rem;
   max-width: 320px;
 }
 

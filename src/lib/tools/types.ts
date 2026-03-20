@@ -15,6 +15,7 @@ export interface ToolContext {
   storage: SandboxedStorage;
   workspaceId: string;
   emitPanelUpdates?: (updates: PanelUpdate[]) => void;
+  refreshMcpResources?: () => Promise<void>;
 }
 
 export type ToolResult = {

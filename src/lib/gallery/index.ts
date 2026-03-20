@@ -1,7 +1,8 @@
 import { readFile, writeFile, mkdir, readdir, cp, rm } from 'fs/promises';
 import { join } from 'path';
 import { nanoid } from 'nanoid';
-import { createSandboxedStorage, UIState, Table, ChartData, CardsData } from '../storage';
+import { createSandboxedStorage, UIState, Table, ChartData, CardsData, type FileInfo } from '../storage';
+import { createDefaultWorkspaceConfig } from '../workspace/defaults';
 
 const DATA_DIR = process.env.DATA_DIR || 'data';
 
@@ -10,7 +11,6 @@ export interface GalleryItem {
   title: string;
   description: string;
   prompt?: string;
-  systemPrompt?: string;
   authorId: string;
   publishedAt: string;
   artifactCount: number;
@@ -29,6 +29,20 @@ function getGalleryPath(): string {
 
 function getGalleryItemPath(id: string): string {
   return join(getGalleryPath(), id);
+}
+
+async function listWorkspaceEntries(
+  storage: ReturnType<typeof createSandboxedStorage>,
+  workspaceId: string,
+  dir = ''
+): Promise<FileInfo[]> {
+  const entries = await storage.listFiles(workspaceId, dir);
+  const nested = await Promise.all(
+    entries
+      .filter(entry => entry.isDirectory)
+      .map(entry => listWorkspaceEntries(storage, workspaceId, entry.path))
+  );
+  return [...entries, ...nested.flat()];
 }
 
 export async function listGalleryItems(): Promise<GalleryItem[]> {
@@ -196,8 +210,11 @@ export async function publishWorkspace(
     // No files to copy
   }
 
-  // Count artifacts
-  const artifactCount = uiState.panels.filter(p => p.type !== 'chat').length;
+  // Count shareable artifacts: durable files plus non-file-backed panels.
+  const workspaceFiles = await listWorkspaceEntries(storage, workspaceId);
+  const fileCount = workspaceFiles.filter((file) => !file.isDirectory).length;
+  const panelCount = uiState.panels.filter(panel => panel.type !== 'chat' && panel.type !== 'fileTree' && !panel.filePath).length;
+  const artifactCount = panelCount + fileCount;
 
   // Create config
   const config: GalleryItem = {
@@ -205,7 +222,6 @@ export async function publishWorkspace(
     title,
     description,
     prompt: workspace.description,
-    systemPrompt: workspace.systemPrompt,
     authorId: userId,
     publishedAt: new Date().toISOString(),
     artifactCount,
@@ -231,21 +247,13 @@ export async function cloneGalleryItem(
   const now = new Date().toISOString();
 
   // Create workspace config
-  await storage.setWorkspace(workspaceId, {
+  await storage.setWorkspace(workspaceId, createDefaultWorkspaceConfig({
     id: workspaceId,
     name: galleryItem.title,
     description: `Cloned from gallery: ${galleryItem.description}`,
     createdAt: now,
     updatedAt: now,
-    systemPrompt: galleryItem.systemPrompt || 'You are a helpful assistant that helps users accomplish tasks by writing code and building interfaces.',
-    tools: [
-      'execute',
-      'read', 'write',
-      'filter', 'pick', 'sort',
-      'ui.table', 'ui.message',
-      'ui.addPanel', 'ui.removePanel', 'ui.updatePanel', 'ui.setLayout',
-    ],
-  });
+  }));
 
   // Copy UI state
   await storage.setUIState(workspaceId, galleryItem.uiState);

@@ -157,7 +157,7 @@ async function validateCsrfToken(tokenString: string): Promise<boolean> {
   return result === 0;
 }
 
-export async function proxy(request: NextRequest) {
+export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const response = NextResponse.next();
 

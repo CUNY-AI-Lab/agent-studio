@@ -1,8 +1,12 @@
+export { createCardsTool } from './cards';
+export { createChartTool } from './chart';
+export { createMarkdownTool } from './markdown';
 export { createTableTool } from './table';
-export { messageTool } from './message';
+export { createPdfTool } from './pdf';
 export {
   createAddPanelTool,
   createRemovePanelTool,
   createUpdatePanelTool,
-  createSetLayoutTool,
 } from './panel';
+export { createShowFileTool } from './show-file';
+export { createWorkspaceInfoTool } from './workspace';

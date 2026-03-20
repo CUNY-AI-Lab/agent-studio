@@ -2,8 +2,8 @@ import { cookies } from 'next/headers';
 import { mkdir } from 'fs/promises';
 import { join } from 'path';
 import { createHmac, randomBytes } from 'crypto';
+import { getUserDataPath } from './data-path';
 
-const DATA_DIR = process.env.DATA_DIR || 'data';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'default-session-secret-change-in-production';
 const SESSION_MAX_AGE = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -53,31 +53,21 @@ function verifySessionId(signedToken: string): string | null {
 
 
 export async function getSession(): Promise<string> {
-  return getOrCreateSession();
-}
-
-// Get existing session or create a new one if invalid/missing
-export async function getOrCreateSession(): Promise<string> {
   const cookieStore = await cookies();
   const signedSession = cookieStore.get('agent-studio-session')?.value;
 
-  // Try to verify existing session
-  if (signedSession) {
-    const sessionId = verifySessionId(signedSession);
-    if (sessionId) {
-      // Ensure user directory exists
-      const userDir = join(process.cwd(), DATA_DIR, 'users', sessionId, 'workspaces');
-      await mkdir(userDir, { recursive: true });
-      return sessionId;
-    }
+  if (!signedSession) {
+    throw new Error('No session found');
   }
 
-  // No valid session - create a new one
-  const { value, sessionId } = createSignedSession();
-  cookieStore.set('agent-studio-session', value, getSessionCookieOptions());
+  // Verify signature
+  const sessionId = verifySessionId(signedSession);
+  if (!sessionId) {
+    throw new Error('Invalid session signature');
+  }
 
   // Ensure user directory exists
-  const userDir = join(process.cwd(), DATA_DIR, 'users', sessionId, 'workspaces');
+  const userDir = join(getUserDataPath(sessionId), 'workspaces');
   await mkdir(userDir, { recursive: true });
 
   return sessionId;
@@ -101,10 +91,4 @@ export function getSessionCookieOptions() {
   };
 }
 
-export function getUserDataPath(sessionId: string): string {
-  // Validate session ID format to prevent path traversal (32-char hex string)
-  if (!/^[a-f0-9]+$/.test(sessionId) || sessionId.length !== 32) {
-    throw new Error('Invalid session ID');
-  }
-  return join(process.cwd(), DATA_DIR, 'users', sessionId);
-}
+export { getUserDataPath } from './data-path';

@@ -3,15 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "dev": "npm run build:runner && node scripts/with-runner.mjs dev",
+    "dev:app": "next dev",
+    "build": "next build && npm run build:runner",
+    "start": "node scripts/with-runner.mjs start",
+    "start:app": "next start",
+    "build:runner": "tsc -p tsconfig.runner.json",
+    "start:runner": "node .runner-dist/src/runner/server.js",
     "lint": "eslint",
-    "test": "tsc -p tests/tsconfig.json && node --test tests/dist/tests/**/*.test.js",
+    "test": "rm -rf tests/dist && tsc -p tests/tsconfig.json && node --test tests/dist/tests/**/*.test.js",
     "typecheck:strict": "tsc --noEmit --noUnusedLocals --noUnusedParameters"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.69",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.79",
     "@anthropic-ai/sdk": "^0.71.2",
     "@floating-ui/react": "^0.27.16",
     "@radix-ui/react-avatar": "^1.1.11",
@@ -48,7 +52,7 @@
     "streamdown": "^1.6.10",
     "tailwind-merge": "^3.4.0",
     "use-stick-to-bottom": "^1.1.1",
-    "zod": "^3.25.76"
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

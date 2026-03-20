@@ -22,8 +22,9 @@ import { apiFetch, basePath } from '@/lib/api';
 import { useStreamingQuery, type Message, type ToolExecution, type PanelUpdate, type StreamStatusEvent } from '@/hooks/useStreamingQuery';
 import { CapabilitiesPanel } from '@/components/CapabilitiesPanel';
 import { OnboardingTour, type TourStep } from '@/components/OnboardingTour';
+import { ConfirmDialog } from '@/components/ConfirmDialog';
 import skills from '@/lib/skills/index.json';
-import type { CanvasPanelLayout, UIPanel, UIState, PanelGroup, PanelConnection } from '@/lib/storage';
+import type { CanvasPanelLayout, UIPanel, UIState, PanelGroup, PanelConnection, FileInfo } from '@/lib/storage';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Types
@@ -82,8 +83,225 @@ const DEFAULT_PANEL_SIZES: Record<string, { width: number; height: number }> = {
   chart: { width: 500, height: 350 },
   cards: { width: 500, height: 400 },
   markdown: { width: 400, height: 300 },
+  editor: { width: 620, height: 460 },
+  fileTree: { width: 440, height: 480 },
   preview: { width: 600, height: 500 },
+  pdf: { width: 600, height: 800 },
 };
+
+const IMAGE_FILE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg']);
+const MARKDOWN_FILE_EXTENSIONS = new Set(['.md']);
+const CSV_FILE_EXTENSIONS = new Set(['.csv']);
+const HTML_FILE_EXTENSIONS = new Set(['.html']);
+const TEXT_PREVIEW_FILE_EXTENSIONS = new Set([
+  '.txt', '.md', '.csv', '.json', '.xml', '.yaml', '.yml', '.js', '.ts', '.css', '.html',
+]);
+
+function getFileExtension(filePath: string): string {
+  const lower = filePath.toLowerCase();
+  const index = lower.lastIndexOf('.');
+  return index >= 0 ? lower.slice(index) : '';
+}
+
+function getFileName(filePath: string): string {
+  return filePath.split('/').pop() || filePath;
+}
+
+function getWorkspaceFileUrl(workspaceId: string, filePath: string): string {
+  const encodedPath = filePath.split('/').map(segment => encodeURIComponent(segment)).join('/');
+  return `${basePath}/api/workspaces/${workspaceId}/files/${encodedPath}`;
+}
+
+function formatFileSize(size?: number): string {
+  if (!size && size !== 0) return 'Unknown size';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatRelativeTime(value?: string): string {
+  if (!value) return 'Unknown time';
+  const diffMs = Date.now() - new Date(value).getTime();
+  if (!Number.isFinite(diffMs)) return 'Unknown time';
+  const diffMinutes = Math.round(diffMs / 60000);
+  if (Math.abs(diffMinutes) < 1) return 'Just now';
+  if (Math.abs(diffMinutes) < 60) return `${Math.abs(diffMinutes)}m ago`;
+  const diffHours = Math.round(diffMinutes / 60);
+  if (Math.abs(diffHours) < 24) return `${Math.abs(diffHours)}h ago`;
+  const diffDays = Math.round(diffHours / 24);
+  if (Math.abs(diffDays) < 7) return `${Math.abs(diffDays)}d ago`;
+  return new Date(value).toLocaleDateString();
+}
+
+function hashString(value: string): string {
+  let hash = 0;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function makeFilePanelId(filePath: string): string {
+  return `file_${hashString(filePath)}`;
+}
+
+function getFilePanelType(filePath: string): 'editor' | 'pdf' {
+  return getFileExtension(filePath) === '.pdf' ? 'pdf' : 'editor';
+}
+
+function getFileTypeIcon(filePath: string): string {
+  const ext = getFileExtension(filePath);
+  switch (ext) {
+    case '.md': case '.txt': return '📄';
+    case '.csv': case '.tsv': return '📊';
+    case '.html': case '.htm': return '🌐';
+    case '.json': return '{ }';
+    case '.pdf': return '📕';
+    case '.png': case '.jpg': case '.jpeg': case '.gif': case '.svg': case '.webp': return '🖼';
+    case '.py': case '.js': case '.ts': case '.tsx': case '.jsx': return '⟨⟩';
+    default: return '📁';
+  }
+}
+
+function canOpenFileInPanel(filePath: string): boolean {
+  const ext = getFileExtension(filePath);
+  return ext === '.pdf' || IMAGE_FILE_EXTENSIONS.has(ext) || TEXT_PREVIEW_FILE_EXTENSIONS.has(ext);
+}
+
+function canQueryFileInPanel(filePath: string): boolean {
+  const ext = getFileExtension(filePath);
+  if (ext === '.pdf') return true;
+  return TEXT_PREVIEW_FILE_EXTENSIONS.has(ext);
+}
+
+function getFileTileLabel(filePath: string): string {
+  const ext = getFileExtension(filePath);
+  if (ext === '.pdf') return 'PDF';
+  if (CSV_FILE_EXTENSIONS.has(ext)) return 'CSV File';
+  if (MARKDOWN_FILE_EXTENSIONS.has(ext)) return 'Markdown File';
+  if (HTML_FILE_EXTENSIONS.has(ext)) return 'HTML View';
+  if (IMAGE_FILE_EXTENSIONS.has(ext)) return 'Image';
+  if (ext === '.json') return 'JSON File';
+  if (ext === '.txt') return 'Text File';
+  return 'File';
+}
+
+function getTileTypeLabel(panel: UIPanel): string {
+  switch (panel.type) {
+    case 'table':
+      return 'Table';
+    case 'chart':
+      return 'Chart';
+    case 'cards':
+      return 'Cards';
+    case 'markdown':
+      return 'Markdown';
+    case 'preview':
+      return panel.filePath ? getFileTileLabel(panel.filePath) : 'Web View';
+    case 'fileTree':
+      return 'Files';
+    case 'pdf':
+      return panel.filePath ? getFileTileLabel(panel.filePath) : 'PDF';
+    case 'editor':
+      return panel.filePath ? getFileTileLabel(panel.filePath) : 'File';
+    case 'detail':
+      return 'Detail';
+    default:
+      return panel.type;
+  }
+}
+
+function isPanelContextualChatCapable(panel: UIPanel): boolean {
+  if (panel.type === 'table') return !!panel.tableId;
+  if (panel.type === 'chart') return !!panel.chartId;
+  if (panel.type === 'cards') return !!panel.cardsId;
+  if (panel.type === 'markdown') return true;
+  if (panel.type === 'preview') {
+    if (panel.filePath && canQueryFileInPanel(panel.filePath)) return true;
+    return !!panel.content;
+  }
+  if (panel.type === 'fileTree') return true;
+  if (panel.type === 'pdf') return !!panel.filePath;
+  if (panel.type === 'editor' && panel.filePath) {
+    return canQueryFileInPanel(panel.filePath);
+  }
+  return false;
+}
+
+function canExportPanelSnapshot(panel: UIPanel): boolean {
+  return ['table', 'chart', 'cards', 'markdown', 'preview', 'editor'].includes(panel.type);
+}
+
+function getToolbarDownloadFormats(panel?: UIPanel | null): Array<'file' | 'csv' | 'json' | 'png'> {
+  if (!panel) return [];
+
+  const formats: Array<'file' | 'csv' | 'json' | 'png'> = [];
+  if (panel.filePath) {
+    formats.push('file');
+  }
+
+  switch (panel.type) {
+    case 'table':
+      formats.push('csv', 'json', 'png');
+      break;
+    case 'chart':
+      formats.push('csv', 'json', 'png');
+      break;
+    case 'cards':
+      formats.push('json', 'png');
+      break;
+    case 'markdown':
+    case 'preview':
+    case 'editor':
+      formats.push('png');
+      break;
+    default:
+      break;
+  }
+
+  return formats;
+}
+
+function parseCsvRow(line: string): string[] {
+  const cells: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const next = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && next === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      cells.push(current);
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  cells.push(current);
+  return cells;
+}
+
+function parseCsvPreview(content: string): { headers: string[]; rows: string[][] } {
+  const lines = content.split(/\r?\n/).filter(line => line.length > 0);
+  if (lines.length === 0) return { headers: [], rows: [] };
+  const headers = parseCsvRow(lines[0]);
+  const rows = lines.slice(1, 51).map(parseCsvRow);
+  return { headers, rows };
+}
 
 // Collision resolution constants
 const PANEL_GAP = 20; // Minimum gap between panels in pixels
@@ -91,6 +309,21 @@ const AUTO_FOCUS_DELAY = 150;
 const AUTO_FOCUS_DURATION = 650;
 const AUTO_FOCUS_EASING = 'easeInOutQuint';
 const AUTO_FOCUS_PADDING = 40;
+type TransformAnimationType =
+  | 'linear'
+  | 'easeInOutQuint'
+  | 'easeOut'
+  | 'easeInQuad'
+  | 'easeOutQuad'
+  | 'easeInOutQuad'
+  | 'easeInCubic'
+  | 'easeOutCubic'
+  | 'easeInOutCubic'
+  | 'easeInQuart'
+  | 'easeOutQuart'
+  | 'easeInOutQuart'
+  | 'easeInQuint'
+  | 'easeOutQuint';
 
 // Type for panel layouts
 type LayoutMap = Record<string, { x: number; y: number; width: number; height: number }>;
@@ -217,12 +450,20 @@ export default function WorkspacePage() {
   const [tables, setTables] = useState<Record<string, TableData>>({});
   const [charts, setCharts] = useState<Record<string, ChartData>>({});
   const [cards, setCards] = useState<Record<string, CardsData>>({});
+  const [workspaceFiles, setWorkspaceFiles] = useState<FileInfo[]>([]);
+  const [highlightedFilePaths, setHighlightedFilePaths] = useState<Set<string>>(new Set());
   const [uiState, setUIState] = useState<UIState>({ panels: [{ id: 'chat', type: 'chat' }], viewport: { x: 0, y: 0, zoom: 1 } });
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
-  const [chatOpen, setChatOpen] = useState(true);
+  const [chatOpen, setChatOpen] = useState(false);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [fileShelfCollapsed, setFileShelfCollapsed] = useState(false);
+  const [activeFilePillPopover, setActiveFilePillPopover] = useState<string | null>(null);
+  const [narrowActiveTab, setNarrowActiveTab] = useState<'canvas' | 'chat'>('canvas');
   const [tourOpen, setTourOpen] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [isDeletingWorkspace, setIsDeletingWorkspace] = useState(false);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [publishTitle, setPublishTitle] = useState('');
   const [publishDescription, setPublishDescription] = useState('');
@@ -296,24 +537,30 @@ export default function WorkspacePage() {
   // Refs
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const viewportSaveTimeout = useRef<NodeJS.Timeout | null>(null);
+  const clearFileHighlightTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Initial viewport: looking at canvas area around (4000, 4000) at 75% zoom
   const currentViewport = useRef<{ x: number; y: number; scale: number }>({ x: -2500, y: -2000, scale: 0.75 });
   const canvasContainerRef = useRef<HTMLDivElement>(null);
-  const transformRef = useRef<{ setTransform: (x: number, y: number, scale: number, duration?: number, animationType?: "linear" | "easeInOutQuint" | "easeOut" | "easeInQuad" | "easeOutQuad" | "easeInOutQuad" | "easeInCubic" | "easeOutCubic" | "easeInOutCubic" | "easeInQuart" | "easeOutQuart" | "easeInOutQuart" | "easeInQuint" | "easeOutQuint") => void } | null>(null);
+  const filesSectionRef = useRef<HTMLDivElement>(null);
+  const fileCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const transformRef = useRef<{ setTransform: (x: number, y: number, scale: number, duration?: number, animationType?: TransformAnimationType) => void } | null>(null);
   const groupsSaveTimeout = useRef<NodeJS.Timeout | null>(null);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const autoFocusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const pendingQueryProcessed = useRef(false);
   const panelRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const workspaceFilesRef = useRef<FileInfo[]>([]);
+  const filesInitializedRef = useRef(false);
   const lastLayoutInteractionRef = useRef(0);
   const messageIdRef = useRef(0);
   const selectionPendingRef = useRef<{ x: number; y: number } | null>(null);
   const selectionSuppressClickRef = useRef(false);
   const selectionPointerIdRef = useRef<number | null>(null);
+  const previousDockedChatRef = useRef<boolean | null>(null);
 
   // Load workspace callback (forward declared for hook)
-  const loadWorkspaceRef = useRef<((options?: { skipMessages?: boolean }) => Promise<void>) | undefined>(undefined);
+  const loadWorkspaceRef = useRef<((options?: { skipMessages?: boolean; announceFileChanges?: boolean }) => Promise<void>) | undefined>(undefined);
 
   // Track panels that need auto-focus after layout is computed
   const pendingAutoFocusRef = useRef<Set<string>>(new Set());
@@ -324,19 +571,19 @@ export default function WorkspacePage() {
     {
       id: 'chat',
       title: 'Ask the agent',
-      description: 'Type your request here. The agent will create tables, charts, and tools on the canvas.',
+      description: 'Type your request here. The agent can create files in your workspace and place tiles on the canvas to inspect or visualize them.',
       selector: '[data-tour="chat-input"]',
     },
     {
       id: 'upload',
       title: 'Add files',
-      description: 'Upload PDFs, CSVs, or images and reference them in your prompt.',
+      description: 'Upload PDFs, CSVs, or images and reference them in your prompt. They land in your workspace files.',
       selector: '[data-tour="upload-button"]',
     },
     {
       id: 'canvas',
       title: 'Your workspace canvas',
-      description: 'Results appear here as draggable panels you can move and resize.',
+      description: 'Tiles appear here as draggable views over data and files the agent creates.',
       selector: '[data-tour="canvas"]',
     },
     {
@@ -558,7 +805,7 @@ export default function WorkspacePage() {
     onMessagesUpdate: setMessages,
     onComplete: async () => {
       if (loadWorkspaceRef.current) {
-        await loadWorkspaceRef.current({ skipMessages: true });
+        await loadWorkspaceRef.current({ skipMessages: true, announceFileChanges: true });
       }
     },
     onPanelUpdate: handlePanelUpdates,
@@ -567,9 +814,41 @@ export default function WorkspacePage() {
     },
   });
 
+  const isDockedChatLayout = viewportWidth >= 1400;
+  const isCompactHeaderLayout = viewportWidth > 0 && viewportWidth < 1500;
+  const isDrawerChatLayout = viewportWidth > 0 && !isDockedChatLayout;
+
+  useEffect(() => {
+    const updateViewportWidth = () => {
+      setViewportWidth(window.innerWidth);
+    };
+
+    updateViewportWidth();
+    window.addEventListener('resize', updateViewportWidth);
+    return () => window.removeEventListener('resize', updateViewportWidth);
+  }, []);
+
+  useEffect(() => {
+    if (viewportWidth === 0) return;
+
+    const previousDocked = previousDockedChatRef.current;
+    if (previousDocked === null) {
+      previousDockedChatRef.current = isDockedChatLayout;
+      setChatOpen(isDockedChatLayout);
+      return;
+    }
+
+    if (previousDocked !== isDockedChatLayout) {
+      previousDockedChatRef.current = isDockedChatLayout;
+      setChatOpen(isDockedChatLayout);
+    }
+  }, [isDockedChatLayout, viewportWidth]);
+
   useEffect(() => {
     const seen = localStorage.getItem('agent-studio-tour-seen');
-    if (seen !== 'true') {
+    const seenThisSession = sessionStorage.getItem('agent-studio-tour-session-seen');
+    if (seen !== 'true' && seenThisSession !== 'true') {
+      sessionStorage.setItem('agent-studio-tour-session-seen', 'true');
       setTourOpen(true);
     }
   }, []);
@@ -598,9 +877,13 @@ export default function WorkspacePage() {
   // Close menu on click outside
   useEffect(() => {
     if (!openMenuId) return;
-    const handleClick = () => setOpenMenuId(null);
-    document.addEventListener('click', handleClick);
-    return () => document.removeEventListener('click', handleClick);
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest('.panel-menu') || target?.closest('.panel-menu-trigger')) return;
+      setOpenMenuId(null);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [openMenuId]);
 
   // Close maximized panel on Escape
@@ -1324,7 +1607,7 @@ export default function WorkspacePage() {
 
 
   // Load workspace data
-  const loadWorkspace = useCallback(async (options?: { skipMessages?: boolean }) => {
+  const loadWorkspace = useCallback(async (options?: { skipMessages?: boolean; announceFileChanges?: boolean }) => {
     const res = await apiFetch(`/api/workspaces/${workspaceId}`);
     const data = await res.json();
 
@@ -1336,6 +1619,58 @@ export default function WorkspacePage() {
     }
     if (data.charts) setCharts(data.charts);
     if (data.cards) setCards(data.cards);
+    if (data.files) {
+      const nextFiles = data.files as FileInfo[];
+      const previousFiles = workspaceFilesRef.current.filter(file => !file.isDirectory);
+      const previousByPath = new Map(previousFiles.map(file => [file.path, file]));
+      const nextFileEntries = nextFiles.filter(file => !file.isDirectory);
+      const createdPaths: string[] = [];
+      const updatedPaths: string[] = [];
+
+      for (const file of nextFileEntries) {
+        const previous = previousByPath.get(file.path);
+        if (!previous) {
+          createdPaths.push(file.path);
+          continue;
+        }
+        if (previous.modifiedAt !== file.modifiedAt || previous.size !== file.size) {
+          updatedPaths.push(file.path);
+        }
+      }
+
+      setWorkspaceFiles(nextFiles);
+      workspaceFilesRef.current = nextFiles;
+
+      if (filesInitializedRef.current && options?.announceFileChanges && (createdPaths.length > 0 || updatedPaths.length > 0)) {
+        const changedPaths = [...createdPaths, ...updatedPaths].slice(0, 6);
+        setHighlightedFilePaths(new Set(changedPaths));
+
+        if (clearFileHighlightTimeoutRef.current) {
+          clearTimeout(clearFileHighlightTimeoutRef.current);
+        }
+        clearFileHighlightTimeoutRef.current = setTimeout(() => {
+          setHighlightedFilePaths(new Set());
+        }, 4000);
+
+        const createdLabel = createdPaths.length > 0 ? `created ${createdPaths.length} file${createdPaths.length !== 1 ? 's' : ''}` : '';
+        const updatedLabel = updatedPaths.length > 0 ? `updated ${updatedPaths.length} file${updatedPaths.length !== 1 ? 's' : ''}` : '';
+        const summary = [createdLabel, updatedLabel].filter(Boolean).join(' and ');
+        if (toastTimeoutRef.current) {
+          clearTimeout(toastTimeoutRef.current);
+        }
+        setToast({
+          message: changedPaths.length === 1
+            ? `${getFileName(changedPaths[0])} is ready in Workspace Files.`
+            : `The agent ${summary}.`,
+          type: 'success',
+        });
+        toastTimeoutRef.current = setTimeout(() => setToast(null), 3000);
+      }
+
+      if (!filesInitializedRef.current) {
+        filesInitializedRef.current = true;
+      }
+    }
     if (data.downloads && data.downloads.length > 0) {
       data.downloads.forEach((dl: DownloadRequest) => {
         triggerDownload(dl.filename, dl.data, dl.format);
@@ -1412,13 +1747,169 @@ export default function WorkspacePage() {
     loadWorkspace();
   }, [loadWorkspace]);
 
+  useEffect(() => {
+    return () => {
+      if (clearFileHighlightTimeoutRef.current) {
+        clearTimeout(clearFileHighlightTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  const workspaceFileEntries = useMemo(() => (
+    workspaceFiles
+      .filter(file => !file.isDirectory)
+      .sort((a, b) => {
+        const aTime = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
+        const bTime = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
+        if (aTime !== bTime) return bTime - aTime;
+        return a.path.localeCompare(b.path);
+      })
+  ), [workspaceFiles]);
+
+  const publishablePanelCount = useMemo(() => (
+    artifactPanels.filter(panel => panel.type !== 'fileTree' && !panel.filePath).length
+  ), [artifactPanels]);
+
+  const publishableArtifactCount = publishablePanelCount + workspaceFileEntries.length;
+
+  const focusTile = useCallback((panelId: string) => {
+    setMinimizedPanels(prev => {
+      if (!prev.has(panelId)) return prev;
+      const next = new Set(prev);
+      next.delete(panelId);
+      return next;
+    });
+    setFocusedPanelId(panelId);
+
+    const layout = panelLayouts[panelId];
+    if (!layout || !transformRef.current || !canvasContainerRef.current) return;
+
+    const viewportWidth = canvasContainerRef.current.clientWidth;
+    const viewportHeight = canvasContainerRef.current.clientHeight;
+    const currentScale = currentViewport.current.scale;
+    const panelCenterX = layout.x + layout.width / 2;
+    const panelCenterY = layout.y + layout.height / 2;
+    const targetX = viewportWidth / 2 - panelCenterX * currentScale;
+    const targetY = viewportHeight / 2 - panelCenterY * currentScale;
+    transformRef.current.setTransform(targetX, targetY, currentScale, AUTO_FOCUS_DURATION, AUTO_FOCUS_EASING);
+  }, [panelLayouts]);
+
+  const getExistingFileTileId = useCallback((filePath: string) => (
+    uiState.panels.find(panel => panel.filePath === filePath || panel.id === makeFilePanelId(filePath))?.id ?? null
+  ), [uiState.panels]);
+
+  const getFileCanvasActionLabel = useCallback((filePath: string) => (
+    getExistingFileTileId(filePath)
+      ? 'Go to Tile'
+      : 'Show on Canvas'
+  ), [getExistingFileTileId]);
+
+  const filesTileActionLabel = useMemo(() => (
+    uiState.panels.some(panel => panel.id === 'workspace_files')
+      ? 'Go to Files Tile'
+      : 'Show Files on Canvas'
+  ), [uiState.panels]);
+
+  const highlightWorkspaceFiles = useCallback((paths: string[], options?: { scroll?: boolean }) => {
+    const uniquePaths = Array.from(new Set(paths)).filter(Boolean);
+    if (uniquePaths.length === 0) return;
+
+    setHighlightedFilePaths(new Set(uniquePaths));
+
+    if (clearFileHighlightTimeoutRef.current) {
+      clearTimeout(clearFileHighlightTimeoutRef.current);
+    }
+    clearFileHighlightTimeoutRef.current = setTimeout(() => {
+      setHighlightedFilePaths(new Set());
+    }, 4000);
+
+    if (options?.scroll === false) return;
+
+    filesSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    requestAnimationFrame(() => {
+      fileCardRefs.current[uniquePaths[0]]?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'nearest',
+        inline: 'center',
+      });
+    });
+  }, []);
+
+  const downloadWorkspaceFile = useCallback((filePath: string) => {
+    const link = document.createElement('a');
+    link.href = getWorkspaceFileUrl(workspaceId, filePath);
+    link.download = getFileName(filePath);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }, [workspaceId]);
+
+  const upsertWorkspacePanel = useCallback(async (panel: UIPanel) => {
+    handlePanelUpdates([{ action: 'add', panel }]);
+    try {
+      await apiFetch(`/api/workspaces/${workspaceId}/panels`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ panel }),
+      });
+    } catch (error) {
+      console.error('Failed to persist panel:', error);
+      setToast({ message: 'The tile opened locally but could not be saved.', type: 'info' });
+    }
+  }, [handlePanelUpdates, workspaceId]);
+
+  const openWorkspaceFile = useCallback(async (filePath: string) => {
+    highlightWorkspaceFiles([filePath], { scroll: false });
+
+    if (!canOpenFileInPanel(filePath)) {
+      downloadWorkspaceFile(filePath);
+      return;
+    }
+
+    const existingPanelId = getExistingFileTileId(filePath);
+    if (existingPanelId) {
+      focusTile(existingPanelId);
+      return;
+    }
+
+    const panelId = makeFilePanelId(filePath);
+    await upsertWorkspacePanel({
+      id: panelId,
+      type: getFilePanelType(filePath),
+      title: getFileName(filePath),
+      filePath,
+    });
+  }, [downloadWorkspaceFile, focusTile, getExistingFileTileId, highlightWorkspaceFiles, upsertWorkspacePanel]);
+
+  const openFilesPanel = useCallback(async () => {
+    const panelId = 'workspace_files';
+    const existing = uiState.panels.find(panel => panel.id === panelId);
+    if (existing) {
+      focusTile(panelId);
+      return;
+    }
+
+    await upsertWorkspacePanel({
+      id: panelId,
+      type: 'fileTree',
+      title: 'Workspace Files',
+    });
+  }, [focusTile, uiState.panels, upsertWorkspacePanel]);
+
+  const revealFileInWorkspace = useCallback((filePath: string) => {
+    highlightWorkspaceFiles([filePath]);
+  }, [highlightWorkspaceFiles]);
+
   // Auto-process pending user message (from initial prompt)
   const processPendingMessage = useCallback(async (userMessage: string) => {
     if (isLoading) return;
     setStreamStatus('Thinking...');
     setIsLoading(true);
     try {
-      await executeQuery(userMessage);
+      await executeQuery(userMessage, {
+        conversationPrompt: userMessage,
+        skipUserMessagePersistence: true,
+      });
     } finally {
       setIsLoading(false);
       setStreamStatus(null);
@@ -1477,7 +1968,10 @@ export default function WorkspacePage() {
     setIsLoading(true);
 
     try {
-      await executeQuery(userMessage);
+      const prompt = mainChatSelectionScope
+        ? `${mainChatSelectionScope.prompt}\n\nUser question: ${userMessage}`
+        : userMessage;
+      await executeQuery(prompt, { conversationPrompt: userMessage });
     } finally {
       setIsLoading(false);
       setStreamStatus(null);
@@ -1519,6 +2013,9 @@ export default function WorkspacePage() {
     e.stopPropagation();
     if (selectionSuppressClickRef.current) return;
 
+    const panel = uiState.panels.find(p => p.id === panelId);
+    if (!panel || !isPanelContextualChatCapable(panel)) return;
+
     // Clear selection when opening chat
     setSelectedPanelIds(new Set());
 
@@ -1542,7 +2039,7 @@ export default function WorkspacePage() {
         transformRef.current.setTransform(targetX, targetY, currentScale, 400);
       }, 0);
     }
-  }, [contextualChatPanelId, panelLayouts]);
+  }, [contextualChatPanelId, panelLayouts, uiState.panels]);
 
   const minimizePanel = useCallback((panelId: string, options?: { clearSelection?: boolean }) => {
     setMinimizedPanels(prev => {
@@ -1578,18 +2075,103 @@ export default function WorkspacePage() {
     if (panel.type === 'cards' && panel.cardsId && cards[panel.cardsId]) {
       return cards[panel.cardsId].title;
     }
+    if ((panel.type === 'editor' || panel.type === 'pdf' || panel.type === 'preview') && panel.filePath) {
+      return getFileName(panel.filePath);
+    }
+    if (panel.type === 'fileTree') {
+      return 'Workspace Files';
+    }
     return panel.type.charAt(0).toUpperCase() + panel.type.slice(1);
   }, [tables, charts, cards]);
 
-  // Get resource path for a panel (used in read() instructions)
-  const getPanelResource = useCallback((panel: UIPanel): string | null => {
-    if (panel.type === 'table' && panel.tableId) return `table:${panel.tableId}`;
-    if (panel.type === 'chart' && panel.chartId) return `chart:${panel.chartId}`;
-    if (panel.type === 'cards' && panel.cardsId) return `cards:${panel.cardsId}`;
-    if (panel.type === 'markdown') return `markdown:${panel.id}`;
-    if ((panel.type === 'editor' || panel.type === 'pdf') && panel.filePath) return `file:${panel.filePath}`;
-    // preview, chat, fileTree, detail have no readable resource
+  const getPanelMcpResourceUri = useCallback((panel: UIPanel): string | null => {
+    if (panel.type === 'table' && panel.tableId) return `workspace://table/${encodeURIComponent(panel.tableId)}`;
+    if (panel.type === 'chart' && panel.chartId) return `workspace://chart/${encodeURIComponent(panel.chartId)}`;
+    if (panel.type === 'cards' && panel.cardsId) return `workspace://cards/${encodeURIComponent(panel.cardsId)}`;
+    if (panel.type === 'markdown' && panel.content) return `workspace://panel-markdown/${encodeURIComponent(panel.id)}`;
+    if (panel.type === 'preview' && panel.content) return `workspace://panel-preview/${encodeURIComponent(panel.id)}`;
+    if (panel.type === 'fileTree') return `workspace://panel-files/${encodeURIComponent(panel.id)}`;
     return null;
+  }, []);
+
+  const getPanelContextAccessLine = useCallback((panel: UIPanel): string => {
+    if (panel.filePath) {
+      if (canQueryFileInPanel(panel.filePath)) {
+        return `Read workspace file "${panel.filePath}" with Claude Code file tools or Bash.`;
+      }
+      return `Use workspace file "${panel.filePath}" as the source artifact for this tile.`;
+    }
+
+    const mcpResourceUri = getPanelMcpResourceUri(panel);
+    if (mcpResourceUri) {
+      return `Read MCP resource "${mcpResourceUri}" from server "${workspaceId}" with ReadMcpResource.`;
+    }
+
+    return 'No directly readable file or MCP resource.';
+  }, [getPanelMcpResourceUri, workspaceId]);
+
+  const mainChatSelectionScope = useMemo(() => {
+    const selectedPanels = Array.from(selectedPanelIds)
+      .map(panelId => uiState.panels.find(panel => panel.id === panelId))
+      .filter((panel): panel is UIPanel => Boolean(panel));
+
+    if (selectedPanels.length === 0) return null;
+
+    const exactSelectedGroup = selectedPanelsGroup
+      && selectedPanelsGroup.panelIds.length === selectedPanels.length
+      && selectedPanelsGroup.panelIds.every(panelId => selectedPanelIds.has(panelId))
+      ? selectedPanelsGroup
+      : null;
+
+    const orderedPanels = exactSelectedGroup
+      ? exactSelectedGroup.panelIds
+          .map(panelId => selectedPanels.find(panel => panel.id === panelId))
+          .filter((panel): panel is UIPanel => Boolean(panel))
+      : selectedPanels;
+
+    const groupLabel = exactSelectedGroup?.name?.trim() || `${orderedPanels.length} tiles`;
+    const scopeLabel = exactSelectedGroup
+      ? `Scoped to group: ${groupLabel}`
+      : orderedPanels.length === 1
+        ? `Scoped to tile: ${getPanelTitle(orderedPanels[0])}`
+        : `Scoped to ${orderedPanels.length} selected tiles`;
+
+    const scopeEntries = orderedPanels.map((panel) => {
+      const lines = [
+        `- ID: ${panel.id}`,
+        `  Title: "${getPanelTitle(panel)}"`,
+        `  Type: ${panel.type} (${getTileTypeLabel(panel)})`,
+      ];
+
+      if (panel.filePath) {
+        lines.push(`  File: ${panel.filePath}`);
+      }
+
+      lines.push(`  Access: ${getPanelContextAccessLine(panel)}`);
+      return lines.join('\n');
+    }).join('\n');
+
+    const scopeHeading = exactSelectedGroup
+      ? `Selected group: "${groupLabel}"`
+      : orderedPanels.length === 1
+        ? 'Selected tile:'
+        : `Selected tiles (${orderedPanels.length}):`;
+
+    const prompt = `<contextual_focus>
+The user currently has tiles selected on the canvas.
+This block is internal context. Do not repeat it in your reply.
+Treat the selected tile or tiles as the default referent for phrases like "this tile", "these tiles", or "this file".
+Start from this selection. You may use other workspace context when needed, but be explicit if you go beyond the selected tiles.
+
+${scopeHeading}
+${scopeEntries}
+</contextual_focus>`;
+
+    return { prompt, scopeLabel };
+  }, [getPanelContextAccessLine, getPanelTitle, selectedPanelIds, selectedPanelsGroup, uiState.panels]);
+
+  const clearMainChatSelectionScope = useCallback(() => {
+    setSelectedPanelIds(new Set());
   }, []);
 
   // Handle contextual chat message
@@ -1614,18 +2196,16 @@ export default function WorkspacePage() {
     setContextualChatLoading(prev => ({ ...prev, [panelId]: true }));
     setContextualChatStatus(prev => ({ ...prev, [panelId]: 'Thinking...' }));
 
-    const resource = getPanelResource(panel);
-
     const contextualPrompt = `<contextual_focus>
-The user is asking about a specific panel in their workspace.
+The user is asking about a specific tile in their workspace.
 This block is internal context. Do not repeat it in your reply.
-Scope: Only this panel is in context. Other panels are out of scope unless explicitly provided.
-Panels are isolated. A preview panel cannot access other panels' data at runtime.
+Scope: Only this tile is in context. Other tiles are out of scope unless explicitly provided.
+Tiles are isolated. A preview tile cannot access other tiles' data at runtime.
 
-Panel ID: ${panel.id}
+Tile ID: ${panel.id}
 Title: "${getPanelTitle(panel)}"
 Type: ${panel.type}
-${resource ? `Data: await read("${resource}")` : 'Data: (no readable data resource)'}
+Access: ${getPanelContextAccessLine(panel)}
 </contextual_focus>
 
 User question: ${message}`;
@@ -1668,7 +2248,7 @@ User question: ${message}`;
       setContextualChatLoading(prev => ({ ...prev, [panelId]: false }));
       setContextualChatStatus(prev => ({ ...prev, [panelId]: null }));
     }
-  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, getPanelResource, executeQuery, getPanelTitle, getStatusLabel, makeMessageId]);
+  }, [contextualChatPanelId, contextualChatLoading, uiState.panels, getPanelContextAccessLine, executeQuery, getPanelTitle, getStatusLabel, makeMessageId]);
 
   // Handle group contextual chat message
   const handleGroupContextualMessage = useCallback(async (message: string) => {
@@ -1696,19 +2276,18 @@ User question: ${message}`;
     // Build context from all panels in the group (minimal, reference-based)
     const panelsContext = groupPanels.map(panel => {
       if (!panel) return '';
-      const resource = getPanelResource(panel);
-      const accessLine = resource ? `Data: await read("${resource}")` : 'Data: (no readable data resource)';
-      return `- ID: ${panel.id}\n  Title: "${getPanelTitle(panel)}"\n  Type: ${panel.type}\n  ${accessLine}`;
+      const accessLine = getPanelContextAccessLine(panel);
+      return `- ID: ${panel.id}\n  Title: "${getPanelTitle(panel)}"\n  Type: ${panel.type}\n  Access: ${accessLine}`;
     }).join('\n');
 
     const contextualPrompt = `<contextual_focus>
-The user is asking about a group of related panels in their workspace.
+The user is asking about a group of related tiles in their workspace.
 This block is internal context. Do not repeat it in your reply.
-Scope: Only the panels listed below are in context. Other panels are out of scope unless explicitly provided.
-Panels are isolated. A preview panel cannot access other panels' data at runtime.
+Scope: Only the tiles listed below are in context. Other tiles are out of scope unless explicitly provided.
+Tiles are isolated. A preview tile cannot access other tiles' data at runtime.
 
 Group: ${group.name || 'Unnamed group'}
-Panels (${groupPanels.length}):
+Tiles (${groupPanels.length}):
 ${panelsContext}
 </contextual_focus>
 
@@ -1752,7 +2331,7 @@ User question: ${message}`;
       setContextualChatLoading(prev => ({ ...prev, [groupId]: false }));
       setContextualChatStatus(prev => ({ ...prev, [groupId]: null }));
     }
-  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, getPanelResource, executeQuery, getPanelTitle, getStatusLabel, makeMessageId]);
+  }, [contextualChatGroupId, contextualChatLoading, groups, uiState.panels, getPanelContextAccessLine, executeQuery, getPanelTitle, getStatusLabel, makeMessageId]);
 
   // Handle canvas pointer down for drag-to-select
   // Left-click starts selection box, middle-click allows panning (RTS style controls)
@@ -2053,7 +2632,7 @@ User question: ${message}`;
       setContextualChatPanelId(null);
       setContextualChatGroupId(groupId);
     } else {
-      showToast(`Grouped ${panelCount} panels`);
+      showToast(`Grouped ${panelCount} tiles`);
     }
   }, [selectedPanelIds, panelLayouts, showToast]);
 
@@ -2198,6 +2777,14 @@ User question: ${message}`;
     : (hoveredPanel ? new Set([hoveredPanel.id]) : new Set<string>());
   const toolbarGroup = selectedPanelIds.size > 0 ? selectedPanelsGroup : null;
   const toolbarSinglePanelGroup = selectedPanelIds.size > 0 ? singleSelectedPanelGroup : hoveredPanelGroup;
+  const toolbarCanChat = useMemo(() => {
+    if (selectedPanelIds.size > 0) {
+      return Array.from(selectedPanelIds)
+        .map(id => visiblePanels.find(panel => panel.id === id))
+        .some(panel => panel ? isPanelContextualChatCapable(panel) : false);
+    }
+    return toolbarPanel ? isPanelContextualChatCapable(toolbarPanel) : false;
+  }, [selectedPanelIds, toolbarPanel, visiblePanels]);
   const showToolbar = !!toolbarBounds && (selectedPanelIds.size > 0 || !!hoveredPanel);
 
   // Ungroup selected panels
@@ -2340,14 +2927,18 @@ User question: ${message}`;
 
   // Delete workspace
   const handleDelete = async () => {
-    if (!confirm('Delete this workspace? This cannot be undone.')) return;
+    setConfirmDeleteOpen(true);
+  };
 
+  const confirmDeleteWorkspace = async () => {
+    setIsDeletingWorkspace(true);
     try {
       const res = await apiFetch(`/api/workspaces/${workspaceId}`, {
         method: 'DELETE',
       });
 
       if (res.ok) {
+        setConfirmDeleteOpen(false);
         router.push(`${basePath}/`);
       } else {
         const data = await res.json();
@@ -2356,6 +2947,8 @@ User question: ${message}`;
     } catch (error) {
       console.error('Delete error:', error);
       alert('Failed to delete workspace');
+    } finally {
+      setIsDeletingWorkspace(false);
     }
   };
 
@@ -2370,8 +2963,20 @@ User question: ${message}`;
         return <CardsContent cards={panel.cardsId ? cards[panel.cardsId] : null} />;
       case 'markdown':
         return <MarkdownContent content={panel.content} />;
+      case 'editor':
+        return <EditorContent workspaceId={workspaceId} filePath={panel.filePath} />;
       case 'preview':
-        return <PreviewContent content={panel.content} />;
+        return <PreviewContent workspaceId={workspaceId} content={panel.content} filePath={panel.filePath} />;
+      case 'fileTree':
+        return (
+          <FileTreeContent
+            files={workspaceFiles}
+            highlightedPaths={highlightedFilePaths}
+            onOpenFile={openWorkspaceFile}
+            getFileActionLabel={getFileCanvasActionLabel}
+            onDownloadFile={downloadWorkspaceFile}
+          />
+        );
       case 'pdf':
         return <PDFContent workspaceId={workspaceId} filePath={panel.filePath} />;
       default:
@@ -2444,7 +3049,7 @@ User question: ${message}`;
   const downloadPanelAsPng = async (panelId: string, title: string) => {
     const element = panelRefs.current[panelId];
     if (!element) {
-      setExportError('Panel not found');
+      setExportError('Tile not found');
       return;
     }
 
@@ -2525,6 +3130,63 @@ User question: ${message}`;
       console.error('Failed to remove panel:', error);
     }
   }, [workspaceId]);
+
+  const renderPanelMenuContent = useCallback((panel: UIPanel) => (
+    <>
+      {panel.filePath && (
+        <>
+          <button onClick={() => { revealFileInWorkspace(panel.filePath!); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Show in Workspace Files</button>
+          <button onClick={() => { downloadWorkspaceFile(panel.filePath!); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download File</button>
+          <button onClick={() => { window.open(getWorkspaceFileUrl(workspaceId, panel.filePath!), '_blank'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Open in new tab</button>
+        </>
+      )}
+      {panel.type === 'table' && (
+        <>
+          <button onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Export Data as CSV</button>
+          <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Export Data as JSON</button>
+        </>
+      )}
+      {panel.type === 'chart' && (
+        <>
+          <button onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Export Data as CSV</button>
+          <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Export Data as JSON</button>
+        </>
+      )}
+      {panel.type === 'cards' && (
+        <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Export Data as JSON</button>
+      )}
+      {panel.type === 'markdown' && (
+        <button onClick={() => { downloadPanel(panel, 'md'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Export Markdown (.md)</button>
+      )}
+      {panel.type === 'preview' && panel.content && !panel.filePath && (
+        <button onClick={() => { downloadPanel(panel, 'html'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download HTML Source</button>
+      )}
+      {canExportPanelSnapshot(panel) && (
+        <button onClick={() => { downloadPanelAsPng(panel.id, getPanelTitle(panel)); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Save Snapshot as PNG</button>
+      )}
+      <button
+        onClick={() => minimizePanel(panel.id)}
+        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12h-15" /></svg>
+        Minimize
+      </button>
+      <button
+        onClick={() => { setMaximizedPanelId(panel.id); setOpenMenuId(null); }}
+        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
+      >
+        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+        Maximize
+      </button>
+      <div className="border-t border-border my-1" />
+      <button
+        onClick={() => { removePanel(panel.id); setOpenMenuId(null); }}
+        className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+      >
+        Remove
+      </button>
+    </>
+  ), [downloadPanel, downloadPanelAsPng, downloadWorkspaceFile, getPanelTitle, minimizePanel, removePanel, revealFileInWorkspace, workspaceId]);
 
   // Global Escape to clear selection and keyboard shortcuts (after handlers are defined)
   useEffect(() => {
@@ -2620,8 +3282,8 @@ User question: ${message}`;
       )}
       {/* Header */}
       <header className="canvas-header flex-shrink-0">
-        <div className="flex items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-4">
+        <div className="flex flex-col gap-3 px-4 py-3 sm:px-6 sm:py-4 min-[1500px]:flex-row min-[1500px]:items-start min-[1500px]:justify-between">
+          <div className="flex min-w-0 items-start gap-4">
             <Link
               href="/"
               className="p-2 -ml-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -2711,11 +3373,15 @@ User question: ${message}`;
               )}
             </div>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-muted-foreground bg-muted px-3 py-1.5 rounded-lg">
-              {artifactPanels.length} artifact{artifactPanels.length !== 1 ? 's' : ''}
+          <div className="flex items-center gap-1.5 min-[1500px]:justify-end">
+            <span className="rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground tabular-nums">
+              {artifactPanels.length}T · {workspaceFileEntries.length}F
             </span>
-            <CapabilitiesPanel skills={skills} />
+            {!isCompactHeaderLayout && (
+              <div>
+                <CapabilitiesPanel skills={skills} />
+              </div>
+            )}
             {workspace.galleryId ? (
               <button
                 onClick={handleUnpublish}
@@ -2724,7 +3390,7 @@ User question: ${message}`;
               >
                 Unpublish
               </button>
-            ) : artifactPanels.length > 0 ? (
+            ) : publishableArtifactCount > 0 ? (
               <button
                 onClick={() => {
                   setPublishTitle(workspace.name);
@@ -2737,15 +3403,17 @@ User question: ${message}`;
                 Publish
               </button>
             ) : null}
-            <button
-              onClick={() => setTourOpen(true)}
-              className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              title="Start tutorial"
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.32-.67.414-.74.295-1.338.987-1.338 1.796v.406M12 17.25h.008M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            </button>
+            {!isCompactHeaderLayout && (
+              <button
+                onClick={() => setTourOpen(true)}
+                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title="Start tutorial"
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.32-.67.414-.74.295-1.338.987-1.338 1.796v.406M12 17.25h.008M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+              </button>
+            )}
             <button
               onClick={() => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark')}
               className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
@@ -2770,30 +3438,141 @@ User question: ${message}`;
                 <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
               </svg>
             </button>
-            <button
-              onClick={() => setChatOpen(!chatOpen)}
-              className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-              title={chatOpen ? 'Hide chat' : 'Show chat'}
-            >
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-              </svg>
-            </button>
+            {isDockedChatLayout && (
+              <button
+                onClick={() => setChatOpen(!chatOpen)}
+                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                title={chatOpen ? 'Hide chat' : 'Show chat'}
+              >
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </header>
 
+      {/* Narrow viewport tab bar */}
+      {isDrawerChatLayout && (
+        <div className="flex-shrink-0 flex items-center gap-1 px-4 py-1.5 border-b border-border/50 bg-card/40 backdrop-blur-sm">
+          <div className="inline-flex rounded-lg bg-muted/60 p-0.5">
+            <button
+              onClick={() => setNarrowActiveTab('canvas')}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                narrowActiveTab === 'canvas'
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-foreground/50 hover:text-foreground/70'
+              }`}
+            >
+              Canvas
+            </button>
+            <button
+              onClick={() => setNarrowActiveTab('chat')}
+              className={`relative px-3 py-1 rounded-md text-xs font-medium transition-all ${
+                narrowActiveTab === 'chat'
+                  ? 'bg-background text-foreground shadow-sm'
+                  : 'text-foreground/50 hover:text-foreground/70'
+              }`}
+            >
+              Chat
+              {narrowActiveTab !== 'chat' && messages.length > 0 && messages[messages.length - 1]?.role === 'assistant' && (
+                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-primary" />
+              )}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Content */}
       <div className="flex-1 flex min-h-0">
-        {/* Canvas Area */}
-        <div
-          ref={canvasContainerRef}
-          data-tour="canvas"
-          className={`flex-1 canvas-bg overflow-hidden transition-all duration-300 relative ${chatOpen ? 'md:mr-[400px]' : ''}`}
-          onPointerDownCapture={handleCanvasPointerDown}
-          onPointerMoveCapture={handleCanvasPointerMove}
-          onPointerUpCapture={handleCanvasPointerUp}
-        >
+        <div className={`flex-1 min-w-0 flex flex-col transition-[margin] duration-300 ${chatOpen && isDockedChatLayout ? 'mr-[400px]' : ''} ${isDrawerChatLayout && narrowActiveTab !== 'canvas' ? 'hidden' : ''}`}>
+          <section ref={filesSectionRef} className="flex-shrink-0 border-b border-border/50 bg-card/60 backdrop-blur-sm overflow-visible relative z-10">
+            {/* Compact header row */}
+            <div className="flex items-center justify-between gap-3 px-4 py-2">
+              <button
+                onClick={() => setFileShelfCollapsed(!fileShelfCollapsed)}
+                className="flex items-center gap-2 text-xs font-medium text-foreground/70 hover:text-foreground transition-colors"
+              >
+                <svg className={`w-3 h-3 transition-transform duration-200 ${fileShelfCollapsed ? '-rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+                </svg>
+                <span>Files</span>
+                {workspaceFileEntries.length > 0 && (
+                  <span className="text-[10px] text-foreground/50 tabular-nums">{workspaceFileEntries.length}</span>
+                )}
+              </button>
+              <button
+                onClick={openFilesPanel}
+                className="text-[11px] font-medium text-primary/80 hover:text-primary transition-colors"
+              >
+                {filesTileActionLabel}
+              </button>
+            </div>
+            {/* Collapsible file pills row */}
+            {!fileShelfCollapsed && (
+              <div className="px-4 pb-2.5">
+                {workspaceFileEntries.length === 0 ? (
+                  <p className="text-[11px] text-foreground/40 italic">No files yet</p>
+                ) : (
+                  <div className="flex gap-1.5 flex-wrap">
+                    {workspaceFileEntries.map((file) => (
+                      <div
+                        key={file.path}
+                        ref={(el) => { fileCardRefs.current[file.path] = el; }}
+                        className="relative"
+                      >
+                        <button
+                          onClick={() => setActiveFilePillPopover(activeFilePillPopover === file.path ? null : file.path)}
+                          className={`flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] transition-all hover:bg-muted/80 ${
+                            highlightedFilePaths.has(file.path)
+                              ? 'border-primary/40 bg-primary/5 text-foreground shadow-sm shadow-primary/10'
+                              : 'border-border/50 bg-background/80 text-foreground/80'
+                          } ${activeFilePillPopover === file.path ? 'ring-1 ring-primary/30' : ''}`}
+                        >
+                          <span className="text-[10px] leading-none opacity-60">{getFileTypeIcon(file.path)}</span>
+                          <span className="font-medium" style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '10.5px' }}>{getFileName(file.path)}</span>
+                          <span className="text-foreground/35 tabular-nums" style={{ fontSize: '10px' }}>{formatFileSize(file.size)}</span>
+                          {highlightedFilePaths.has(file.path) && (
+                            <span className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
+                          )}
+                        </button>
+                        {/* Action popover */}
+                        {activeFilePillPopover === file.path && (
+                          <div className="absolute top-full left-0 z-50 mt-1 flex gap-1 rounded-lg border border-border/70 bg-card p-1 shadow-lg">
+                            {canOpenFileInPanel(file.path) && (
+                              <button
+                                onClick={() => { openWorkspaceFile(file.path); setActiveFilePillPopover(null); }}
+                                className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors"
+                              >
+                                {getFileCanvasActionLabel(file.path)}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => { downloadWorkspaceFile(file.path); setActiveFilePillPopover(null); }}
+                              className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors"
+                            >
+                              Download
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+
+          {/* Canvas Area */}
+          <div
+            ref={canvasContainerRef}
+            data-tour="canvas"
+            className="flex-1 min-h-0 canvas-bg overflow-hidden relative"
+            onPointerDownCapture={handleCanvasPointerDown}
+            onPointerMoveCapture={handleCanvasPointerMove}
+            onPointerUpCapture={handleCanvasPointerUp}
+          >
           <TransformWrapper
               initialScale={uiState.viewport?.zoom ?? 0.75}
               initialPositionX={uiState.viewport?.x ?? -2500}
@@ -2877,7 +3656,7 @@ User question: ${message}`;
                             title={`Restore ${getPanelTitle(panel)}`}
                           >
                             <span className="truncate max-w-[120px]">{getPanelTitle(panel)}</span>
-                            <span className="text-xs text-muted-foreground">{panel.type}</span>
+                            <span className="text-xs text-muted-foreground">{getTileTypeLabel(panel)}</span>
                           </button>
                         );
                       })}
@@ -2992,7 +3771,7 @@ User question: ${message}`;
                             id={panel.id}
                             layout={layout}
                             title={getPanelTitle(panel)}
-                            type={panel.type}
+                            type={getTileTypeLabel(panel)}
                             scale={zoomLevel}
                             zIndex={focusedPanelId === panel.id ? 100 : 1}
                             onLayoutChange={handleLayoutChange}
@@ -3024,56 +3803,7 @@ User question: ${message}`;
                                 setHoveredPanelId(null);
                               }, 120);
                             }}
-                            menuContent={
-                              <>
-                                {panel.type === 'table' && (
-                                  <>
-                                    <button onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download CSV</button>
-                                    <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download JSON</button>
-                                  </>
-                                )}
-                                {panel.type === 'chart' && (
-                                  <>
-                                    <button onClick={() => { downloadPanelAsPng(panel.id, getPanelTitle(panel)); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download PNG</button>
-                                    <button onClick={() => { downloadPanel(panel, 'csv'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download CSV</button>
-                                    <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download JSON</button>
-                                  </>
-                                )}
-                                {panel.type === 'cards' && (
-                                  <button onClick={() => { downloadPanel(panel, 'json'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download JSON</button>
-                                )}
-                                {panel.type === 'markdown' && (
-                                  <button onClick={() => { downloadPanel(panel, 'md'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download .md</button>
-                                )}
-                                {panel.type === 'preview' && (
-                                  <button onClick={() => { downloadPanel(panel, 'html'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Download HTML</button>
-                                )}
-                                {panel.type === 'pdf' && panel.filePath && (
-                                  <button onClick={() => { window.open(`${basePath}/api/workspaces/${workspaceId}/files/${encodeURIComponent(panel.filePath!)}`, '_blank'); setOpenMenuId(null); }} className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors">Open in new tab</button>
-                                )}
-                                <button
-                                  onClick={() => minimizePanel(panel.id)}
-                                  className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
-                                >
-                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12h-15" /></svg>
-                                  Minimize
-                                </button>
-                                <button
-                                  onClick={() => { setMaximizedPanelId(panel.id); setOpenMenuId(null); }}
-                                  className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors flex items-center gap-2"
-                                >
-                                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
-                                  Maximize
-                                </button>
-                                <div className="border-t border-border my-1" />
-                                <button
-                                  onClick={() => { removePanel(panel.id); setOpenMenuId(null); }}
-                                  className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 transition-colors"
-                                >
-                                  Remove
-                                </button>
-                              </>
-                            }
+                            menuContent={renderPanelMenuContent(panel)}
                           >
                             <div ref={(el) => { panelRefs.current[panel.id] = el; }} className="h-full">
                               {renderArtifact(panel)}
@@ -3096,8 +3826,8 @@ User question: ${message}`;
                             isOpen={true}
                             onClose={() => setContextualChatPanelId(null)}
                             anchorLayout={panelLayouts[contextualChatPanelId]}
-                            panelTitle={getPanelTitle(panel)}
-                            panelType={panel.type}
+                            tileTitle={getPanelTitle(panel)}
+                            tileType={getTileTypeLabel(panel).toLowerCase()}
                             scale={zoomLevel}
                             viewportOffset={{ x: currentViewport.current.x, y: currentViewport.current.y }}
                             viewportSize={canvasViewport}
@@ -3131,8 +3861,8 @@ User question: ${message}`;
                             isOpen={true}
                             onClose={() => setContextualChatGroupId(null)}
                             anchorLayout={labelAnchor}
-                            panelTitle={group.name || `${groupLayouts.length} panels`}
-                            panelType="group"
+                            tileTitle={group.name || `${groupLayouts.length} tiles`}
+                            tileType="group"
                             scale={zoomLevel}
                             viewportOffset={{ x: currentViewport.current.x, y: currentViewport.current.y }}
                             viewportSize={canvasViewport}
@@ -3156,7 +3886,8 @@ User question: ${message}`;
                           canvasScale={zoomLevel}
                           viewportOffset={{ x: currentViewport.current.x, y: currentViewport.current.y }}
                           viewportSize={canvasViewport}
-                          onChat={() => {
+                          canChat={toolbarCanChat}
+                          onChat={toolbarCanChat ? () => {
                             if (selectedPanelIds.size > 0) {
                               if (singleSelectedPanel) {
                                 setContextualChatGroupId(null);
@@ -3172,10 +3903,14 @@ User question: ${message}`;
                               return;
                             }
                             setContextualChatGroupId(null);
-                            setContextualChatPanelId(toolbarPanel?.id ?? null);
-                          }}
+                            if (toolbarPanel) {
+                              setContextualChatPanelId(toolbarPanel.id);
+                            }
+                          } : undefined}
                           onDownload={toolbarPanel ? (format) => {
-                            if (format === 'png') {
+                            if (format === 'file' && toolbarPanel.filePath) {
+                              downloadWorkspaceFile(toolbarPanel.filePath);
+                            } else if (format === 'png') {
                               downloadPanelAsPng(toolbarPanel.id, getPanelTitle(toolbarPanel));
                             } else {
                               downloadPanel(toolbarPanel, format);
@@ -3186,6 +3921,7 @@ User question: ${message}`;
                               minimizePanel(toolbarPanel.id, { clearSelection: selectedPanelIds.size > 0 });
                             }
                           }}
+                          onMaximize={toolbarPanel ? () => setMaximizedPanelId(toolbarPanel.id) : undefined}
                           onRemove={() => {
                             if (selectedPanelIds.size > 0) {
                               if (singleSelectedPanel) {
@@ -3210,12 +3946,8 @@ User question: ${message}`;
                             }
                           } : undefined}
                           isInGroup={!!toolbarSinglePanelGroup}
-                          canDownload={!!toolbarPanel && (toolbarPanel.type === 'table' || toolbarPanel.type === 'chart')}
-                          downloadFormats={
-                            toolbarPanel?.type === 'table' ? ['csv', 'json'] :
-                            toolbarPanel?.type === 'chart' ? ['png'] :
-                            []
-                          }
+                          canDownload={getToolbarDownloadFormats(toolbarPanel).length > 0}
+                          downloadFormats={getToolbarDownloadFormats(toolbarPanel)}
                           onAlign={selectedPanelIds.size > 0 ? alignSelected : undefined}
                           onDistribute={selectedPanelIds.size > 0 ? distributeSelected : undefined}
                           onHoverChange={(hovering) => {
@@ -3243,42 +3975,76 @@ User question: ${message}`;
               </svg>
               {artifactPanels.length === 0 ? (
                 <>
-                  <h3>Your canvas is empty</h3>
-                  <p>Chat with the agent to create tables, charts, and other artifacts. They&rsquo;ll appear here as draggable cards.</p>
+                  <h3 className="text-foreground">Your canvas is empty</h3>
+                  <p className="text-foreground/80">Ask the agent to create files, tables, charts, and other views. Files show up above, and tiles appear here.</p>
                 </>
               ) : (
                 <>
-                  <h3>All panels are minimized</h3>
-                  <p>Restore panels from the dock below to continue working on the canvas.</p>
+                  <h3 className="text-foreground">All tiles are minimized</h3>
+                  <p className="text-foreground/80">Restore tiles from the dock below to continue working on the canvas.</p>
                 </>
               )}
             </div>
           )}
+          </div>
         </div>
 
-        {/* Floating Chat Panel */}
-        <div
-          className={`fixed top-[73px] right-0 bottom-0 w-full md:w-[400px] chat-panel flex flex-col transition-transform duration-300 ${chatOpen ? 'translate-x-0' : 'translate-x-full'}`}
-        >
-          <ChatPanel
-            messages={messages}
-            input={input}
-            isLoading={isLoading}
-            statusLabel={streamStatus}
-            messagesEndRef={messagesEndRef}
-            textareaRef={textareaRef}
-            onInputChange={handleTextareaChange}
-            onSubmit={handleSubmit}
-            onStop={stopQuery}
-            onKeyDown={handleKeyDown}
-            workspaceId={workspaceId}
-            uploadedFiles={uploadedFiles}
-            setUploadedFiles={setUploadedFiles}
-          />
-        </div>
+        {/* Chat Panel - Tab mode (narrow viewport) */}
+        {isDrawerChatLayout && narrowActiveTab === 'chat' && (
+          <div className="flex-1 min-h-0 chat-panel flex flex-col">
+            <ChatPanel
+              messages={messages}
+              input={input}
+              isLoading={isLoading}
+              statusLabel={streamStatus}
+              scopeLabel={mainChatSelectionScope?.scopeLabel ?? null}
+              onClearScope={mainChatSelectionScope ? clearMainChatSelectionScope : undefined}
+              messagesEndRef={messagesEndRef}
+              textareaRef={textareaRef}
+              onInputChange={handleTextareaChange}
+              onSubmit={handleSubmit}
+              onStop={stopQuery}
+              onKeyDown={handleKeyDown}
+              workspaceId={workspaceId}
+              uploadedFiles={uploadedFiles}
+              setUploadedFiles={setUploadedFiles}
+              onFilesUploaded={() => {
+                loadWorkspaceRef.current?.({ skipMessages: true, announceFileChanges: false });
+              }}
+            />
+          </div>
+        )}
 
-        {/* Chat toggle button (when closed) */}
-        {!chatOpen && (
+        {/* Chat Panel - Docked mode (wide viewport) */}
+        {isDockedChatLayout && (
+          <div
+            className={`fixed z-30 max-w-full chat-panel flex flex-col transition-transform duration-300 top-[73px] right-0 bottom-0 left-auto w-[400px] ${chatOpen ? 'translate-x-0' : 'translate-x-full'}`}
+          >
+            <ChatPanel
+              messages={messages}
+              input={input}
+              isLoading={isLoading}
+              statusLabel={streamStatus}
+              scopeLabel={mainChatSelectionScope?.scopeLabel ?? null}
+              onClearScope={mainChatSelectionScope ? clearMainChatSelectionScope : undefined}
+              messagesEndRef={messagesEndRef}
+              textareaRef={textareaRef}
+              onInputChange={handleTextareaChange}
+              onSubmit={handleSubmit}
+              onStop={stopQuery}
+              onKeyDown={handleKeyDown}
+              workspaceId={workspaceId}
+              uploadedFiles={uploadedFiles}
+              setUploadedFiles={setUploadedFiles}
+              onFilesUploaded={() => {
+                loadWorkspaceRef.current?.({ skipMessages: true, announceFileChanges: false });
+              }}
+            />
+          </div>
+        )}
+
+        {/* Chat toggle button (when closed, docked mode only) */}
+        {isDockedChatLayout && !chatOpen && (
           <button
             onClick={() => setChatOpen(true)}
             className="chat-toggle"
@@ -3300,7 +4066,7 @@ User question: ${message}`;
             <div className="flex items-center justify-between px-6 py-4 border-b border-border">
               <div className="flex items-center gap-3">
                 <h2 className="text-lg font-medium">{getPanelTitle(panel)}</h2>
-                <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-1 rounded">{panel.type}</span>
+                <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-1 rounded">{getTileTypeLabel(panel)}</span>
               </div>
               <button
                 onClick={() => setMaximizedPanelId(null)}
@@ -3352,7 +4118,7 @@ User question: ${message}`;
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                This will share your {artifactPanels.length} artifact{artifactPanels.length !== 1 ? 's' : ''} (tables, charts, files) to the public gallery.
+                This will share {publishablePanelCount} tile view{publishablePanelCount !== 1 ? 's' : ''} and {workspaceFileEntries.length} file{workspaceFileEntries.length !== 1 ? 's' : ''} to the public gallery.
               </p>
             </div>
             <div className="flex justify-end gap-3 mt-6">
@@ -3374,6 +4140,17 @@ User question: ${message}`;
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onOpenChange={setConfirmDeleteOpen}
+        title="Delete workspace?"
+        description={`Delete "${workspace.name}" permanently. This cannot be undone.`}
+        confirmLabel="Delete workspace"
+        tone="destructive"
+        isPending={isDeletingWorkspace}
+        onConfirm={confirmDeleteWorkspace}
+      />
 
       {tourOpen && (
         <OnboardingTour
@@ -3602,6 +4379,232 @@ function CardsContent({ cards }: { cards: CardsData | null }) {
   );
 }
 
+function EditorContent({ workspaceId, filePath }: { workspaceId: string; filePath?: string }) {
+  const [textContent, setTextContent] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const ext = filePath ? getFileExtension(filePath) : '';
+  const fileUrl = filePath ? getWorkspaceFileUrl(workspaceId, filePath) : null;
+
+  useEffect(() => {
+    if (!filePath || !fileUrl) return;
+    if (IMAGE_FILE_EXTENSIONS.has(ext) || HTML_FILE_EXTENSIONS.has(ext)) {
+      setTextContent(null);
+      setLoadError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setTextContent(null);
+    setLoadError(null);
+
+    fetch(fileUrl)
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`Failed to load file (${res.status})`);
+        }
+        const text = await res.text();
+        if (!cancelled) {
+          setTextContent(text);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setLoadError(error instanceof Error ? error.message : 'Failed to load file');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ext, filePath, fileUrl]);
+
+  if (!filePath || !fileUrl) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+        No file selected
+      </div>
+    );
+  }
+
+  if (IMAGE_FILE_EXTENSIONS.has(ext)) {
+    return (
+      <div className="h-full w-full overflow-auto bg-muted/20">
+        <img src={fileUrl} alt={getFileName(filePath)} className="max-w-full mx-auto object-contain" />
+      </div>
+    );
+  }
+
+  if (HTML_FILE_EXTENSIONS.has(ext)) {
+    return (
+      <iframe
+        src={fileUrl}
+        className="w-full h-full border-0 rounded"
+        referrerPolicy="no-referrer"
+        sandbox="allow-scripts"
+      />
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="flex items-center justify-center h-full text-sm text-red-500">
+        {loadError}
+      </div>
+    );
+  }
+
+  if (textContent === null) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+        Loading file...
+      </div>
+    );
+  }
+
+  if (MARKDOWN_FILE_EXTENSIONS.has(ext)) {
+    return (
+      <div className="prose prose-sm max-w-none dark:prose-invert overflow-auto h-full">
+        <SafeMarkdown>{textContent}</SafeMarkdown>
+      </div>
+    );
+  }
+
+  if (CSV_FILE_EXTENSIONS.has(ext)) {
+    const preview = parseCsvPreview(textContent);
+    if (preview.headers.length === 0) {
+      return (
+        <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+          Empty CSV file
+        </div>
+      );
+    }
+
+    return (
+      <div className="overflow-auto h-full">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-border">
+              {preview.headers.map((header, index) => (
+                <th key={`${header}-${index}`} className="px-3 py-2 text-left font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                  {header}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/50">
+            {preview.rows.map((row, rowIndex) => (
+              <tr key={rowIndex} className="hover:bg-muted/30 transition-colors">
+                {preview.headers.map((_, cellIndex) => (
+                  <td key={cellIndex} className="px-3 py-2 text-sm align-top">
+                    {row[cellIndex] || <span className="text-muted-foreground">—</span>}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {textContent.split(/\r?\n/).filter(Boolean).length > 51 && (
+          <div className="px-3 py-2 text-xs text-muted-foreground border-t border-border/50">
+            Showing the first 50 rows.
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  let renderedText = textContent;
+  if (ext === '.json') {
+    try {
+      renderedText = JSON.stringify(JSON.parse(textContent), null, 2);
+    } catch {
+      renderedText = textContent;
+    }
+  }
+
+  return (
+    <pre className="h-full overflow-auto whitespace-pre-wrap break-words text-sm font-mono text-foreground/90">
+      {renderedText}
+    </pre>
+  );
+}
+
+function FileTreeContent({
+  files,
+  highlightedPaths,
+  onOpenFile,
+  getFileActionLabel,
+  onDownloadFile,
+}: {
+  files: FileInfo[];
+  highlightedPaths: Set<string>;
+  onOpenFile: (filePath: string) => void;
+  getFileActionLabel: (filePath: string) => string;
+  onDownloadFile: (filePath: string) => void;
+}) {
+  const entries = [...files].sort((a, b) => a.path.localeCompare(b.path));
+
+  if (entries.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
+        No workspace files yet
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full overflow-auto p-3 space-y-1">
+      {entries.map((entry) => {
+        const depth = Math.max(0, entry.path.split('/').length - 1);
+        const isHighlighted = highlightedPaths.has(entry.path);
+
+        return (
+          <div
+            key={entry.path}
+            className={`rounded-lg border px-3 py-2 ${
+              isHighlighted ? 'border-primary bg-primary/5' : 'border-border/60 bg-background/70'
+            }`}
+            style={{ marginLeft: `${depth * 14}px` }}
+          >
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-muted-foreground">{entry.isDirectory ? 'Folder' : 'File'}</span>
+                  <span className="truncate text-sm font-medium">{getFileName(entry.path)}</span>
+                </div>
+                <p className="truncate text-xs text-muted-foreground mt-1">{entry.path}</p>
+              </div>
+              {!entry.isDirectory && (
+                <div className="flex items-center gap-2">
+                  {canOpenFileInPanel(entry.path) && (
+                    <button
+                      onClick={() => onOpenFile(entry.path)}
+                      className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
+                    >
+                      {getFileActionLabel(entry.path)}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => onDownloadFile(entry.path)}
+                    className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
+                  >
+                    Download File
+                  </button>
+                </div>
+              )}
+            </div>
+            {!entry.isDirectory && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {formatFileSize(entry.size)} · {formatRelativeTime(entry.modifiedAt)}
+              </p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function MarkdownContent({ content }: { content?: string }) {
   if (!content) {
     return (
@@ -3618,11 +4621,20 @@ function MarkdownContent({ content }: { content?: string }) {
   );
 }
 
-function PreviewContent({ content }: { content?: string }) {
+function PreviewContent({ workspaceId, content, filePath }: { workspaceId: string; content?: string; filePath?: string }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const fileUrl = filePath ? getWorkspaceFileUrl(workspaceId, filePath) : null;
 
   useEffect(() => {
+    if (fileUrl) {
+      setPreviewUrl(fileUrl);
+      return;
+    }
+
+    setPreviewUrl(null);
     if (!content) return;
+
+    let cancelled = false;
 
     // Upload content to preview API and get a URL
     // This gives the iframe a real origin with proper CORS/COEP headers
@@ -3635,19 +4647,24 @@ function PreviewContent({ content }: { content?: string }) {
         });
         if (res.ok) {
           const { key } = await res.json();
-          setPreviewUrl(`${basePath}/api/preview?key=${key}`);
+          if (!cancelled) {
+            setPreviewUrl(`${basePath}/api/preview?key=${key}`);
+          }
         }
       } catch (e) {
         console.error('Failed to upload preview:', e);
       }
     };
     uploadPreview();
-  }, [content]);
+    return () => {
+      cancelled = true;
+    };
+  }, [content, fileUrl]);
 
-  if (!content || !previewUrl) {
+  if ((!content && !fileUrl) || !previewUrl) {
     return (
       <div className="flex items-center justify-center h-full text-muted-foreground text-sm">
-        {content ? 'Loading preview...' : 'No preview'}
+        {content || fileUrl ? 'Loading preview...' : 'No preview'}
       </div>
     );
   }
@@ -3672,7 +4689,7 @@ function PDFContent({ workspaceId, filePath }: { workspaceId: string; filePath?:
   }
 
   // Build URL to the file serving endpoint
-  const pdfUrl = `${basePath}/api/workspaces/${workspaceId}/files/${encodeURIComponent(filePath)}`;
+  const pdfUrl = getWorkspaceFileUrl(workspaceId, filePath);
 
   return (
     <iframe
@@ -3687,15 +4704,38 @@ function PDFContent({ workspaceId, filePath }: { workspaceId: string; filePath?:
 // Chat Components
 // ═══════════════════════════════════════════════════════════════════════════
 
+const cleanToolName = (name: string) => name.replace(/^mcp__[^_]+__/, '');
+
+const getFirstStringValue = (input: Record<string, unknown>, keys: string[]): string | null => {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+};
+
 // Tool icons by type
 const ToolIcon = ({ name, className }: { name: string; className?: string }) => {
-  const cleanName = name.replace(/^mcp__[^_]+__/, '');
+  const cleanName = cleanToolName(name);
 
   switch (cleanName) {
-    case 'execute':
+    case 'Read':
+    case 'ReadMcpResource':
+    case 'Glob':
+    case 'Grep':
       return (
         <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.347a1.125 1.125 0 0 1 0 1.972l-11.54 6.347a1.125 1.125 0 0 1-1.667-.986V5.653Z" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+        </svg>
+      );
+    case 'Write':
+    case 'Edit':
+    case 'NotebookEdit':
+    case 'ui_markdown':
+    case 'ui_workspace':
+      return (
+        <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+          <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
         </svg>
       );
     case 'Bash':
@@ -3704,16 +4744,17 @@ const ToolIcon = ({ name, className }: { name: string; className?: string }) => 
           <path strokeLinecap="round" strokeLinejoin="round" d="M6.75 7.5l3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0021 18V6a2.25 2.25 0 00-2.25-2.25H5.25A2.25 2.25 0 003 6v12a2.25 2.25 0 002.25 2.25z" />
         </svg>
       );
-    case 'read':
+    case 'ui_table':
+    case 'ui_chart':
+    case 'ui_cards':
+    case 'ui_pdf':
+    case 'ui_show_file':
+    case 'ui_add_panel':
+    case 'ui_update_panel':
+    case 'ui_remove_panel':
       return (
         <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-        </svg>
-      );
-    case 'write':
-      return (
-        <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" />
+          <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 5.25h16.5m-16.5 6h16.5m-16.5 6h16.5" />
         </svg>
       );
     case 'WebFetch':
@@ -3723,6 +4764,9 @@ const ToolIcon = ({ name, className }: { name: string; className?: string }) => 
         </svg>
       );
     case 'WebSearch':
+    case 'Task':
+    case 'Agent':
+    case 'TodoWrite':
       return (
         <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
           <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-5.197-5.197m0 0A7.5 7.5 0 1 0 5.196 5.196a7.5 7.5 0 0 0 10.607 10.607Z" />
@@ -3739,21 +4783,38 @@ const ToolIcon = ({ name, className }: { name: string; className?: string }) => 
 
 // Tool labels by type
 const getToolLabel = (name: string) => {
-  const cleanName = name.replace(/^mcp__[^_]+__/, '');
+  const cleanName = cleanToolName(name);
   const labels: Record<string, string> = {
-    execute: 'Running code',
     Bash: 'Running command',
-    read: 'Reading data',
-    write: 'Writing data',
+    Read: 'Reading file',
+    Write: 'Writing file',
+    Edit: 'Editing file',
+    Glob: 'Finding files',
+    Grep: 'Searching files',
     WebFetch: 'Fetching web',
     WebSearch: 'Searching web',
+    ReadMcpResource: 'Reading canvas resource',
+    NotebookEdit: 'Editing notebook',
+    TodoWrite: 'Updating plan',
+    Agent: 'Delegating work',
+    Task: 'Running task',
+    ui_table: 'Updating table tile',
+    ui_chart: 'Updating chart tile',
+    ui_cards: 'Updating cards tile',
+    ui_markdown: 'Updating markdown tile',
+    ui_pdf: 'Showing PDF tile',
+    ui_show_file: 'Showing file tile',
+    ui_workspace: 'Updating workspace',
+    ui_add_panel: 'Adding tile',
+    ui_update_panel: 'Updating tile',
+    ui_remove_panel: 'Removing tile',
   };
   return labels[cleanName] || cleanName.replace(/_/g, ' ');
 };
 
 function ToolCard({ tool }: { tool: ToolExecution }) {
   const [expanded, setExpanded] = useState(false);
-  const cleanName = tool.name.replace(/^mcp__[^_]+__/, '');
+  const cleanName = cleanToolName(tool.name);
 
   const getStatusStyles = () => {
     switch (tool.status) {
@@ -3768,25 +4829,28 @@ function ToolCard({ tool }: { tool: ToolExecution }) {
 
   const getToolTarget = () => {
     const input = tool.input as Record<string, unknown>;
+    const pathValue = getFirstStringValue(input, ['file_path', 'path', 'filePath', 'to', 'from']);
+    const titleValue = getFirstStringValue(input, ['title', 'id', 'panelId']);
+    const uriValue = getFirstStringValue(input, ['uri', 'resourceUri', 'resource_uri']);
 
     switch (cleanName) {
-      case 'execute':
-        if (input?.code) {
-          const code = input.code as string;
-          const firstLine = code.split('\n')[0].slice(0, 30);
-          return firstLine + (code.length > 30 ? '...' : '');
-        }
-        return null;
       case 'Bash':
-        if (input?.command) {
-          const cmd = input.command as string;
+        if (typeof input?.command === 'string') {
+          const cmd = input.command;
           return cmd.slice(0, 40) + (cmd.length > 40 ? '...' : '');
         }
         return null;
-      case 'read':
-        return input?.from as string || null;
-      case 'write':
-        return input?.to as string || null;
+      case 'Read':
+      case 'Write':
+      case 'Edit':
+      case 'NotebookEdit':
+        return pathValue;
+      case 'Glob':
+        return getFirstStringValue(input, ['pattern', 'glob']);
+      case 'Grep':
+        return getFirstStringValue(input, ['pattern', 'query']) || pathValue;
+      case 'ReadMcpResource':
+        return uriValue || getFirstStringValue(input, ['server', 'server_name']);
       case 'WebFetch':
         if (input?.url) {
           try {
@@ -3803,10 +4867,24 @@ function ToolCard({ tool }: { tool: ToolExecution }) {
           return q.length > 25 ? q.slice(0, 25) + '...' : q;
         }
         return null;
+      case 'ui_table':
+      case 'ui_chart':
+      case 'ui_cards':
+      case 'ui_markdown':
+      case 'ui_pdf':
+      case 'ui_show_file':
+      case 'ui_workspace':
+      case 'ui_add_panel':
+      case 'ui_update_panel':
+      case 'ui_remove_panel':
+        return pathValue || titleValue || uriValue;
       default:
-        if (input?.query) return (input.query as string).slice(0, 25) + '...';
-        if (input?.from) return input.from as string;
-        if (input?.url) return input.url as string;
+        if (typeof input?.query === 'string') {
+          return input.query.length > 25 ? input.query.slice(0, 25) + '...' : input.query;
+        }
+        if (typeof input?.url === 'string') return input.url;
+        if (pathValue) return pathValue;
+        if (titleValue) return titleValue;
         return null;
     }
   };
@@ -3869,11 +4947,13 @@ function ToolCard({ tool }: { tool: ToolExecution }) {
   );
 }
 
-function ChatPanel({ messages, input, isLoading, statusLabel, messagesEndRef, textareaRef, onInputChange, onSubmit, onStop, onKeyDown, workspaceId, uploadedFiles, setUploadedFiles }: {
+function ChatPanel({ messages, input, isLoading, statusLabel, scopeLabel, onClearScope, messagesEndRef, textareaRef, onInputChange, onSubmit, onStop, onKeyDown, workspaceId, uploadedFiles, setUploadedFiles, onFilesUploaded }: {
   messages: Message[];
   input: string;
   isLoading: boolean;
   statusLabel?: string | null;
+  scopeLabel?: string | null;
+  onClearScope?: () => void;
   messagesEndRef: React.RefObject<HTMLDivElement | null>;
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   onInputChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
@@ -3883,6 +4963,7 @@ function ChatPanel({ messages, input, isLoading, statusLabel, messagesEndRef, te
   workspaceId: string;
   uploadedFiles: { name: string; path: string }[];
   setUploadedFiles: React.Dispatch<React.SetStateAction<{ name: string; path: string }[]>>;
+  onFilesUploaded: () => void;
 }) {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -3909,6 +4990,7 @@ function ChatPanel({ messages, input, isLoading, statusLabel, messagesEndRef, te
       const data = await res.json();
       if (data.files && data.files.length > 0) {
         setUploadedFiles(prev => [...prev, ...data.files]);
+        onFilesUploaded();
       }
     } catch (error) {
       console.error('Upload error:', error);
@@ -3954,7 +5036,7 @@ function ChatPanel({ messages, input, isLoading, statusLabel, messagesEndRef, te
                 </svg>
               </div>
               <p className="text-sm text-muted-foreground">Start a conversation</p>
-              <p className="text-xs text-muted-foreground/70 mt-1">Ask the agent to create tables, charts, and more.</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">Ask the agent to create files, inspect data, and place tiles on the canvas to work through the result.</p>
             </div>
           )}
           {messages.map((message, i) => (
@@ -4020,6 +5102,29 @@ function ChatPanel({ messages, input, isLoading, statusLabel, messagesEndRef, te
 
       {/* Input */}
       <div className="flex-shrink-0 border-t border-border/50 p-4">
+        {scopeLabel && (
+          <div className="mb-3">
+            <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-primary/15 bg-primary/5 px-3 py-1 text-xs text-foreground">
+              <svg className="h-3.5 w-3.5 flex-shrink-0 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.75}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 3.75h9A2.25 2.25 0 0118.75 6v12A2.25 2.25 0 0116.5 20.25h-9A2.25 2.25 0 015.25 18V6A2.25 2.25 0 017.5 3.75zm2.25 4.5h4.5m-6 3h7.5m-7.5 3h5.25" />
+              </svg>
+              <span className="truncate">{scopeLabel}</span>
+              {onClearScope && (
+                <button
+                  type="button"
+                  onClick={onClearScope}
+                  className="flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-primary/10 hover:text-foreground"
+                  title="Clear selected tile scope"
+                >
+                  <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         {uploadedFiles.length > 0 && (
           <div className="mb-3">
             <div className="flex flex-wrap gap-1.5">

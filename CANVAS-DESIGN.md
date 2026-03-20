@@ -1,313 +1,182 @@
-# Agent Studio Canvas Redesign
+# Agent Studio Canvas Model
 
-## Vision
+This document describes the current product model for the canvas. Earlier drafts described a transition from a panel system to a canvas. That transition has effectively happened; the current product language is `tile`.
 
-Transform Agent Studio from a rigid panel system into a **spatial workspace** where AI-created artifacts live on a canvas that users can explore, arrange, and iterate on.
+## Core Model
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  Agent Studio                                              [zoom] [fit] [?] │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│    ┌─────────────┐                                                          │
-│    │ 📊 Sales    │     ┌─────────────────────┐                              │
-│    │   Table     │     │  📈 Revenue Chart   │                              │
-│    │  [12 rows]  │────▶│   (linked)          │                              │
-│    └─────────────┘     └─────────────────────┘                              │
-│                                                                             │
-│                              ┌─────────────┐                                │
-│         ┌───────────────────▶│ 📝 Summary  │                                │
-│         │                    │   Markdown  │                                │
-│         │                    └─────────────┘                                │
-│    ┌────┴────────┐                                                          │
-│    │ 🃏 Top      │                                                          │
-│    │  Products   │                                       ┌────────────────┐ │
-│    │   Cards     │                                       │ 💬 Chat        │ │
-│    └─────────────┘                                       │                │ │
-│                                                          │ Agent is       │ │
-│    ═══════════════════════════════════════════          │ creating...    │ │
-│    · · · · · · · · · · · · · · · · · · · · · ·          │                │ │
-│    (infinite canvas - pan & zoom)                        │ [────────────] │ │
-│                                                          └────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+Agent Studio is an infinite canvas made of tiles.
 
-## Core Concepts
+Three concepts matter:
+- `Files`: durable workspace artifacts
+- `Tiles`: canvas views over files or derived data
+- `Chat`: the agent interface that can work globally or in the context of selected tiles
 
-### 1. The Canvas
-- **Infinite 2D space** - pan with drag, zoom with scroll/pinch
-- **Grid snapping** (optional) - helps alignment without forcing it
-- **Dot pattern background** - subtle depth, shows you're in a space
-- **Minimap** (optional) - for orientation when zoomed in
+The key rule is:
 
-### 2. Artifacts (Nodes)
-Each artifact the agent creates becomes a **node** on the canvas:
+> Files are the source of truth. Tiles are views.
 
-```
-┌──────────────────────────────────┐
-│ ◉ Sales Data              ⋮  ×  │  ← Header: icon, title, menu, close
-├──────────────────────────────────┤
-│                                  │
-│     [Artifact Content]           │  ← Body: table/chart/cards/markdown
-│                                  │
-├──────────────────────────────────┤
-│ table · 12 rows · 2s ago         │  ← Footer: type, meta, timestamp
-└──────────────────────────────────┘
-     │
-     └──○ (connection point)
-```
+If the agent says it created something durable, it should exist as a real file in the workspace first.
 
-**Artifact Types:**
-- `table` - Data grid with sort/filter
-- `chart` - Bar, line, pie, area (Recharts)
-- `cards` - Card grid for items
-- `markdown` - Rich text content
-- `code` - Syntax-highlighted code block
-- `image` - Generated or uploaded images
-- `preview` - Live HTML preview (sandboxed)
+## Workspace Shell
 
-### 3. Connections (Optional)
-Visual lines showing data flow:
-- Table → Chart (chart uses table data)
-- Cards → Detail (click card shows detail)
-- Dashed lines for "references"
-- Solid lines for "data flow"
+The workspace shell has three layers:
 
-### 4. The Chat Panel
-**Floating sidebar** - not part of the canvas:
+1. `Workspace Files`
+   A compact file shelf that surfaces durable artifacts.
 
-```
-┌────────────────────┐
-│ 💬 Conversation    │  ← Collapsible
-├────────────────────┤
-│                    │
-│ You: Create a      │
-│ sales dashboard    │
-│                    │
-│ Agent: I'll...     │
-│ ┌────┐ ┌────┐      │  ← Tool cards (compact)
-│ │exec│ │set │      │
-│ └────┘ └────┘      │
-│                    │
-│ Created 3 artifacts│
-│                    │
-├────────────────────┤
-│ [Type message...]  │
-└────────────────────┘
-```
+2. `Canvas`
+   The main infinite canvas where tiles live, move, group, minimize, and connect.
 
-**Behaviors:**
-- Slides in from right (or left)
-- Can be collapsed to icon-only
-- Can be popped out as floating window
-- Always accessible via keyboard shortcut
+3. `Chat`
+   The primary conversation surface, docked on wide screens and tabbed on narrower ones.
 
-## Layout Modes
+On smaller widths, canvas and chat switch through a segmented tab control instead of overlapping.
 
-### Mode 1: Auto-Layout (Default)
-Artifacts auto-arrange in a pleasant flow:
-- New artifacts appear near the last one
-- Smart spacing based on artifact size
-- No overlaps
-- User can still drag to reposition
+## Tile Types
 
-### Mode 2: Free Canvas
-Full spatial freedom:
-- Drag anywhere
-- Manual sizing
-- Overlaps allowed
-- Connections visible
+Current user-facing tile categories:
+- markdown tiles
+- table/CSV tiles
+- chart tiles
+- cards tiles
+- PDF tiles
+- HTML/file preview tiles
+- utility tiles such as the workspace files view
 
-### Mode 3: Focus View
-Single artifact expanded:
-- Click artifact to focus
-- Others fade/minimize
-- Great for detailed work
-- Escape to return
+Some tiles are file-backed and some are derived.
 
-## Visual Design
+### File-Backed Tiles
 
-### Aesthetic Direction: "Scholarly Glass"
-Refined, editorial feel with modern glass-morphism:
+Examples:
+- `report.md`
+- `data.csv`
+- `chart.html`
+- `notes.pdf`
+- `figure.png`
 
-**Colors:**
-```css
---canvas-bg: oklch(0.96 0.01 250);      /* Cool paper */
---canvas-dots: oklch(0.85 0.02 250);    /* Subtle grid */
---artifact-bg: oklch(0.99 0.005 80);    /* Warm white */
---artifact-border: oklch(0.90 0.01 80); /* Soft edge */
---artifact-shadow: 0 8px 32px oklch(0.2 0.02 250 / 0.08);
---accent: oklch(0.65 0.15 45);          /* Warm amber */
---chat-bg: oklch(0.98 0.005 80 / 0.9);  /* Glass effect */
-```
+These should support actions like:
+- `Go to Tile`
+- `Show in Workspace Files`
+- `Download File`
 
-**Typography:**
-- Artifact titles: Crimson Pro (serif, editorial)
-- Content: DM Sans (clean, readable)
-- Code/data: JetBrains Mono
+### Derived Tiles
 
-**Effects:**
-- Artifacts have subtle shadow + border
-- Selected artifact has accent glow
-- Hover shows resize handles
-- Drag shows ghost + drop zone
-- New artifacts fade-in with slight scale
+Examples:
+- a chart built from a table
+- cards built from search results
+- inline markdown generated as a summary
 
-### Artifact Card Design
+These should support actions like:
+- `Export Data`
+- `Save Snapshot as PNG`
 
-```
-┌─────────────────────────────────────────┐
-│                                         │
-│  ┌─────────────────────────────────┐    │
-│  │ ▣ Sales Performance    ⋯  □  × │    │  ← Frosted header
-│  ├─────────────────────────────────┤    │
-│  │                                 │    │
-│  │                                 │    │
-│  │      [ Chart / Table /         │    │  ← Content area
-│  │         Cards / etc ]          │    │
-│  │                                 │    │
-│  │                                 │    │
-│  ├─────────────────────────────────┤    │
-│  │ 📊 chart · bar · 3s ago        │    │  ← Subtle footer
-│  └─────────────────────────────────┘    │
-│     ↖ subtle outer glow when selected   │
-└─────────────────────────────────────────┘
-```
+## Artifact Flow
+
+The intended flow is:
+
+1. The agent creates or updates files in the workspace.
+2. The files appear in `Workspace Files`.
+3. Files can be shown on the canvas as tiles.
+4. The user can inspect, compare, group, or download them.
+
+This is why a request like “make me a ZIP” is treated as file creation, not as a special tile export.
+
+## Chat Model
+
+There are two main chat modes:
+
+- `Global chat`
+  Works against the workspace generally.
+
+- `Scoped chat`
+  Works against the selected tile or selected tile group.
+
+The main composer can inherit selected-tile scope. Contextual tile chat is still useful for tightly local reasoning.
 
 ## Interaction Model
 
-### Canvas Interactions
+### Canvas
+
 | Action | Result |
-|--------|--------|
+|---|---|
 | Drag background | Pan canvas |
-| Scroll / Pinch | Zoom in/out |
-| Double-click background | Create note? Or just zoom to fit |
-| `Space` + drag | Pan (Figma-style) |
-| `Cmd/Ctrl` + `0` | Zoom to fit all |
-| `Cmd/Ctrl` + `1` | Zoom to 100% |
+| Scroll / pinch | Zoom |
+| Click tile | Select tile |
+| Shift-click | Multi-select |
+| Drag tile | Move tile |
+| Drag edge | Resize tile |
+| Double-click tile/header | Open contextual tile chat or focus behavior, depending on tile/action |
+| Minimize | Send tile to dock |
+| Maximize | Expand tile |
 
-### Artifact Interactions
+### Files
+
 | Action | Result |
-|--------|--------|
-| Click | Select |
-| Double-click | Focus mode (expand) |
-| Drag | Move |
-| Drag edge | Resize |
-| Right-click | Context menu |
-| `Delete` / `Backspace` | Remove (with confirm) |
-| `Cmd/Ctrl` + `D` | Duplicate |
+|---|---|
+| Show on Canvas | Create or reveal a tile for that file |
+| Go to Tile | Focus the existing tile |
+| Download File | Download the durable artifact |
+| Show in Workspace Files | Reveal the file in the shelf/context |
 
-### Chat Interactions
-| Action | Result |
-|--------|--------|
-| `Cmd/Ctrl` + `K` | Focus chat input |
-| `Cmd/Ctrl` + `\` | Toggle chat panel |
-| `Escape` | Close chat / deselect |
+## Grouping and Connections
 
-## State Management
+Tiles can be:
+- grouped
+- renamed as groups
+- moved together
+- queried as a group
 
-### Canvas State (stored per workspace)
-```typescript
+Connections represent provenance or follow-on relationships between tiles. They help explain how one tile led to another, but they are secondary to the file-first model.
+
+## Responsive Behavior
+
+Wide screens:
+- canvas and chat are visible together
+
+Compact screens:
+- canvas and chat switch via tabs
+- the header compresses
+- the files shelf remains accessible from the canvas view
+
+The app should never rely on overlapping chat and canvas panes.
+
+## Product Language
+
+Use these terms consistently in user-facing copy:
+- `tile`, not `panel`
+- `file`, not `download`, for the artifact itself
+- `Show on Canvas`, not `Open as Tile`
+- `Go to Tile`, when a visible tile already exists
+
+Internally, some state still uses `panels` in code and storage. That is an implementation detail, not product language.
+
+## State Model
+
+Conceptually, the canvas stores:
+
+```ts
 interface CanvasState {
-  viewport: {
-    x: number;      // Pan offset
-    y: number;
-    zoom: number;   // 0.25 to 2.0
-  };
-  nodes: CanvasNode[];
-  connections: Connection[];
-  selectedNodeId: string | null;
-}
-
-interface CanvasNode {
-  id: string;
-  type: 'table' | 'chart' | 'cards' | 'markdown' | 'code' | 'preview';
-  position: { x: number; y: number };
-  size: { width: number; height: number };
-  dataId: string;  // Reference to actual data (tableId, chartId, etc.)
-  zIndex: number;
-}
-
-interface Connection {
-  id: string;
-  from: string;    // Node ID
-  to: string;      // Node ID
-  type: 'data' | 'reference';
+  viewport: { x: number; y: number; zoom: number };
+  tiles: TileState[];
+  groups: TileGroup[];
+  connections: TileConnection[];
 }
 ```
 
-### Migration from Current System
-Current `UIState.panels[]` becomes `CanvasState.nodes[]`:
-- `panel.type` → `node.type`
-- `panel.tableId` → `node.dataId`
-- New: position, size, zIndex
+In current persisted app state, this still maps onto `uiState.panels`, `groups`, and `connections`.
 
-## Implementation Phases
+## Design Principles
 
-### Phase 1: Basic Canvas
-- [ ] Canvas component with pan/zoom
-- [ ] Render artifacts as positioned nodes
-- [ ] Drag to reposition
-- [ ] Chat as floating sidebar
-- [ ] Auto-layout for new artifacts
+- spatial first
+- files first
+- truthful actions
+- compact artifact surfacing
+- strong desktop experience with usable compact layouts
+- one coherent vocabulary
 
-### Phase 2: Polish
-- [ ] Resize handles
-- [ ] Focus mode (double-click)
-- [ ] Minimap
-- [ ] Keyboard shortcuts
-- [ ] Connection lines
+## Open Questions
 
-### Phase 3: Advanced
-- [ ] Multi-select
-- [ ] Copy/paste artifacts
-- [ ] Export canvas as image
-- [ ] Templates / saved layouts
-- [ ] Collaborative cursors (future)
-
-## Technical Approach
-
-### Option A: Pure CSS/DOM
-- Use CSS transforms for pan/zoom
-- Positioned divs for nodes
-- Pros: Simple, accessible, SEO-friendly
-- Cons: Performance at scale, complex gestures
-
-### Option B: React Flow / Similar Library
-- Battle-tested canvas infrastructure
-- Built-in pan/zoom, connections, minimap
-- Pros: Fast to implement, handles edge cases
-- Cons: Dependency, styling constraints
-
-### Option C: Custom Canvas (HTML Canvas / SVG)
-- Full control
-- Best performance
-- Pros: Unlimited flexibility
-- Cons: Most work, accessibility challenges
-
-**Recommendation:** Start with **Option A** (pure CSS/DOM) for simplicity, with architecture that could adopt React Flow later if needed.
-
-## Questions to Resolve
-
-1. **Auto-layout algorithm** - How should new artifacts be positioned?
-   - Grid-based? Flow-based? Force-directed?
-
-2. **Connections** - Are they necessary for v1, or a nice-to-have?
-
-3. **Mobile** - Canvas on mobile is tricky. Fallback to stacked view?
-
-4. **Persistence** - Save node positions to server, or just session?
-
-5. **Chat position** - Fixed right sidebar, or floating/movable?
-
----
-
-## Inspiration
-
-- [Figma](https://figma.com) - The gold standard for canvas UX
-- [Miro](https://miro.com) - Collaborative infinite canvas
-- [tldraw](https://tldraw.com) - Simple, delightful whiteboard
-- [Obsidian Canvas](https://obsidian.md) - Note cards on canvas
-- [Apple Freeform](https://apple.com/freeform) - Native feel, gesture-first
-- [Hatch Canvas](https://hatch.ai) - AI + visual workspace fusion
-- [Jeda.ai](https://jeda.ai) - "Think visually on infinite canvas"
+- When should a generated result stay inline versus become a real file automatically?
+- Which derived tiles should get first-class export actions beyond snapshots?
+- How far should tile connections go visually before they add clutter?
+- What is the right mobile floor for the canvas experience?

@@ -1,6 +1,6 @@
 import { readFile, writeFile, mkdir, readdir, stat, unlink, rename } from 'fs/promises';
 import { join, resolve, sep } from 'path';
-import { getUserDataPath } from '../session';
+import { getUserDataPath } from '../session/data-path';
 
 // Simple per-workspace mutex to prevent race conditions in read-modify-write operations
 const workspaceLocks = new Map<string, Promise<void>>();

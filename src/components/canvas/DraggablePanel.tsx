@@ -254,6 +254,12 @@ export function DraggablePanel({
             onPanelClick?.(id, e as unknown as React.MouseEvent);
           }
         }}
+        onDoubleClick={(e) => {
+          if (!didMove) {
+            e.stopPropagation();
+            onPanelDoubleClick?.(id, e as unknown as React.MouseEvent);
+          }
+        }}
       >
         <div className="flex items-center gap-2 min-w-0 flex-1">
           <h3 className="truncate" title={title}>{title}</h3>
@@ -261,7 +267,12 @@ export function DraggablePanel({
         </div>
         <div className="relative flex-shrink-0">
           <button
-            className="panel-menu-trigger p-1 rounded hover:bg-white/10 transition-colors"
+            type="button"
+            aria-label={`Open menu for ${title}`}
+            aria-haspopup="menu"
+            aria-expanded={isMenuOpen}
+            className="panel-menu-trigger inline-flex h-8 w-8 touch-manipulation items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
               onOpenMenu?.(isMenuOpen ? '' : id);
@@ -273,7 +284,8 @@ export function DraggablePanel({
           </button>
           {isMenuOpen && menuContent && (
             <div
-              className="panel-menu absolute right-0 top-full mt-1 w-40 bg-popover border border-border rounded-lg shadow-lg py-1 z-50"
+              className="panel-menu absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-xl"
+              onPointerDown={(e) => e.stopPropagation()}
               onClick={(e) => e.stopPropagation()}
             >
               {menuContent}

@@ -1,8 +1,9 @@
 import { NextRequest } from 'next/server';
 import { getSession } from '@/lib/session';
 import { createSandboxedStorage } from '@/lib/storage';
-import { createWorkspaceRuntime } from '@/lib/runtime';
+import { createWorkspaceRunner } from '@/lib/runtime';
 import { createStreamAccumulator, type StreamAccumulatorState } from '@/lib/streaming/accumulator';
+import { normalizeWorkspaceConfig } from '@/lib/workspace/defaults';
 
 export const dynamic = 'force-dynamic';
 
@@ -33,13 +34,23 @@ export async function POST(
       { status: 404, headers: { 'Content-Type': 'application/json' } }
     );
   }
+  const normalizedWorkspace = normalizeWorkspaceConfig(workspace);
+  if (normalizedWorkspace !== workspace) {
+    await storage.setWorkspace(id, normalizedWorkspace);
+  }
 
   let prompt: string | undefined;
+  let conversationPrompt: string | undefined;
   let skipConversation = false;
+  let skipUserMessagePersistence = false;
   try {
     const body = await request.json();
     prompt = body.prompt;
+    conversationPrompt = typeof body.conversationPrompt === 'string'
+      ? body.conversationPrompt
+      : undefined;
     skipConversation = Boolean(body.skipConversation);
+    skipUserMessagePersistence = Boolean(body.skipUserMessagePersistence);
   } catch {
     return new Response(
       JSON.stringify({ error: 'Invalid JSON body' }),
@@ -58,12 +69,15 @@ export async function POST(
   const conversationHistory = skipConversation ? [] : await storage.getConversation(id);
 
   // Save user message unless it's a contextual (side) chat
-  if (!skipConversation) {
-    await storage.appendMessage(id, { role: 'user', content: prompt });
+  if (!skipConversation && !skipUserMessagePersistence) {
+    await storage.appendMessage(id, {
+      role: 'user',
+      content: conversationPrompt || prompt,
+    });
   }
 
   // Create runtime and stream response
-  const runtime = createWorkspaceRuntime(workspace, storage);
+  const runtime = createWorkspaceRunner(normalizedWorkspace, storage);
 
   // Create AbortController for this query
   const abortController = new AbortController();

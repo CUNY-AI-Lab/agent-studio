@@ -43,6 +43,7 @@ export interface PanelUpdate {
     tableId?: string;
     chartId?: string;
     cardsId?: string;
+    filePath?: string;
     content?: string;
     layout?: { x?: number; y?: number; width?: number; height?: number };
   };
@@ -123,6 +124,8 @@ export function useStreamingQuery({
     prompt: string,
     options?: {
       skipMainChat?: boolean;
+      conversationPrompt?: string;
+      skipUserMessagePersistence?: boolean;
       onTextDelta?: (delta: string, fullText: string) => void;
       onStatusUpdate?: (event: StreamStatusEvent) => void;
       panelContext?: PanelUpdateContext;
@@ -156,7 +159,6 @@ export function useStreamingQuery({
     let streamErrorMessage: string | null = null;
     let terminalEvent: 'done' | 'aborted' | null = null;
     let receivedStreamEvents = false;
-    let willRetry = false;
 
     const triggerComplete = () => {
       if (completionTriggered) return;
@@ -208,11 +210,11 @@ export function useStreamingQuery({
       statusHandler({ status, label, toolName });
     };
 
-    const appendText = (text: string, options?: { fromStream?: boolean; onTextDelta?: (delta: string, fullText: string) => void }) => {
+    const appendText = (text: string, appendOptions?: { fromStream?: boolean }) => {
       if (!text) return;
       flushToolsBeforeText();
       currentSectionText += text;
-      if (options?.fromStream) {
+      if (appendOptions?.fromStream) {
         receivedStreamEvents = true;
       }
       setStatus('responding', 'Responding...');
@@ -383,7 +385,12 @@ export function useStreamingQuery({
       const response = await apiFetch(`/api/workspaces/${workspaceId}/query`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt, skipConversation: skipMainChat }),
+        body: JSON.stringify({
+          prompt,
+          conversationPrompt: options?.conversationPrompt,
+          skipUserMessagePersistence: options?.skipUserMessagePersistence,
+          skipConversation: skipMainChat,
+        }),
       });
 
       const reader = response.body?.getReader();
@@ -550,12 +557,8 @@ export function useStreamingQuery({
 
       if (isNetworkError && retryCount < MAX_RETRIES) {
         console.log(`Network error, retrying (${retryCount + 1}/${MAX_RETRIES})...`);
-        // Preserve in-progress content/tool groups before retrying.
-        flushText();
-        flushTools();
-        updateMessage();
         await new Promise(resolve => setTimeout(resolve, RETRY_DELAY_MS));
-        willRetry = true;
+        // Preserve state across retries to prevent duplicate tools
         return executeQuery(prompt, options, retryCount + 1, {
           contentBlocks,
           processedToolIds,
@@ -585,12 +588,12 @@ export function useStreamingQuery({
       }
       return errorMessage;
     } finally {
-      if (trackLoading && !willRetry) {
+      if (trackLoading) {
         isLoadingRef.current = false;
         stopToolTimer();
       }
 
-      if (trackLoading && !willRetry) {
+      if (trackLoading) {
         // Mark any still-running tools as interrupted (but don't clear toolIdMap!)
           for (const id of runningToolIdsRef.current) {
             const tool = toolIdMap.get(id);

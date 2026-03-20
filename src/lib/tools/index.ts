@@ -1,39 +1,32 @@
 import { ToolContext } from './types';
-import { createReadTool, createWriteTool } from './io';
-import { filterTool, pickTool, sortTool } from './transform';
 import {
+  createCardsTool,
+  createChartTool,
+  createMarkdownTool,
+  createPdfTool,
+  createShowFileTool,
   createTableTool,
-  messageTool,
+  createWorkspaceInfoTool,
   createAddPanelTool,
   createRemovePanelTool,
   createUpdatePanelTool,
-  createSetLayoutTool,
 } from './ui';
-import { createExecuteTool } from './code';
 
 export type { ToolContext } from './types';
 
 // Tool registry - maps tool IDs to tool creators
 export const toolRegistry = {
-  // I/O tools (need context)
-  read: (ctx: ToolContext) => createReadTool(ctx),
-  write: (ctx: ToolContext) => createWriteTool(ctx),
-
-  // Transform tools (pure, no context needed)
-  filter: () => filterTool,
-  pick: () => pickTool,
-  sort: () => sortTool,
-
   // UI tools (need context)
   'ui.table': (ctx: ToolContext) => createTableTool(ctx),
-  'ui.message': () => messageTool,
+  'ui.chart': (ctx: ToolContext) => createChartTool(ctx),
+  'ui.cards': (ctx: ToolContext) => createCardsTool(ctx),
+  'ui.markdown': (ctx: ToolContext) => createMarkdownTool(ctx),
+  'ui.pdf': (ctx: ToolContext) => createPdfTool(ctx),
+  'ui.showFile': (ctx: ToolContext) => createShowFileTool(ctx),
+  'ui.workspace': (ctx: ToolContext) => createWorkspaceInfoTool(ctx),
   'ui.addPanel': (ctx: ToolContext) => createAddPanelTool(ctx),
   'ui.removePanel': (ctx: ToolContext) => createRemovePanelTool(ctx),
   'ui.updatePanel': (ctx: ToolContext) => createUpdatePanelTool(ctx),
-  'ui.setLayout': (ctx: ToolContext) => createSetLayoutTool(ctx),
-
-  // Code execution (need context)
-  execute: (ctx: ToolContext) => createExecuteTool(ctx),
 } as const;
 
 export type ToolId = keyof typeof toolRegistry;
@@ -51,17 +44,15 @@ export function getTools(toolIds: string[], ctx: ToolContext) {
 // List all available tools
 export function listTools(): { id: string; description: string }[] {
   return [
-    { id: 'read', description: 'Read data from table or file' },
-    { id: 'write', description: 'Write data to table or file' },
-    { id: 'filter', description: 'Filter array by condition' },
-    { id: 'pick', description: 'Select fields from items' },
-    { id: 'sort', description: 'Sort array by field' },
-    { id: 'ui.table', description: 'Create/update table in UI' },
-    { id: 'ui.message', description: 'Display message to user' },
-    { id: 'ui.addPanel', description: 'Add a panel to workspace UI' },
-    { id: 'ui.removePanel', description: 'Remove a panel from workspace UI' },
-    { id: 'ui.updatePanel', description: 'Update an existing panel' },
-    { id: 'ui.setLayout', description: 'Set workspace layout direction' },
-    { id: 'execute', description: 'Execute JavaScript code with tool functions' },
+    { id: 'ui.table', description: 'Create or update a table tile' },
+    { id: 'ui.chart', description: 'Create or update a chart tile' },
+    { id: 'ui.cards', description: 'Create or update a cards tile' },
+    { id: 'ui.markdown', description: 'Create or update a markdown tile' },
+    { id: 'ui.pdf', description: 'Show a PDF file as a tile' },
+    { id: 'ui.showFile', description: 'Show a workspace file on the canvas' },
+    { id: 'ui.workspace', description: 'Update workspace title or description' },
+    { id: 'ui.addPanel', description: 'Add a low-level tile to the canvas' },
+    { id: 'ui.removePanel', description: 'Remove a tile from the canvas' },
+    { id: 'ui.updatePanel', description: 'Update a tile on the canvas' },
   ];
 }
