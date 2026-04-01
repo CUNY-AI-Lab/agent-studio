@@ -21,6 +21,7 @@ tests/dist/
 .env
 .env.*
 !.env.example
+.dev.vars
 
 # Python
 .venv/
@@ -57,6 +58,8 @@ yarn-error.log*
 next-env.d.ts
 *.pem
 .runner-dist/
+.wrangler/
+dist/
 
 # Vercel
 .vercel

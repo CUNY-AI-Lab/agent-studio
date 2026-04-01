@@ -1,0 +1,52 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent-studio",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-03-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "build": {
+    "command": "npm --prefix ../frontend run build",
+    "cwd": ".",
+    "watch_dir": ["src", "../frontend/src", "../frontend/index.html"]
+  },
+  "worker_loaders": [
+    {
+      "binding": "LOADER"
+    }
+  ],
+  "assets": {
+    "directory": "../frontend/dist",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/agents/*", "/health"],
+    "not_found_handling": "single-page-application",
+    "html_handling": "auto-trailing-slash"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "WorkspaceAgent",
+        "class_name": "WorkspaceAgent"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["WorkspaceAgent"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "WORKSPACE_FILES",
+      "bucket_name": "site-studio",
+      "preview_bucket_name": "site-studio"
+    }
+  ],
+  "vars": {
+    "R2_PUBLIC_DOMAIN": "https://tools.cuny.qzz.io",
+    "WORKER_SUBDOMAIN": "site-studio"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

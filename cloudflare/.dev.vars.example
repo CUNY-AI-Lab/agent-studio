@@ -1,0 +1,6 @@
+SESSION_SECRET=replace-with-random-32-byte-hex
+OPENROUTER_API_KEY=replace-with-openrouter-api-key
+OPENROUTER_MODEL=anthropic/claude-sonnet-4
+GIT_AUTH_TOKEN=
+R2_PUBLIC_DOMAIN=https://tools.cuny.qzz.io
+WORKER_SUBDOMAIN=site-studio
