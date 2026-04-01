@@ -10,6 +10,7 @@
     "build": "npm --prefix ./frontend run build && npm --prefix ./cloudflare run typecheck",
     "typecheck": "npm --prefix ./cloudflare run typecheck && npm --prefix ./frontend run typecheck",
     "preview": "npm --prefix ./frontend run preview",
+    "smoke": "node ./scripts/smoke-worker.mjs",
     "deploy": "npm --prefix ./cloudflare run deploy",
     "install:all": "npm --prefix ./frontend install && npm --prefix ./cloudflare install",
     "chat:debug": "node ./scripts/workspace-chat-debug.mjs",

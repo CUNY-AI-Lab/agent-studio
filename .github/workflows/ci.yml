@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+            cloudflare/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install Cloudflare dependencies
+        run: npm ci --prefix cloudflare
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  smoke-worker:
+    runs-on: ubuntu-latest
+    needs: validate
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+            cloudflare/package-lock.json
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install Cloudflare dependencies
+        run: npm ci --prefix cloudflare
+
+      - name: Write CI dev vars
+        run: |
+          cat > cloudflare/.dev.vars <<'EOF'
+          SESSION_SECRET=ci-session-secret
+          OPENROUTER_API_KEY=ci-placeholder-key
+          OPENROUTER_MODEL=anthropic/claude-sonnet-4
+          R2_PUBLIC_DOMAIN=https://example.invalid
+          WORKER_SUBDOMAIN=agent-studio-ci
+          EOF
+
+      - name: Start worker and run smoke test
+        run: |
+          set -euo pipefail
+
+          cleanup() {
+            if [[ -f /tmp/agent-studio-dev.pid ]]; then
+              kill "$(cat /tmp/agent-studio-dev.pid)" >/dev/null 2>&1 || true
+            fi
+          }
+
+          trap cleanup EXIT
+
+          npm run dev >/tmp/agent-studio-dev.log 2>&1 &
+          echo $! > /tmp/agent-studio-dev.pid
+
+          for attempt in {1..90}; do
+            if curl -fsS http://127.0.0.1:8787/health >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          if ! curl -fsS http://127.0.0.1:8787/health >/dev/null; then
+            cat /tmp/agent-studio-dev.log
+            exit 1
+          fi
+
+          npm run smoke -- --base-url http://127.0.0.1:8787
