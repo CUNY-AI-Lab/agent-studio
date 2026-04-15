@@ -44,10 +44,10 @@ export async function POST(request: NextRequest) {
   }
 
   const meta = getRequestMeta(request);
-  audit('workspace.create', {
+  await audit('workspace.create', {
     sessionId,
     workspaceId,
-    details: { name, hasPrompt: !!prompt },
+    details: { name, hasPrompt: !!prompt, promptLength: prompt?.length ?? 0 },
     ...meta,
   });
 

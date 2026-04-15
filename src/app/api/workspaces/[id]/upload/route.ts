@@ -95,7 +95,7 @@ export async function POST(
 
     // Audit log file upload
     const meta = getRequestMeta(request);
-    audit('file.upload', {
+    await audit('file.upload', {
       sessionId,
       workspaceId: id,
       details: {

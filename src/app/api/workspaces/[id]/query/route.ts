@@ -4,6 +4,7 @@ import { createSandboxedStorage } from '@/lib/storage';
 import { createWorkspaceRunner } from '@/lib/runtime';
 import { createStreamAccumulator, type StreamAccumulatorState } from '@/lib/streaming/accumulator';
 import { normalizeWorkspaceConfig } from '@/lib/workspace/defaults';
+import { audit, getRequestMeta } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
 
@@ -64,6 +65,20 @@ export async function POST(
       { status: 400, headers: { 'Content-Type': 'application/json' } }
     );
   }
+
+  const requestMeta = getRequestMeta(request);
+  const queryStartedAt = Date.now();
+  await audit('workspace.query', {
+    sessionId,
+    workspaceId: id,
+    details: {
+      phase: 'start',
+      promptLength: prompt.length,
+      skipConversation,
+      skipUserMessagePersistence,
+    },
+    ...requestMeta,
+  });
 
   // Get conversation history before adding new message
   const conversationHistory = skipConversation ? [] : await storage.getConversation(id);
@@ -155,6 +170,19 @@ export async function POST(
           });
         }
 
+        await audit('workspace.query', {
+          sessionId,
+          workspaceId: id,
+          details: {
+            phase: wasAborted ? 'aborted' : 'complete',
+            durationMs: Date.now() - queryStartedAt,
+            responseLength: fullResponse.length,
+            contentBlockCount: contentBlocks.length,
+            skipConversation,
+          },
+          ...requestMeta,
+        });
+
         clearInterval(keepaliveInterval);
         controller.close();
       } catch (error) {
@@ -170,10 +198,34 @@ export async function POST(
               blocks: contentBlocks.length > 0 ? contentBlocks : undefined
             });
           }
+          await audit('workspace.query', {
+            sessionId,
+            workspaceId: id,
+            details: {
+              phase: 'aborted',
+              durationMs: Date.now() - queryStartedAt,
+              responseLength: fullResponse.length,
+              contentBlockCount: contentBlocks.length,
+              skipConversation,
+            },
+            ...requestMeta,
+          });
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'aborted' })}\n\n`));
           controller.close();
           return;
         }
+
+        await audit('workspace.query', {
+          sessionId,
+          workspaceId: id,
+          details: {
+            phase: 'error',
+            durationMs: Date.now() - queryStartedAt,
+            error: error instanceof Error ? error.message : 'Unknown error',
+            skipConversation,
+          },
+          ...requestMeta,
+        });
 
         const errorEvent = {
           type: 'error',

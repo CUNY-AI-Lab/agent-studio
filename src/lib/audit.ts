@@ -55,8 +55,7 @@ export async function audit(
     ...options,
   };
 
-  // Always log to console in development
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.AUDIT_LOG_CONSOLE !== 'false') {
     console.log('[AUDIT]', JSON.stringify(entry));
   }
 

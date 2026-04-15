@@ -159,7 +159,7 @@ export async function DELETE(
 
   // Audit log workspace deletion
   const meta = getRequestMeta(request);
-  audit('workspace.delete', {
+  await audit('workspace.delete', {
     sessionId,
     workspaceId: id,
     ...meta,
