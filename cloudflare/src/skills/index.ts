@@ -10,8 +10,11 @@
  * Skills without a doc are description-only: read_skill returns the
  * description and the model works from general knowledge of the API.
  *
- * Ported from the legacy Next.js app's src/lib/skills. Not carried over:
- * pdf/xlsx/docx/pptx (Python-dependent; no Python on Workers) — see PLAN.md.
+ * Ported from the legacy Next.js app's src/lib/skills. The pdf/xlsx/docx
+ * document skills are restored as host-side JS capabilities (codemode tools;
+ * see cloudflare/src/lib/document-tools.ts). Not carried over: pptx (no
+ * generation path yet), and pdf/docx editing + xlsx formulas are deferred —
+ * see PLAN.md.
  */
 
 import { SKILL_DOCS } from './docs.generated';
@@ -86,6 +89,21 @@ export const SKILLS: Skill[] = [
     name: 'citation',
     description:
       "Format citations in various styles (APA 7, MLA 9, Chicago, BibTeX, RIS). Convert between formats. Build bibliographies from DOIs or metadata. Example queries: 'format this paper as APA citation', 'convert these DOIs to BibTeX', 'create a bibliography in Chicago style'. No auth required.",
+  },
+  {
+    name: 'pdf',
+    description:
+      "Extract the text layer from PDF workspace files via codemode (codemode.parse_pdf). Returns page-marked text for quoting, summarizing, or tabulating. Text-layer only — no OCR for scanned PDFs. Example queries: 'pull the text out of this report', 'summarize the attached PDF', 'find the figures on page 3'.",
+  },
+  {
+    name: 'xlsx',
+    description:
+      "Read and write Excel workbooks as durable workspace files via codemode (codemode.read_xlsx, codemode.write_xlsx). Loads sheets into JSON rows and builds new .xlsx files from array-rows. Static values only — no formulas or formatting. Example queries: 'read this spreadsheet', 'export these results to Excel', 'summarize the data in the workbook'.",
+  },
+  {
+    name: 'docx',
+    description:
+      "Generate Word .docx files from a simple declarative block schema via codemode (codemode.write_docx). Supports headings, paragraphs, lists, and tables. Generation only — no editing existing documents or tracked changes. Example queries: 'write this up as a Word doc', 'produce a .docx brief', 'export the report to Word'.",
   },
   {
     name: 'frontend-design',

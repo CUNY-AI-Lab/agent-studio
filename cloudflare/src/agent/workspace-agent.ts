@@ -28,6 +28,16 @@ import {
 import type { Env } from '../env';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
+import {
+  extractPdfText,
+  readXlsx,
+  buildXlsx,
+  buildDocx,
+  MAX_PDF_PAGES,
+  MAX_XLSX_ROWS,
+  type XlsxCell,
+  type DocxBlock,
+} from '../lib/document-tools';
 import { getSkillContent, SKILLS } from '../skills';
 import { buildWorkspaceAgentSystemPrompt } from './instructions';
 import {
@@ -986,6 +996,82 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           return content;
         },
       }),
+      parse_pdf: tool({
+        description: [
+          'Extract the text layer from a PDF file in the workspace and return it with page markers.',
+          'Codemode-only: call this from inside codemode as codemode.parse_pdf({ filePath }).',
+          'Text-layer only — scanned or image-only PDFs return little or no text (there is no OCR).',
+          `Output is capped (~200k chars, ${MAX_PDF_PAGES} pages max); check "truncated" and re-run with maxPages if needed.`,
+        ].join(' '),
+        inputSchema: z.object({
+          filePath: z.string().describe('Workspace-relative path to the .pdf file.'),
+          maxPages: z.number().int().positive().optional().describe('Extract only the first N pages.'),
+        }),
+        execute: async ({ filePath, maxPages }) => {
+          const bytes = await this.requireRuntimeFileBytes(filePath);
+          const result = await extractPdfText(bytes, { maxPages });
+          return { ok: true, filePath: sanitizeRelativePath(filePath), ...result };
+        },
+      }),
+      read_xlsx: tool({
+        description: [
+          'Read one sheet of an .xlsx/.xls/.csv workbook in the workspace into JSON rows.',
+          'Codemode-only: call as codemode.read_xlsx({ filePath, sheet?, maxRows? }).',
+          'Returns array-of-arrays rows by default; check "truncated" and "totalRows" for row caps.',
+        ].join(' '),
+        inputSchema: z.object({
+          filePath: z.string().describe('Workspace-relative path to the workbook.'),
+          sheet: z.string().optional().describe('Sheet name; defaults to the first sheet.'),
+          maxRows: z.number().int().positive().optional().describe(`Cap returned data rows (max ${MAX_XLSX_ROWS}).`),
+          asObjects: z.boolean().optional().describe('Return rows as header-keyed objects instead of arrays.'),
+        }),
+        execute: async ({ filePath, sheet, maxRows, asObjects }) => {
+          const bytes = await this.requireRuntimeFileBytes(filePath);
+          const result = readXlsx(bytes, { sheet, maxRows, asObjects });
+          return { ok: true, filePath: sanitizeRelativePath(filePath), ...result };
+        },
+      }),
+      write_xlsx: tool({
+        description: [
+          'Build an .xlsx workbook from sheets of array-rows and write it as a durable workspace file.',
+          'Codemode-only: call as codemode.write_xlsx({ filePath, sheets }).',
+          'Each sheet is { name, rows } where rows is an array of arrays (first row is usually the header).',
+        ].join(' '),
+        inputSchema: z.object({
+          filePath: z.string().describe('Workspace-relative path to write (should end in .xlsx).'),
+          sheets: z.array(z.object({
+            name: z.string(),
+            rows: z.array(z.array(z.union([z.string(), z.number(), z.boolean(), z.null()]))),
+          })).min(1),
+        }),
+        execute: async ({ filePath, sheets }) => {
+          const bytes = buildXlsx(sheets as { name: string; rows: XlsxCell[][] }[]);
+          const relativePath = await this.writeRuntimeFileBytes(filePath, bytes);
+          return { ok: true, filePath: relativePath, bytes: bytes.byteLength, sheets: sheets.length };
+        },
+      }),
+      write_docx: tool({
+        description: [
+          'Build a Word .docx from a declarative content schema and write it as a durable workspace file.',
+          'Codemode-only: call as codemode.write_docx({ filePath, content }).',
+          'content is an array of blocks: {type:"heading",level,text} | {type:"paragraph",text,bold?,italic?} | {type:"list",ordered?,items} | {type:"table",rows}.',
+          'You never touch the docx library directly — describe the document with these blocks.',
+        ].join(' '),
+        inputSchema: z.object({
+          filePath: z.string().describe('Workspace-relative path to write (should end in .docx).'),
+          content: z.array(z.union([
+            z.object({ type: z.literal('heading'), level: z.number().int().min(1).max(6).optional(), text: z.string() }),
+            z.object({ type: z.literal('paragraph'), text: z.string(), bold: z.boolean().optional(), italic: z.boolean().optional() }),
+            z.object({ type: z.literal('list'), ordered: z.boolean().optional(), items: z.array(z.string()) }),
+            z.object({ type: z.literal('table'), rows: z.array(z.array(z.string())) }),
+          ])).min(1),
+        }),
+        execute: async ({ filePath, content }) => {
+          const bytes = await buildDocx(content as DocxBlock[]);
+          const relativePath = await this.writeRuntimeFileBytes(filePath, bytes);
+          return { ok: true, filePath: relativePath, bytes: bytes.byteLength, blocks: content.length };
+        },
+      }),
       ui_markdown: tool({
         description: [
           'Create or update a concise markdown panel on the canvas.',
@@ -1186,6 +1272,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const {
       delete_file: _deleteFile,
       web_fetch: _webFetch,
+      // Document tools are codemode-only: bulk extracted content must flow
+      // through sandbox code, not directly into model tool-result context.
+      parse_pdf: _parsePdf,
+      read_xlsx: _readXlsx,
+      write_xlsx: _writeXlsx,
+      write_docx: _writeDocx,
       ...modelTools
     } = tools;
 
@@ -1286,6 +1378,25 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       contentType: stat.mimeType || getMimeType(relativePath),
       data: toArrayBuffer(data),
     };
+  }
+
+  /** Read a workspace file as raw bytes, throwing if it does not exist. */
+  private async requireRuntimeFileBytes(filePath: string): Promise<Uint8Array> {
+    const runtime = this.getRuntimeWorkspace();
+    const relativePath = sanitizeRelativePath(filePath);
+    const data = await runtime.readFileBytes(toRuntimePath(relativePath));
+    if (!data) {
+      throw new Error(`File not found: ${filePath}`);
+    }
+    return data;
+  }
+
+  /** Write raw bytes to a durable workspace file, returning the relative path. */
+  private async writeRuntimeFileBytes(filePath: string, bytes: Uint8Array): Promise<string> {
+    const runtime = this.getRuntimeWorkspace();
+    const relativePath = sanitizeRelativePath(filePath);
+    await runtime.writeFileBytes(toRuntimePath(relativePath), bytes, getMimeType(relativePath));
+    return relativePath;
   }
 
   private requireWorkspace(): WorkspaceRecord {

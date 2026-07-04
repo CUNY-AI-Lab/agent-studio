@@ -29,12 +29,27 @@ Next.js + runner plan lives on `main`.
 
 ## Open decisions
 
-1. **Python / document-format capability.** The legacy Python sandbox
+1. **Python / document-format capability.** ~~The legacy Python sandbox
    (pandas, pdfplumber, openpyxl; pdf/xlsx/docx/pptx skills) has no Worker
-   equivalent. Near-term option: bundle JS equivalents into codemode
-   (pdf.js/SheetJS-class libraries). Larger option: Cloudflare Sandbox SDK
-   (containers) for real Bash/Python — cost and complexity to evaluate after
-   launch usage data.
+   equivalent.~~ **JS document capability shipped host-side.** Pure-JS,
+   workerd-compatible libraries run in the main Worker and are exposed to the
+   codemode sandbox as host tools (same pattern as web_fetch) via
+   `cloudflare/src/lib/document-tools.ts` — no external conversion service, no
+   Python. **In:** PDF text extraction (`unpdf`/pdf.js → `codemode.parse_pdf`,
+   page-marked, ~200k-char/500-page caps), XLSX read + write (SheetJS CE →
+   `codemode.read_xlsx` / `codemode.write_xlsx`, JSON rows in/out, 5k-row cap),
+   and DOCX generation from a declarative block schema (`docx` →
+   `codemode.write_docx`: heading/paragraph/list/table). These tools are
+   codemode-only (excluded from direct model tools, like web_fetch) so bulk
+   content flows through sandbox code. Skill docs restored under
+   `src/skills/docs/{pdf,xlsx,docx}.md`. `pdf-lib` is a dev-only dependency used
+   to generate the test PDF fixture. **Deferred (honest limits):** no OCR for
+   scanned PDFs; no PDF generation/merge/split/forms; XLSX writes static values
+   only (no formulas/formatting/in-place template edits); DOCX is generation
+   only (no reading/editing/tracked-changes) and covers no images/headers/
+   footers; **pptx** has no generation path at all. Larger option: Cloudflare
+   Sandbox SDK (containers) for real Bash/Python and the deferred cases — cost
+   and complexity to evaluate after launch usage data (stays post-launch).
 2. **WorldCat and LibGuides skills.** ~~Dropped in the port — both need OAuth
    client-credential token exchanges, which belong server-side.~~ **Resolved.**
    Server-side OAuth client-credentials implemented in

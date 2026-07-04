@@ -33,7 +33,8 @@ test('core research sources ship full reference docs', () => {
 
 test('docs teach the codemode web-fetch path, not raw fetch or Bash', () => {
   for (const [name, doc] of Object.entries(SKILL_DOCS)) {
-    if (['frontend-design', 'leaflet', 'citation'].includes(name)) continue;
+    // Capability docs teach their own codemode.* tools, not codemode.web_fetch.
+    if (['frontend-design', 'leaflet', 'citation', 'pdf', 'xlsx', 'docx'].includes(name)) continue;
     assert.match(doc, /codemode\.web_fetch/, `${name} should reference codemode.web_fetch`);
     assert.doesNotMatch(doc, /\bcurl\b|\bpython\b|\brequests\.get\b/i, `${name} should not reference Bash/Python tooling`);
   }

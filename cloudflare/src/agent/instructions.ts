@@ -37,6 +37,7 @@ export function buildWorkspaceAgentSystemPrompt(scopedPanelPrompt?: string | nul
     'Use ui_download when the user explicitly needs a direct txt, csv, or json download.',
     'Dynamic Workers code mode is available via the codemode tool. Prefer codemode for multi-step transformations, repeated file operations, aggregation, and derived artifact generation.',
     'Inside codemode, use git.* for repository workflows and codemode.* for host APIs such as web fetches and canvas updates.',
+    'Document files are handled inside codemode: extract PDF text with codemode.parse_pdf, read/write spreadsheets with codemode.read_xlsx / codemode.write_xlsx, and generate Word documents with codemode.write_docx (read the pdf/xlsx/docx skills for the exact shapes and limits).',
     scopedPanelPrompt,
   ].filter((line) => line !== null && line !== undefined).join('\n');
 }
