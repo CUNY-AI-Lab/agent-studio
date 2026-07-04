@@ -1,4 +1,4 @@
-import { getCookie, setCookie } from 'hono/cookie';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Context, MiddlewareHandler } from 'hono';
 import { createOpaqueId } from './ids';
 import type { Env } from '../env';
@@ -8,6 +8,7 @@ import {
   getCailIdentityFromRequest,
   type CailIdentity,
 } from './cail-identity';
+import { runFirstLoginMigration } from './migration';
 
 export const SESSION_COOKIE_NAME = 'agent-studio-session';
 
@@ -110,6 +111,37 @@ export const sessionMiddleware: MiddlewareHandler<{
     sessionId = await sessionIdForSubject(verified.identity.subject);
     c.set('cailIdentity', verified.identity);
     c.set('cailIdentityJwt', verified.token);
+
+    // First login after working anonymously: the browser still carries a
+    // valid legacy anonymous cookie. Migrate that namespace's data into the
+    // subject namespace (claim-once, idempotent — see lib/migration.ts),
+    // then drop the cookie so the check never re-triggers. The cookie is
+    // kept when the run is still in progress elsewhere or failed, so a
+    // later request can retry.
+    const legacyCookie = getCookie(c, SESSION_COOKIE_NAME);
+    if (legacyCookie) {
+      const anonSessionId = await verifySignedValue(legacyCookie, sessionSecret);
+      if (anonSessionId && anonSessionId !== sessionId) {
+        try {
+          const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId);
+          if (outcome !== 'in-progress') {
+            deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
+          }
+        } catch (error) {
+          // Soft-fail: the user sees their subject namespace (possibly still
+          // empty); the claim is marked failed and the next request retries.
+          console.error('First-login migration failed', {
+            anonSessionId,
+            subjectSessionId: sessionId,
+            error,
+          });
+        }
+      } else {
+        // Invalid signature or (vanishingly unlikely) same id: nothing to
+        // migrate — drop the stale cookie.
+        deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
+      }
+    }
   } else {
     // Anonymous / pre-rollout: fall back to the signed opaque cookie session.
     const existing = getCookie(c, SESSION_COOKIE_NAME);

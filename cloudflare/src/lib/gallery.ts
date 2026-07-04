@@ -131,3 +131,30 @@ export async function unpublishGalleryItem(env: Env, galleryId: string, sessionI
 
   await deleteByPrefix(env, getGalleryPrefix(galleryId));
 }
+
+/**
+ * Move gallery-item ownership from one session id to another (first-login
+ * migration): every manifest authored by `fromSessionId` is rewritten to
+ * `toSessionId` so unpublish rights follow the user into their subject
+ * namespace. Items authored by anyone else are untouched. Idempotent.
+ * Returns the number of manifests rewritten.
+ */
+export async function reassignGalleryAuthor(
+  env: Env,
+  fromSessionId: string,
+  toSessionId: string
+): Promise<number> {
+  const items = await listGalleryItems(env);
+  let reassigned = 0;
+  for (const item of items) {
+    if (item.authorId !== fromSessionId) continue;
+    const next: GalleryItem = { ...item, authorId: toSessionId };
+    await env.WORKSPACE_FILES.put(
+      galleryManifestKey(item.id),
+      JSON.stringify(next, null, 2),
+      { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
+    );
+    reassigned += 1;
+  }
+  return reassigned;
+}

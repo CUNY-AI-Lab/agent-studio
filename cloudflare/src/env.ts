@@ -1,9 +1,11 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
+import type { MigrationRegistry } from './migration-registry';
 
 export interface Env {
   ASSETS: Fetcher;
   LOADER: WorkerLoader;
   WorkspaceAgent: DurableObjectNamespace<WorkspaceAgent>;
+  MIGRATION_REGISTRY: DurableObjectNamespace<MigrationRegistry>;
   WORKSPACE_FILES: R2Bucket;
   SESSION_SECRET: string;
   // CAIL backbone: model calls go through the CAIL model proxy, never a

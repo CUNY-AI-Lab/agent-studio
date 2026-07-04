@@ -756,6 +756,7 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
 });
 
 export { WorkspaceAgent };
+export { MigrationRegistry } from './migration-registry';
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

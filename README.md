@@ -55,6 +55,12 @@ See `cail-gateway/docs/INTEGRATION.md` for the full contract. `CAIL_API_BASE` is
 a placeholder until the institutional Cloudflare contract signs
 (`cail-gateway/docs/LAUNCH_CHECKLIST.md`).
 
+Anything created anonymously before SSO enforcement follows the user on first
+login: when an authenticated request still carries the legacy anonymous session
+cookie, that namespace's workspaces, chat history, files, and gallery
+authorship are copied into the subject namespace exactly once (claim-once via
+the `MigrationRegistry` Durable Object; see `cloudflare/src/lib/migration.ts`).
+
 ## Running
 
 Worker-first local development:

@@ -26,6 +26,12 @@
       {
         "name": "WorkspaceAgent",
         "class_name": "WorkspaceAgent"
+      },
+      {
+        // First-login migration claims (anonymous namespace -> CAIL subject),
+        // one instance per anonymous session id. See src/migration-registry.ts.
+        "name": "MIGRATION_REGISTRY",
+        "class_name": "MigrationRegistry"
       }
     ]
   },
@@ -33,6 +39,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["WorkspaceAgent"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["MigrationRegistry"]
     }
   ],
   "r2_buckets": [
