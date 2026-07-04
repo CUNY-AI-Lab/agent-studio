@@ -92,6 +92,16 @@ const app = new Hono<{
   Variables: SessionVariables;
 }>();
 
+// Validation failures are client errors: routes validate with zod .parse and
+// rely on this mapping instead of try/catch at every call site.
+app.onError((error, c) => {
+  if (error instanceof z.ZodError) {
+    return c.json({ error: 'Invalid request body' }, 400);
+  }
+  console.error('Unhandled route error', { path: c.req.path, error });
+  return c.json({ error: 'Internal error' }, 500);
+});
+
 function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
   return getAgentByName<Env, WorkspaceAgent>(
     env.WorkspaceAgent,

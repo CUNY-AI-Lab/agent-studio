@@ -5,12 +5,10 @@
 // helpers/env.mjs for the doubles and the cloudflare:* stub loader that lets
 // server.ts import under the plain tsx test loader.
 //
-// Notes on observed behavior (asserted below, flagged in the task report):
-//   * Routes that validate with `zod.parse()` (create / patch / layout /
-//     publish / runtime-execute) surface invalid bodies as HTTP 500, because
-//     the ZodError is thrown and the app installs no onError handler. Only the
-//     hand-validated /panels route returns 400. Tests pin the current 500 so a
-//     future fix (return 400) makes the intent explicit.
+// Notes on observed behavior (asserted below):
+//   * Routes that validate with `zod.parse()` rely on the app-level onError
+//     handler to map ZodError to a 400. The invalid-body tests below cover
+//     that mapping.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -165,12 +163,12 @@ test('cross-session isolation: session B cannot see session A workspace', async 
   assert.equal(aList.workspaces.length, 1);
 });
 
-test('create with invalid body currently surfaces as 500 (uncaught ZodError)', async () => {
+test('create with invalid body returns 400 (ZodError mapped by onError)', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   // name must be a non-empty trimmed string; empty string fails min(1).
   const res = await session.request(app, '/api/workspaces', jsonInit('POST', { name: '' }));
-  assert.equal(res.status, 500);
+  assert.equal(res.status, 400);
 });
 
 // ---------------------------------------------------------------------------
@@ -411,7 +409,7 @@ test('panels: invalid panel payload -> 400 (hand-validated route)', async () => 
   assert.deepEqual(await res.json(), { error: 'Invalid panel payload' });
 });
 
-test('layout: invalid body currently surfaces as 500 (uncaught ZodError)', async () => {
+test('layout: invalid body returns 400 (ZodError mapped by onError)', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session);
@@ -422,7 +420,7 @@ test('layout: invalid body currently surfaces as 500 (uncaught ZodError)', async
     `/api/workspaces/${workspace.id}/layout`,
     jsonInit('PATCH', { viewport: { x: 'nope' } }),
   );
-  assert.equal(res.status, 500);
+  assert.equal(res.status, 400);
 });
 
 test('panels: DELETE a panel', async () => {
@@ -539,7 +537,7 @@ test('gallery: unpublish (DELETE /api/gallery/:id) by the author removes the ite
   assert.equal(detail.workspace.galleryId, undefined);
 });
 
-test('gallery: publish with invalid body currently surfaces as 500 (uncaught ZodError)', async () => {
+test('gallery: publish with invalid body returns 400 (ZodError mapped by onError)', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session);
@@ -548,7 +546,7 @@ test('gallery: publish with invalid body currently surfaces as 500 (uncaught Zod
     `/api/workspaces/${workspace.id}/publish`,
     jsonInit('POST', { title: 'only title' }), // missing description
   );
-  assert.equal(res.status, 500);
+  assert.equal(res.status, 400);
 });
 
 // ---------------------------------------------------------------------------
