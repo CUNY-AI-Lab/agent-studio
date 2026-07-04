@@ -12,9 +12,10 @@ is in the tab order at a time (a roving tabindex), so the canvas takes a single
 tab stop and the arrow keys drive geometry from the focused tile.
 
 The same map is available in-app: press **`?`** while the canvas region is
-focused, or use the **keyboard icon** in the workspace header. It is rendered
-from the shared source `frontend/src/lib/keyboardMap.ts`, so this table and the
-in-app dialog can never drift apart.
+focused, or use the **keyboard icon** in the workspace header. The in-app dialog renders
+directly from the shared source `frontend/src/lib/keyboardMap.ts`; the tables
+below are hand-maintained mirrors of that source, and a vitest drift check
+(`keyboardMap.drift.test.ts`) fails the suite if they fall out of sync.
 
 ### Focus & selection
 

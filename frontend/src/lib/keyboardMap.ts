@@ -44,6 +44,9 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
     shortcuts: [
       { keys: 'Cmd / Ctrl + G', description: 'Group the selected tiles' },
       { keys: 'Cmd / Ctrl + Shift + G', description: 'Ungroup the selected group' },
+      { keys: 'Enter / Space', description: 'Select the focused group boundary' },
+      { keys: 'Arrow keys', description: `Move the focused group by ${CANVAS_STEP}px` },
+      { keys: 'F2', description: 'Rename the focused group' },
     ],
   },
   {
@@ -53,6 +56,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
       { keys: '- / _', description: 'Zoom out (when the canvas is focused)' },
       { keys: '0', description: 'Reset zoom and position (when the canvas is focused)' },
       { keys: 'Space + drag', description: 'Pan the canvas (mouse)' },
+      { keys: '?', description: 'Open the keyboard shortcuts dialog' },
     ],
   },
 ];
