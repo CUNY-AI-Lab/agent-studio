@@ -156,12 +156,26 @@ async function main() {
     assert(layoutPayload.state?.viewport?.zoom === 1.1, 'Layout patch did not persist viewport changes');
     log('layout-patched', 'smoke-panel');
 
-    const runtimePayload = await session.json(`/api/workspaces/${workspaceId}/runtime/execute`, {
-      method: 'POST',
-      ...jsonRequest({
-        code: 'async () => { const entries = await state.readdir("/"); return entries; }',
-      }),
-    });
+    // The Worker Loader occasionally throws an opaque "internal error" on the
+    // FIRST Dynamic Worker execution after a fresh wrangler boot (cold start).
+    // Retry once with a short delay so that flake doesn't fail local dev or CI;
+    // a persistent failure still does.
+    let runtimePayload;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        runtimePayload = await session.json(`/api/workspaces/${workspaceId}/runtime/execute`, {
+          method: 'POST',
+          ...jsonRequest({
+            code: 'async () => { const entries = await state.readdir("/"); return entries; }',
+          }),
+        });
+        break;
+      } catch (error) {
+        if (attempt === 2) throw error;
+        log('runtime-executed', `cold-start retry after: ${error.message}`);
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+      }
+    }
     assert(runtimePayload.execution && !runtimePayload.execution.error, `Runtime execution failed: ${runtimePayload.execution?.error || 'unknown error'}`);
     log('runtime-executed', 'ok');
 
