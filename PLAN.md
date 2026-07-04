@@ -48,11 +48,22 @@ Next.js + runner plan lives on `main`.
    (commit b449c84 there); canonical local source `~/Apps/library-tools/.env`
    (values never in this repo).
 3. **CSRF and rate limiting.** The legacy middleware had both; the Worker has
-   neither. Rate limiting should use a Workers-native mechanism (rate-limit
-   binding or DO counter) rather than in-memory maps. CSRF needs a decision
-   once the SSO gate's cookie/header model is final ­— JSON APIs behind
-   SameSite=Lax cookies plus JWT-gated mutations may be sufficient; confirm
-   against the gateway contract before launch.
+   neither. **Rate limiting resolved for the HTTP surface.** Uses Cloudflare's
+   Rate Limiting binding (wrangler.jsonc `unsafe.bindings`, type "ratelimit"),
+   not in-memory maps — see `cloudflare/src/lib/rate-limit.ts`. Two namespaces:
+   `API_RATE_LIMIT` (300/60s) for general `/api/*`, `HEAVY_RATE_LIMIT` (20/60s)
+   for expensive POSTs (runtime/execute, upload, import, publish). Keyed by
+   session id (stable across SSO subjects and anonymous cookies), not IP.
+   Counting is per-colo — acceptable for launch scale, not a global hard cap.
+   Fail-open: bindings are declared optional and limiting is skipped when
+   absent (local dev / tests / miniflare), so CI smoke stays green. On limit:
+   429 `{error:'rate_limited', message}` + `Retry-After: 30`. **Known
+   remainder:** the WebSocket chat path (`/agents/*`) does NOT go through the
+   `/api/*` middleware and is unlimited in this pass — per-message limiting
+   belongs inside the DO and needs product thinking about long agent turns.
+   CSRF still needs a decision once the SSO gate's cookie/header model is final
+   ­— JSON APIs behind SameSite=Lax cookies plus JWT-gated mutations may be
+   sufficient; confirm against the gateway contract before launch.
 4. **Frontend monolith and accessibility.** `frontend/src/App.tsx` (~5k lines)
    is a 1:1 port of the legacy canvas page: 40+ state hooks, minimal ARIA on a
    drag-heavy canvas, no error boundaries, no UI tests. Splitting the

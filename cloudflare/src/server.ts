@@ -26,6 +26,7 @@ import { fetchCailModels } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
+import { rateLimitMiddleware } from './lib/rate-limit';
 import { isAllowedUpload } from './lib/upload-validation';
 import {
   createDefaultWorkspace,
@@ -158,6 +159,9 @@ function previewHeaders(): Record<string, string> {
 }
 
 app.use('/api/*', sessionMiddleware);
+// Rate limiting runs after sessionMiddleware because it keys by the session id
+// that middleware sets. /health stays outside /api/* and is never limited.
+app.use('/api/*', rateLimitMiddleware);
 
 app.get('/health', (c) => c.json({ ok: true, service: 'agent-studio' }));
 

@@ -8,6 +8,11 @@ export interface Env {
   MIGRATION_REGISTRY: DurableObjectNamespace<MigrationRegistry>;
   WORKSPACE_FILES: R2Bucket;
   SESSION_SECRET: string;
+  // Cloudflare Rate Limiting bindings (wrangler.jsonc unsafe.bindings, type
+  // "ratelimit"). Optional so local dev / tests / miniflare quirks fail open —
+  // see src/lib/rate-limit.ts. RateLimit comes from @cloudflare/workers-types.
+  API_RATE_LIMIT?: RateLimit;
+  HEAVY_RATE_LIMIT?: RateLimit;
   // CAIL backbone: model calls go through the CAIL model proxy, never a
   // provider key. See src/lib/cail-model.ts and src/lib/cail-identity.ts.
   CAIL_API_BASE?: string;
