@@ -38,10 +38,6 @@ async function sessionIdForSubject(subject: string): Promise<string> {
 }
 
 function hexToBuffer(value: string): ArrayBuffer {
-  if (!/^[a-f0-9]+$/i.test(value) || value.length % 2 !== 0) {
-    throw new Error('SESSION_SECRET must be an even-length hex string');
-  }
-
   const buffer = new ArrayBuffer(value.length / 2);
   const bytes = new Uint8Array(buffer);
   for (let i = 0; i < value.length; i += 2) {
@@ -50,10 +46,24 @@ function hexToBuffer(value: string): ArrayBuffer {
   return buffer;
 }
 
+export const MIN_SESSION_SECRET_LENGTH = 32;
+
+/**
+ * Derive the HMAC key by hashing the raw secret string, so any sufficiently
+ * long secret works — not just even-length hex. The length check fails loud
+ * with an actionable message; the earlier hex-only requirement turned
+ * plausible non-hex secrets into opaque 500s deep inside the middleware.
+ */
 async function importSigningKey(secret: string): Promise<CryptoKey> {
+  if (secret.length < MIN_SESSION_SECRET_LENGTH) {
+    throw new Error(
+      `SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters; generate one with \`openssl rand -hex 32\``
+    );
+  }
+  const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
   return crypto.subtle.importKey(
     'raw',
-    hexToBuffer(secret),
+    keyMaterial,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign', 'verify']
@@ -64,13 +74,13 @@ function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-async function signValue(value: string, secret: string): Promise<string> {
+export async function signValue(value: string, secret: string): Promise<string> {
   const key = await importSigningKey(secret);
   const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value));
   return `${value}.${bytesToHex(new Uint8Array(signature))}`;
 }
 
-async function verifySignedValue(value: string, secret: string): Promise<string | null> {
+export async function verifySignedValue(value: string, secret: string): Promise<string | null> {
   const [sessionId, signature] = value.split('.');
   if (!sessionId || !signature) return null;
   if (!/^[a-f0-9]{32}$/i.test(sessionId)) return null;

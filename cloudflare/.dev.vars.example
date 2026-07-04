@@ -1,4 +1,7 @@
-SESSION_SECRET=replace-with-random-32-byte-hex
+# Any string of 32+ characters works; generate with `openssl rand -hex 32`.
+# This placeholder is intentionally too short so an uncustomized copy fails
+# loud at request time instead of running with a known secret.
+SESSION_SECRET=replace-me-openssl-rand-hex-32
 
 # CAIL model proxy base URL (serves /v1/... and /keys). Placeholder until
 # launch — see cail-gateway docs/LAUNCH_CHECKLIST.md. No trailing slash.
@@ -15,5 +18,3 @@ CAIL_IDENTITY_JWT_SECRET=
 CAIL_REQUIRE_IDENTITY=false
 
 GIT_AUTH_TOKEN=
-R2_PUBLIC_DOMAIN=https://tools.cuny.qzz.io
-WORKER_SUBDOMAIN=site-studio
