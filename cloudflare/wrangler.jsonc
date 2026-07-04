@@ -38,8 +38,8 @@
   "r2_buckets": [
     {
       "binding": "WORKSPACE_FILES",
-      "bucket_name": "site-studio",
-      "preview_bucket_name": "site-studio"
+      "bucket_name": "agent-studio",
+      "preview_bucket_name": "agent-studio"
     }
   ],
   "vars": {
