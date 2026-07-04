@@ -1,37 +1,33 @@
-import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { TransformWrapper, TransformComponent, useControls } from 'react-zoom-pan-pinch';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
 import {
   getToolName,
   isTextUIPart,
   isToolUIPart,
-  type UIMessage,
 } from 'ai';
 import { toPng } from 'html-to-image';
-import { cn } from './lib/utils';
 import { HomePage } from './components/HomePage';
-import { ThemeToggle } from './components/ThemeToggle';
 import { ConnectionLines as LegacyConnectionLines } from './components/canvas/ConnectionLines';
 import { ContextualChatPopover as LegacyContextualChatPopover } from './components/canvas/ContextualChatPopover';
 import { DraggablePanel as LegacyDraggablePanel } from './components/canvas/DraggablePanel';
 import { GroupBoundary as LegacyGroupBoundary } from './components/canvas/GroupBoundary';
 import { SelectionBox as LegacySelectionBox } from './components/canvas/SelectionBox';
 import { SelectionToolbar as LegacySelectionToolbar } from './components/canvas/SelectionToolbar';
+import { CanvasZoomControls } from './components/canvas/CanvasZoomControls';
+import { ReadOnlyCanvas } from './components/canvas/ReadOnlyCanvas';
+import { PanelBody } from './components/panels/PanelBody';
+import { PanelMenu } from './components/panels/PanelMenu';
+import { ChatPanel } from './components/chat/ChatPanel';
+import { WorkspaceHeader } from './components/workspace/WorkspaceHeader';
+import { FilesShelf } from './components/workspace/FilesShelf';
+import { PublishDialog } from './components/workspace/PublishDialog';
+import { WorkspaceToast } from './components/workspace/WorkspaceToast';
+import { MaximizedPanelOverlay } from './components/workspace/MaximizedPanelOverlay';
 import {
   X,
-  Plus,
-  Minus,
-  RotateCcw,
-  Send,
   MessageSquare,
-  Download,
-  Trash2,
-  Maximize2,
-  Upload,
-  Play,
-  Layout,
-  FolderOpen,
   Sparkles,
 } from 'lucide-react';
 import {
@@ -50,10 +46,6 @@ import {
   fetchWorkspaceFiles,
   fetchWorkspaces,
   fetchModels,
-  buildModelPickerView,
-  getGalleryPanelPreviewUrl,
-  getGalleryFileUrl,
-  getWorkspacePanelPreviewUrl,
   getWorkspaceFileUrl,
   importWorkspaceBundle,
   publishWorkspace,
@@ -63,6 +55,39 @@ import {
   handleAuthRequired,
 } from './api';
 import type { ModelCatalog } from './api';
+import {
+  PANEL_GAP,
+  buildPanelLayouts,
+  getGroupBounds,
+  getLayoutsBounds,
+  hasOverlappingPanels,
+  inferPanelLayout,
+  layoutOverlapsBounds,
+  resolveCollisions,
+  resolveVisibleLayoutCollisions,
+  type CanvasPanelLayout,
+  type LayoutMap,
+} from './lib/panelLayout';
+import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
+import { clampNumber, formatFileSize, makeClientId } from './lib/format';
+import { downloadBlob, triggerQueuedDownload } from './lib/download';
+import {
+  type ContextualChatTarget,
+  type ContextualThreadMessage,
+  extractMessageText,
+  getContextualStatusLabel,
+} from './lib/messages';
+import {
+  type ToolbarDownloadFormat,
+  canOpenFileInPanel,
+  getFileName,
+  getPanelDownloadFormats,
+  getPanelTitle,
+  getPanelTypeLabel,
+  getWorkspaceFilePanelId,
+  inferWorkspaceFilePanelType,
+  isPanelContextualChatCapable,
+} from './lib/panelFiles';
 import type {
   DownloadRequest,
   GalleryItem,
@@ -75,1361 +100,6 @@ import type {
   WorkspaceRuntimeExecution,
   WorkspaceState,
 } from './types';
-
-const LazyChartPanelView = lazy(() => import('./components/panels/ChartPanelView'));
-const LazyMarkdownRenderer = lazy(() => import('./components/renderers/MarkdownRenderer'));
-
-function extractMessageText(message: UIMessage): string {
-  if (!Array.isArray(message.parts)) return '';
-  return message.parts
-    .map((part) => {
-      if (isTextUIPart(part)) return part.text;
-      if (isToolUIPart(part)) return `[tool:${getToolName(part)}]`;
-      return '';
-    })
-    .filter(Boolean)
-    .join('\n');
-}
-
-function inferPanelLayout(panel: WorkspacePanel, index: number) {
-  const width = panel.layout?.width ?? 360;
-  const height = panel.layout?.height ?? (panel.type === 'table' ? 300 : 220);
-  const x = panel.layout?.x ?? 32 + (index % 3) * 392;
-  const y = panel.layout?.y ?? 32 + Math.floor(index / 3) * 252;
-  return { x, y, width, height };
-}
-
-type CanvasPanelLayout = ReturnType<typeof inferPanelLayout>;
-type LayoutMap = Record<string, CanvasPanelLayout>;
-
-type ToolbarDownloadFormat = 'file' | 'csv' | 'json' | 'txt' | 'png';
-const PANEL_GAP = 20;
-const RUNTIME_EXAMPLE = `async () => {
-  const entries = await state.readdir("/");
-  console.log("Root entries", entries);
-  return entries;
-}`;
-
-interface ContextualThreadMessage {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-}
-
-interface ContextualChatTarget {
-  key: string;
-  panelIds: string[];
-  title: string;
-  typeLabel: string;
-}
-
-function buildPanelLayouts(panels: WorkspacePanel[]): Record<string, CanvasPanelLayout> {
-  return Object.fromEntries(
-    panels.map((panel, index) => [panel.id, inferPanelLayout(panel, index)])
-  );
-}
-
-function collectLayouts(layouts: Record<string, CanvasPanelLayout>, panelIds: Iterable<string>): LayoutMap {
-  const visibleLayouts: LayoutMap = {};
-  for (const panelId of panelIds) {
-    const layout = layouts[panelId];
-    if (layout) {
-      visibleLayouts[panelId] = { ...layout };
-    }
-  }
-  return visibleLayouts;
-}
-
-function hasOverlappingPanels(layouts: LayoutMap): boolean {
-  const panelIds = Object.keys(layouts);
-  for (let index = 0; index < panelIds.length; index += 1) {
-    for (let nextIndex = index + 1; nextIndex < panelIds.length; nextIndex += 1) {
-      const left = layouts[panelIds[index]];
-      const right = layouts[panelIds[nextIndex]];
-      const overlaps = !(
-        left.x + left.width + PANEL_GAP <= right.x ||
-        right.x + right.width + PANEL_GAP <= left.x ||
-        left.y + left.height + PANEL_GAP <= right.y ||
-        right.y + right.height + PANEL_GAP <= left.y
-      );
-      if (overlaps) return true;
-    }
-  }
-  return false;
-}
-
-function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>): LayoutMap {
-  const panelIds = Object.keys(layouts);
-  const rectsOverlap = (left: CanvasPanelLayout, right: CanvasPanelLayout) => !(
-    left.x + left.width + PANEL_GAP <= right.x ||
-    right.x + right.width + PANEL_GAP <= left.x ||
-    left.y + left.height + PANEL_GAP <= right.y ||
-    right.y + right.height + PANEL_GAP <= left.y
-  );
-
-  for (let iteration = 0; iteration < 15; iteration += 1) {
-    let hadCollision = false;
-
-    for (let index = 0; index < panelIds.length; index += 1) {
-      for (let nextIndex = index + 1; nextIndex < panelIds.length; nextIndex += 1) {
-        const leftId = panelIds[index];
-        const rightId = panelIds[nextIndex];
-        const left = layouts[leftId];
-        const right = layouts[rightId];
-
-        if (!rectsOverlap(left, right)) continue;
-        if (fixedPanelIds.has(leftId) && fixedPanelIds.has(rightId)) continue;
-
-        hadCollision = true;
-
-        let movedId: string;
-        let fixedId: string;
-        if (fixedPanelIds.has(leftId)) {
-          movedId = rightId;
-          fixedId = leftId;
-        } else if (fixedPanelIds.has(rightId)) {
-          movedId = leftId;
-          fixedId = rightId;
-        } else if (right.y > left.y || (right.y === left.y && right.x > left.x)) {
-          movedId = rightId;
-          fixedId = leftId;
-        } else {
-          movedId = leftId;
-          fixedId = rightId;
-        }
-
-        const fixed = layouts[fixedId];
-        const moved = layouts[movedId];
-        const fixedCenterX = fixed.x + fixed.width / 2;
-        const fixedCenterY = fixed.y + fixed.height / 2;
-        const movedCenterX = moved.x + moved.width / 2;
-        const movedCenterY = moved.y + moved.height / 2;
-
-        const pushRight = fixed.x + fixed.width + PANEL_GAP - moved.x;
-        const pushLeft = moved.x + moved.width + PANEL_GAP - fixed.x;
-        const pushDown = fixed.y + fixed.height + PANEL_GAP - moved.y;
-        const pushUp = moved.y + moved.height + PANEL_GAP - fixed.y;
-        const pushX = movedCenterX >= fixedCenterX ? pushRight : pushLeft;
-        const pushY = movedCenterY >= fixedCenterY ? pushDown : pushUp;
-
-        if (pushX > 0 && pushX <= pushY) {
-          const dx = movedCenterX >= fixedCenterX ? pushRight : -pushLeft;
-          layouts[movedId] = { ...moved, x: moved.x + dx };
-        } else if (pushY > 0) {
-          const dy = movedCenterY >= fixedCenterY ? pushDown : -pushUp;
-          layouts[movedId] = { ...moved, y: moved.y + dy };
-        }
-      }
-    }
-
-    if (!hadCollision) break;
-  }
-
-  return layouts;
-}
-
-function resolveVisibleLayoutCollisions(
-  layouts: Record<string, CanvasPanelLayout>,
-  visiblePanelIds: Iterable<string>,
-  fixedPanelIds: Set<string>
-): LayoutMap {
-  const visibleLayouts = collectLayouts(layouts, visiblePanelIds);
-  return hasOverlappingPanels(visibleLayouts)
-    ? resolveCollisions(visibleLayouts, fixedPanelIds)
-    : visibleLayouts;
-}
-
-function getLayoutsBounds(layouts: CanvasPanelLayout[]) {
-  if (layouts.length === 0) return null;
-  const minX = Math.min(...layouts.map((layout) => layout.x));
-  const minY = Math.min(...layouts.map((layout) => layout.y));
-  const maxX = Math.max(...layouts.map((layout) => layout.x + layout.width));
-  const maxY = Math.max(...layouts.map((layout) => layout.y + layout.height));
-  return {
-    x: minX,
-    y: minY,
-    width: maxX - minX,
-    height: maxY - minY,
-  };
-}
-
-function getGroupBounds(
-  group: WorkspaceState['groups'][number],
-  layouts: LayoutMap,
-  padding: number,
-  excludedPanelId?: string
-) {
-  const groupLayouts = group.panelIds
-    .filter((groupPanelId) => groupPanelId !== excludedPanelId)
-    .map((groupPanelId) => layouts[groupPanelId])
-    .filter(Boolean) as CanvasPanelLayout[];
-
-  if (groupLayouts.length === 0) return null;
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-
-  groupLayouts.forEach((layout) => {
-    minX = Math.min(minX, layout.x);
-    minY = Math.min(minY, layout.y);
-    maxX = Math.max(maxX, layout.x + layout.width);
-    maxY = Math.max(maxY, layout.y + layout.height);
-  });
-
-  return {
-    x: minX - padding,
-    y: minY - padding,
-    width: maxX - minX + padding * 2,
-    height: maxY - minY + padding * 2,
-  };
-}
-
-function layoutOverlapsBounds(
-  layout: CanvasPanelLayout,
-  bounds: { x: number; y: number; width: number; height: number }
-) {
-  return !(
-    layout.x + layout.width < bounds.x ||
-    layout.x > bounds.x + bounds.width ||
-    layout.y + layout.height < bounds.y ||
-    layout.y > bounds.y + bounds.height
-  );
-}
-
-function makeClientId(prefix: string) {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `${prefix}-${crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function getConnectionEdgePoint(
-  sourceLayout: CanvasPanelLayout,
-  targetLayout: CanvasPanelLayout,
-  isSource: boolean
-) {
-  const layout = isSource ? sourceLayout : targetLayout;
-  const otherLayout = isSource ? targetLayout : sourceLayout;
-  const centerX = layout.x + layout.width / 2;
-  const centerY = layout.y + layout.height / 2;
-  const otherCenterX = otherLayout.x + otherLayout.width / 2;
-  const otherCenterY = otherLayout.y + otherLayout.height / 2;
-  const dx = otherCenterX - centerX;
-  const dy = otherCenterY - centerY;
-
-  if (Math.abs(dx) > Math.abs(dy)) {
-    return dx > 0
-      ? { x: layout.x + layout.width, y: centerY, side: 'right' as const }
-      : { x: layout.x, y: centerY, side: 'left' as const };
-  }
-
-  return dy > 0
-    ? { x: centerX, y: layout.y + layout.height, side: 'bottom' as const }
-    : { x: centerX, y: layout.y, side: 'top' as const };
-}
-
-function generateConnectionPath(
-  source: ReturnType<typeof getConnectionEdgePoint>,
-  target: ReturnType<typeof getConnectionEdgePoint>
-) {
-  const curvature = 80;
-  let sourceControlX = source.x;
-  let sourceControlY = source.y;
-  let targetControlX = target.x;
-  let targetControlY = target.y;
-
-  if (source.side === 'right') sourceControlX += curvature;
-  if (source.side === 'left') sourceControlX -= curvature;
-  if (source.side === 'bottom') sourceControlY += curvature;
-  if (source.side === 'top') sourceControlY -= curvature;
-  if (target.side === 'right') targetControlX += curvature;
-  if (target.side === 'left') targetControlX -= curvature;
-  if (target.side === 'bottom') targetControlY += curvature;
-  if (target.side === 'top') targetControlY -= curvature;
-
-  return `M ${source.x} ${source.y} C ${sourceControlX} ${sourceControlY}, ${targetControlX} ${targetControlY}, ${target.x} ${target.y}`;
-}
-
-function CanvasConnections({
-  layouts,
-  connections,
-}: {
-  layouts: Record<string, CanvasPanelLayout>;
-  connections: WorkspaceState['connections'];
-}) {
-  const paths = connections
-    .map((connection) => {
-      const sourceLayout = layouts[connection.sourceId];
-      const targetLayout = layouts[connection.targetId];
-      if (!sourceLayout || !targetLayout) return null;
-      const source = getConnectionEdgePoint(sourceLayout, targetLayout, true);
-      const target = getConnectionEdgePoint(sourceLayout, targetLayout, false);
-      return {
-        id: connection.id,
-        path: generateConnectionPath(source, target),
-        source,
-        target,
-      };
-    })
-    .filter(Boolean) as Array<{
-    id: string;
-    path: string;
-    source: ReturnType<typeof getConnectionEdgePoint>;
-    target: ReturnType<typeof getConnectionEdgePoint>;
-  }>;
-
-  if (paths.length === 0) return null;
-
-  return (
-    <svg className="connection-lines" aria-hidden="true">
-      {paths.map((path) => (
-        <g key={path.id}>
-          <path className="connection-line" d={path.path} />
-          <circle className="connection-line" cx={path.source.x} cy={path.source.y} r="3" fill="currentColor" />
-          <circle className="connection-line" cx={path.target.x} cy={path.target.y} r="3" fill="currentColor" />
-        </g>
-      ))}
-    </svg>
-  );
-}
-
-function CanvasGroups({
-  layouts,
-  groups,
-}: {
-  layouts: Record<string, CanvasPanelLayout>;
-  groups: WorkspaceState['groups'];
-}) {
-  const boundaries = groups
-    .map((group) => {
-      const groupLayouts = group.panelIds
-        .map((panelId) => layouts[panelId])
-        .filter(Boolean) as CanvasPanelLayout[];
-      if (groupLayouts.length < 2) return null;
-
-      const padding = 18;
-      const minX = Math.min(...groupLayouts.map((layout) => layout.x));
-      const minY = Math.min(...groupLayouts.map((layout) => layout.y));
-      const maxX = Math.max(...groupLayouts.map((layout) => layout.x + layout.width));
-      const maxY = Math.max(...groupLayouts.map((layout) => layout.y + layout.height));
-
-      return {
-        id: group.id,
-        name: group.name || `${groupLayouts.length} tiles`,
-        color: group.color,
-        x: minX - padding,
-        y: minY - padding,
-        width: maxX - minX + padding * 2,
-        height: maxY - minY + padding * 2,
-      };
-    })
-    .filter(Boolean) as Array<{
-    id: string;
-    name: string;
-    color?: string;
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-  }>;
-
-  if (boundaries.length === 0) return null;
-
-  return (
-    <>
-      {boundaries.map((group) => (
-        <div
-          key={group.id}
-          className="group-boundary"
-          style={{
-            left: group.x,
-            top: group.y,
-            width: group.width,
-            height: group.height,
-            borderColor: group.color || undefined,
-          }}
-        >
-          <span className="group-boundary-label">{group.name}</span>
-        </div>
-      ))}
-    </>
-  );
-}
-
-function SelectionBox({
-  start,
-  end,
-}: {
-  start: { x: number; y: number };
-  end: { x: number; y: number };
-}) {
-  const left = Math.min(start.x, end.x);
-  const top = Math.min(start.y, end.y);
-  const width = Math.abs(end.x - start.x);
-  const height = Math.abs(end.y - start.y);
-
-  if (width < 4 && height < 4) return null;
-
-  return (
-    <div
-      className="selection-box"
-      style={{
-        left,
-        top,
-        width,
-        height,
-      }}
-    />
-  );
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(value, max));
-}
-
-function formatFileSize(size?: number): string {
-  if (!size) return '0 B';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function formatRelativeTime(value?: string): string {
-  if (!value) return 'Unknown time';
-  const diffMs = Date.now() - new Date(value).getTime();
-  if (!Number.isFinite(diffMs)) return 'Unknown time';
-  const diffMinutes = Math.round(diffMs / 60000);
-  if (Math.abs(diffMinutes) < 1) return 'Just now';
-  if (Math.abs(diffMinutes) < 60) return `${Math.abs(diffMinutes)}m ago`;
-  const diffHours = Math.round(diffMinutes / 60);
-  if (Math.abs(diffHours) < 24) return `${Math.abs(diffHours)}h ago`;
-  const diffDays = Math.round(diffHours / 24);
-  if (Math.abs(diffDays) < 7) return `${Math.abs(diffDays)}d ago`;
-  return new Date(value).toLocaleDateString();
-}
-
-function formatRuntimeValue(value: unknown): string {
-  if (value === undefined) return 'undefined';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
-function parseDelimitedLine(line: string, delimiter = ','): string[] {
-  const values: string[] = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let index = 0; index < line.length; index += 1) {
-    const character = line[index];
-
-    if (character === '"') {
-      if (inQuotes && line[index + 1] === '"') {
-        current += '"';
-        index += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-
-    if (character === delimiter && !inQuotes) {
-      values.push(current);
-      current = '';
-      continue;
-    }
-
-    current += character;
-  }
-
-  values.push(current);
-  return values;
-}
-
-function parseCsvPreview(content: string, limit = 50) {
-  const lines = content
-    .split(/\r?\n/)
-    .filter((line, index, source) => line.trim().length > 0 || (index === 0 && source.length === 1));
-
-  if (lines.length === 0) {
-    return { headers: [] as string[], rows: [] as string[][], truncated: false };
-  }
-
-  const headers = parseDelimitedLine(lines[0]);
-  const rows = lines.slice(1, limit + 1).map((line) => parseDelimitedLine(line));
-  return {
-    headers,
-    rows,
-    truncated: lines.length > limit + 1,
-  };
-}
-
-function getFileName(filePath: string): string {
-  return filePath.split('/').pop() || filePath;
-}
-
-function getFileExtension(filePath: string): string {
-  const dotIndex = filePath.lastIndexOf('.');
-  return dotIndex >= 0 ? filePath.slice(dotIndex).toLowerCase() : '';
-}
-
-function getWorkspaceFilePanelId(filePath: string): string {
-  return `file-${filePath.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
-}
-
-function canOpenFileInPanel(filePath: string): boolean {
-  return /\.(pdf|png|jpe?g|gif|webp|svg|md|txt|csv|json|xml|ya?ml|js|ts|tsx|jsx|css|html?)$/i.test(filePath);
-}
-
-function canQueryFileInPanel(filePath: string): boolean {
-  return /\.(pdf|md|txt|csv|json|xml|ya?ml|js|ts|tsx|jsx|css|html?|svg)$/i.test(filePath);
-}
-
-function inferWorkspaceFilePanelType(filePath: string): 'pdf' | 'preview' | 'editor' {
-  if (/\.pdf$/i.test(filePath)) return 'pdf';
-  if (/\.(html?|svg)$/i.test(filePath)) return 'preview';
-  return 'editor';
-}
-
-function getFileTypeBadge(filePath: string): string {
-  const extension = getFileExtension(filePath).replace(/^\./, '');
-  if (!extension) return 'FILE';
-  if (extension.length <= 4) return extension.toUpperCase();
-  return extension.slice(0, 4).toUpperCase();
-}
-
-function getFileTileLabel(filePath: string): string {
-  const extension = getFileExtension(filePath);
-  if (extension === '.pdf') return 'PDF';
-  if (extension === '.csv' || extension === '.tsv') return 'CSV File';
-  if (extension === '.md' || extension === '.markdown') return 'Markdown File';
-  if (extension === '.html' || extension === '.htm') return 'HTML View';
-  if (['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp'].includes(extension)) return 'Image';
-  if (extension === '.json') return 'JSON File';
-  if (extension === '.txt') return 'Text File';
-  return 'File';
-}
-
-function getPanelTitle(panel: WorkspacePanel): string {
-  if (panel.title) return panel.title;
-  if ('filePath' in panel && panel.filePath) return getFileName(panel.filePath);
-  if (panel.type === 'fileTree') return 'Workspace Files';
-  return panel.id;
-}
-
-function getPanelTypeLabel(panel: WorkspacePanel): string {
-  switch (panel.type) {
-    case 'markdown':
-      return 'Markdown';
-    case 'table':
-      return 'Table';
-    case 'chart':
-      return 'Chart';
-    case 'cards':
-      return 'Cards';
-    case 'pdf':
-      return panel.filePath ? getFileTileLabel(panel.filePath) : 'PDF';
-    case 'preview':
-      return panel.filePath ? getFileTileLabel(panel.filePath) : 'Web View';
-    case 'editor':
-      return panel.filePath ? getFileTileLabel(panel.filePath) : 'File';
-    case 'file':
-      return panel.filePath ? getFileTileLabel(panel.filePath) : 'File';
-    case 'detail':
-      return 'Detail';
-    case 'fileTree':
-      return 'Files';
-    case 'chat':
-      return 'Chat';
-    default:
-      return 'Panel';
-  }
-}
-
-function isPanelContextualChatCapable(panel: WorkspacePanel): boolean {
-  if (panel.type === 'table' || panel.type === 'chart' || panel.type === 'cards' || panel.type === 'markdown') {
-    return true;
-  }
-  if (panel.type === 'fileTree') return true;
-  if (panel.type === 'pdf') return true;
-  if (panel.type === 'preview') {
-    if (panel.filePath) return canQueryFileInPanel(panel.filePath);
-    return !!panel.content;
-  }
-  if ((panel.type === 'editor' || panel.type === 'file') && 'filePath' in panel && panel.filePath) {
-    return canQueryFileInPanel(panel.filePath);
-  }
-  return false;
-}
-
-function canExportPanelSnapshot(panel: WorkspacePanel): boolean {
-  if (panel.type === 'table' || panel.type === 'chart' || panel.type === 'cards' || panel.type === 'markdown' || panel.type === 'fileTree') {
-    return true;
-  }
-
-  if (panel.type === 'preview' && panel.content) {
-    return true;
-  }
-
-  if ((panel.type === 'preview' || panel.type === 'editor' || panel.type === 'file') && 'filePath' in panel && panel.filePath) {
-    return /\.(png|jpe?g|gif|webp|svg|md|txt|csv|json|xml|ya?ml|js|ts|tsx|jsx|css)$/i.test(panel.filePath);
-  }
-
-  return false;
-}
-
-function getPanelDownloadFormats(panel: WorkspacePanel | null): ToolbarDownloadFormat[] {
-  if (!panel) return [];
-
-  const formats: ToolbarDownloadFormat[] = [];
-  if ('filePath' in panel && panel.filePath) {
-    formats.push('file');
-  }
-
-  switch (panel.type) {
-    case 'table':
-      formats.push('csv', 'json');
-      break;
-    case 'chart':
-      formats.push('csv', 'json');
-      break;
-    case 'cards':
-      formats.push('json');
-      break;
-    case 'markdown':
-      formats.push('txt');
-      break;
-    default:
-      break;
-  }
-
-  if (canExportPanelSnapshot(panel)) {
-    formats.push('png');
-  }
-
-  return Array.from(new Set(formats));
-}
-
-function escapeCsvCell(value: unknown): string {
-  const normalized = String(value ?? '');
-  if (/[",\n]/.test(normalized)) {
-    return `"${normalized.replace(/"/g, '""')}"`;
-  }
-  return normalized;
-}
-
-function serializeTableAsCsv(panel: Extract<WorkspacePanel, { type: 'table' }>): string {
-  const header = panel.columns.map((column) => escapeCsvCell(column.label)).join(',');
-  const rows = panel.rows.map((row) =>
-    panel.columns.map((column) => escapeCsvCell(row[column.key])).join(',')
-  );
-  return [header, ...rows].join('\n');
-}
-
-function downloadBlob(blob: Blob, filename: string) {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.append(anchor);
-  anchor.click();
-  anchor.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function ensureDownloadFilename(filename: string, format: DownloadRequest['format']): string {
-  const trimmed = filename.trim() || `download.${format}`;
-  return /\.[a-z0-9]+$/i.test(trimmed) ? trimmed : `${trimmed}.${format}`;
-}
-
-function triggerQueuedDownload(download: DownloadRequest) {
-  const filename = ensureDownloadFilename(download.filename, download.format);
-
-  if (download.format === 'json') {
-    downloadBlob(
-      new Blob([JSON.stringify(download.data, null, 2)], { type: 'application/json;charset=utf-8' }),
-      filename
-    );
-    return;
-  }
-
-  const content = typeof download.data === 'string'
-    ? download.data
-    : download.data == null
-      ? ''
-      : String(download.data);
-  const contentType = download.format === 'csv'
-    ? 'text/csv;charset=utf-8'
-    : 'text/plain;charset=utf-8';
-  downloadBlob(new Blob([content], { type: contentType }), filename);
-}
-
-function getContextualStatusLabel(status: string, assistantMessage: UIMessage | null): string | null {
-  if (status === 'ready') return null;
-  if (status === 'submitted') return 'Thinking...';
-  if (status === 'error') return null;
-
-  if (assistantMessage && Array.isArray(assistantMessage.parts)) {
-    const hasRunningTool = assistantMessage.parts.some((part) =>
-      isToolUIPart(part) &&
-      part.state !== 'output-available' &&
-      part.state !== 'output-error' &&
-      part.state !== 'output-denied'
-    );
-    if (hasRunningTool) return 'Running tools...';
-    if (extractMessageText(assistantMessage).trim()) return 'Responding...';
-  }
-
-  return 'Thinking...';
-}
-
-type FileSource =
-  | { kind: 'workspace'; id: string }
-  | { kind: 'gallery'; id: string };
-
-function getFileUrl(source: FileSource, filePath: string): string {
-  return source.kind === 'workspace'
-    ? getWorkspaceFileUrl(source.id, filePath)
-    : getGalleryFileUrl(source.id, filePath);
-}
-
-function withCacheKey(url: string, cacheKey?: string | null): string {
-  if (!cacheKey) return url;
-  return `${url}${url.includes('?') ? '&' : '?'}v=${encodeURIComponent(cacheKey)}`;
-}
-
-function getWorkspaceFileCacheKey(
-  workspaceFiles: WorkspaceFileInfo[] | undefined,
-  filePath: string
-): string | null {
-  const file = workspaceFiles?.find((entry) => !entry.isDirectory && entry.path === filePath);
-  if (!file) return null;
-  return file.etag || file.modifiedAt || file.uploadedAt || (typeof file.size === 'number' ? String(file.size) : null);
-}
-
-function FilePreview({
-  fileSource,
-  panel,
-  cacheKey,
-}: {
-  fileSource: FileSource;
-  panel: Extract<WorkspacePanel, { type: 'pdf' | 'editor' | 'file' }>;
-  cacheKey?: string | null;
-}) {
-  const url = withCacheKey(getFileUrl(fileSource, panel.filePath), cacheKey);
-  const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(panel.filePath);
-  const isPdf = panel.type === 'pdf';
-  const isHtml = /\.html?$/i.test(panel.filePath);
-
-  if (isImage) {
-    return <img key={url} className="panel-image" src={url} alt={panel.title || panel.filePath} />;
-  }
-
-  if (isPdf) {
-    return <iframe key={url} className="panel-frame" src={url} title={panel.title || panel.filePath} />;
-  }
-
-  if (isHtml) {
-    return (
-      <iframe
-        key={url}
-        className="panel-frame"
-        src={url}
-        title={panel.title || panel.filePath}
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-      />
-    );
-  }
-
-  if (/\.(md|txt|csv|json|xml|ya?ml|js|ts|tsx|jsx|css)$/i.test(panel.filePath)) {
-    return <TextFilePreview url={url} filePath={panel.filePath} />;
-  }
-
-  return (
-    <div className="panel-file">
-      <a href={url} target="_blank" rel="noreferrer">
-        Open {panel.filePath}
-      </a>
-    </div>
-  );
-}
-
-function PreviewPanelView({
-  fileSource,
-  panel,
-  cacheKey,
-}: {
-  fileSource: FileSource;
-  panel: Extract<WorkspacePanel, { type: 'preview' }>;
-  cacheKey?: string | null;
-}) {
-  if (panel.filePath) {
-    return (
-      <FilePreview
-        fileSource={fileSource}
-        panel={{ ...panel, type: 'editor', filePath: panel.filePath }}
-        cacheKey={cacheKey}
-      />
-    );
-  }
-
-  if (panel.content) {
-    const previewUrl = fileSource.kind === 'workspace'
-      ? getWorkspacePanelPreviewUrl(fileSource.id, panel.id)
-      : getGalleryPanelPreviewUrl(fileSource.id, panel.id);
-    return (
-      <iframe
-        className="panel-frame"
-        src={previewUrl}
-        title={panel.title || panel.id}
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-      />
-    );
-  }
-
-  return <div className="panel-empty">No preview content yet.</div>;
-}
-
-function DetailPanelView({
-  panel,
-  panels,
-}: {
-  panel: Extract<WorkspacePanel, { type: 'detail' }>;
-  panels: WorkspacePanel[];
-}) {
-  const linkedPanel = panel.linkedTo
-    ? panels.find((candidate) => candidate.id === panel.linkedTo)
-    : null;
-
-  if (!panel.linkedTo) {
-    return <div className="panel-empty">No linked tile selected for this detail view.</div>;
-  }
-
-  if (!linkedPanel || linkedPanel.type !== 'table') {
-    return <div className="panel-empty">The linked table for this detail view is unavailable.</div>;
-  }
-
-  if (linkedPanel.rows.length === 0) {
-    return <div className="panel-empty">The linked table has no rows yet.</div>;
-  }
-
-  return (
-    <div className="space-y-3 pr-1">
-      {linkedPanel.rows.slice(0, 8).map((row, index) => (
-        <article key={index} className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm">
-          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground mb-3">
-            Row {index + 1}
-          </div>
-          <dl className="space-y-2">
-            {linkedPanel.columns.map((column) => (
-              <div key={column.key} className="grid grid-cols-[minmax(0,140px)_1fr] gap-3 items-start">
-                <dt className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                  {column.label}
-                </dt>
-                <dd className="text-sm leading-relaxed break-words">
-                  {row[column.key] == null || row[column.key] === ''
-                    ? <span className="panel-muted">—</span>
-                    : String(row[column.key])}
-                </dd>
-              </div>
-            ))}
-          </dl>
-        </article>
-      ))}
-      {linkedPanel.rows.length > 8 ? (
-        <div className="panel-footnote">Showing the first 8 rows from the linked table.</div>
-      ) : null}
-    </div>
-  );
-}
-
-function TablePanelView({ panel }: { panel: Extract<WorkspacePanel, { type: 'table' }> }) {
-  const [sortKey, setSortKey] = useState<string | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
-
-  const sortedRows = useMemo(() => {
-    if (!sortKey) return panel.rows;
-
-    return [...panel.rows].sort((left, right) => {
-      const leftValue = left[sortKey];
-      const rightValue = right[sortKey];
-
-      if (leftValue == null && rightValue == null) return 0;
-      if (leftValue == null) return sortDirection === 'asc' ? 1 : -1;
-      if (rightValue == null) return sortDirection === 'asc' ? -1 : 1;
-
-      if (typeof leftValue === 'number' && typeof rightValue === 'number') {
-        return sortDirection === 'asc' ? leftValue - rightValue : rightValue - leftValue;
-      }
-
-      const leftString = String(leftValue).toLowerCase();
-      const rightString = String(rightValue).toLowerCase();
-      if (leftString < rightString) return sortDirection === 'asc' ? -1 : 1;
-      if (leftString > rightString) return sortDirection === 'asc' ? 1 : -1;
-      return 0;
-    });
-  }, [panel.rows, sortDirection, sortKey]);
-
-  if (panel.rows.length === 0) {
-    return <div className="panel-empty">No table rows yet.</div>;
-  }
-
-  return (
-    <div className="panel-table-wrap">
-      <table className="panel-table">
-        <thead>
-          <tr>
-            {panel.columns.map((column) => (
-              <th key={column.key}>
-                <button
-                  className="panel-table-sort"
-                  onClick={() => {
-                    if (sortKey === column.key) {
-                      setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'));
-                    } else {
-                      setSortKey(column.key);
-                      setSortDirection('asc');
-                    }
-                  }}
-                >
-                  <span>{column.label}</span>
-                  {sortKey === column.key ? (
-                    <span>{sortDirection === 'asc' ? '↑' : '↓'}</span>
-                  ) : null}
-                </button>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {sortedRows.map((row, index) => (
-            <tr key={index}>
-              {panel.columns.map((column) => (
-                <td key={column.key}>
-                  {row[column.key] == null || row[column.key] === ''
-                    ? <span className="panel-muted">—</span>
-                    : String(row[column.key])}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function TextFilePreview({ url, filePath }: { url: string; filePath: string }) {
-  const [textContent, setTextContent] = useState<string | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const extension = filePath.split('.').pop()?.toLowerCase() || '';
-
-  useEffect(() => {
-    let cancelled = false;
-    setTextContent(null);
-    setLoadError(null);
-
-    fetch(url)
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`Failed to load file (${response.status})`);
-        }
-        const text = await response.text();
-        if (!cancelled) {
-          setTextContent(text);
-        }
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : 'Failed to load file');
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
-
-  if (loadError) {
-    return <div className="panel-empty">{loadError}</div>;
-  }
-
-  if (textContent === null) {
-    return <div className="panel-empty">Loading file…</div>;
-  }
-
-  if (extension === 'md') {
-    return (
-      <Suspense fallback={<div className="panel-richtext whitespace-pre-wrap">{textContent}</div>}>
-        <LazyMarkdownRenderer
-          className="panel-richtext"
-          content={textContent}
-        />
-      </Suspense>
-    );
-  }
-
-  if (extension === 'csv') {
-    const preview = parseCsvPreview(textContent);
-    if (preview.headers.length === 0) {
-      return <div className="panel-empty">Empty CSV file.</div>;
-    }
-    return (
-      <div className="panel-table-wrap">
-        <table className="panel-table">
-          <thead>
-            <tr>
-              {preview.headers.map((header, index) => (
-                <th key={`${header}-${index}`}>{header}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {preview.rows.map((row, rowIndex) => (
-              <tr key={rowIndex}>
-                {preview.headers.map((_, cellIndex) => (
-                  <td key={cellIndex}>{row[cellIndex] || <span className="panel-muted">—</span>}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {preview.truncated ? (
-          <div className="panel-footnote">Showing the first 50 rows.</div>
-        ) : null}
-      </div>
-    );
-  }
-
-  if (extension === 'json') {
-    try {
-      return (
-        <pre className="panel-code-block">
-          {JSON.stringify(JSON.parse(textContent), null, 2)}
-        </pre>
-      );
-    } catch {
-      return <pre className="panel-code-block">{textContent}</pre>;
-    }
-  }
-
-  if (extension === 'yml' || extension === 'yaml' || extension === 'xml' || extension === 'txt' || extension === 'js' || extension === 'ts' || extension === 'tsx' || extension === 'jsx' || extension === 'css') {
-    return <pre className="panel-code-block">{textContent}</pre>;
-  }
-
-  return <pre className="panel-code-block">{textContent}</pre>;
-}
-
-function FileTreePanelView({
-  fileSource,
-  files,
-  highlightedPaths,
-  getFileActionLabel,
-  onOpenFile,
-}: {
-  fileSource: FileSource;
-  files?: WorkspaceFileInfo[];
-  highlightedPaths?: Set<string>;
-  getFileActionLabel?: (filePath: string) => string;
-  onOpenFile?: (file: WorkspaceFileInfo) => void;
-}) {
-  const entries = useMemo(
-    () => [...(files || [])].sort((left, right) => left.path.localeCompare(right.path)),
-    [files]
-  );
-
-  if (!files) {
-    return <div className="panel-empty">File tree data is only available inside editable workspaces.</div>;
-  }
-
-  if (entries.length === 0) {
-    return <div className="panel-empty">No workspace files yet.</div>;
-  }
-
-  return (
-    <div className="p-3 space-y-1">
-      {entries.map((file) => {
-        const depth = Math.max(0, file.path.split('/').length - 1);
-        const isHighlighted = highlightedPaths?.has(file.path) ?? false;
-        const timestamp = file.modifiedAt ?? file.uploadedAt;
-        return (
-          <article
-            className={cn(
-              'rounded-lg border px-3 py-2',
-              isHighlighted ? 'border-primary bg-primary/5' : 'border-border/60 bg-background/70'
-            )}
-            key={file.path}
-            style={{ marginLeft: `${depth * 14}px` }}
-          >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground">{file.isDirectory ? 'Folder' : 'File'}</span>
-                  <span className="truncate text-sm font-medium">{file.name}</span>
-                </div>
-                <p className="truncate text-xs text-muted-foreground mt-1">{file.path}</p>
-              </div>
-              {!file.isDirectory ? (
-                <div className="flex items-center gap-2">
-                  {fileSource.kind === 'workspace' && onOpenFile && canOpenFileInPanel(file.path) ? (
-                    <button
-                      onClick={() => onOpenFile(file)}
-                      className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
-                    >
-                      {getFileActionLabel?.(file.path) ?? 'Open'}
-                    </button>
-                  ) : null}
-                  <button
-                    onClick={() => {
-                      const anchor = document.createElement('a');
-                      anchor.href = getFileUrl(fileSource, file.path);
-                      anchor.download = file.name;
-                      document.body.append(anchor);
-                      anchor.click();
-                      anchor.remove();
-                    }}
-                    className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
-                  >
-                    Download File
-                  </button>
-                </div>
-              ) : null}
-            </div>
-            {!file.isDirectory ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                {formatFileSize(file.size)} · {formatRelativeTime(timestamp)}
-              </p>
-            ) : null}
-          </article>
-        );
-      })}
-    </div>
-  );
-}
-
-function PanelBody({
-  fileSource,
-  panel,
-  allPanels,
-  workspaceFiles,
-  highlightedFilePaths,
-  getFileActionLabel,
-  onOpenFile,
-}: {
-  fileSource: FileSource;
-  panel: WorkspacePanel;
-  allPanels: WorkspacePanel[];
-  workspaceFiles?: WorkspaceFileInfo[];
-  highlightedFilePaths?: Set<string>;
-  getFileActionLabel?: (filePath: string) => string;
-  onOpenFile?: (file: WorkspaceFileInfo) => void;
-}) {
-  switch (panel.type) {
-    case 'markdown':
-      return (
-        <Suspense fallback={<div className="panel-richtext whitespace-pre-wrap">{panel.content}</div>}>
-          <LazyMarkdownRenderer
-            className="panel-richtext"
-            content={panel.content}
-          />
-        </Suspense>
-      );
-    case 'table':
-      return <TablePanelView panel={panel} />;
-    case 'chart':
-      return (
-        <Suspense fallback={<div className="panel-empty">Loading chart…</div>}>
-          <LazyChartPanelView panel={panel} />
-        </Suspense>
-      );
-    case 'cards':
-      return (
-        <div className="panel-cards">
-          {panel.items.map((item, index) => (
-            <article className="panel-card" key={item.id || index}>
-              <h4>{item.title}</h4>
-              {item.subtitle ? <p>{item.subtitle}</p> : null}
-              {item.description ? <span>{item.description}</span> : null}
-            </article>
-          ))}
-        </div>
-      );
-    case 'pdf':
-    case 'editor':
-    case 'file':
-      return (
-        <FilePreview
-          fileSource={fileSource}
-          panel={panel}
-          cacheKey={fileSource.kind === 'workspace' ? getWorkspaceFileCacheKey(workspaceFiles, panel.filePath) : null}
-        />
-      );
-    case 'preview':
-      return (
-        <PreviewPanelView
-          fileSource={fileSource}
-          panel={panel}
-          cacheKey={fileSource.kind === 'workspace' && panel.filePath
-            ? getWorkspaceFileCacheKey(workspaceFiles, panel.filePath)
-            : null}
-        />
-      );
-    case 'detail':
-      return <DetailPanelView panel={panel} panels={allPanels} />;
-    case 'fileTree':
-      return (
-        <FileTreePanelView
-          fileSource={fileSource}
-          files={workspaceFiles}
-          highlightedPaths={highlightedFilePaths}
-          getFileActionLabel={getFileActionLabel}
-          onOpenFile={onOpenFile}
-        />
-      );
-    default:
-      return <div className="panel-file">Panel type not rendered yet.</div>;
-  }
-}
-
-function ReadOnlyCanvas({
-  galleryId,
-  title,
-  description,
-  state,
-}: {
-  galleryId: string;
-  title: string;
-  description: string;
-  state: WorkspaceState;
-}) {
-  const visiblePanels = state.panels.filter((panel) => panel.type !== 'chat');
-  const panelLayouts = useMemo(() => buildPanelLayouts(visiblePanels), [visiblePanels]);
-  const visiblePanelIds = useMemo(() => new Set(visiblePanels.map((panel) => panel.id)), [visiblePanels]);
-  const panelTitles = useMemo(
-    () => Object.fromEntries(visiblePanels.map((panel) => [panel.id, getPanelTitle(panel)])),
-    [visiblePanels]
-  );
-
-  return (
-    <section className="flex-1 flex flex-col min-h-0">
-      <header className="canvas-header flex items-center gap-4 px-6 py-3">
-        <div className="flex-1 min-w-0">
-          <h2 className="font-serif text-lg font-medium truncate">{title}</h2>
-          <p className="text-sm text-muted-foreground truncate">{description}</p>
-        </div>
-      </header>
-
-      <div className="canvas-bg flex-1 relative overflow-auto">
-        {state.groups.map((group) => (
-          <LegacyGroupBoundary
-            key={group.id}
-            group={group}
-            panelLayouts={panelLayouts}
-            existingPanelIds={visiblePanelIds}
-            visiblePanelIds={visiblePanelIds}
-            scale={1}
-          />
-        ))}
-        <LegacyConnectionLines
-          panelLayouts={panelLayouts}
-          connections={state.connections.filter((connection) => visiblePanelIds.has(connection.sourceId) && visiblePanelIds.has(connection.targetId))}
-          panelTitles={panelTitles}
-        />
-        {visiblePanels.length === 0 ? (
-          <div className="canvas-empty">
-            <Layout className="canvas-empty-icon" />
-            <h3>No Panels</h3>
-            <p>This gallery item has no visible panels yet.</p>
-          </div>
-        ) : null}
-        {visiblePanels.map((panel, index) => {
-          const layout = panelLayouts[panel.id] ?? inferPanelLayout(panel, index);
-          return (
-            <article
-              key={panel.id}
-              className="artifact-card absolute"
-              style={{
-                left: layout.x,
-                top: layout.y,
-                width: layout.width,
-                height: layout.height,
-              }}
-            >
-              <header className="artifact-header">
-                <h3>{panel.title || panel.id}</h3>
-                <span className="artifact-type">{panel.type}</span>
-              </header>
-              <div className="artifact-content">
-                <PanelBody fileSource={{ kind: 'gallery', id: galleryId }} panel={panel} allPanels={visiblePanels} />
-              </div>
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function CanvasZoomControls({ zoom, viewportX, viewportY }: { zoom: number; viewportX: number; viewportY: number }) {
-  const { instance } = useControls();
-  const showReset = Math.abs(zoom - 1) > 0.01 || Math.abs(viewportX) > 1 || Math.abs(viewportY) > 1;
-
-  const handleZoom = useCallback((direction: 'in' | 'out') => {
-    const { scale, positionX, positionY } = instance.transformState;
-    const factor = direction === 'in' ? 1.2 : 1 / 1.2;
-    const newScale = Math.min(3, Math.max(0.1, scale * factor));
-    // Zoom toward the center of the viewport
-    const wrapper = instance.wrapperComponent;
-    if (wrapper) {
-      const rect = wrapper.getBoundingClientRect();
-      const cx = rect.width / 2;
-      const cy = rect.height / 2;
-      const newX = cx - (cx - positionX) * (newScale / scale);
-      const newY = cy - (cy - positionY) * (newScale / scale);
-      instance.setTransformState(newScale, newX, newY);
-    } else {
-      instance.setTransformState(newScale, positionX, positionY);
-    }
-  }, [instance]);
-
-  return (
-    <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 rounded-lg border border-border bg-card/90 p-1 shadow-lg backdrop-blur">
-      <button
-        onClick={() => handleZoom('out')}
-        className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        title="Zoom out"
-      >
-        <Minus size={14} />
-      </button>
-      <span className="w-12 text-center font-mono text-xs text-muted-foreground">
-        {Math.round(zoom * 100)}%
-      </span>
-      <button
-        onClick={() => handleZoom('in')}
-        className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-        title="Zoom in"
-      >
-        <Plus size={14} />
-      </button>
-      {showReset ? (
-        <button
-          onClick={() => instance.setTransformState(1, 0, 0)}
-          className="rounded px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          title="Reset viewport"
-        >
-          Reset
-        </button>
-      ) : null}
-    </div>
-  );
-}
 
 function WorkspaceShell({
   workspace,
@@ -3287,180 +1957,28 @@ function WorkspaceShell({
   }, [downloadPanelAsPng, workspace.workspace.id]);
 
   const renderPanelMenuContent = useCallback((panel: WorkspacePanel) => (
-    <>
-      <button
-        onClick={() => {
-          openContextualChatForPanel(panel.id);
-          setOpenMenuId(null);
-        }}
-        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-      >
-        Ask About This Tile
-      </button>
-      {'filePath' in panel && panel.filePath ? (
-        (() => {
-          const filePath = panel.filePath;
-          return (
-        <>
-          <button
-            onClick={() => {
-              revealFileInWorkspace(filePath);
-              setOpenMenuId(null);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Show in Workspace Files
-          </button>
-          <button
-            onClick={() => {
-              handlePanelDownload(panel, 'file');
-              setOpenMenuId(null);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Download File
-          </button>
-          <button
-            onClick={() => {
-              window.open(getWorkspaceFileUrl(workspace.workspace.id, filePath), '_blank', 'noopener,noreferrer');
-              setOpenMenuId(null);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Open in New Tab
-          </button>
-        </>
-          );
-        })()
-      ) : null}
-      {panel.type === 'table' ? (
-        <>
-          <button
-            onClick={() => {
-              handlePanelDownload(panel, 'csv');
-              setOpenMenuId(null);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Export Data as CSV
-          </button>
-          <button
-            onClick={() => {
-              handlePanelDownload(panel, 'json');
-              setOpenMenuId(null);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Export Data as JSON
-          </button>
-        </>
-      ) : null}
-      {panel.type === 'chart' ? (
-        <>
-          <button
-            onClick={() => {
-              handlePanelDownload(panel, 'csv');
-              setOpenMenuId(null);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Export Data as CSV
-          </button>
-          <button
-            onClick={() => {
-              handlePanelDownload(panel, 'json');
-              setOpenMenuId(null);
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Export Data as JSON
-          </button>
-        </>
-      ) : null}
-      {panel.type === 'cards' ? (
-        <button
-          onClick={() => {
-            handlePanelDownload(panel, 'json');
-            setOpenMenuId(null);
-          }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-        >
-          Export Data as JSON
-        </button>
-      ) : null}
-      {panel.type === 'markdown' ? (
-        <button
-          onClick={() => {
-            handlePanelDownload(panel, 'txt');
-            setOpenMenuId(null);
-          }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-        >
-          Export Markdown (.md)
-        </button>
-      ) : null}
-      {panel.type === 'preview' && panel.content && !panel.filePath ? (
-        <button
-          onClick={() => {
-            const safeTitle = getPanelTitle(panel).replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'preview';
-            downloadBlob(new Blob([panel.content || ''], { type: 'text/html;charset=utf-8' }), `${safeTitle}.html`);
-            setOpenMenuId(null);
-          }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-        >
-          Download HTML Source
-        </button>
-      ) : null}
-      {canExportPanelSnapshot(panel) ? (
-        <button
-          onClick={() => {
-            handlePanelDownload(panel, 'png');
-            setOpenMenuId(null);
-          }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-        >
-          Save Snapshot as PNG
-        </button>
-      ) : null}
-      <button
-        onClick={() => {
-          setMinimizedPanelIds((current) => new Set(current).add(panel.id));
-          setSelectedPanelIds((current) => new Set(Array.from(current).filter((panelId) => panelId !== panel.id)));
-          setContextualChatTarget((current) => {
-            if (!current) return null;
-            return current.panelIds.includes(panel.id) ? null : current;
-          });
-          clearContextualDraft();
-          if (maximizedPanelId === panel.id) {
-            setMaximizedPanelId(null);
-          }
-          setOpenMenuId(null);
-        }}
-        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-      >
-        Minimize
-      </button>
-      <button
-        onClick={() => {
-          setMaximizedPanelId(panel.id);
-          setOpenMenuId(null);
-        }}
-        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-      >
-        Maximize
-      </button>
-      <div className="border-t border-border my-1" />
-      <button
-        onClick={() => {
-          void removePanel(panel.id);
-          setOpenMenuId(null);
-        }}
-        className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 transition-colors"
-      >
-        Remove
-      </button>
-    </>
+    <PanelMenu
+      panel={panel}
+      workspaceId={workspace.workspace.id}
+      maximizedPanelId={maximizedPanelId}
+      onAskAboutTile={openContextualChatForPanel}
+      onRevealFile={revealFileInWorkspace}
+      onPanelDownload={handlePanelDownload}
+      onCloseMenu={() => setOpenMenuId(null)}
+      onMinimize={(panelId) => {
+        setMinimizedPanelIds((current) => new Set(current).add(panelId));
+        setSelectedPanelIds((current) => new Set(Array.from(current).filter((id) => id !== panelId)));
+      }}
+      onMaximize={setMaximizedPanelId}
+      onSetContextualChatTarget={setContextualChatTarget}
+      onClearContextualDraft={clearContextualDraft}
+      onSetMaximizedPanelId={setMaximizedPanelId}
+      onRemovePanel={(panelId) => {
+        void removePanel(panelId);
+      }}
+    />
   ), [
+    clearContextualDraft,
     handlePanelDownload,
     maximizedPanelId,
     openContextualChatForPanel,
@@ -3959,379 +2477,76 @@ function WorkspaceShell({
     ? artifactPanels.find((panel) => panel.id === maximizedPanelId) || null
     : null;
   const chatPanelContent = (
-    <section className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-        <h3 className="font-serif text-sm font-medium flex items-center gap-2">
-          <MessageSquare size={14} className="text-accent" />Chat
-        </h3>
-        <div className="flex items-center gap-2">
-          <span className={cn(
-            'text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded',
-            chat.status === 'ready'
-              ? 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400'
-              : chat.status === 'error'
-                ? 'text-destructive bg-destructive/10'
-                : 'text-accent bg-accent/10'
-          )}>{chat.status}</span>
-          <button className="text-xs text-muted-foreground hover:text-foreground transition-colors" onClick={handleChatClear}>Clear</button>
-        </div>
-      </div>
-      {selectedScopeLabel ? (
-        <div className="flex items-center justify-between px-4 py-2 bg-accent/5 border-b border-accent/20 text-xs">
-          <span className="text-accent font-medium">{selectedScopeLabel}</span>
-          <button className="text-muted-foreground hover:text-foreground transition-colors" onClick={clearSelection}>Clear Scope</button>
-        </div>
-      ) : null}
-      {chat.status === 'error' ? (
-        <div className="border-b border-destructive/20 bg-destructive/8 px-4 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="space-y-1">
-              <p className="text-sm font-medium text-destructive">The last response failed before it finished.</p>
-              <p className="text-xs text-muted-foreground">
-                Retry the last turn or clear the thread and continue.
-              </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                onClick={() => {
-                  void dumpWorkspaceObservability();
-                }}
-              >
-                Dump Trace
-              </button>
-              <button
-                className="rounded-md border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={handleChatRetry}
-                disabled={!lastUserPrompt}
-              >
-                Retry
-              </button>
-              <button
-                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                onClick={handleChatClear}
-              >
-                Clear
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
-        {chat.messages.map((message) => {
-          if (message.role === 'user') {
-            return (
-              <article key={message.id} className="max-w-[85%] bg-primary text-primary-foreground rounded-2xl rounded-br-sm p-3 self-end">
-                <pre className="whitespace-pre-wrap font-sans text-sm">{extractMessageText(message)}</pre>
-              </article>
-            );
-          }
-          const textParts: string[] = [];
-          const toolParts = Array.isArray(message.parts)
-            ? message.parts
-              .filter(isToolUIPart)
-              .map((part) => ({
-                name: getToolName(part),
-                state: part.state,
-              }))
-            : [];
-          if (Array.isArray(message.parts)) {
-            for (const part of message.parts) {
-              if (isTextUIPart(part) && part.text) {
-                textParts.push(part.text);
-              }
-            }
-          }
-          return (
-            <article key={message.id} className="max-w-[90%] self-start space-y-2">
-              {toolParts.length > 0 && (
-                <div className="rounded-2xl border border-border/60 bg-card/80 px-3 py-2">
-                  <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                    Tool Activity
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                  {toolParts.map((tool, index) => (
-                    <span
-                      key={`${message.id}-${tool.name}-${index}`}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono border',
-                        tool.state === 'output-error' || tool.state === 'output-denied'
-                          ? 'bg-destructive/10 text-destructive border border-destructive/20'
-                          : tool.state === 'output-available'
-                            ? 'bg-accent/10 text-accent border-accent/20'
-                            : 'bg-secondary text-secondary-foreground border-border'
-                      )}
-                    >
-                      {tool.name.replace(/^(ui_|tool_)/, '')}
-                      <span className="opacity-60">{tool.state}</span>
-                    </span>
-                  ))}
-                  </div>
-                </div>
-              )}
-              {textParts.length > 0 && (
-                <div className="bg-secondary text-secondary-foreground rounded-2xl rounded-bl-sm p-3">
-                  <Suspense fallback={<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{textParts.join('\n')}</div>}>
-                    <LazyMarkdownRenderer
-                      className="prose prose-sm dark:prose-invert max-w-none"
-                      content={textParts.join('\n')}
-                    />
-                  </Suspense>
-                </div>
-              )}
-            </article>
-          );
-        })}
-      </div>
-      <form
-        className="flex gap-2 p-3 border-t border-border"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const next = composer.trim();
-          if (!next) return;
-          void sendChatMessage(next);
-          setComposer('');
-        }}
-      >
-        <textarea
-          className="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-sm resize-none focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all placeholder:text-muted-foreground"
-          value={composer}
-          onChange={(event) => setComposer(event.target.value)}
-          placeholder={selectedScopeLabel ? 'Ask about the selected tile scope.' : 'Ask the agent to create files and panels.'}
-          rows={2}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              const next = composer.trim();
-              if (!next) return;
-              void sendChatMessage(next);
-              setComposer('');
-            }
-          }}
-        />
-        <button className="bg-primary text-primary-foreground rounded-xl px-3 py-2 hover:opacity-90 transition-opacity self-end" type="submit">
-          <Send size={16} />
-        </button>
-      </form>
-    </section>
+    <ChatPanel
+      status={chat.status}
+      messages={chat.messages}
+      composer={composer}
+      onComposerChange={setComposer}
+      onSubmit={(text) => void sendChatMessage(text)}
+      onClear={handleChatClear}
+      onRetry={handleChatRetry}
+      onDumpTrace={() => {
+        void dumpWorkspaceObservability();
+      }}
+      canRetry={Boolean(lastUserPrompt)}
+      selectedScopeLabel={selectedScopeLabel}
+      onClearScope={clearSelection}
+    />
   );
 
   const fileShelf = (
-    <section ref={filesSectionRef} className="flex-shrink-0 border-b border-border/50 bg-card/60 backdrop-blur-sm overflow-visible relative z-10">
-      <div className="flex items-center justify-between gap-3 px-4 py-2">
-        <button
-          onClick={() => setFileShelfCollapsed((current) => !current)}
-          className="flex items-center gap-2 text-xs font-medium text-foreground/70 hover:text-foreground transition-colors"
-        >
-          <svg className={`w-3 h-3 transition-transform duration-200 ${fileShelfCollapsed ? '-rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-          </svg>
-          <span>Files</span>
-          {workspaceFileEntries.length > 0 ? (
-            <span className="text-[10px] text-foreground/50 tabular-nums">{workspaceFileEntries.length}</span>
-          ) : null}
-        </button>
-        <div className="flex items-center gap-2">
-          <label className="text-[11px] font-medium text-primary/80 hover:text-primary transition-colors cursor-pointer">
-            {uploading ? 'Uploading…' : 'Upload'}
-            <input
-              className="hidden"
-              type="file"
-              multiple
-              accept=".pdf,.txt,.csv,.md,.json,.xlsx,.xls,.jpg,.jpeg,.png,.gif,.webp,.xml"
-              onChange={(event) => {
-                void handleUpload(event.target.files);
-                event.currentTarget.value = '';
-              }}
-            />
-          </label>
-          <button
-            onClick={() => void openFilesPanel()}
-            className="text-[11px] font-medium text-primary/80 hover:text-primary transition-colors"
-          >
-            {filesTileActionLabel}
-          </button>
-        </div>
-      </div>
-      {!fileShelfCollapsed ? (
-        <div className="px-4 pb-2.5">
-          {workspaceFileEntries.length === 0 ? (
-            <p className="text-[11px] text-foreground/40 italic">No files yet</p>
-          ) : (
-            <div className="flex gap-1.5 flex-wrap">
-              {workspaceFileEntries.map((file) => (
-                <div
-                  key={file.path}
-                  ref={(node) => {
-                    fileCardRefs.current[file.path] = node;
-                  }}
-                  className="relative"
-                >
-                  <button
-                    type="button"
-                    data-file-pill-trigger
-                    onClick={() => setActiveFilePillPopover((current) => current === file.path ? null : file.path)}
-                    className={cn(
-                      'flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] transition-all hover:bg-muted/80',
-                      highlightedFilePaths.has(file.path)
-                        ? 'border-primary/40 bg-primary/5 text-foreground shadow-sm shadow-primary/10'
-                        : 'border-border/50 bg-background/80 text-foreground/80',
-                      activeFilePillPopover === file.path && 'ring-1 ring-primary/30'
-                    )}
-                    title={`${file.name} (${formatFileSize(file.size)})`}
-                  >
-                    <span className="text-[10px] leading-none opacity-60">{getFileTypeBadge(file.path)}</span>
-                    <span className="font-medium truncate max-w-[160px]" style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '10.5px' }}>
-                      {getFileName(file.path)}
-                    </span>
-                    <span className="text-foreground/35 tabular-nums" style={{ fontSize: '10px' }}>
-                      {formatFileSize(file.size)}
-                    </span>
-                    {highlightedFilePaths.has(file.path) ? (
-                      <span className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
-                    ) : null}
-                  </button>
-                  {activeFilePillPopover === file.path ? (
-                    <div
-                      data-file-pill-popover
-                      className="absolute top-full left-0 z-50 mt-1 flex gap-1 rounded-lg border border-border/70 bg-card p-1 shadow-lg"
-                    >
-                      {canOpenFileInPanel(file.path) ? (
-                        <button
-                          onClick={() => {
-                            void openFileOnCanvas(file);
-                            setActiveFilePillPopover(null);
-                          }}
-                          className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors"
-                        >
-                          {getFileCanvasActionLabel(file.path)}
-                        </button>
-                      ) : null}
-                      <button
-                        onClick={() => {
-                          const anchor = document.createElement('a');
-                          anchor.href = getWorkspaceFileUrl(workspace.workspace.id, file.path);
-                          anchor.download = file.name;
-                          document.body.append(anchor);
-                          anchor.click();
-                          anchor.remove();
-                          setActiveFilePillPopover(null);
-                        }}
-                        className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors"
-                      >
-                        Download
-                      </button>
-                    </div>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : null}
-    </section>
+    <FilesShelf
+      sectionRef={filesSectionRef}
+      fileCardRefs={fileCardRefs}
+      workspaceId={workspace.workspace.id}
+      workspaceFileEntries={workspaceFileEntries}
+      uploading={uploading}
+      fileShelfCollapsed={fileShelfCollapsed}
+      onToggleCollapsed={() => setFileShelfCollapsed((current) => !current)}
+      onUpload={(files) => {
+        void handleUpload(files);
+      }}
+      onOpenFilesPanel={() => void openFilesPanel()}
+      filesTileActionLabel={filesTileActionLabel}
+      activeFilePillPopover={activeFilePillPopover}
+      onSetActiveFilePillPopover={setActiveFilePillPopover}
+      highlightedFilePaths={highlightedFilePaths}
+      onOpenFileOnCanvas={(file) => {
+        void openFileOnCanvas(file);
+      }}
+      getFileCanvasActionLabel={getFileCanvasActionLabel}
+    />
   );
 
   return (
     <div className="flex-1 flex min-h-0">
       <div className={`flex-1 min-w-0 flex flex-col transition-[margin] duration-300 ${chatOpen && isDockedChatLayout ? 'mr-[400px]' : ''} ${isDrawerChatLayout && narrowActiveTab !== 'canvas' ? 'hidden' : ''}`}>
-        <header className="canvas-header flex items-center gap-4 px-6 py-3">
-          <button
-            onClick={onGoHome}
-            className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-            title="Back to home"
-          >
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-            </svg>
-          </button>
-          <div className="flex-1 min-w-0">
-            <input
-              className="font-serif text-lg font-medium bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground"
-              value={workspaceName}
-              onChange={(event) => setWorkspaceName(event.target.value)}
-            />
-            <textarea
-              className="text-sm text-muted-foreground bg-transparent border-none outline-none w-full resize-none placeholder:text-muted-foreground"
-              value={workspaceDescription}
-              onChange={(event) => setWorkspaceDescription(event.target.value)}
-              placeholder="Describe this workspace."
-              rows={1}
-            />
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-xs text-muted-foreground font-mono mr-2">
-              {workspaceState.panels.filter((p) => p.type !== 'chat').length}T · {workspaceFileEntries.length}F
-            </span>
-            {modelCatalog ? (() => {
-              const view = buildModelPickerView(modelCatalog, workspaceModel);
-              return (
-                <select
-                  className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 hover:text-foreground transition-colors cursor-pointer outline-none"
-                  value={view.effectiveModel}
-                  onChange={(event) => void handleModelChange(event.target.value)}
-                  title={view.effectiveRetiringNote ?? `Model: ${view.effectiveModel}`}
-                >
-                  {view.recommended.map((option) => (
-                    <option key={option.id} value={option.id} title={option.title}>
-                      {option.label}
-                    </option>
-                  ))}
-                  {view.advanced.length > 0 ? (
-                    <optgroup label="Other models">
-                      {view.advanced.map((option) => (
-                        <option key={option.id} value={option.id} title={option.title}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ) : null}
-                </select>
-              );
-            })() : null}
-            <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={refreshWorkspace} title="Refresh">
-              <RotateCcw size={16} />
-            </button>
-            {!isCompactHeaderLayout ? (
-              workspace.workspace.galleryId ? (
-                <button
-                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                  onClick={() => void handleUnpublish()}
-                  disabled={publishing}
-                >
-                  {publishing ? 'Updating…' : 'Unpublish'}
-                </button>
-              ) : publishableArtifactCount > 0 ? (
-                <button
-                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-                  onClick={() => setPublishModalOpen(true)}
-                  disabled={publishing}
-                >
-                  Publish
-                </button>
-              ) : null
-            ) : null}
-            <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={() => void handleExportDownload()} title="Export">
-              <Download size={16} />
-            </button>
-            <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={() => void onDelete()} title="Delete workspace">
-              <Trash2 size={16} />
-            </button>
-            <button className="px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity" onClick={() => void handleWorkspaceSave()}>
-              {savingWorkspace ? 'Saving…' : 'Save'}
-            </button>
-            <ThemeToggle />
-            {isDockedChatLayout ? (
-              <button
-                onClick={() => setChatOpen((current) => !current)}
-                className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                title={chatOpen ? 'Hide chat' : 'Show chat'}
-              >
-                <MessageSquare size={16} />
-              </button>
-            ) : null}
-          </div>
-        </header>
+        <WorkspaceHeader
+          workspaceName={workspaceName}
+          workspaceDescription={workspaceDescription}
+          onNameChange={setWorkspaceName}
+          onDescriptionChange={setWorkspaceDescription}
+          tileCount={workspaceState.panels.filter((p) => p.type !== 'chat').length}
+          fileCount={workspaceFileEntries.length}
+          modelCatalog={modelCatalog}
+          workspaceModel={workspaceModel}
+          onModelChange={(modelId) => void handleModelChange(modelId)}
+          onGoHome={onGoHome}
+          onRefresh={refreshWorkspace}
+          onExport={() => void handleExportDownload()}
+          onDelete={() => void onDelete()}
+          onSave={() => void handleWorkspaceSave()}
+          savingWorkspace={savingWorkspace}
+          isCompactHeaderLayout={isCompactHeaderLayout}
+          galleryId={workspace.workspace.galleryId}
+          publishing={publishing}
+          publishableArtifactCount={publishableArtifactCount}
+          onUnpublish={() => void handleUnpublish()}
+          onOpenPublishModal={() => setPublishModalOpen(true)}
+          isDockedChatLayout={isDockedChatLayout}
+          chatOpen={chatOpen}
+          onToggleChat={() => setChatOpen((current) => !current)}
+        />
 
         {error ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
@@ -4675,115 +2890,31 @@ function WorkspaceShell({
           <MessageSquare size={18} />
         </button>
       ) : null}
-      {toast ? (
-        <div className="toast-notification fixed top-20 right-4 z-50">
-          <div
-            className={cn(
-              'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm shadow-lg',
-              toast.type === 'success'
-                ? 'border border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400'
-                : 'border border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-400'
-            )}
-          >
-            {toast.type === 'success' ? (
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            ) : (
-              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-            )}
-            <span>{toast.message}</span>
-          </div>
-        </div>
-      ) : null}
-      {publishModalOpen ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
-          onClick={() => {
-            if (!publishing) {
-              setPublishModalOpen(false);
-            }
-          }}
-        >
-          <div
-            className="mx-4 w-full max-w-md rounded-2xl bg-card p-6 shadow-xl"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h2 className="mb-4 text-lg font-semibold">Publish to Gallery</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Title</label>
-                <input
-                  type="text"
-                  value={publishTitle}
-                  onChange={(event) => setPublishTitle(event.target.value)}
-                  placeholder="Give your workspace a name..."
-                  className="w-full rounded-lg border border-border bg-background px-3 py-2 focus:border-primary/50 focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="mb-1.5 block text-sm font-medium">Description</label>
-                <textarea
-                  value={publishDescription}
-                  onChange={(event) => setPublishDescription(event.target.value)}
-                  placeholder="Describe what this workspace does..."
-                  rows={3}
-                  className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 focus:border-primary/50 focus:outline-none"
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                This will share {publishablePanelCount} tile view{publishablePanelCount !== 1 ? 's' : ''} and {workspaceFileEntries.length} file{workspaceFileEntries.length !== 1 ? 's' : ''} to the public gallery.
-              </p>
-            </div>
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                onClick={() => setPublishModalOpen(false)}
-                className="rounded-lg px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
-                disabled={publishing}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => void handlePublish()}
-                disabled={publishing || !publishTitle.trim() || !publishDescription.trim()}
-                className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {publishing ? 'Publishing...' : 'Publish'}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {maximizedPanel ? (
-        <div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex flex-col">
-          <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-card">
-            <div className="flex items-center gap-3">
-              <strong className="font-serif text-lg font-medium">{getPanelTitle(maximizedPanel)}</strong>
-              <span className="artifact-type">{getPanelTypeLabel(maximizedPanel)}</span>
-            </div>
-            <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={() => setMaximizedPanelId(null)}>
-              <X size={18} />
-            </button>
-          </div>
-          <div className="flex-1 overflow-auto p-6">
-            <div className="max-w-4xl mx-auto">
-              <PanelBody
-                fileSource={{ kind: 'workspace', id: workspace.workspace.id }}
-                panel={maximizedPanel}
-                allPanels={workspaceState.panels}
-                workspaceFiles={workspaceFiles}
-                highlightedFilePaths={highlightedFilePaths}
-                getFileActionLabel={getFileCanvasActionLabel}
-                onOpenFile={(file) => {
-                  void openFileOnCanvas(file);
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <WorkspaceToast toast={toast} />
+      <PublishDialog
+        open={publishModalOpen}
+        publishing={publishing}
+        title={publishTitle}
+        description={publishDescription}
+        publishablePanelCount={publishablePanelCount}
+        fileCount={workspaceFileEntries.length}
+        onTitleChange={setPublishTitle}
+        onDescriptionChange={setPublishDescription}
+        onClose={() => setPublishModalOpen(false)}
+        onPublish={() => void handlePublish()}
+      />
+      <MaximizedPanelOverlay
+        panel={maximizedPanel}
+        fileSource={{ kind: 'workspace', id: workspace.workspace.id }}
+        allPanels={workspaceState.panels}
+        workspaceFiles={workspaceFiles}
+        highlightedFilePaths={highlightedFilePaths}
+        getFileActionLabel={getFileCanvasActionLabel}
+        onOpenFile={(file) => {
+          void openFileOnCanvas(file);
+        }}
+        onClose={() => setMaximizedPanelId(null)}
+      />
     </div>
   );
 }
