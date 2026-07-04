@@ -68,11 +68,9 @@ jobs:
           cat > cloudflare/.dev.vars <<'EOF'
           SESSION_SECRET=ci-session-secret
           CAIL_API_BASE=https://cail-model-proxy.invalid
-          CAIL_MODEL=anthropic/claude-sonnet-4
+          CAIL_MODEL=@cf/zai-org/glm-5.2
           CAIL_IDENTITY_JWT_SECRET=
           CAIL_REQUIRE_IDENTITY=false
-          R2_PUBLIC_DOMAIN=https://example.invalid
-          WORKER_SUBDOMAIN=agent-studio-ci
           EOF
 
       - name: Start worker and run smoke test

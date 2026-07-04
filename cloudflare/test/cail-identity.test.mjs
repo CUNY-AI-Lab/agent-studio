@@ -151,7 +151,10 @@ test('cailCompatBaseUrl targets the AI Gateway OpenAI-compatible path', () => {
 });
 
 test('resolveCailModelName honors the override and default', () => {
-  assert.equal(resolveCailModelName({ CAIL_MODEL: 'openai/gpt-4o' }), 'openai/gpt-4o');
+  assert.equal(
+    resolveCailModelName({ CAIL_MODEL: '@cf/openai/gpt-oss-120b' }),
+    '@cf/openai/gpt-oss-120b'
+  );
   assert.equal(resolveCailModelName({}), DEFAULT_CAIL_MODEL);
 });
 
@@ -171,7 +174,7 @@ test('createCailModel forwards the JWT + app header and sets NO provider key', a
 
   try {
     const model = createCailModel({
-      env: { CAIL_API_BASE: 'https://proxy.example', CAIL_MODEL: 'anthropic/claude-sonnet-4' },
+      env: { CAIL_API_BASE: 'https://proxy.example', CAIL_MODEL: '@cf/zai-org/glm-5.2' },
       identityJwt: 'jwt-token-value',
     });
     // Drive a generate so the provider issues an HTTP request.

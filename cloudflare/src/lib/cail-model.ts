@@ -19,11 +19,13 @@ import type { LanguageModel } from 'ai';
 import { CAIL_APP_SLUG, CAIL_IDENTITY_HEADER } from './cail-identity';
 
 /**
- * Default model slug. Kept configurable via CAIL_MODEL so ops can point it at
- * whatever the AI Gateway is routing (OpenAI/Anthropic/Google/Workers AI). The
- * value is a plain OpenAI-compatible model id; the proxy/gateway resolves it.
+ * Default model slug. CAIL policy (2026-07-04) is Workers AI catalog only —
+ * `@cf/...` ids resolved by the AI Gateway. GLM-5.2 is the catalog's flagship
+ * agentic model (262k context, function calling, parallel tool calls), which
+ * fits this tool's multi-step tool-loop + codemode workload. Ops can override
+ * via CAIL_MODEL — e.g. `@cf/openai/gpt-oss-120b` as a cheaper general model.
  */
-export const DEFAULT_CAIL_MODEL = 'anthropic/claude-sonnet-4';
+export const DEFAULT_CAIL_MODEL = '@cf/zai-org/glm-5.2';
 
 export interface CailModelEnv {
   /**

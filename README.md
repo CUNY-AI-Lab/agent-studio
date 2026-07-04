@@ -32,7 +32,7 @@ Set at least:
 ```bash
 SESSION_SECRET=<random-32-byte-hex>
 CAIL_API_BASE=<cail-model-proxy-base-url>   # placeholder until launch
-CAIL_MODEL=anthropic/claude-sonnet-4        # optional model override
+CAIL_MODEL=@cf/zai-org/glm-5.2              # optional; Workers AI (@cf/...) ids only
 CAIL_IDENTITY_JWT_SECRET=                    # blank locally = anonymous
 ```
 
@@ -54,6 +54,11 @@ the client unmodified; browser 401s follow the `/login?rt=` redirect pattern.
 See `cail-gateway/docs/INTEGRATION.md` for the full contract. `CAIL_API_BASE` is
 a placeholder until the institutional Cloudflare contract signs
 (`cail-gateway/docs/LAUNCH_CHECKLIST.md`).
+
+Model policy (CAIL, 2026-07-04): **Workers AI catalog models only** — `@cf/...`
+ids. The default is `@cf/zai-org/glm-5.2` (agentic, 262k context, function
+calling); `@cf/openai/gpt-oss-120b` is a cheaper general-purpose override via
+`CAIL_MODEL`.
 
 Anything created anonymously before SSO enforcement follows the user on first
 login: when an authenticated request still carries the legacy anonymous session

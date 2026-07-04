@@ -15,6 +15,4 @@ export interface Env {
   CAIL_IDENTITY_JWT_SECRET?: string;
   CAIL_REQUIRE_IDENTITY?: string;
   GIT_AUTH_TOKEN?: string;
-  R2_PUBLIC_DOMAIN?: string;
-  WORKER_SUBDOMAIN?: string;
 }
