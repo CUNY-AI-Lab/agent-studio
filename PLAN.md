@@ -35,9 +35,18 @@ Next.js + runner plan lives on `main`.
    (pdf.js/SheetJS-class libraries). Larger option: Cloudflare Sandbox SDK
    (containers) for real Bash/Python — cost and complexity to evaluate after
    launch usage data.
-2. **WorldCat and LibGuides skills.** Dropped in the port — both need OAuth
-   client-credential token exchanges, which belong server-side (same pattern
-   as Primo injection but with a token cache). Wire when keys are available.
+2. **WorldCat and LibGuides skills.** ~~Dropped in the port — both need OAuth
+   client-credential token exchanges, which belong server-side.~~ **Resolved.**
+   Server-side OAuth client-credentials implemented in
+   `cloudflare/src/lib/api-token-broker.ts` (per-provider in-memory token cache,
+   expiry with a 60s safety margin, single 401-retry). web-fetch-guard attaches
+   the bearer token per-hop only on the allowlisted API host (WorldCat
+   `metadata.api.oclc.org`; LibGuides host derived from `LIBGUIDES_BASE_URL`),
+   dropping it across any off-host redirect — same no-credentials-in-model-
+   context posture as Primo. Skill docs restored under `cloudflare/src/skills/
+   docs/`. Secrets arrive at deploy per the cail-gateway `LAUNCH_CHECKLIST`
+   (commit b449c84 there); canonical local source `~/Apps/library-tools/.env`
+   (values never in this repo).
 3. **CSRF and rate limiting.** The legacy middleware had both; the Worker has
    neither. Rate limiting should use a Workers-native mechanism (rate-limit
    binding or DO counter) rather than in-memory maps. CSRF needs a decision

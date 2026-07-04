@@ -9,8 +9,18 @@
  *
  * This module also attaches institutional API credentials server-side for
  * allowlisted hosts (currently Ex Libris Primo), so keys never enter model
- * context or sandbox code.
+ * context or sandbox code. Bearer tokens (WorldCat, LibGuides) are attached
+ * per-hop only when the hop's host is the allowlisted API host — a redirect off
+ * that host must not carry them.
  */
+
+import {
+  getAccessToken,
+  invalidateToken,
+  isProviderConfigured,
+  type TokenBrokerEnv,
+  type TokenProvider,
+} from './api-token-broker';
 
 const BLOCKED_HOSTNAMES = new Set([
   'localhost',
@@ -77,12 +87,40 @@ export function assertPublicHttpUrl(rawUrl: string): URL {
   return url;
 }
 
-export interface WebFetchCredentialEnv {
+export interface WebFetchCredentialEnv extends TokenBrokerEnv {
   /** Primo search API base, e.g. https://api-na.hosted.exlibrisgroup.com/primo/v1/search */
   PRIMO_API_BASE?: string;
   PRIMO_API_KEY?: string;
   PRIMO_VID?: string;
   PRIMO_SCOPE?: string;
+}
+
+/** OCLC WorldCat Metadata/Search API host (bearer-auth). */
+const WORLDCAT_API_HOST = 'metadata.api.oclc.org';
+
+/**
+ * Resolve which bearer-token provider (if any) owns a given hop host. Only the
+ * exact allowlisted host qualifies, and only when its credentials are
+ * configured — so a redirect to any other host attaches no Authorization.
+ */
+export function bearerProviderForHost(
+  hostname: string,
+  env: WebFetchCredentialEnv
+): TokenProvider | null {
+  const host = hostname.toLowerCase();
+  if (host === WORLDCAT_API_HOST && isProviderConfigured('worldcat', env)) {
+    return 'worldcat';
+  }
+  if (isProviderConfigured('libguides', env) && env.LIBGUIDES_BASE_URL) {
+    let libguidesHost: string | null = null;
+    try {
+      libguidesHost = new URL(env.LIBGUIDES_BASE_URL).hostname.toLowerCase();
+    } catch {
+      libguidesHost = null;
+    }
+    if (libguidesHost && host === libguidesHost) return 'libguides';
+  }
+  return null;
 }
 
 /**
@@ -109,6 +147,15 @@ export function applyConfiguredApiParams(url: URL, env: WebFetchCredentialEnv): 
       }
     }
   }
+
+  // LibGuides requests require the site_id query param; inject it server-side
+  // for the LibGuides API host so the agent never needs to carry it. The bearer
+  // token itself is attached per-hop in fetchFollowingRedirects.
+  if (env.LIBGUIDES_SITE_ID && bearerProviderForHost(url.hostname, env) === 'libguides') {
+    if (!url.searchParams.has('site_id')) {
+      url.searchParams.set('site_id', env.LIBGUIDES_SITE_ID);
+    }
+  }
   return url;
 }
 
@@ -122,26 +169,41 @@ export interface GuardedFetchResult {
 }
 
 /**
- * Fetch with the destination policy enforced on the initial URL and every
- * redirect hop. Credentials are only injected for the initial URL — a
- * redirect off the allowlisted host must not carry institutional params.
+ * Follow redirects with the destination policy enforced on the initial URL and
+ * every hop. Institutional query params (Primo) are injected only on the
+ * initial URL; bearer tokens (WorldCat/LibGuides) are attached per-hop and only
+ * when the hop's host is the allowlisted API host, so a redirect off that host
+ * carries neither the params nor the Authorization header.
+ *
+ * The bearer cache is consulted per call; the caller invalidates it before a
+ * 401 retry so the next call re-acquires a fresh token.
  */
-export async function guardedWebFetch(
-  rawUrl: string,
-  format: 'text' | 'json',
+async function fetchFollowingRedirects(
+  startUrl: URL,
   env: WebFetchCredentialEnv,
-  fetchImpl: typeof fetch = fetch
-): Promise<GuardedFetchResult> {
-  let url = applyConfiguredApiParams(assertPublicHttpUrl(rawUrl), env);
-
+  fetchImpl: typeof fetch
+): Promise<{ response: Response; provider: TokenProvider | null }> {
+  let url = startUrl;
   let response: Response | null = null;
+  // The provider whose bearer token the FINAL response carried, so the caller
+  // knows which cache to invalidate on a 401.
+  let finalProvider: TokenProvider | null = null;
+
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    response = await fetchImpl(url.toString(), {
-      redirect: 'manual',
-      headers: {
-        'User-Agent': 'agent-studio/0.1 (CUNY AI Lab research assistant)',
-      },
-    });
+    const headers: Record<string, string> = {
+      'User-Agent': 'agent-studio/0.1 (CUNY AI Lab research assistant)',
+    };
+    const provider = bearerProviderForHost(url.hostname, env);
+    if (provider) {
+      const token = await getAccessToken(provider, env, fetchImpl);
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+        headers.Accept = 'application/json';
+      }
+    }
+    finalProvider = provider;
+
+    response = await fetchImpl(url.toString(), { redirect: 'manual', headers });
     const location = response.headers.get('location');
     if (response.status >= 300 && response.status < 400 && location) {
       if (hop === MAX_REDIRECTS) {
@@ -154,6 +216,27 @@ export async function guardedWebFetch(
   }
   if (!response) {
     throw new Error('web_fetch: no response');
+  }
+  return { response, provider: finalProvider };
+}
+
+/**
+ * Fetch with the destination policy enforced on every hop and institutional
+ * credentials attached server-side. On a 401 from a bearer-authed API host the
+ * cached token is invalidated and the whole fetch is retried once.
+ */
+export async function guardedWebFetch(
+  rawUrl: string,
+  format: 'text' | 'json',
+  env: WebFetchCredentialEnv,
+  fetchImpl: typeof fetch = fetch
+): Promise<GuardedFetchResult> {
+  const startUrl = applyConfiguredApiParams(assertPublicHttpUrl(rawUrl), env);
+
+  let { response, provider } = await fetchFollowingRedirects(startUrl, env, fetchImpl);
+  if (response.status === 401 && provider) {
+    invalidateToken(provider);
+    ({ response } = await fetchFollowingRedirects(startUrl, env, fetchImpl));
   }
 
   const contentType = response.headers.get('content-type') || '';

@@ -15,7 +15,17 @@ test('every bundled doc corresponds to a listed skill', () => {
 });
 
 test('core research sources ship full reference docs', () => {
-  for (const name of ['openalex', 'crossref', 'semantic-scholar', 'arxiv', 'pubmed', 'primo', 'citation']) {
+  for (const name of [
+    'openalex',
+    'crossref',
+    'semantic-scholar',
+    'arxiv',
+    'pubmed',
+    'primo',
+    'worldcat',
+    'libguides',
+    'citation',
+  ]) {
     const content = getSkillContent(name);
     assert.ok(content && content.length > 500, `${name} should have a substantial doc`);
   }
@@ -33,6 +43,16 @@ test('primo doc defers credentials to the host', () => {
   const doc = SKILL_DOCS.primo;
   assert.match(doc, /automatically attaches/i);
   assert.doesNotMatch(doc, /env\(/);
+});
+
+test('OAuth docs defer credentials to the host and never mention env()', () => {
+  for (const name of ['worldcat', 'libguides']) {
+    const doc = SKILL_DOCS[name];
+    assert.match(doc, /handled by the host/i, `${name} should defer auth to the host`);
+    assert.doesNotMatch(doc, /env\(/, `${name} should not reference env()`);
+    // Not-configured fallback instruction must be present.
+    assert.match(doc, /(not|isn't)\s+available\s+on\s+this\s+deployment/i, name);
+  }
 });
 
 test('description-only skills fall back to their description', () => {

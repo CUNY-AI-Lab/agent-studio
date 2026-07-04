@@ -26,3 +26,19 @@ PRIMO_API_BASE=
 PRIMO_API_KEY=
 PRIMO_VID=
 PRIMO_SCOPE=
+
+# OCLC WorldCat Search/Metadata API — optional. When set, web_fetch exchanges
+# the client id/secret for a bearer token server-side and attaches it to the
+# WorldCat API host; the agent never sees the credentials. Values come from the
+# ops LAUNCH_CHECKLIST at deploy (canonical source ~/Apps/library-tools/.env).
+OCLC_CLIENT_ID=
+OCLC_CLIENT_SECRET=
+OCLC_INSTITUTION_ID=
+
+# Springshare LibGuides API — optional. Same server-side bearer pattern; the API
+# host is derived from LIBGUIDES_BASE_URL. Values come from the ops checklist at
+# deploy. LIBGUIDES_BASE_URL example: https://lgapi-us.libapps.com/1.2
+LIBGUIDES_BASE_URL=
+LIBGUIDES_CLIENT_ID=
+LIBGUIDES_CLIENT_SECRET=
+LIBGUIDES_SITE_ID=

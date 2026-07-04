@@ -11,9 +11,7 @@
  * description and the model works from general knowledge of the API.
  *
  * Ported from the legacy Next.js app's src/lib/skills. Not carried over:
- * pdf/xlsx/docx/pptx (Python-dependent; no Python on Workers) and
- * worldcat/libguides (OAuth client-credential flows not yet wired) — see
- * PLAN.md.
+ * pdf/xlsx/docx/pptx (Python-dependent; no Python on Workers) — see PLAN.md.
  */
 
 import { SKILL_DOCS } from './docs.generated';
@@ -50,9 +48,19 @@ export const SKILLS: Skill[] = [
       "NCBI's biomedical literature database with 35M+ citations. Search medical/clinical research, biology, health sciences. Filter by MeSH terms, publication type, date. Example queries: 'clinical trials for diabetes', 'AI in radiology studies', 'COVID vaccine research'. No auth required.",
   },
   {
+    name: 'worldcat',
+    description:
+      "Search physical books across 10,000+ libraries worldwide. Returns: title, author, publisher, publication date, ISBN, which libraries hold copies. Example queries: 'find books about jazz history', 'novels by Toni Morrison', 'where can I borrow a copy of 1984'. Requires OAuth.",
+  },
+  {
     name: 'primo',
     description:
       "Search CUNY OneSearch / library catalog via Ex Libris Primo API. Find books, e-books, journals, articles available at CUNY libraries. Check availability, get call numbers, find items at specific campuses. Example queries: 'search CUNY library for machine learning books', 'does CUNY have this ISBN', 'find books at Graduate Center library'.",
+  },
+  {
+    name: 'libguides',
+    description:
+      "Find library research guides and subject tutorials. Returns: guide titles, subjects, librarian contacts. Example queries: 'how to research sociology', 'library guide for nursing students'.",
   },
   {
     name: 'unpaywall',
