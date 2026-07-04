@@ -44,8 +44,29 @@
   ],
   "vars": {
     "R2_PUBLIC_DOMAIN": "https://tools.cuny.qzz.io",
-    "WORKER_SUBDOMAIN": "site-studio"
+    "WORKER_SUBDOMAIN": "site-studio",
+    // CAIL model proxy base URL (serves /v1/... and /keys). Placeholder until
+    // launch — set to the institutional model-proxy URL per
+    // cail-gateway docs/LAUNCH_CHECKLIST.md. No trailing slash.
+    "CAIL_API_BASE": "https://REPLACE-WITH-CAIL-MODEL-PROXY.invalid",
+    // Optional model override; the proxy/AI Gateway resolves this slug.
+    // Defaults to anthropic/claude-sonnet-4 when unset (see src/lib/cail-model.ts).
+    "CAIL_MODEL": "anthropic/claude-sonnet-4",
+    // Fail closed: reject anonymous model calls with 401. Turn on ("true") at
+    // the same time CAIL_SSO_MODE=enforce lands on the gateway. Left "false"
+    // pre-rollout so local/dev without the gate stays usable.
+    "CAIL_REQUIRE_IDENTITY": "false"
   },
+  // Secrets (never in this file; set via `wrangler secret put`):
+  //   SESSION_SECRET             - random 32-byte hex for the signed session cookie.
+  //   CAIL_IDENTITY_JWT_SECRET   - shared HS256 secret used to VERIFY the
+  //                                X-CAIL-Identity-JWT the SSO gate injects.
+  //                                Ops-managed (cail-gateway push-secrets.sh);
+  //                                identical to the value the model proxy and
+  //                                key service use. Never in code.
+  //   GIT_AUTH_TOKEN (optional)  - token for git tools inside the runtime.
+  // Agent Studio holds NO provider API key: all model calls go through the CAIL
+  // model proxy with the caller's identity JWT (see src/lib/cail-model.ts).
   "observability": {
     "enabled": true
   }

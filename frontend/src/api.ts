@@ -9,10 +9,40 @@ import type {
   WorkspaceRuntimeExecution,
 } from './types';
 
+/**
+ * CAIL 401 handling (see cail-gateway docs/INTEGRATION.md §2). When the SSO
+ * gate / model proxy returns `authentication_required`, redirect the browser
+ * to /login?rt=<current-path> so the user re-authenticates and returns here.
+ * Same-origin paths only. Returns true when it handled (and is redirecting).
+ */
+export function handleAuthRequired(status: number, payload: unknown): boolean {
+  if (status !== 401) return false;
+  const error = typeof payload === 'object' && payload !== null
+    ? (payload as { error?: unknown }).error
+    : undefined;
+  if (error !== 'authentication_required') return false;
+
+  const loginUrl = typeof payload === 'object' && payload !== null
+    ? (payload as { login_url?: unknown }).login_url
+    : undefined;
+  const base = typeof loginUrl === 'string' && loginUrl.startsWith('/') ? loginUrl : '/login';
+  const rt = `${window.location.pathname}${window.location.search}`;
+  window.location.assign(`${base}?rt=${encodeURIComponent(rt)}`);
+  return true;
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ error: `Request failed with ${response.status}` }));
-    throw new Error(payload.error || `Request failed with ${response.status}`);
+    if (handleAuthRequired(response.status, payload)) {
+      // Redirecting to /login; reject with a benign message so callers stop.
+      throw new Error('Authentication required');
+    }
+    const message = typeof payload === 'object' && payload !== null
+      ? ((payload as { message?: string; error?: string }).message
+        ?? (payload as { error?: string }).error)
+      : undefined;
+    throw new Error(message || `Request failed with ${response.status}`);
   }
   return response.json() as Promise<T>;
 }

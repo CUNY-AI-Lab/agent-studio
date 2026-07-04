@@ -1,6 +1,18 @@
 SESSION_SECRET=replace-with-random-32-byte-hex
-OPENROUTER_API_KEY=replace-with-openrouter-api-key
-OPENROUTER_MODEL=anthropic/claude-sonnet-4
+
+# CAIL model proxy base URL (serves /v1/... and /keys). Placeholder until
+# launch — see cail-gateway docs/LAUNCH_CHECKLIST.md. No trailing slash.
+CAIL_API_BASE=https://REPLACE-WITH-CAIL-MODEL-PROXY.invalid
+# Optional model override; the proxy/AI Gateway resolves this slug.
+CAIL_MODEL=anthropic/claude-sonnet-4
+# Shared HS256 secret used to VERIFY the X-CAIL-Identity-JWT the SSO gate
+# injects. Same value the model proxy and key service use (ops-managed).
+# Leave blank locally to run anonymous (identity disabled).
+CAIL_IDENTITY_JWT_SECRET=
+# Fail closed: reject anonymous model calls with 401. Set "true" when
+# CAIL_SSO_MODE=enforce lands on the gateway.
+CAIL_REQUIRE_IDENTITY=false
+
 GIT_AUTH_TOKEN=
 R2_PUBLIC_DOMAIN=https://tools.cuny.qzz.io
 WORKER_SUBDOMAIN=site-studio

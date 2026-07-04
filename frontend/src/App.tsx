@@ -58,6 +58,7 @@ import {
   unpublishGalleryItem,
   updateWorkspace,
   uploadWorkspaceFiles,
+  handleAuthRequired,
 } from './api';
 import type {
   DownloadRequest,
@@ -1558,6 +1559,18 @@ function WorkspaceShell({
       ? { scopePanelIds: Array.from(selectedPanelIds) }
       : {},
     onError: (chatError) => {
+      // A model-proxy authentication_required envelope can surface here as a
+      // stringified error body. Follow the /login?rt= redirect if so.
+      const message = chatError instanceof Error ? chatError.message : String(chatError ?? '');
+      if (message.includes('authentication_required')) {
+        try {
+          const parsed = JSON.parse(message.slice(message.indexOf('{')));
+          if (handleAuthRequired(401, parsed)) return;
+        } catch {
+          handleAuthRequired(401, { error: 'authentication_required' });
+          return;
+        }
+      }
       console.error('Workspace chat error', chatError);
       void dumpWorkspaceObservability();
     },

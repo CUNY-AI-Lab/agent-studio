@@ -31,13 +31,29 @@ Set at least:
 
 ```bash
 SESSION_SECRET=<random-32-byte-hex>
-OPENROUTER_API_KEY=<your-openrouter-api-key>
-OPENROUTER_MODEL=anthropic/claude-sonnet-4
+CAIL_API_BASE=<cail-model-proxy-base-url>   # placeholder until launch
+CAIL_MODEL=anthropic/claude-sonnet-4        # optional model override
+CAIL_IDENTITY_JWT_SECRET=                    # blank locally = anonymous
 ```
 
 `cloudflare/wrangler.jsonc` also expects a bound R2 bucket for `WORKSPACE_FILES` and a Worker Loader binding for Dynamic Workers.
 
-For deployed environments, set `SESSION_SECRET` and `OPENROUTER_API_KEY` as Wrangler secrets for the worker. `OPENROUTER_MODEL` is optional unless you want to override the default model.
+For deployed environments, set `SESSION_SECRET` and `CAIL_IDENTITY_JWT_SECRET` as Wrangler secrets. `CAIL_API_BASE` and `CAIL_MODEL` are `vars`.
+
+### CAIL backbone integration
+
+Agent Studio holds **no provider API key**. All model calls go through the
+[CAIL model proxy](https://tools.ailab.gc.cuny.edu) at `{CAIL_API_BASE}/v1/...`
+(Cloudflare AI Gateway's OpenAI-compatible path), forwarding the signed-in
+user's `X-CAIL-Identity-JWT` as the credential plus `X-CAIL-App: agent-studio`
+for spend attribution. Identity is verified locally (HS256, pinned) from that
+JWT — bare `X-CAIL-*` headers are never trusted — and all per-user data keys to
+the stable pseudonymous CAIL subject, never email. Quota/auth error envelopes
+from the proxy (`quota_exceeded`, `authentication_required`, …) pass through to
+the client unmodified; browser 401s follow the `/login?rt=` redirect pattern.
+See `cail-gateway/docs/INTEGRATION.md` for the full contract. `CAIL_API_BASE` is
+a placeholder until the institutional Cloudflare contract signs
+(`cail-gateway/docs/LAUNCH_CHECKLIST.md`).
 
 ## Running
 

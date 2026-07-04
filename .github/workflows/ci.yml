@@ -32,6 +32,9 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
+      - name: Unit tests
+        run: npm test
+
       - name: Build
         run: npm run build
 
@@ -64,8 +67,10 @@ jobs:
         run: |
           cat > cloudflare/.dev.vars <<'EOF'
           SESSION_SECRET=ci-session-secret
-          OPENROUTER_API_KEY=ci-placeholder-key
-          OPENROUTER_MODEL=anthropic/claude-sonnet-4
+          CAIL_API_BASE=https://cail-model-proxy.invalid
+          CAIL_MODEL=anthropic/claude-sonnet-4
+          CAIL_IDENTITY_JWT_SECRET=
+          CAIL_REQUIRE_IDENTITY=false
           R2_PUBLIC_DOMAIN=https://example.invalid
           WORKER_SUBDOMAIN=agent-studio-ci
           EOF
