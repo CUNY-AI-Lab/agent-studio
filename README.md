@@ -5,7 +5,7 @@ Agent Studio is now a single Cloudflare-native application.
 - [cloudflare](/Users/stephenzweibel/Apps/agent-studio/cloudflare): Worker API, Durable Object agent, Dynamic Worker runtime, R2-backed workspace storage, and static asset hosting
 - [frontend](/Users/stephenzweibel/Apps/agent-studio/frontend): React/Vite client served by the worker
 
-The legacy Next.js + runner implementation has been archived under [archive/legacy-next-app](/Users/stephenzweibel/Apps/agent-studio/archive/legacy-next-app) and is no longer the active app.
+The legacy Next.js + runner implementation lives on the `main` branch (it remains the source of the live pm2 deployment); this lineage replaces it and is the deployment target once the institutional Cloudflare contract signs.
 
 ## Requirements
 
