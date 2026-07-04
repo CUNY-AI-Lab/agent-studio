@@ -18,3 +18,11 @@ CAIL_IDENTITY_JWT_SECRET=
 CAIL_REQUIRE_IDENTITY=false
 
 GIT_AUTH_TOKEN=
+
+# CUNY Primo (Ex Libris) search API — optional. When set, web_fetch attaches
+# apikey/vid/scope server-side for this host; the agent never sees the key.
+# PRIMO_API_BASE example: https://api-na.hosted.exlibrisgroup.com/primo/v1/search
+PRIMO_API_BASE=
+PRIMO_API_KEY=
+PRIMO_VID=
+PRIMO_SCOPE=

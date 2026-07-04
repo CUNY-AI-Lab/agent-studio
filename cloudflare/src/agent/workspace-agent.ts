@@ -27,6 +27,8 @@ import {
 } from '../domain/workspace';
 import type { Env } from '../env';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
+import { guardedWebFetch } from '../lib/web-fetch-guard';
+import { getSkillContent, SKILLS } from '../skills';
 import { buildWorkspaceAgentSystemPrompt } from './instructions';
 import {
   deleteByPrefix,
@@ -951,27 +953,31 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         },
       }),
       web_fetch: tool({
-        description: 'Fetch a URL from the host worker. Use this from codemode instead of direct fetch().',
+        description: [
+          'Fetch a public http(s) URL from the host worker. Use this from codemode instead of direct fetch().',
+          'Localhost, private-network, and cloud-metadata destinations are blocked.',
+          'Configured institutional API credentials (e.g. CUNY Primo) are attached automatically server-side.',
+        ].join(' '),
         inputSchema: z.object({
           url: z.string().url(),
           format: z.enum(['text', 'json']).default('text'),
         }),
-        execute: async ({ url, format }) => {
-          const response = await fetch(url, {
-            headers: {
-              'User-Agent': 'agent-studio/0.1 (+https://tools.cuny.qzz.io)',
-            },
-          });
-          const contentType = response.headers.get('content-type') || '';
-          const body = format === 'json'
-            ? JSON.stringify(await response.json())
-            : await response.text();
-          return {
-            ok: response.ok,
-            status: response.status,
-            contentType,
-            body,
-          };
+        execute: async ({ url, format }) => guardedWebFetch(url, format, this.env),
+      }),
+      read_skill: tool({
+        description: [
+          'Read the reference doc for a research source or capability skill listed in the system prompt.',
+          'Call this before the first use of a source in a conversation to get exact endpoints, parameters, and response shapes.',
+        ].join(' '),
+        inputSchema: z.object({ name: z.string() }),
+        execute: async ({ name }) => {
+          const content = getSkillContent(name);
+          if (!content) {
+            throw new Error(
+              `Unknown skill: ${name}. Available: ${SKILLS.map((skill) => skill.name).join(', ')}`
+            );
+          }
+          return content;
         },
       }),
       ui_markdown: tool({

@@ -4105,6 +4105,7 @@ function WorkspaceShell({
               className="hidden"
               type="file"
               multiple
+              accept=".pdf,.txt,.csv,.md,.json,.xlsx,.xls,.jpg,.jpeg,.png,.gif,.webp,.xml"
               onChange={(event) => {
                 void handleUpload(event.target.files);
                 event.currentTarget.value = '';

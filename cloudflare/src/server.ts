@@ -23,6 +23,7 @@ import {
 } from './lib/files';
 import { createOpaqueId, createWorkspaceAgentName } from './lib/ids';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
+import { isAllowedUpload } from './lib/upload-validation';
 import {
   createDefaultWorkspace,
   deleteWorkspace,
@@ -684,6 +685,10 @@ app.post('/api/workspaces/:id/upload', async (c) => {
       files.map(async (file) => {
         if (file.size > MAX_UPLOAD_FILE_BYTES) {
           throw new Error(`${file.name} exceeds the 25 MB upload limit`);
+        }
+        const verdict = isAllowedUpload(file);
+        if (!verdict.allowed) {
+          throw new Error(`${file.name}: ${verdict.reason}`);
         }
 
         const filePath = sanitizeRelativePath(file.name.trim());
