@@ -40,6 +40,15 @@ function listResponse(ids) {
     );
 }
 
+/** Response builder for arbitrary (new-schema) data[] entries. */
+function dataResponse(data) {
+  return () =>
+    new Response(JSON.stringify({ object: 'list', data }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+}
+
 beforeEach(() => {
   resetCailModelsCache();
 });
@@ -52,11 +61,16 @@ test('parses the proxy list and marks the first entry recommended', async () => 
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
 
   assert.equal(result.source, 'proxy');
-  assert.deepEqual(result.models, [
-    { id: '@cf/zai-org/glm-5.2', recommended: true },
-    { id: '@cf/openai/gpt-oss-120b', recommended: false },
-    { id: '@cf/meta/llama-3', recommended: false },
-  ]);
+  // data[0] is the fleet default: recommended + tier 'recommended'; the rest,
+  // with no tier/recommended flags, fall to 'advanced'. All default to active.
+  assert.deepEqual(
+    result.models.map((m) => ({ id: m.id, recommended: m.recommended, tier: m.tier, status: m.status })),
+    [
+      { id: '@cf/zai-org/glm-5.2', recommended: true, tier: 'recommended', status: 'active' },
+      { id: '@cf/openai/gpt-oss-120b', recommended: false, tier: 'advanced', status: 'active' },
+      { id: '@cf/meta/llama-3', recommended: false, tier: 'advanced', status: 'active' },
+    ]
+  );
 
   // Sanity: it hit /models with the identity + app headers, no Bearer key.
   const req = new Request(calls[0].url, calls[0].init);
@@ -74,7 +88,9 @@ test('falls back to the configured default when CAIL_API_BASE is unset', async (
     fetchImpl,
   });
   assert.equal(result.source, 'fallback');
-  assert.deepEqual(result.models, [{ id: '@cf/openai/gpt-oss-120b', recommended: true }]);
+  assert.equal(result.models.length, 1);
+  assert.equal(result.models[0].id, '@cf/openai/gpt-oss-120b');
+  assert.equal(result.models[0].recommended, true);
   assert.equal(calls.length, 0, 'no request without a base URL');
 });
 
@@ -82,7 +98,21 @@ test('falls back to the default model when the JWT is null', async () => {
   const { fetchImpl, calls } = makeFetch([listResponse(['@cf/x'])]);
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: null, fetchImpl });
   assert.equal(result.source, 'fallback');
-  assert.deepEqual(result.models, [{ id: DEFAULT_CAIL_MODEL, recommended: true }]);
+  // The single fallback entry carries the normalized default fields.
+  assert.deepEqual(result.models, [
+    {
+      id: DEFAULT_CAIL_MODEL,
+      recommended: true,
+      tier: 'recommended',
+      status: 'active',
+      sunset: null,
+      capabilities: [],
+      contextLength: null,
+      registryUrl: null,
+      name: null,
+      description: null,
+    },
+  ]);
   assert.equal(calls.length, 0);
 });
 
@@ -122,7 +152,9 @@ test('falls back when the response fails shape validation', async () => {
   ]);
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
   assert.equal(result.source, 'fallback');
-  assert.deepEqual(result.models, [{ id: DEFAULT_CAIL_MODEL, recommended: true }]);
+  assert.equal(result.models.length, 1);
+  assert.equal(result.models[0].id, DEFAULT_CAIL_MODEL);
+  assert.equal(result.models[0].recommended, true);
 });
 
 test('caches the proxy list: a second call within TTL does not refetch', async () => {
@@ -146,4 +178,114 @@ test('does not cache fallbacks: a later success still fetches', async () => {
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl: ok.fetchImpl });
   assert.equal(result.source, 'proxy');
   assert.equal(ok.calls.length, 1);
+});
+
+test('surfaces all fields of a full new-schema entry', async () => {
+  const { fetchImpl } = makeFetch([
+    dataResponse([
+      {
+        id: '@cf/zai-org/glm-5.2',
+        object: 'model',
+        name: 'GLM 5.2',
+        description: 'A capable general model.',
+        task: 'text-generation',
+        recommended: true,
+        tier: 'recommended',
+        order: 0,
+        status: 'active',
+        sunset: null,
+        capabilities: ['text-generation', 'vision', 'function-calling'],
+        context_length: 131072,
+        registry_url: 'https://registry.example/glm-5.2',
+      },
+    ]),
+  ]);
+  const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
+  assert.equal(result.source, 'proxy');
+  assert.deepEqual(result.models[0], {
+    id: '@cf/zai-org/glm-5.2',
+    recommended: true,
+    tier: 'recommended',
+    status: 'active',
+    sunset: null,
+    capabilities: ['text-generation', 'vision', 'function-calling'],
+    contextLength: 131072,
+    registryUrl: 'https://registry.example/glm-5.2',
+    name: 'GLM 5.2',
+    description: 'A capable general model.',
+  });
+});
+
+test('parses a minimal legacy entry with normalized defaults', async () => {
+  const { fetchImpl } = makeFetch([
+    dataResponse([{ id: '@cf/zai-org/glm-5.2', object: 'model' }]),
+  ]);
+  const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
+  assert.equal(result.source, 'proxy');
+  assert.deepEqual(result.models[0], {
+    id: '@cf/zai-org/glm-5.2',
+    recommended: true,
+    tier: 'recommended',
+    status: 'active',
+    sunset: null,
+    capabilities: [],
+    contextLength: null,
+    registryUrl: null,
+    name: null,
+    description: null,
+  });
+});
+
+test('tier normalization precedence: explicit tier > recommended boolean > index-0', async () => {
+  const { fetchImpl } = makeFetch([
+    dataResponse([
+      // data[0]: no flags → default (recommended:true), tier recommended by index.
+      { id: '@cf/a', object: 'model' },
+      // explicit tier wins even against a recommended:true flag.
+      { id: '@cf/b', object: 'model', tier: 'advanced', recommended: true },
+      // recommended:true (no tier) promotes a non-first entry to recommended tier.
+      { id: '@cf/c', object: 'model', recommended: true },
+      // nothing → advanced.
+      { id: '@cf/d', object: 'model' },
+      // unknown tier value falls through to the recommended/index logic (advanced here).
+      { id: '@cf/e', object: 'model', tier: 'experimental' },
+    ]),
+  ]);
+  const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
+  assert.deepEqual(
+    result.models.map((m) => ({ id: m.id, recommended: m.recommended, tier: m.tier })),
+    [
+      { id: '@cf/a', recommended: true, tier: 'recommended' },
+      { id: '@cf/b', recommended: false, tier: 'advanced' },
+      { id: '@cf/c', recommended: false, tier: 'recommended' },
+      { id: '@cf/d', recommended: false, tier: 'advanced' },
+      { id: '@cf/e', recommended: false, tier: 'advanced' },
+    ]
+  );
+});
+
+test('passes through retiring status and sunset date', async () => {
+  const { fetchImpl } = makeFetch([
+    dataResponse([
+      { id: '@cf/a', object: 'model' },
+      { id: '@cf/old', object: 'model', status: 'retiring', sunset: '2026-12-31' },
+    ]),
+  ]);
+  const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
+  const retiring = result.models.find((m) => m.id === '@cf/old');
+  assert.equal(retiring.status, 'retiring');
+  assert.equal(retiring.sunset, '2026-12-31');
+});
+
+test('unknown status values normalize to active without failing the list', async () => {
+  const { fetchImpl } = makeFetch([
+    dataResponse([
+      { id: '@cf/a', object: 'model', status: 'quarantined' },
+      { id: '@cf/b', object: 'model' },
+    ]),
+  ]);
+  const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
+  assert.equal(result.source, 'proxy');
+  assert.equal(result.models.length, 2);
+  assert.equal(result.models[0].status, 'active');
 });

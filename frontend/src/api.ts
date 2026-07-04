@@ -92,9 +92,20 @@ export async function importWorkspaceBundle(file: File): Promise<{ workspaceId: 
   return parseJson<{ workspaceId: string; workspace: WorkspaceRecord }>(response);
 }
 
+export type ModelTier = 'recommended' | 'advanced';
+export type ModelStatus = 'active' | 'deprecated' | 'retiring';
+
 export interface ModelCatalogEntry {
   id: string;
   recommended: boolean;
+  tier: ModelTier;
+  status: ModelStatus;
+  sunset: string | null;
+  capabilities: string[];
+  contextLength: number | null;
+  registryUrl: string | null;
+  name: string | null;
+  description: string | null;
 }
 
 export interface ModelCatalog {
@@ -106,6 +117,94 @@ export interface ModelCatalog {
 export async function fetchModels(): Promise<ModelCatalog> {
   const response = await fetch('/api/models', { credentials: 'include' });
   return parseJson<ModelCatalog>(response);
+}
+
+/** Strip the `@cf/vendor/` prefix so the picker shows a short model name. */
+export function modelDisplayName(id: string): string {
+  return id.split('/').pop() || id;
+}
+
+export interface ModelOption {
+  id: string;
+  /** Visible option text (short name, ' (default)', ' — retiring <date>'). */
+  label: string;
+  /** Full option title attribute: id plus context length when known. */
+  title: string;
+}
+
+export interface ModelPickerView {
+  /** The model that is actually in effect (override ?? catalog default). */
+  effectiveModel: string;
+  /** Options for the recommended tier (shown ungrouped, above the disclosure). */
+  recommended: ModelOption[];
+  /** Options for the advanced tier (rendered inside an "Other models" optgroup). */
+  advanced: ModelOption[];
+  /** Sunset note for the effective model when it is retiring; else null. */
+  effectiveRetiringNote: string | null;
+}
+
+function buildOption(entry: ModelCatalogEntry, catalogDefault: string): ModelOption {
+  const base = entry.name?.trim() ? entry.name.trim() : modelDisplayName(entry.id);
+  let label = base;
+  if (entry.id === catalogDefault) {
+    label += ' (default)';
+  }
+  if (entry.status === 'retiring' && entry.sunset) {
+    label += ` — retiring ${entry.sunset}`;
+  }
+  const title =
+    entry.contextLength != null ? `${entry.id} · ${entry.contextLength} tokens` : entry.id;
+  return { id: entry.id, label, title };
+}
+
+/**
+ * Partition the catalog into the picker's recommended/advanced groups, honoring
+ * the override and the contract's visibility rules:
+ *  - effective model = workspace override ?? catalog default (data[0]).
+ *  - deprecated models are hidden unless they are the currently-selected model.
+ *  - a stored override that dropped from the catalog is kept selectable,
+ *    prepended into the group matching its tier (or recommended by default).
+ */
+export function buildModelPickerView(
+  catalog: ModelCatalog,
+  override: string | undefined
+): ModelPickerView {
+  const catalogDefault = catalog.default;
+  const effectiveModel = override ?? catalogDefault;
+
+  const recommended: ModelOption[] = [];
+  const advanced: ModelOption[] = [];
+  let effectiveInCatalog = false;
+  let effectiveRetiringNote: string | null = null;
+
+  for (const entry of catalog.models) {
+    const isEffective = entry.id === effectiveModel;
+    if (isEffective) {
+      effectiveInCatalog = true;
+      if (entry.status === 'retiring') {
+        effectiveRetiringNote = entry.sunset
+          ? `This model is retiring on ${entry.sunset}.`
+          : 'This model is retiring.';
+      }
+    }
+    // Deprecated models are excluded from the picker unless currently selected.
+    if (entry.status === 'deprecated' && !isEffective) {
+      continue;
+    }
+    const option = buildOption(entry, catalogDefault);
+    (entry.tier === 'advanced' ? advanced : recommended).push(option);
+  }
+
+  // Keep a stored override selectable even if it dropped from the catalog.
+  if (!effectiveInCatalog) {
+    recommended.unshift({
+      id: effectiveModel,
+      label: modelDisplayName(effectiveModel),
+      title: effectiveModel,
+    });
+  }
+
+  return { effectiveModel, recommended, advanced, effectiveRetiringNote };
 }
 
 export async function updateWorkspace(
