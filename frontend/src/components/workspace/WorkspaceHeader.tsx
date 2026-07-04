@@ -1,4 +1,4 @@
-import { Download, MessageSquare, RotateCcw, Trash2 } from 'lucide-react';
+import { Download, Keyboard, MessageSquare, RotateCcw, Trash2 } from 'lucide-react';
 import { ThemeToggle } from '../ThemeToggle';
 import { buildModelPickerView, type ModelCatalog } from '../../api';
 
@@ -32,6 +32,7 @@ export function WorkspaceHeader({
   isDockedChatLayout,
   chatOpen,
   onToggleChat,
+  onOpenShortcuts,
 }: {
   workspaceName: string;
   workspaceDescription: string;
@@ -57,30 +58,34 @@ export function WorkspaceHeader({
   isDockedChatLayout: boolean;
   chatOpen: boolean;
   onToggleChat: () => void;
+  onOpenShortcuts: () => void;
 }) {
   return (
     <header className="canvas-header flex items-center gap-4 px-6 py-3">
       <button
         onClick={onGoHome}
-        className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         title="Back to home"
+        aria-label="Back to home"
       >
-        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
           <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
         </svg>
       </button>
       <div className="flex-1 min-w-0">
         <input
-          className="font-serif text-lg font-medium bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground"
+          className="font-serif text-lg font-medium bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring rounded"
           value={workspaceName}
           onChange={(event) => onNameChange(event.target.value)}
+          aria-label="Workspace name"
         />
         <textarea
-          className="text-sm text-muted-foreground bg-transparent border-none outline-none w-full resize-none placeholder:text-muted-foreground"
+          className="text-sm text-muted-foreground bg-transparent border-none outline-none w-full resize-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring rounded"
           value={workspaceDescription}
           onChange={(event) => onDescriptionChange(event.target.value)}
           placeholder="Describe this workspace."
           rows={1}
+          aria-label="Workspace description"
         />
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
@@ -91,10 +96,11 @@ export function WorkspaceHeader({
           const view = buildModelPickerView(modelCatalog, workspaceModel);
           return (
             <select
-              className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 hover:text-foreground transition-colors cursor-pointer outline-none"
+              className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 hover:text-foreground transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring"
               value={view.effectiveModel}
               onChange={(event) => onModelChange(event.target.value)}
               title={view.effectiveRetiringNote ?? `Model: ${view.effectiveModel}`}
+              aria-label="Agent model"
             >
               {view.recommended.map((option) => (
                 <option key={option.id} value={option.id} title={option.title}>
@@ -113,8 +119,8 @@ export function WorkspaceHeader({
             </select>
           );
         })() : null}
-        <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={onRefresh} title="Refresh">
-          <RotateCcw size={16} />
+        <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onRefresh} title="Refresh" aria-label="Refresh workspace">
+          <RotateCcw size={16} aria-hidden="true" />
         </button>
         {!isCompactHeaderLayout ? (
           galleryId ? (
@@ -135,23 +141,32 @@ export function WorkspaceHeader({
             </button>
           ) : null
         ) : null}
-        <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={onExport} title="Export">
-          <Download size={16} />
+        <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onExport} title="Export" aria-label="Export workspace">
+          <Download size={16} aria-hidden="true" />
         </button>
-        <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={onDelete} title="Delete workspace">
-          <Trash2 size={16} />
+        <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onDelete} title="Delete workspace" aria-label="Delete workspace">
+          <Trash2 size={16} aria-hidden="true" />
         </button>
-        <button className="px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity" onClick={onSave}>
+        <button
+          className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={onOpenShortcuts}
+          title="Keyboard shortcuts"
+          aria-label="Keyboard shortcuts"
+        >
+          <Keyboard size={16} aria-hidden="true" />
+        </button>
+        <button className="px-3 py-1.5 text-xs rounded-lg bg-primary text-primary-foreground hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onSave}>
           {savingWorkspace ? 'Saving…' : 'Save'}
         </button>
         <ThemeToggle />
         {isDockedChatLayout ? (
           <button
             onClick={onToggleChat}
-            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             title={chatOpen ? 'Hide chat' : 'Show chat'}
+            aria-label={chatOpen ? 'Hide chat' : 'Show chat'}
           >
-            <MessageSquare size={16} />
+            <MessageSquare size={16} aria-hidden="true" />
           </button>
         ) : null}
       </div>

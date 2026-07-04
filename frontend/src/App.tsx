@@ -69,6 +69,8 @@ import {
   type LayoutMap,
 } from './lib/panelLayout';
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
+import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
+import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { clampNumber, formatFileSize, makeClientId } from './lib/format';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import {
@@ -148,6 +150,10 @@ function WorkspaceShell({
   const [fileShelfCollapsed, setFileShelfCollapsed] = useState(false);
   const [showCanvasHint, setShowCanvasHint] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'info' } | null>(null);
+  // Politely-announced messages for screen readers (chat status, uploads,
+  // errors). Kept separate from the visual toast so announcements can fire even
+  // when there is nothing new to show visually.
+  const [announcement, setAnnouncement] = useState('');
   const [animatingPanelIds, setAnimatingPanelIds] = useState<Set<string>>(new Set());
   const [animatingConnectionIds, setAnimatingConnectionIds] = useState<Set<string>>(new Set());
   const [highlightedFilePaths, setHighlightedFilePaths] = useState<Set<string>>(new Set());
@@ -165,6 +171,7 @@ function WorkspaceShell({
   const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [minimizedPanelIds, setMinimizedPanelIds] = useState<Set<string>>(new Set());
   const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [contextualComposer, setContextualComposer] = useState('');
   const [contextualChatTarget, setContextualChatTarget] = useState<ContextualChatTarget | null>(null);
@@ -173,8 +180,8 @@ function WorkspaceShell({
   const [contextualStatus, setContextualStatus] = useState<Record<string, string | null>>({});
   const canvasViewportRef = useRef<HTMLDivElement | null>(null);
   const filesSectionRef = useRef<HTMLElement | null>(null);
-  const fileCardRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const panelRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const fileCardRefs = useRef<Record<string, HTMLElement | null>>({});
+  const panelRefs = useRef<Record<string, HTMLElement | null>>({});
   const workspaceFilesRef = useRef(workspace.files);
   const viewportSaveTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
@@ -380,6 +387,18 @@ function WorkspaceShell({
     () => new Set(visiblePanels.map((panel) => panel.id)),
     [visiblePanels]
   );
+  // Roving tabindex target: exactly one visible tile is Tab-reachable at a time,
+  // so the canvas takes a single tab stop and arrow keys drive geometry from the
+  // focused tile. Prefer the explicitly focused tile, then the first selected,
+  // then the first visible tile.
+  const rovingPanelId = useMemo(() => {
+    if (focusedPanelId && visiblePanels.some((panel) => panel.id === focusedPanelId)) {
+      return focusedPanelId;
+    }
+    const firstSelected = visiblePanels.find((panel) => selectedPanelIds.has(panel.id));
+    if (firstSelected) return firstSelected.id;
+    return visiblePanels[0]?.id ?? null;
+  }, [focusedPanelId, selectedPanelIds, visiblePanels]);
   const panelLayouts = useMemo(() => buildPanelLayouts(visiblePanels), [visiblePanels]);
   const visibleConnections = useMemo(
     () => workspaceState.connections.filter((connection) => visiblePanelIds.has(connection.sourceId) && visiblePanelIds.has(connection.targetId)),
@@ -938,16 +957,46 @@ function WorkspaceShell({
     setSelectedPanelIds(new Set());
   }, []);
 
+  const announce = useCallback((message: string) => {
+    // Re-set to empty first so identical consecutive messages are still spoken
+    // by assistive tech (which ignores no-op text updates in a live region).
+    setAnnouncement('');
+    window.setTimeout(() => setAnnouncement(message), 30);
+  }, []);
+
   const showToast = useCallback((message: string, type: 'success' | 'info' = 'success') => {
     if (toastTimeoutRef.current) {
       clearTimeout(toastTimeoutRef.current);
     }
 
     setToast({ message, type });
+    announce(message);
     toastTimeoutRef.current = window.setTimeout(() => {
       setToast(null);
     }, 3000);
-  }, []);
+  }, [announce]);
+
+  // Announce agent/chat streaming status transitions politely. "submitted" and
+  // "streaming" surface as "thinking"; errors and completion are announced too.
+  const lastChatStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const status = chat.status;
+    if (status === lastChatStatusRef.current) return;
+    lastChatStatusRef.current = status;
+    if (status === 'submitted' || status === 'streaming') {
+      announce('Agent is thinking…');
+    } else if (status === 'error') {
+      announce('The agent response failed. You can retry or clear the thread.');
+    } else if (status === 'ready') {
+      announce('Agent response ready.');
+    }
+  }, [announce, chat.status]);
+
+  // Surface workspace-level errors (uploads, saves, rate limits) to screen
+  // readers, not just the visual error banner.
+  useEffect(() => {
+    if (error) announce(`Error: ${error}`);
+  }, [announce, error]);
 
   const consumeDownloads = useCallback((downloads?: DownloadRequest[]) => {
     if (!downloads || downloads.length === 0) return;
@@ -2249,13 +2298,16 @@ function WorkspaceShell({
 
       let dx = 0;
       let dy = 0;
-      const step = event.shiftKey ? 20 : 5;
+      const step = event.shiftKey ? CANVAS_LARGE_STEP : CANVAS_STEP;
       if (event.key === 'ArrowLeft') dx = -step;
       if (event.key === 'ArrowRight') dx = step;
       if (event.key === 'ArrowUp') dy = -step;
       if (event.key === 'ArrowDown') dy = step;
 
-      if ((dx !== 0 || dy !== 0) && selectedPanelIds.size > 0) {
+      // When 2+ tiles are selected, arrows nudge the whole selection. A single
+      // focused tile is handled by DraggablePanel's own key handler (which stops
+      // propagation), so this only runs for multi-select.
+      if ((dx !== 0 || dy !== 0) && selectedPanelIds.size > 1) {
         event.preventDefault();
         const updates: Record<string, { x: number; y: number; width: number; height: number }> = {};
         selectedPanelIds.forEach((panelId) => {
@@ -2466,6 +2518,43 @@ function WorkspaceShell({
     updateViewport({ x: 0, y: 0, zoom: 1 });
   }, [updateViewport]);
 
+  const zoomBy = useCallback((factor: number) => {
+    const element = canvasViewportRef.current;
+    const centerX = element ? element.clientWidth / 2 : 0;
+    const centerY = element ? element.clientHeight / 2 : 0;
+    updateViewport((current) => {
+      const nextZoom = clampNumber(current.zoom * factor, 0.35, 2.5);
+      const canvasX = (centerX - current.x) / current.zoom;
+      const canvasY = (centerY - current.y) / current.zoom;
+      return {
+        x: centerX - canvasX * nextZoom,
+        y: centerY - canvasY * nextZoom,
+        zoom: nextZoom,
+      };
+    });
+  }, [updateViewport]);
+
+  // Keyboard handling for the canvas region itself (fires only when the region,
+  // not a tile, holds focus — tiles stopPropagation their own arrow keys). This
+  // is why the canvas is a labeled region with roving tile focus rather than
+  // role="application": it adds a few affordances without trapping all keys.
+  const handleCanvasKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    if (event.key === '+' || event.key === '=') {
+      event.preventDefault();
+      zoomBy(1.2);
+    } else if (event.key === '-' || event.key === '_') {
+      event.preventDefault();
+      zoomBy(1 / 1.2);
+    } else if (event.key === '0') {
+      event.preventDefault();
+      handleResetViewport();
+    } else if (event.key === '?') {
+      event.preventDefault();
+      setShortcutsOpen(true);
+    }
+  }, [handleResetViewport, zoomBy]);
+
   const canvasViewportSize = canvasViewportRef.current
     ? {
       width: canvasViewportRef.current.clientWidth,
@@ -2520,7 +2609,21 @@ function WorkspaceShell({
 
   return (
     <div className="flex-1 flex min-h-0">
-      <div className={`flex-1 min-w-0 flex flex-col transition-[margin] duration-300 ${chatOpen && isDockedChatLayout ? 'mr-[400px]' : ''} ${isDrawerChatLayout && narrowActiveTab !== 'canvas' ? 'hidden' : ''}`}>
+      <a
+        href="#workspace-canvas"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
+        onClick={(event) => {
+          event.preventDefault();
+          canvasViewportRef.current?.focus();
+        }}
+      >
+        Skip to canvas
+      </a>
+      <main
+        id="workspace-canvas"
+        aria-label="Workspace"
+        className={`flex-1 min-w-0 flex flex-col transition-[margin] duration-300 ${chatOpen && isDockedChatLayout ? 'mr-[400px]' : ''} ${isDrawerChatLayout && narrowActiveTab !== 'canvas' ? 'hidden' : ''}`}
+      >
         <WorkspaceHeader
           workspaceName={workspaceName}
           workspaceDescription={workspaceDescription}
@@ -2546,6 +2649,7 @@ function WorkspaceShell({
           isDockedChatLayout={isDockedChatLayout}
           chatOpen={chatOpen}
           onToggleChat={() => setChatOpen((current) => !current)}
+          onOpenShortcuts={() => setShortcutsOpen(true)}
         />
 
         {error ? (
@@ -2627,11 +2731,15 @@ function WorkspaceShell({
 
           <div
             ref={canvasViewportRef}
-            className="canvas-bg canvas-wrapper flex-1"
+            role="region"
+            aria-label={`Workspace canvas, ${visiblePanels.length} tile${visiblePanels.length === 1 ? '' : 's'}. Tab to a tile, then use arrow keys to move it. Press question mark for keyboard help.`}
+            tabIndex={0}
+            className="canvas-bg canvas-wrapper flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
             onPointerDownCapture={handleCanvasPointerDown}
             onPointerMoveCapture={handleCanvasPointerMove}
             onPointerUpCapture={handleCanvasPointerUp}
             onPointerCancelCapture={handleCanvasPointerUp}
+            onKeyDown={handleCanvasKeyDown}
           >
             <TransformWrapper
               initialScale={workspaceState.viewport.zoom}
@@ -2732,6 +2840,8 @@ function WorkspaceShell({
                     menuContent={renderPanelMenuContent(panel)}
                     isSelected={selectedPanelIds.has(panel.id)}
                     isAnimating={animatingPanelIds.has(panel.id)}
+                    onKeyboardSelect={selectPanel}
+                    isFocusTarget={rovingPanelId === panel.id}
                     onPanelClick={handlePanelClick}
                     onPanelDoubleClick={(panelId, event) => {
                       handlePanelDoubleClick(panelId, event);
@@ -2871,14 +2981,17 @@ function WorkspaceShell({
             </div>
           ) : null}
         </div>
-      </div>
+      </main>
       {isDrawerChatLayout && narrowActiveTab === 'chat' ? (
         <div className="flex-1 min-h-0 chat-panel flex flex-col">
           {chatPanelContent}
         </div>
       ) : null}
       {isDockedChatLayout ? (
-        <aside className={`fixed z-30 max-w-full chat-panel flex flex-col transition-transform duration-300 top-[73px] right-0 bottom-0 left-auto w-[400px] ${chatOpen ? 'translate-x-0' : 'translate-x-full'}`}>
+        <aside
+          aria-label="Agent chat"
+          className={`fixed z-30 max-w-full chat-panel flex flex-col transition-transform duration-300 top-[73px] right-0 bottom-0 left-auto w-[400px] ${chatOpen ? 'translate-x-0' : 'translate-x-full'}`}
+        >
           {chatPanelContent}
         </aside>
       ) : null}
@@ -2886,11 +2999,16 @@ function WorkspaceShell({
         <button
           onClick={() => setChatOpen(true)}
           className="chat-toggle"
+          aria-label="Show chat"
         >
-          <MessageSquare size={18} />
+          <MessageSquare size={18} aria-hidden="true" />
         </button>
       ) : null}
       <WorkspaceToast toast={toast} />
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcement}
+      </div>
+      <KeyboardShortcutsDialog open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
       <PublishDialog
         open={publishModalOpen}
         publishing={publishing}

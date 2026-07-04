@@ -164,9 +164,28 @@ export function SelectionToolbar({
   const showDistributeSection = Boolean(onDistribute);
   const showRemoveSection = Boolean(onRemove);
 
+  const chatLabel = isGroupSelection
+    ? `Chat about ${groupName || 'group'}`
+    : isMultiSelection
+      ? 'Chat about selected tiles'
+      : `Chat about ${panelTitle || 'tile'}`;
+  const removeLabel = isGroupSelection
+    ? 'Delete group'
+    : isMultiSelection
+      ? 'Remove selected tiles'
+      : 'Remove tile';
+
   return (
     <div
       ref={toolbarRef}
+      role="toolbar"
+      aria-label={
+        isGroupSelection
+          ? `Actions for ${groupName || 'group'}`
+          : isMultiSelection
+            ? 'Actions for selected tiles'
+            : `Actions for ${panelTitle || 'tile'}`
+      }
       className="selection-toolbar absolute"
       style={{
         left: canvasX,
@@ -190,15 +209,10 @@ export function SelectionToolbar({
         <button
           className="toolbar-btn toolbar-btn-primary"
           onClick={onChat}
-          title={
-            isGroupSelection
-              ? `Chat about ${groupName || 'group'}`
-              : isMultiSelection
-                ? 'Chat about selected tiles'
-                : `Chat about ${panelTitle || 'tile'}`
-          }
+          title={chatLabel}
+          aria-label={chatLabel}
         >
-          <MessageSquare className="w-4 h-4" />
+          <MessageSquare className="w-4 h-4" aria-hidden="true" />
         </button>
       ) : null}
 
@@ -210,14 +224,18 @@ export function SelectionToolbar({
               className="toolbar-btn"
               onClick={() => setOpenMenu((current) => current === 'download' ? null : 'download')}
               title="Download or export"
+              aria-label="Download or export"
+              aria-haspopup="menu"
+              aria-expanded={openMenu === 'download'}
             >
-              <DownloadIcon className="w-4 h-4" />
+              <DownloadIcon className="w-4 h-4" aria-hidden="true" />
             </button>
             {openMenu === 'download' ? (
-              <div className="toolbar-dropdown-menu">
+              <div className="toolbar-dropdown-menu" role="menu" aria-label="Download formats">
                 {downloadFormats.map((format) => (
                   <button
                     key={format}
+                    role="menuitem"
                     onClick={() => {
                       onDownload?.(format);
                       setOpenMenu(null);
@@ -240,11 +258,14 @@ export function SelectionToolbar({
               className="toolbar-btn"
               onClick={() => setOpenMenu((current) => current === 'align' ? null : 'align')}
               title="Align"
+              aria-label="Align tiles"
+              aria-haspopup="menu"
+              aria-expanded={openMenu === 'align'}
             >
-              <AlignCenter className="w-4 h-4" />
+              <AlignCenter className="w-4 h-4" aria-hidden="true" />
             </button>
             {openMenu === 'align' ? (
-              <div className="toolbar-dropdown-menu">
+              <div className="toolbar-dropdown-menu" role="menu" aria-label="Align options">
                 {[
                   ['left', 'Left'],
                   ['centerX', 'Center X'],
@@ -255,6 +276,7 @@ export function SelectionToolbar({
                 ].map(([mode, label]) => (
                   <button
                     key={mode}
+                    role="menuitem"
                     onClick={() => {
                       onAlign?.(mode as 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom');
                       setOpenMenu(null);
@@ -277,17 +299,21 @@ export function SelectionToolbar({
               className="toolbar-btn"
               onClick={() => setOpenMenu((current) => current === 'distribute' ? null : 'distribute')}
               title="Distribute"
+              aria-label="Distribute tiles"
+              aria-haspopup="menu"
+              aria-expanded={openMenu === 'distribute'}
             >
-              <GripVertical className="w-4 h-4" />
+              <GripVertical className="w-4 h-4" aria-hidden="true" />
             </button>
             {openMenu === 'distribute' ? (
-              <div className="toolbar-dropdown-menu">
+              <div className="toolbar-dropdown-menu" role="menu" aria-label="Distribute options">
                 {[
                   ['horizontal', 'Horizontal'],
                   ['vertical', 'Vertical'],
                 ].map(([axis, label]) => (
                   <button
                     key={axis}
+                    role="menuitem"
                     onClick={() => {
                       onDistribute?.(axis as 'horizontal' | 'vertical');
                       setOpenMenu(null);
@@ -305,8 +331,8 @@ export function SelectionToolbar({
       {showMinimizeSection ? (
         <>
           {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection) ? <div className="toolbar-divider" /> : null}
-          <button className="toolbar-btn" onClick={onMinimize} title="Minimize">
-            <Minus className="w-4 h-4" />
+          <button className="toolbar-btn" onClick={onMinimize} title="Minimize" aria-label="Minimize tile">
+            <Minus className="w-4 h-4" aria-hidden="true" />
           </button>
         </>
       ) : null}
@@ -314,8 +340,8 @@ export function SelectionToolbar({
       {showMaximizeSection ? (
         <>
           {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection) ? <div className="toolbar-divider" /> : null}
-          <button className="toolbar-btn" onClick={onMaximize} title="Maximize tile">
-            <Maximize2 className="w-4 h-4" />
+          <button className="toolbar-btn" onClick={onMaximize} title="Maximize tile" aria-label="Maximize tile">
+            <Maximize2 className="w-4 h-4" aria-hidden="true" />
           </button>
         </>
       ) : null}
@@ -323,8 +349,8 @@ export function SelectionToolbar({
       {showGroupSection ? (
         <>
           {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection) ? <div className="toolbar-divider" /> : null}
-          <button className="toolbar-btn" onClick={onGroup} title="Group tiles">
-            <LinkIcon className="w-4 h-4" />
+          <button className="toolbar-btn" onClick={onGroup} title="Group tiles" aria-label="Group tiles">
+            <LinkIcon className="w-4 h-4" aria-hidden="true" />
           </button>
         </>
       ) : null}
@@ -332,8 +358,8 @@ export function SelectionToolbar({
       {showUngroupSection ? (
         <>
           {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection) ? <div className="toolbar-divider" /> : null}
-          <button className="toolbar-btn" onClick={onUngroup} title="Ungroup">
-            <UnlinkIcon className="w-4 h-4" />
+          <button className="toolbar-btn" onClick={onUngroup} title="Ungroup" aria-label="Ungroup">
+            <UnlinkIcon className="w-4 h-4" aria-hidden="true" />
           </button>
         </>
       ) : null}
@@ -341,8 +367,8 @@ export function SelectionToolbar({
       {showRemoveFromGroupSection ? (
         <>
           {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection || showUngroupSection) ? <div className="toolbar-divider" /> : null}
-          <button className="toolbar-btn" onClick={onRemoveFromGroup} title="Remove from group">
-            <LogOut className="w-4 h-4" />
+          <button className="toolbar-btn" onClick={onRemoveFromGroup} title="Remove from group" aria-label="Remove tile from group">
+            <LogOut className="w-4 h-4" aria-hidden="true" />
           </button>
         </>
       ) : null}
@@ -353,9 +379,10 @@ export function SelectionToolbar({
           <button
             className="toolbar-btn toolbar-btn-danger"
             onClick={onRemove}
-            title={isGroupSelection ? 'Delete group' : isMultiSelection ? 'Remove selected tiles' : 'Remove tile'}
+            title={removeLabel}
+            aria-label={removeLabel}
           >
-            <Trash2 className="w-4 h-4" />
+            <Trash2 className="w-4 h-4" aria-hidden="true" />
           </button>
         </>
       ) : null}

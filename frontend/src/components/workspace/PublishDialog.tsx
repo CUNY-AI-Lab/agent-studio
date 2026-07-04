@@ -1,3 +1,6 @@
+import { useEffect, useId, useRef } from 'react';
+import { createFocusTrap } from '../../lib/focusTrap';
+
 export function PublishDialog({
   open,
   publishing,
@@ -21,6 +24,21 @@ export function PublishDialog({
   onClose: () => void;
   onPublish: () => void;
 }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const titleId = useId();
+  const titleFieldId = useId();
+  const descriptionFieldId = useId();
+
+  useEffect(() => {
+    if (!open || !dialogRef.current) return;
+    const trap = createFocusTrap(dialogRef.current, {
+      onEscape: () => {
+        if (!publishing) onClose();
+      },
+    });
+    return () => trap.release();
+  }, [open, onClose, publishing]);
+
   if (!open) return null;
 
   return (
@@ -33,14 +51,20 @@ export function PublishDialog({
       }}
     >
       <div
-        className="mx-4 w-full max-w-md rounded-2xl bg-card p-6 shadow-xl"
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
+        className="mx-4 w-full max-w-md rounded-2xl bg-card p-6 shadow-xl focus:outline-none"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 className="mb-4 text-lg font-semibold">Publish to Gallery</h2>
+        <h2 id={titleId} className="mb-4 text-lg font-semibold">Publish to Gallery</h2>
         <div className="space-y-4">
           <div>
-            <label className="mb-1.5 block text-sm font-medium">Title</label>
+            <label htmlFor={titleFieldId} className="mb-1.5 block text-sm font-medium">Title</label>
             <input
+              id={titleFieldId}
               type="text"
               value={title}
               onChange={(event) => onTitleChange(event.target.value)}
@@ -49,8 +73,9 @@ export function PublishDialog({
             />
           </div>
           <div>
-            <label className="mb-1.5 block text-sm font-medium">Description</label>
+            <label htmlFor={descriptionFieldId} className="mb-1.5 block text-sm font-medium">Description</label>
             <textarea
+              id={descriptionFieldId}
               value={description}
               onChange={(event) => onDescriptionChange(event.target.value)}
               placeholder="Describe what this workspace does..."

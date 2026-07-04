@@ -1,6 +1,7 @@
 'use client';
 
 import { useMemo, useRef, useEffect, useCallback, useState } from 'react';
+import { CANVAS_STEP, CANVAS_LARGE_STEP } from '../../lib/keyboardMap';
 
 type CanvasPanelLayout = { x: number; y: number; width: number; height: number };
 type PanelGroup = { id: string; name?: string; panelIds: string[]; color?: string };
@@ -156,10 +157,46 @@ export function GroupBoundary({
     }, 0);
   }, [group.id, isDragging, onGroupDragEnd]);
 
+  const handleContainerKeyDown = useCallback((event: React.KeyboardEvent) => {
+    if (isEditing) return;
+    const target = event.target as HTMLElement;
+    if (target.closest('.group-boundary-label')) return;
+
+    if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+      event.preventDefault();
+      onGroupClick?.(group.id);
+      return;
+    }
+
+    if (event.key === 'F2') {
+      event.preventDefault();
+      onEditStart?.(group.id);
+      return;
+    }
+
+    let dx = 0;
+    let dy = 0;
+    if (event.key === 'ArrowLeft') dx = -1;
+    else if (event.key === 'ArrowRight') dx = 1;
+    else if (event.key === 'ArrowUp') dy = -1;
+    else if (event.key === 'ArrowDown') dy = 1;
+    else return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const step = event.shiftKey ? CANVAS_LARGE_STEP : CANVAS_STEP;
+    onGroupDrag?.(group.id, dx * step, dy * step);
+    onGroupDragEnd?.(group.id);
+  }, [group.id, isEditing, onEditStart, onGroupClick, onGroupDrag, onGroupDragEnd]);
+
   if (!bounds || validPanelCount < 2) return null;
 
   return (
     <div
+      role="group"
+      aria-label={`${group.name || `${validPanelCount} tiles`} group`}
+      aria-pressed={isActive}
+      tabIndex={0}
       className={`group-boundary absolute pointer-events-auto ${isDragging ? 'cursor-grabbing' : 'cursor-grab'} ${isActive ? 'active' : ''}`}
       style={{
         left: bounds.x,
@@ -170,6 +207,7 @@ export function GroupBoundary({
       }}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
+      onKeyDown={handleContainerKeyDown}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -191,6 +229,7 @@ export function GroupBoundary({
             onDoubleClick={(event) => event.stopPropagation()}
             className="group-name-input"
             placeholder="Group name..."
+            aria-label="Group name"
           />
         ) : (
           <span className="group-name-text" title="Double-click to rename">

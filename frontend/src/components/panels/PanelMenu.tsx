@@ -41,6 +41,7 @@ export function PanelMenu({
   return (
     <>
       <button
+        role="menuitem"
         onClick={() => {
           onAskAboutTile(panel.id);
           onCloseMenu();
@@ -55,6 +56,7 @@ export function PanelMenu({
           return (
         <>
           <button
+        role="menuitem"
             onClick={() => {
               onRevealFile(filePath);
               onCloseMenu();
@@ -64,6 +66,7 @@ export function PanelMenu({
             Show in Workspace Files
           </button>
           <button
+        role="menuitem"
             onClick={() => {
               onPanelDownload(panel, 'file');
               onCloseMenu();
@@ -73,6 +76,7 @@ export function PanelMenu({
             Download File
           </button>
           <button
+        role="menuitem"
             onClick={() => {
               window.open(getWorkspaceFileUrl(workspaceId, filePath), '_blank', 'noopener,noreferrer');
               onCloseMenu();
@@ -88,6 +92,7 @@ export function PanelMenu({
       {panel.type === 'table' ? (
         <>
           <button
+        role="menuitem"
             onClick={() => {
               onPanelDownload(panel, 'csv');
               onCloseMenu();
@@ -97,6 +102,7 @@ export function PanelMenu({
             Export Data as CSV
           </button>
           <button
+        role="menuitem"
             onClick={() => {
               onPanelDownload(panel, 'json');
               onCloseMenu();
@@ -110,6 +116,7 @@ export function PanelMenu({
       {panel.type === 'chart' ? (
         <>
           <button
+        role="menuitem"
             onClick={() => {
               onPanelDownload(panel, 'csv');
               onCloseMenu();
@@ -119,6 +126,7 @@ export function PanelMenu({
             Export Data as CSV
           </button>
           <button
+        role="menuitem"
             onClick={() => {
               onPanelDownload(panel, 'json');
               onCloseMenu();
@@ -131,6 +139,7 @@ export function PanelMenu({
       ) : null}
       {panel.type === 'cards' ? (
         <button
+        role="menuitem"
           onClick={() => {
             onPanelDownload(panel, 'json');
             onCloseMenu();
@@ -142,6 +151,7 @@ export function PanelMenu({
       ) : null}
       {panel.type === 'markdown' ? (
         <button
+        role="menuitem"
           onClick={() => {
             onPanelDownload(panel, 'txt');
             onCloseMenu();
@@ -153,6 +163,7 @@ export function PanelMenu({
       ) : null}
       {panel.type === 'preview' && panel.content && !panel.filePath ? (
         <button
+        role="menuitem"
           onClick={() => {
             const safeTitle = getPanelTitle(panel).replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'preview';
             downloadBlob(new Blob([panel.content || ''], { type: 'text/html;charset=utf-8' }), `${safeTitle}.html`);
@@ -165,6 +176,7 @@ export function PanelMenu({
       ) : null}
       {canExportPanelSnapshot(panel) ? (
         <button
+        role="menuitem"
           onClick={() => {
             onPanelDownload(panel, 'png');
             onCloseMenu();
@@ -175,6 +187,7 @@ export function PanelMenu({
         </button>
       ) : null}
       <button
+        role="menuitem"
         onClick={() => {
           onMinimize(panel.id);
           onSetContextualChatTarget((current) => {
@@ -192,6 +205,7 @@ export function PanelMenu({
         Minimize
       </button>
       <button
+        role="menuitem"
         onClick={() => {
           onMaximize(panel.id);
           onCloseMenu();
@@ -202,6 +216,7 @@ export function PanelMenu({
       </button>
       <div className="border-t border-border my-1" />
       <button
+        role="menuitem"
         onClick={() => {
           onRemovePanel(panel.id);
           onCloseMenu();

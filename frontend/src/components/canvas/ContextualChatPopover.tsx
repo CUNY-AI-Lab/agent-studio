@@ -121,6 +121,8 @@ export function ContextualChatPopover({
   return (
     <div
       ref={popoverRef}
+      role="dialog"
+      aria-label={`Ask about ${title}`}
       className={cn(
         'contextual-chat-popover absolute flex flex-col no-zoom-scroll',
         position.placement === 'right' && 'origin-left',
@@ -151,7 +153,7 @@ export function ContextualChatPopover({
           </div>
         </div>
         <button onClick={onClose} className="contextual-chat-close" aria-label="Close">
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
         </button>
@@ -189,13 +191,13 @@ export function ContextualChatPopover({
           })
         )}
         {isLoading ? (
-          <div className="contextual-chat-loading">
-            <div className="contextual-chat-loading-dots">
+          <div className="contextual-chat-loading" role="status" aria-live="polite">
+            <div className="contextual-chat-loading-dots" aria-hidden="true">
               <span className="contextual-chat-loading-dot" />
               <span className="contextual-chat-loading-dot" />
               <span className="contextual-chat-loading-dot" />
             </div>
-            {statusLabel ? <span className="contextual-chat-loading-label">{statusLabel}</span> : null}
+            <span className="contextual-chat-loading-label">{statusLabel || 'Thinking…'}</span>
           </div>
         ) : null}
         <div ref={messagesEndRef} />
@@ -221,6 +223,7 @@ export function ContextualChatPopover({
             }
           }}
           placeholder={`Ask about this ${typeLabel.toLowerCase()} tile...`}
+          aria-label={`Ask about ${title}`}
           className="contextual-chat-input"
           rows={1}
           disabled={isLoading}
@@ -229,8 +232,9 @@ export function ContextualChatPopover({
           type="submit"
           disabled={!input.trim() || isLoading}
           className="contextual-chat-send"
+          aria-label="Send message"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 12L3.269 3.126A59.768 59.768 0 0121.485 12 59.77 59.77 0 013.27 20.876L5.999 12zm0 0h7.5" />
           </svg>
         </button>

@@ -48,17 +48,22 @@ export function ChatPanel({
     <section className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
         <h3 className="font-serif text-sm font-medium flex items-center gap-2">
-          <MessageSquare size={14} className="text-accent" />Chat
+          <MessageSquare size={14} className="text-accent" aria-hidden="true" />Chat
         </h3>
         <div className="flex items-center gap-2">
-          <span className={cn(
-            'text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded',
-            status === 'ready'
-              ? 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400'
-              : status === 'error'
-                ? 'text-destructive bg-destructive/10'
-                : 'text-accent bg-accent/10'
-          )}>{status}</span>
+          <span
+            role="status"
+            aria-live="polite"
+            aria-label={`Chat status: ${status}`}
+            className={cn(
+              'text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded',
+              status === 'ready'
+                ? 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400'
+                : status === 'error'
+                  ? 'text-destructive bg-destructive/10'
+                  : 'text-accent bg-accent/10'
+            )}
+          >{status}</span>
           <button className="text-xs text-muted-foreground hover:text-foreground transition-colors" onClick={onClear}>Clear</button>
         </div>
       </div>
@@ -179,6 +184,7 @@ export function ChatPanel({
           value={composer}
           onChange={(event) => onComposerChange(event.target.value)}
           placeholder={selectedScopeLabel ? 'Ask about the selected tile scope.' : 'Ask the agent to create files and panels.'}
+          aria-label="Message the agent"
           rows={2}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -187,8 +193,8 @@ export function ChatPanel({
             }
           }}
         />
-        <button className="bg-primary text-primary-foreground rounded-xl px-3 py-2 hover:opacity-90 transition-opacity self-end" type="submit">
-          <Send size={16} />
+        <button className="bg-primary text-primary-foreground rounded-xl px-3 py-2 hover:opacity-90 transition-opacity self-end focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" type="submit" aria-label="Send message">
+          <Send size={16} aria-hidden="true" />
         </button>
       </form>
     </section>

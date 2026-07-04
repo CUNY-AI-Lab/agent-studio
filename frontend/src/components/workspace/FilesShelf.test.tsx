@@ -12,7 +12,7 @@ function makeProps(overrides: Partial<Parameters<typeof FilesShelf>[0]> = {}) {
   ];
   return {
     sectionRef: createRef<HTMLElement>(),
-    fileCardRefs: { current: {} as Record<string, HTMLDivElement | null> },
+    fileCardRefs: { current: {} as Record<string, HTMLElement | null> },
     workspaceId: 'ws1',
     workspaceFileEntries: files,
     uploading: false,

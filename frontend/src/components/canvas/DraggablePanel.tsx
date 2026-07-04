@@ -2,8 +2,16 @@
 
 import { useState, useRef, useCallback } from 'react';
 import { cn } from '../../lib/utils';
+import {
+  CANVAS_STEP,
+  CANVAS_LARGE_STEP,
+  CANVAS_RESIZE_STEP,
+} from '../../lib/keyboardMap';
 
 type CanvasPanelLayout = { x: number; y: number; width: number; height: number };
+
+const MIN_PANEL_WIDTH = 200;
+const MIN_PANEL_HEIGHT = 150;
 
 interface DraggablePanelProps {
   id: string;
@@ -23,6 +31,14 @@ interface DraggablePanelProps {
   isSelected?: boolean;
   onPanelClick?: (id: string, e: React.MouseEvent) => void;
   onPanelDoubleClick?: (id: string, e: React.MouseEvent) => void;
+  /** Toggle selection from a keyboard interaction (Enter / Space on the tile). */
+  onKeyboardSelect?: (id: string, additive: boolean) => void;
+  /**
+   * Whether this tile is the current roving-tabindex target. Exactly one tile
+   * carries tabIndex=0 at a time; the rest are -1 so Tab lands once on the group
+   * and arrow keys move focus/geometry from there.
+   */
+  isFocusTarget?: boolean;
   isAnimating?: boolean;
   isInDraggingGroup?: boolean;
   onHoverChange?: (id: string | null) => void;
@@ -48,6 +64,8 @@ export function DraggablePanel({
   isSelected,
   onPanelClick,
   onPanelDoubleClick,
+  onKeyboardSelect,
+  isFocusTarget = true,
   isAnimating,
   isInDraggingGroup,
   onHoverChange,
@@ -199,10 +217,86 @@ export function DraggablePanel({
     }
   }, [didMove, id, onPanelDoubleClick]);
 
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    // Ignore keystrokes originating in the tile body (inputs, editable content,
+    // the menu). The tile-level shortcuts only apply when the card chrome itself
+    // holds focus.
+    const target = e.target as HTMLElement;
+    if (target !== e.currentTarget) {
+      if (
+        target.closest('.artifact-content') ||
+        target.closest('.panel-menu') ||
+        target.closest('.panel-menu-trigger')
+      ) {
+        return;
+      }
+    }
+
+    const key = e.key;
+
+    if (key === 'Enter' || key === ' ' || key === 'Spacebar') {
+      e.preventDefault();
+      onKeyboardSelect?.(id, e.metaKey || e.ctrlKey || e.shiftKey);
+      return;
+    }
+
+    if ((key === 'm' || key === 'M') && (onOpenMenu || menuContent)) {
+      e.preventDefault();
+      onFocus?.(id);
+      onOpenMenu?.(isMenuOpen ? '' : id);
+      return;
+    }
+
+    let dx = 0;
+    let dy = 0;
+    if (key === 'ArrowLeft') dx = -1;
+    else if (key === 'ArrowRight') dx = 1;
+    else if (key === 'ArrowUp') dy = -1;
+    else if (key === 'ArrowDown') dy = 1;
+    else return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    onFocus?.(id);
+
+    // Alt (Option) resizes from the SE corner; otherwise the tile moves. Shift
+    // uses the larger step for coarse positioning.
+    if (e.altKey) {
+      const nextWidth = Math.max(MIN_PANEL_WIDTH, layout.width + dx * CANVAS_RESIZE_STEP);
+      const nextHeight = Math.max(MIN_PANEL_HEIGHT, layout.height + dy * CANVAS_RESIZE_STEP);
+      onLayoutChange(id, { width: nextWidth, height: nextHeight });
+    } else {
+      const step = e.shiftKey ? CANVAS_LARGE_STEP : CANVAS_STEP;
+      onLayoutChange(id, {
+        x: layout.x + dx * step,
+        y: layout.y + dy * step,
+      });
+    }
+    onDragEnd(id);
+  }, [
+    id,
+    isMenuOpen,
+    layout.height,
+    layout.width,
+    layout.x,
+    layout.y,
+    menuContent,
+    onDragEnd,
+    onFocus,
+    onKeyboardSelect,
+    onLayoutChange,
+    onOpenMenu,
+  ]);
+
   const showMenuTrigger = Boolean(onOpenMenu || menuContent);
 
   return (
     <div
+      role="group"
+      aria-label={`${title} (${type} tile)`}
+      aria-pressed={isSelected}
+      tabIndex={isFocusTarget ? 0 : -1}
+      data-panel-id={id}
       className={cn(
         'artifact-card absolute flex flex-col',
         isDragging && 'dragging',
@@ -221,6 +315,8 @@ export function DraggablePanel({
       onPointerDown={() => onFocus?.(id)}
       onPointerEnter={() => onHoverChange?.(id)}
       onPointerLeave={() => onHoverChange?.(null)}
+      onFocus={() => onFocus?.(id)}
+      onKeyDown={handleKeyDown}
       onClick={handleContentClick}
       onDoubleClick={handleContentDoubleClick}
     >
@@ -260,12 +356,14 @@ export function DraggablePanel({
                 onOpenMenu?.(isMenuOpen ? '' : id);
               }}
             >
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
                 <path d="M10 6a2 2 0 110-4 2 2 0 010 4zM10 12a2 2 0 110-4 2 2 0 010 4zM10 18a2 2 0 110-4 2 2 0 010 4z" />
               </svg>
             </button>
             {isMenuOpen && menuContent ? (
               <div
+                role="menu"
+                aria-label={`Actions for ${title}`}
                 className="panel-menu absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-xl"
                 onPointerDown={(e) => e.stopPropagation()}
                 onClick={(e) => e.stopPropagation()}
@@ -285,6 +383,7 @@ export function DraggablePanel({
       {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => (
         <div
           key={corner}
+          aria-hidden="true"
           className={cn('resize-handle', corner)}
           onPointerDown={(e) => handleResizeStart(e, corner)}
           onPointerMove={handleResizeMove}

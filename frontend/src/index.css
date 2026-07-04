@@ -1545,3 +1545,61 @@ hr.editorial {
 .dark .selection-toolbar .toolbar-dropdown-menu button:hover {
   background: oklch(0.26 0.02 250);
 }
+
+/* ---------------------------------------------------------------------------
+   Accessibility: keyboard focus visibility
+   -------------------------------------------------------------------------- */
+
+/* Focusable canvas tiles get a clear, theme-aware focus ring. Uses
+   :focus-visible so mouse pointer-downs don't paint a ring, but keyboard focus
+   (Tab / arrow roving) always does. */
+.artifact-card:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px var(--background),
+    0 0 0 4px var(--ring),
+    0 8px 24px oklch(0.2 0.02 250 / 0.12);
+}
+
+.dark .artifact-card:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--background),
+    0 0 0 4px var(--ring),
+    0 8px 24px oklch(0 0 0 / 0.35);
+}
+
+/* Reveal resize handles when the tile has keyboard focus, matching the hover
+   affordance. (focus-within already covers inner focus.) */
+.artifact-card:focus-visible .resize-handle {
+  opacity: 1;
+}
+
+/* Generic focus ring for the group-boundary and menu triggers driven by
+   focus-visible so keyboard users always see where they are. */
+.group-boundary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------------------
+   prefers-reduced-motion: honor the OS setting for canvas animation.
+   Users who ask for reduced motion get instant transitions instead of the
+   panel-pop / slide / line-draw / toast animations.
+   -------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .artifact-card,
+  .artifact-card.dragging,
+  .artifact-card.resizing,
+  .artifact-card.group-dragging {
+    transition: none !important;
+  }
+}

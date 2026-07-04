@@ -45,4 +45,25 @@ describe('PublishDialog', () => {
     expect(screen.getByRole('button', { name: 'Publishing...' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
   });
+
+  it('is a labeled modal dialog with labeled fields', () => {
+    render(<PublishDialog {...baseProps} />);
+    expect(screen.getByRole('dialog', { name: 'Publish to Gallery' })).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByLabelText('Title')).toBeInTheDocument();
+    expect(screen.getByLabelText('Description')).toBeInTheDocument();
+  });
+
+  it('moves initial focus into the dialog on open', () => {
+    render(<PublishDialog {...baseProps} />);
+    // First focusable inside the dialog is the Title input.
+    expect(document.activeElement).toBe(screen.getByLabelText('Title'));
+  });
+
+  it('closes on Escape when not publishing', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    render(<PublishDialog {...baseProps} onClose={onClose} />);
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });

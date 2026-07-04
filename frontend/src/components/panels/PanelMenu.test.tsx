@@ -29,27 +29,27 @@ const filePanel = { id: 'p2', type: 'editor', filePath: 'doc.md' } as WorkspaceP
 describe('PanelMenu', () => {
   it('always offers ask/minimize/maximize/remove', () => {
     render(<PanelMenu {...makeProps(tablePanel)} />);
-    expect(screen.getByRole('button', { name: 'Ask About This Tile' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Minimize' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Maximize' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Ask About This Tile' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Minimize' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Maximize' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeInTheDocument();
   });
 
   it('offers CSV and JSON export for tables', () => {
     render(<PanelMenu {...makeProps(tablePanel)} />);
-    expect(screen.getByRole('button', { name: 'Export Data as CSV' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Export Data as JSON' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Export Data as CSV' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Export Data as JSON' })).toBeInTheDocument();
   });
 
   it('offers file actions only for file-backed panels', () => {
     render(<PanelMenu {...makeProps(filePanel)} />);
-    expect(screen.getByRole('button', { name: 'Show in Workspace Files' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Open in New Tab' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Show in Workspace Files' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Open in New Tab' })).toBeInTheDocument();
   });
 
   it('does not show file actions for a non-file panel', () => {
     render(<PanelMenu {...makeProps(tablePanel)} />);
-    expect(screen.queryByRole('button', { name: 'Show in Workspace Files' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: 'Show in Workspace Files' })).toBeNull();
   });
 
   it('closes the menu after asking about the tile', async () => {
@@ -57,7 +57,7 @@ describe('PanelMenu', () => {
     const onCloseMenu = vi.fn();
     const user = userEvent.setup();
     render(<PanelMenu {...makeProps(tablePanel, { onAskAboutTile, onCloseMenu })} />);
-    await user.click(screen.getByRole('button', { name: 'Ask About This Tile' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Ask About This Tile' }));
     expect(onAskAboutTile).toHaveBeenCalledWith('p1');
     expect(onCloseMenu).toHaveBeenCalledOnce();
   });
@@ -67,7 +67,7 @@ describe('PanelMenu', () => {
     const onClearContextualDraft = vi.fn();
     const user = userEvent.setup();
     render(<PanelMenu {...makeProps(tablePanel, { onMinimize, onClearContextualDraft })} />);
-    await user.click(screen.getByRole('button', { name: 'Minimize' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Minimize' }));
     expect(onMinimize).toHaveBeenCalledWith('p1');
     expect(onClearContextualDraft).toHaveBeenCalledOnce();
   });
