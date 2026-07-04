@@ -5,6 +5,8 @@ export interface WorkspaceRecord {
   createdAt: string;
   updatedAt: string;
   galleryId?: string;
+  /** Optional per-workspace model override (a `@cf/...` catalog id). */
+  model?: string;
 }
 
 export interface PanelLayout {

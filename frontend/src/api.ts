@@ -92,9 +92,25 @@ export async function importWorkspaceBundle(file: File): Promise<{ workspaceId: 
   return parseJson<{ workspaceId: string; workspace: WorkspaceRecord }>(response);
 }
 
+export interface ModelCatalogEntry {
+  id: string;
+  recommended: boolean;
+}
+
+export interface ModelCatalog {
+  models: ModelCatalogEntry[];
+  source: 'proxy' | 'fallback';
+  default: string;
+}
+
+export async function fetchModels(): Promise<ModelCatalog> {
+  const response = await fetch('/api/models', { credentials: 'include' });
+  return parseJson<ModelCatalog>(response);
+}
+
 export async function updateWorkspace(
   workspaceId: string,
-  input: { name?: string; description?: string }
+  input: { name?: string; description?: string; model?: string }
 ): Promise<WorkspaceRecord> {
   const response = await fetch(`/api/workspaces/${workspaceId}`, {
     method: 'PATCH',

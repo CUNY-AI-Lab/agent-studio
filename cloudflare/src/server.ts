@@ -22,6 +22,9 @@ import {
   sanitizeRelativePath,
 } from './lib/files';
 import { createOpaqueId, createWorkspaceAgentName } from './lib/ids';
+import { fetchCailModels } from './lib/cail-models';
+import { resolveCailModelName } from './lib/cail-model';
+import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
 import { isAllowedUpload } from './lib/upload-validation';
 import {
@@ -37,10 +40,6 @@ const createWorkspaceSchema = z.object({
   description: z.string().max(2000).optional(),
 });
 
-const patchWorkspaceSchema = z.object({
-  name: z.string().trim().min(1).max(200).optional(),
-  description: z.string().max(2000).optional(),
-});
 
 const publishWorkspaceSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -153,6 +152,20 @@ app.use('/api/*', sessionMiddleware);
 app.get('/health', (c) => c.json({ ok: true, service: 'agent-studio' }));
 
 app.get('/api/session', (c) => c.json({ sessionId: requireSession(c) }));
+
+app.get('/api/models', async (c) => {
+  requireSession(c);
+  const { models, source } = await fetchCailModels({
+    env: c.env,
+    identityJwt: cailIdentityJwt(c),
+  });
+  const recommended = models.find((model) => model.recommended) ?? models[0];
+  return c.json({
+    models,
+    source,
+    default: recommended?.id ?? resolveCailModelName(c.env),
+  });
+});
 
 app.get('/api/workspaces', async (c) => {
   const sessionId = requireSession(c);
@@ -480,11 +493,16 @@ app.patch('/api/workspaces/:id', async (c) => {
     return c.json({ error: 'Workspace not found' }, 404);
   }
 
-  const patch = patchWorkspaceSchema.parse(await c.req.json().catch(() => ({})));
+  const parsed = patchWorkspaceSchema.safeParse(await c.req.json().catch(() => ({})));
+  if (!parsed.success) {
+    return c.json({ error: 'Invalid workspace update' }, 400);
+  }
+  const patch = parsed.data;
   const nextWorkspace = {
     ...workspace,
     ...(patch.name !== undefined ? { name: patch.name } : {}),
     ...(patch.description !== undefined ? { description: patch.description } : {}),
+    ...(patch.model !== undefined ? { model: patch.model } : {}),
     updatedAt: new Date().toISOString(),
   };
 

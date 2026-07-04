@@ -49,6 +49,7 @@ import {
   fetchWorkspace,
   fetchWorkspaceFiles,
   fetchWorkspaces,
+  fetchModels,
   getGalleryPanelPreviewUrl,
   getGalleryFileUrl,
   getWorkspacePanelPreviewUrl,
@@ -60,6 +61,7 @@ import {
   uploadWorkspaceFiles,
   handleAuthRequired,
 } from './api';
+import type { ModelCatalog } from './api';
 import type {
   DownloadRequest,
   GalleryItem,
@@ -94,6 +96,11 @@ function inferPanelLayout(panel: WorkspacePanel, index: number) {
   const x = panel.layout?.x ?? 32 + (index % 3) * 392;
   const y = panel.layout?.y ?? 32 + Math.floor(index / 3) * 252;
   return { x, y, width, height };
+}
+
+/** Strip the `@cf/vendor/` prefix so the picker shows a short model name. */
+function modelDisplayName(id: string): string {
+  return id.split('/').pop() || id;
 }
 
 type CanvasPanelLayout = ReturnType<typeof inferPanelLayout>;
@@ -1452,6 +1459,8 @@ function WorkspaceShell({
   const [deletingWorkspace, setDeletingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState(workspace.workspace.name);
   const [workspaceDescription, setWorkspaceDescription] = useState(workspace.workspace.description);
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [workspaceModel, setWorkspaceModel] = useState<string | undefined>(workspace.workspace.model);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [publishTitle, setPublishTitle] = useState(workspace.workspace.name);
   const [publishDescription, setPublishDescription] = useState(workspace.workspace.description);
@@ -1605,6 +1614,7 @@ function WorkspaceShell({
     workspaceFilesRef.current = workspace.files;
     setWorkspaceName(workspace.workspace.name);
     setWorkspaceDescription(workspace.workspace.description);
+    setWorkspaceModel(workspace.workspace.model);
     setPublishModalOpen(false);
     setPublishTitle(workspace.workspace.name);
     setPublishDescription(workspace.workspace.description);
@@ -1651,6 +1661,20 @@ function WorkspaceShell({
       void clearWorkspaceDownloads(workspace.workspace.id);
     }
   }, [closeContextualChat, workspace]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchModels()
+      .then((catalog) => {
+        if (!cancelled) setModelCatalog(catalog);
+      })
+      .catch(() => {
+        // Non-fatal: the picker just stays hidden if the catalog can't load.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace.workspace.id]);
 
   const artifactPanels = useMemo(
     () => workspaceState.panels.filter((panel) => panel.type !== 'chat'),
@@ -3465,6 +3489,19 @@ function WorkspaceShell({
     }
   }, [refreshWorkspace, workspace.workspace.id, workspace.workspace.name, workspaceDescription, workspaceName]);
 
+  const handleModelChange = useCallback(async (modelId: string) => {
+    const previous = workspaceModel;
+    setWorkspaceModel(modelId);
+    setError(null);
+    try {
+      await updateWorkspace(workspace.workspace.id, { model: modelId });
+      await refreshWorkspace();
+    } catch (nextError) {
+      setWorkspaceModel(previous);
+      setError(nextError instanceof Error ? nextError.message : 'Failed to change model');
+    }
+  }, [refreshWorkspace, workspace.workspace.id, workspaceModel]);
+
   const handleFileDelete = useCallback(async (file: WorkspaceFileInfo) => {
     setError(null);
     try {
@@ -4230,6 +4267,27 @@ function WorkspaceShell({
             <span className="text-xs text-muted-foreground font-mono mr-2">
               {workspaceState.panels.filter((p) => p.type !== 'chat').length}T · {workspaceFileEntries.length}F
             </span>
+            {modelCatalog ? (() => {
+              const effectiveModel = workspaceModel ?? modelCatalog.default;
+              // Keep a stored override selectable even if it dropped from the catalog.
+              const options = modelCatalog.models.some((model) => model.id === effectiveModel)
+                ? modelCatalog.models
+                : [{ id: effectiveModel, recommended: false }, ...modelCatalog.models];
+              return (
+                <select
+                  className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 hover:text-foreground transition-colors cursor-pointer outline-none"
+                  value={effectiveModel}
+                  onChange={(event) => void handleModelChange(event.target.value)}
+                  title={`Model: ${effectiveModel}`}
+                >
+                  {options.map((model) => (
+                    <option key={model.id} value={model.id} title={model.id}>
+                      {modelDisplayName(model.id)}{model.recommended ? ' (recommended)' : ''}
+                    </option>
+                  ))}
+                </select>
+              );
+            })() : null}
             <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors" onClick={refreshWorkspace} title="Refresh">
               <RotateCcw size={16} />
             </button>

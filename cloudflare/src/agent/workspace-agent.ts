@@ -332,8 +332,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels);
       const codemode = this.createCodeModeTool(hostTools);
       const modelTools = this.buildModelTools(hostTools);
-      const modelName = resolveCailModelName(this.env);
-      const model = createCailModel({ env: this.env, identityJwt: this.cailIdentityJwt });
+      // Per-workspace override wins; otherwise the env default. The same name
+      // feeds observability so traces reflect the model actually called.
+      const modelName = workspace.model || resolveCailModelName(this.env);
+      const model = createCailModel({
+        env: this.env,
+        identityJwt: this.cailIdentityJwt,
+        model: workspace.model,
+      });
       const scopedPanelTraceIds = scopedPanels.map((panel) => panel.id);
 
       this.ensureObservabilityRequest(requestId, modelName, scopedPanelTraceIds);
