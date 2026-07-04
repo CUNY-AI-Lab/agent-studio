@@ -1,5 +1,5 @@
 import { getAgentByName, routeAgentRequest } from 'agents';
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { WorkspaceAgent } from './agent/workspace-agent';
 import type { WorkspaceFileInfo, WorkspacePanel } from './domain/workspace';
@@ -22,7 +22,7 @@ import {
   sanitizeRelativePath,
 } from './lib/files';
 import { createOpaqueId, createWorkspaceAgentName } from './lib/ids';
-import { requireSession, sessionMiddleware } from './lib/session';
+import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
 import {
   createDefaultWorkspace,
   deleteWorkspace,
@@ -89,7 +89,7 @@ const layoutSchema = z.object({
 
 const app = new Hono<{
   Bindings: Env;
-  Variables: { sessionId: string };
+  Variables: SessionVariables;
 }>();
 
 function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
@@ -97,6 +97,21 @@ function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
     env.WorkspaceAgent,
     createWorkspaceAgentName(sessionId, workspaceId)
   );
+}
+
+/**
+ * Push the caller's verified CAIL identity JWT into the workspace DO so its
+ * model calls (which run over the client WebSocket, where the gateway header
+ * is unavailable) can authenticate to the model proxy. No-op when anonymous.
+ */
+async function primeAgentCredential(
+  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+  agent: Awaited<ReturnType<typeof getWorkspaceAgent>>
+): Promise<void> {
+  const jwt = cailIdentityJwt(c);
+  if (jwt) {
+    await agent.setCailCredential(jwt);
+  }
 }
 
 function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFileInfo[] {
@@ -215,6 +230,7 @@ app.post('/api/gallery/:id', async (c) => {
   await putWorkspace(c.env, sessionId, workspace);
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.syncWorkspace(workspace, sessionId);
+  await primeAgentCredential(c, agent);
 
   const galleryFiles = await listGalleryFilesRecursive(c.env, sourceGalleryId);
   await Promise.all(
@@ -261,6 +277,7 @@ app.post('/api/workspaces', async (c) => {
   await putWorkspace(c.env, sessionId, workspace);
   const agent = await getWorkspaceAgent(c.env, sessionId, workspace.id);
   await agent.syncWorkspace(workspace, sessionId);
+  await primeAgentCredential(c, agent);
 
   return c.json({ workspace }, 201);
 });
@@ -304,6 +321,7 @@ app.post('/api/workspaces/import', async (c) => {
     await putWorkspace(c.env, sessionId, workspace);
     agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
     await agent.syncWorkspace(workspace, sessionId);
+    await primeAgentCredential(c, agent);
     await Promise.all(
       bundle.files.map((file) => agent!.writeWorkspaceFileContent(
         sanitizeRelativePath(file.path),
@@ -338,6 +356,7 @@ app.get('/api/workspaces/:id', async (c) => {
   const agentName = createWorkspaceAgentName(sessionId, workspaceId);
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.syncWorkspace(workspace, sessionId);
+  await primeAgentCredential(c, agent);
   const [state, messages, files, runtime] = await Promise.all([
     agent.getSnapshot(),
     agent.getMessages(),

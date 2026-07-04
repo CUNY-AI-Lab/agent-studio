@@ -2,13 +2,39 @@ import { getCookie, setCookie } from 'hono/cookie';
 import type { Context, MiddlewareHandler } from 'hono';
 import { createOpaqueId } from './ids';
 import type { Env } from '../env';
+import {
+  cailAuthRequiredResponse,
+  cailIdentityRequired,
+  getCailIdentityFromRequest,
+  type CailIdentity,
+} from './cail-identity';
 
 export const SESSION_COOKIE_NAME = 'agent-studio-session';
 
+export type SessionVariables = {
+  sessionId: string;
+  /** Verified CAIL identity, or null when the request is anonymous. */
+  cailIdentity: CailIdentity | null;
+  /** Raw X-CAIL-Identity-JWT to forward to the model proxy, or null. */
+  cailIdentityJwt: string | null;
+};
+
 type SessionContext = Context<{
   Bindings: Env;
-  Variables: { sessionId: string };
+  Variables: SessionVariables;
 }>;
+
+/**
+ * Derive a stable session id from the CAIL subject so all per-user data keys
+ * to the pseudonymous subject (never email). The subject ("cail-<hex>") is
+ * folded into the worker's opaque-id shape via SHA-256 so it slots into the
+ * existing 32-hex session/agent-name machinery unchanged.
+ */
+async function sessionIdForSubject(subject: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`cail:${subject}`));
+  const bytes = new Uint8Array(digest).slice(0, 16);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 function hexToBuffer(value: string): ArrayBuffer {
   if (!/^[a-f0-9]+$/i.test(value) || value.length % 2 !== 0) {
@@ -61,26 +87,46 @@ async function verifySignedValue(value: string, secret: string): Promise<string 
 
 export const sessionMiddleware: MiddlewareHandler<{
   Bindings: Env;
-  Variables: { sessionId: string };
+  Variables: SessionVariables;
 }> = async (c, next) => {
-  const existing = getCookie(c, SESSION_COOKIE_NAME);
   const sessionSecret = c.env.SESSION_SECRET;
-
   if (!sessionSecret) {
     throw new Error('SESSION_SECRET is required');
   }
 
-  let sessionId = existing ? await verifySignedValue(existing, sessionSecret) : null;
-  if (!sessionId) {
-    sessionId = createOpaqueId();
-    const signed = await signValue(sessionId, sessionSecret);
-    setCookie(c, SESSION_COOKIE_NAME, signed, {
-      httpOnly: true,
-      sameSite: 'Lax',
-      secure: new URL(c.req.url).protocol === 'https:',
-      path: '/',
-      maxAge: 60 * 60 * 24 * 7,
-    });
+  // Identity comes ONLY from a verified X-CAIL-Identity-JWT — bare X-CAIL-*
+  // headers are never trusted (this worker is reachable on workers.dev).
+  const verified = await getCailIdentityFromRequest(c.req.raw, c.env);
+
+  // Fail closed on protected surfaces when enforcement is on and the request
+  // is anonymous. Health checks are public and are not under /api/*.
+  if (!verified && cailIdentityRequired(c.env)) {
+    return cailAuthRequiredResponse();
+  }
+
+  let sessionId: string;
+  if (verified) {
+    // Key all per-user data by the stable pseudonymous CAIL subject.
+    sessionId = await sessionIdForSubject(verified.identity.subject);
+    c.set('cailIdentity', verified.identity);
+    c.set('cailIdentityJwt', verified.token);
+  } else {
+    // Anonymous / pre-rollout: fall back to the signed opaque cookie session.
+    const existing = getCookie(c, SESSION_COOKIE_NAME);
+    sessionId = existing ? (await verifySignedValue(existing, sessionSecret)) ?? '' : '';
+    if (!sessionId) {
+      sessionId = createOpaqueId();
+      const signed = await signValue(sessionId, sessionSecret);
+      setCookie(c, SESSION_COOKIE_NAME, signed, {
+        httpOnly: true,
+        sameSite: 'Lax',
+        secure: new URL(c.req.url).protocol === 'https:',
+        path: '/',
+        maxAge: 60 * 60 * 24 * 7,
+      });
+    }
+    c.set('cailIdentity', null);
+    c.set('cailIdentityJwt', null);
   }
 
   c.set('sessionId', sessionId);
@@ -89,4 +135,8 @@ export const sessionMiddleware: MiddlewareHandler<{
 
 export function requireSession(c: SessionContext): string {
   return c.get('sessionId');
+}
+
+export function cailIdentityJwt(c: SessionContext): string | null {
+  return c.get('cailIdentityJwt');
 }

@@ -13,7 +13,6 @@ import {
   tool,
   type UIMessage,
 } from 'ai';
-import { createOpenRouter } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
 import {
   DEFAULT_WORKSPACE_STATE,
@@ -27,6 +26,7 @@ import {
   type WorkspaceState,
 } from '../domain/workspace';
 import type { Env } from '../env';
+import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import { buildWorkspaceAgentSystemPrompt } from './instructions';
 import {
   deleteByPrefix,
@@ -213,17 +213,46 @@ function summarizeChunkData(chunk: { type: string } & Record<string, unknown>): 
   }
 }
 
+const CAIL_CREDENTIAL_STORAGE_KEY = 'cail:identity-jwt';
+
 export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   initialState: WorkspaceState = DEFAULT_WORKSPACE_STATE;
   private runtimeWorkspace?: RuntimeWorkspace;
   private observabilityEvents: WorkspaceObservabilityEvent[] = [];
   private observabilityRequests = new Map<string, WorkspaceObservabilityRequest>();
   private observabilitySequence = 0;
+  /**
+   * The caller's verified X-CAIL-Identity-JWT, forwarded to the model proxy as
+   * the model-call credential. Set server-side (never over the client WebSocket,
+   * which cannot carry the gateway-injected header) via setCailCredential, and
+   * kept in DO storage so it survives hibernation. Never broadcast in state.
+   */
+  private cailIdentityJwt: string | null = null;
 
   async onStart() {
     if (!this.state.workspace) {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
+    if (this.cailIdentityJwt === null) {
+      const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
+      if (typeof stored === 'string') {
+        this.cailIdentityJwt = stored;
+      }
+    }
+  }
+
+  /**
+   * Store the caller's identity JWT for use as the model-proxy credential.
+   * Called server-side from the worker (where the gateway-injected header is
+   * available) on every workspace open. A null token is ignored so an
+   * anonymous read never clears a live credential mid-session.
+   */
+  @callable()
+  async setCailCredential(identityJwt: string | null): Promise<void> {
+    if (!identityJwt) return;
+    if (identityJwt === this.cailIdentityJwt) return;
+    this.cailIdentityJwt = identityJwt;
+    await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
   }
 
   async syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void> {
@@ -257,8 +286,24 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const sessionId = this.requireSessionId();
     const requestId = options?.requestId ?? 'unknown';
 
+    if (!this.cailIdentityJwt) {
+      // No verified CAIL credential reached this workspace: the model proxy
+      // has no way to authenticate or attribute spend. Surface the CAIL
+      // authentication_required envelope rather than calling out anonymously.
+      this.finalizeObservabilityRequest(requestId, 'error', 'No CAIL identity credential for model call', {
+        error: 'authentication_required',
+      }, 'error');
+      return new Response(
+        JSON.stringify({
+          error: 'authentication_required',
+          login_url: '/login',
+          message: 'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
+        }),
+        { status: 401, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+
     try {
-      const openrouter = createOpenRouter({ apiKey: this.env.OPENROUTER_API_KEY });
       const scopedPanelIds = Array.isArray(options?.body?.scopePanelIds)
         ? options.body.scopePanelIds.filter((value): value is string => typeof value === 'string')
         : [];
@@ -285,7 +330,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels);
       const codemode = this.createCodeModeTool(hostTools);
       const modelTools = this.buildModelTools(hostTools);
-      const modelName = this.env.OPENROUTER_MODEL || 'anthropic/claude-sonnet-4';
+      const modelName = resolveCailModelName(this.env);
+      const model = createCailModel({ env: this.env, identityJwt: this.cailIdentityJwt });
       const scopedPanelTraceIds = scopedPanels.map((panel) => panel.id);
 
       this.ensureObservabilityRequest(requestId, modelName, scopedPanelTraceIds);
@@ -297,7 +343,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
 
       const result = streamText({
-        model: openrouter(modelName),
+        model,
         abortSignal: options?.abortSignal,
         system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),
         messages: pruneMessages({
