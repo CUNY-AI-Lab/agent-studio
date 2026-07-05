@@ -89,6 +89,14 @@ export async function publishWorkspace(args: {
       });
     });
 
+  // §3¾ defense-in-depth: an inline `type:'preview'` panel (content, no
+  // filePath) carries active HTML that the public gallery preview route serves
+  // top-level. We intentionally KEEP the content rather than dropping it here: a
+  // live HTML preview is the legitimate published-workspace feature, so stripping
+  // it would break sharing a working preview. The containment is the served CSP
+  // (`sandbox allow-scripts`, no allow-same-origin in previewServingHeaders),
+  // which forces an opaque origin so the served script can't reach same-origin
+  // state even on a direct top-level open. See lib/file-serving.ts §3¾.
   await Promise.all([
     args.env.WORKSPACE_FILES.put(
       galleryManifestKey(id),

@@ -12,7 +12,7 @@ import {
   unpublishGalleryItem,
 } from './lib/gallery';
 import { createWorkspaceExportBundle } from './lib/export';
-import { decodeWorkspaceImportFile, parseWorkspaceImportBundle } from './lib/import';
+import { decodeWorkspaceImportFile, panelSchema, parseWorkspaceImportBundle } from './lib/import';
 import { clearWorkspaceDownloads, getWorkspaceDownloads } from './lib/downloads';
 import {
   deleteWorkspaceFiles,
@@ -29,7 +29,7 @@ import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariabl
 import { csrfMiddleware, deriveCsrfToken, setCsrfCookie, wsOriginAllowed } from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { isAllowedUpload } from './lib/upload-validation';
-import { fileServingHeaders } from './lib/file-serving';
+import { fileServingHeaders, previewServingHeaders } from './lib/file-serving';
 import {
   createDefaultWorkspace,
   deleteWorkspace,
@@ -140,26 +140,6 @@ function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFi
     });
 }
 
-function previewHeaders(): Record<string, string> {
-  return {
-    'Content-Type': 'text/html; charset=utf-8',
-    'Cross-Origin-Embedder-Policy': 'unsafe-none',
-    'Cross-Origin-Resource-Policy': 'cross-origin',
-    'Cross-Origin-Opener-Policy': 'unsafe-none',
-    'Content-Security-Policy': [
-      "default-src 'self'",
-      "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net https://esm.sh",
-      "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net https://fonts.googleapis.com",
-      "font-src 'self' data: https://fonts.gstatic.com https://cdnjs.cloudflare.com https://unpkg.com https://cdn.jsdelivr.net",
-      "img-src 'self' data: blob: https: http:",
-      "connect-src 'self' https: http:",
-      "frame-ancestors 'self'",
-    ].join('; '),
-    'Referrer-Policy': 'no-referrer',
-    'Cache-Control': 'no-store',
-  };
-}
-
 app.use('/api/*', sessionMiddleware);
 // CSRF enforcement runs after sessionMiddleware (it keys the fallback token by
 // the session id that middleware sets) and before rate limiting / handlers, so
@@ -232,7 +212,7 @@ app.get('/api/gallery/:id/panels/:panelId/preview', async (c) => {
 
   return new Response(panel.content, {
     status: 200,
-    headers: previewHeaders(),
+    headers: previewServingHeaders(),
   });
 });
 
@@ -446,7 +426,7 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
 
   return new Response(panel.content, {
     status: 200,
-    headers: previewHeaders(),
+    headers: previewServingHeaders(),
   });
 });
 
@@ -782,11 +762,19 @@ app.post('/api/workspaces/:id/panels', async (c) => {
     return c.json({ error: 'Workspace not found' }, 404);
   }
 
+  // Shape-validate the panel with the same discriminated-union schema the
+  // import path uses (lib/import.ts panelSchema) — a single source of truth so a
+  // third divergent copy can't drift. Rejects unknown types and unshaped fields
+  // (400) instead of the old `typeof id/type === 'string'` check, which let an
+  // attacker plant an arbitrary `type:'preview'` panel with a `<script>` content
+  // body. The served CSP (previewServingHeaders) is the real containment; this
+  // trims the inject surface as defense-in-depth.
   const body = await c.req.json().catch(() => null);
-  const panel = body?.panel as WorkspacePanel | undefined;
-  if (!panel || typeof panel !== 'object' || typeof panel.id !== 'string' || typeof panel.type !== 'string') {
+  const parsed = panelSchema.safeParse(body?.panel);
+  if (!parsed.success) {
     return c.json({ error: 'Invalid panel payload' }, 400);
   }
+  const panel = parsed.data as WorkspacePanel;
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.syncWorkspace(workspace, sessionId);
   const state = await agent.addPanel(panel);

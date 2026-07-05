@@ -26,7 +26,7 @@ const panelBaseSchema = z.object({
   sourcePanelId: z.string().optional(),
 });
 
-const panelSchema = z.discriminatedUnion('type', [
+export const panelSchema = z.discriminatedUnion('type', [
   panelBaseSchema.extend({
     type: z.literal('chat'),
   }).strict(),
