@@ -13,6 +13,21 @@ function parseSetCookie(setCookie) {
   return first || null;
 }
 
+// The CSRF token is delivered via a Set-Cookie header (fleet contract §3¾ rule 3
+// delivery amendment, 2026-07-05) named cail_csrf_agentstudio — never in the
+// response body. A browser page reads it from document.cookie; this non-browser
+// client parses the Set-Cookie header directly (the correct equivalent here).
+const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
+
+function parseCsrfCookie(setCookie) {
+  if (!setCookie) return null;
+  // A single fetch() collapses multiple Set-Cookie headers into one comma-joined
+  // string; cookie-pair commas don't occur here (values are hex + attributes),
+  // so a name-anchored match is unambiguous.
+  const match = setCookie.match(new RegExp(`${CSRF_COOKIE_NAME}=([^;,\\s]+)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 export function parseArgs(argv) {
   const args = {};
   for (let index = 0; index < argv.length; index += 1) {
@@ -48,6 +63,12 @@ export class SessionClient {
     if (parsed) {
       this.cookie = parsed;
     }
+    // Capture the CSRF token from its Set-Cookie header whenever present (the
+    // /api/session bootstrap sets it). Delivered via cookie, never body.
+    const csrf = parseCsrfCookie(setCookie);
+    if (csrf) {
+      this.csrfToken = csrf;
+    }
   }
 
   async fetch(path, init = {}) {
@@ -82,10 +103,9 @@ export class SessionClient {
   }
 
   async ensureSession() {
+    // The CSRF token is captured from the Set-Cookie header in updateCookie()
+    // (the amendment moved it out of the body); the body carries only sessionId.
     const payload = await this.json('/api/session');
-    if (payload.csrfToken) {
-      this.csrfToken = payload.csrfToken;
-    }
     return payload.sessionId;
   }
 }

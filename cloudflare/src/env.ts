@@ -25,6 +25,14 @@ export interface Env {
   // browser-visible origin differs from the worker's request URL. See
   // src/lib/csrf.ts.
   CAIL_CANONICAL_ORIGIN?: string;
+  // Base path this tool is served under, used as the Path scope of the
+  // `cail_csrf_agentstudio` CSRF cookie (fleet contract §3¾ rule 3 delivery
+  // amendment, 2026-07-05). Path-scoping is what keeps sibling tools / user
+  // content on tools.ailab from reading the token via document.cookie. Defaults
+  // to '/'; production on tools.ailab sets '/agent-studio'. '/' is acceptable
+  // locally / on workers.dev because there are no same-origin siblings there.
+  // See src/lib/csrf.ts.
+  CAIL_BASE_PATH?: string;
   GIT_AUTH_TOKEN?: string;
   // CUNY Primo (Ex Libris) search API. When configured, web_fetch attaches
   // apikey/vid/scope server-side for the Primo host — the key never enters

@@ -370,6 +370,27 @@ export function cookieFrom(response) {
   return match ? `agent-studio-session=${match[1]}` : null;
 }
 
+export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
+
+/**
+ * Extract the CSRF token from the Set-Cookie header (fleet contract §3¾ rule 3
+ * delivery amendment, 2026-07-05). This is how a browser page — and this test
+ * harness — receives it; the token is never in the response body. Prefers
+ * getSetCookie() (undici returns each Set-Cookie unmerged) and falls back to the
+ * comma-joined .get('set-cookie').
+ */
+export function csrfCookieFrom(response) {
+  const headers =
+    typeof response.headers.getSetCookie === 'function'
+      ? response.headers.getSetCookie()
+      : [response.headers.get('set-cookie') || ''];
+  for (const header of headers) {
+    const match = header.match(new RegExp(`${CSRF_COOKIE_NAME}=([^;,\\s]+)`));
+    if (match) return decodeURIComponent(match[1]);
+  }
+  return null;
+}
+
 const CSRF_HEADER = 'X-CAIL-CSRF';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -379,8 +400,9 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  * Session instance behaves like one browser.
  *
  * It also mirrors a first-party page's CSRF behavior (fleet contract §3¾): it
- * captures the per-session token from the /api/session bootstrap and attaches
- * it as X-CAIL-CSRF on every state-changing request. With neither Sec-Fetch-Site
+ * captures the per-session token from the /api/session bootstrap's Set-Cookie
+ * header (the delivery channel; never the body) and attaches it as X-CAIL-CSRF
+ * on every state-changing request. With neither Sec-Fetch-Site
  * nor Origin set, the worker falls back to that token — so ordinary route tests
  * pass through the enforced path rather than around it. A test exercising the
  * negative cases passes `init.rawCsrf` (see below) to override.
@@ -418,11 +440,11 @@ export class Session {
     );
     const next = cookieFrom(response);
     if (next) this.cookie = next;
-    // Capture the token the first time /api/session hands it back.
+    // Capture the token from the Set-Cookie header (delivery amendment) the first
+    // time /api/session sets it — the same channel a browser page reads.
     if (this.csrfToken === null && appPath.startsWith('/api/session') && response.ok) {
-      const clone = response.clone();
-      const body = await clone.json().catch(() => ({}));
-      if (body && typeof body.csrfToken === 'string') this.csrfToken = body.csrfToken;
+      const token = csrfCookieFrom(response);
+      if (token) this.csrfToken = token;
     }
     return response;
   }

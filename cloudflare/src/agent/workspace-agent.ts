@@ -291,9 +291,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    *     blocks a cross-origin upgrade before routeAgentRequest; this covers any
    *     future path that reaches the DO without that guard.
    *   * CSRF token (rules 3 & 4): the first-party page connects with
-   *     `?csrfToken=<token>`, the per-session token issued via /api/session. A
-   *     sibling tool on the same host is same-origin but cannot read that token,
-   *     so it cannot open a mutating socket. A connection that fails either
+   *     `?csrfToken=<token>`. The browser cannot set custom headers on a WS
+   *     upgrade, so the token rides the query string; its SOURCE is the
+   *     path-scoped cail_csrf_agentstudio cookie the page reads from
+   *     document.cookie (delivery amendment 2026-07-05 — the token is no longer
+   *     in any response body). A sibling tool on the same host is same-origin
+   *     but, being outside our cookie's path prefix, cannot read that token, so
+   *     it cannot open a mutating socket. A connection that fails either
    *     check is closed (1008) — every message on this socket, chat or RPC,
    *     mutates or spends, so there is no read-only-only client to preserve.
    *

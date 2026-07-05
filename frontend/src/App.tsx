@@ -220,8 +220,11 @@ function WorkspaceShell({
     agent: workspace.agent.className,
     name: workspace.agent.name,
     // Per-connection CSRF token on the WebSocket upgrade (fleet contract §3¾
-    // rule 4). The DO verifies it once at accept and closes the socket if it is
-    // missing/invalid; a sibling tool is same-origin but cannot read this token.
+    // rule 4). ensureCsrfToken() sources it from the path-scoped
+    // cail_csrf_agentstudio cookie (delivery amendment); the browser can't set a
+    // custom header on a WS upgrade, so it rides the query string. The DO
+    // verifies it once at accept and closes the socket if it is missing/invalid;
+    // a sibling tool is same-origin but cannot read this token.
     query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
       setWorkspaceState(state);

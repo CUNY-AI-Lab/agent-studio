@@ -17,6 +17,14 @@ CAIL_IDENTITY_JWT_SECRET=
 # CAIL_SSO_MODE=enforce lands on the gateway.
 CAIL_REQUIRE_IDENTITY=false
 
+# Base path this tool is served under (fleet contract §3¾ rule 3 delivery
+# amendment). Scopes the Path of the CSRF cookie (cail_csrf_agentstudio) so
+# sibling tools / user content on tools.ailab can't read the token via
+# document.cookie. Production on tools.ailab sets /agent-studio; leave unset
+# ('/' default) locally / on workers.dev, where there are no same-origin
+# siblings. See src/lib/csrf.ts.
+CAIL_BASE_PATH=
+
 GIT_AUTH_TOKEN=
 
 # CUNY Primo (Ex Libris) search API — optional. When set, web_fetch attaches

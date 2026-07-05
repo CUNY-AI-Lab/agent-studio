@@ -13,14 +13,39 @@ function mockFetch(impl: (input: RequestInfo | URL, init?: RequestInit) => Respo
   return spy;
 }
 
-function sessionResponse(token = 'a'.repeat(64)) {
-  return new Response(JSON.stringify({ sessionId: 'deadbeef'.repeat(4), csrfToken: token }), {
+/**
+ * Stub document.cookie (delivery amendment 2026-07-05: the token arrives via a
+ * path-scoped Set-Cookie and the page reads it from document.cookie — the JSON
+ * body no longer carries it). `set(value)` simulates the worker's Set-Cookie.
+ */
+function stubCookie(initial = '') {
+  let jar = initial;
+  vi.stubGlobal('document', {
+    get cookie() {
+      return jar;
+    },
+    set cookie(value: string) {
+      jar = value;
+    },
+  } as unknown as Document);
+  return {
+    set: (value: string) => {
+      jar = value;
+    },
+  };
+}
+
+const CSRF_COOKIE = 'cail_csrf_agentstudio';
+
+/** A body with only sessionId — the token is delivered out-of-band via cookie. */
+function sessionResponse() {
+  return new Response(JSON.stringify({ sessionId: 'deadbeef'.repeat(4) }), {
     status: 200,
     headers: { 'Content-Type': 'application/json' },
   });
 }
 
-describe('CSRF fetch helper', () => {
+describe('CSRF fetch helper (cookie delivery)', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
@@ -28,29 +53,47 @@ describe('CSRF fetch helper', () => {
     vi.unstubAllGlobals();
   });
 
-  it('ensureCsrfToken fetches /api/session once and caches the token', async () => {
+  it('ensureCsrfToken reads the token from document.cookie set by the bootstrap GET', async () => {
     const { ensureCsrfToken } = await loadApi();
-    const spy = mockFetch(() => sessionResponse('t0ken'.padEnd(64, '0')));
+    const token = 't0ken'.padEnd(64, '0');
+    const cookie = stubCookie();
+    const spy = mockFetch(() => {
+      // The worker's Set-Cookie is observed by the browser as document.cookie.
+      cookie.set(`${CSRF_COOKIE}=${token}`);
+      return sessionResponse();
+    });
 
     const first = await ensureCsrfToken();
-    const second = await ensureCsrfToken();
-
-    expect(first).toBe(second);
-    expect(spy).toHaveBeenCalledTimes(1);
+    expect(first).toBe(token);
     expect(String(spy.mock.calls[0][0])).toContain('/api/session');
   });
 
-  it('mutatingFetch attaches the X-CAIL-CSRF header with the fetched token', async () => {
+  it('ensureCsrfToken uses an already-present cookie without a network round-trip', async () => {
+    const { ensureCsrfToken } = await loadApi();
+    const token = 'c'.repeat(64);
+    stubCookie(`${CSRF_COOKIE}=${token}`);
+    const spy = mockFetch(() => sessionResponse());
+
+    const value = await ensureCsrfToken();
+    expect(value).toBe(token);
+    // Cookie was already there, so no /api/session fetch was needed.
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('mutatingFetch attaches the X-CAIL-CSRF header with the cookie token', async () => {
     const { mutatingFetch, CSRF_HEADER } = await loadApi();
     const token = 'b'.repeat(64);
+    const cookie = stubCookie();
     const spy = mockFetch((input) => {
-      if (String(input).includes('/api/session')) return sessionResponse(token);
+      if (String(input).includes('/api/session')) {
+        cookie.set(`${CSRF_COOKIE}=${token}`);
+        return sessionResponse();
+      }
       return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
     });
 
     await mutatingFetch('/api/workspaces', { method: 'POST', body: '{}' });
 
-    // Two calls: the bootstrap GET, then the mutation carrying the header.
     const mutationCall = spy.mock.calls.find((call) => String(call[0]).includes('/api/workspaces'));
     expect(mutationCall).toBeTruthy();
     const headers = new Headers(mutationCall![1]?.headers);
@@ -61,8 +104,12 @@ describe('CSRF fetch helper', () => {
 
   it('mutatingFetch preserves caller-supplied headers alongside the token', async () => {
     const { mutatingFetch, CSRF_HEADER } = await loadApi();
+    const cookie = stubCookie();
     mockFetch((input) => {
-      if (String(input).includes('/api/session')) return sessionResponse();
+      if (String(input).includes('/api/session')) {
+        cookie.set(`${CSRF_COOKIE}=${'d'.repeat(64)}`);
+        return sessionResponse();
+      }
       return new Response('{}', { status: 200 });
     });
 
@@ -78,13 +125,18 @@ describe('CSRF fetch helper', () => {
     expect(headers.get(CSRF_HEADER)).toBeTruthy();
   });
 
-  it('a failed bootstrap is not cached and is retried on the next call', async () => {
+  it('a bootstrap that sets no cookie rejects and is not cached (retried next call)', async () => {
     const { ensureCsrfToken } = await loadApi();
+    const cookie = stubCookie();
     let attempt = 0;
     mockFetch(() => {
       attempt += 1;
-      if (attempt === 1) return new Response('nope', { status: 500 });
-      return sessionResponse('recovered'.padEnd(64, '0'));
+      if (attempt === 1) {
+        // First bootstrap fails to set the cookie -> ensure must throw.
+        return sessionResponse();
+      }
+      cookie.set(`${CSRF_COOKIE}=${'recovered'.padEnd(64, '0')}`);
+      return sessionResponse();
     });
 
     await expect(ensureCsrfToken()).rejects.toThrow();

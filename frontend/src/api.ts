@@ -33,31 +33,57 @@ export function handleAuthRequired(status: number, payload: unknown): boolean {
 
 /**
  * Per-session CSRF token (fleet contract §3¾ rule 3). The worker HMAC-derives it
- * from the session and hands it back on the /api/session bootstrap GET; the
- * frontend echoes it in X-CAIL-CSRF on every mutation and passes it as the
- * WebSocket connect token. A sibling tool on the same host is same-origin but
- * cannot read this value, which is what isolates siblings (the origin check
- * alone cannot). Cached for the page's lifetime and fetched at most once.
+ * from the session and delivers it via a path-scoped Set-Cookie on the
+ * /api/session bootstrap GET (the 2026-07-05 delivery amendment: the token must
+ * NOT appear in any response body, so a same-origin sibling / user-content
+ * script that `fetch()`es our endpoints can't read it). Set-Cookie is
+ * script-unreadable; the cookie's Path scopes document.cookie visibility to our
+ * own pages. We read it here and echo it in X-CAIL-CSRF on every mutation and as
+ * the WebSocket connect token. A sibling tool is same-origin but, being outside
+ * our path prefix, never sees the cookie — which is what isolates siblings (the
+ * origin check alone cannot).
  */
 export const CSRF_HEADER = 'X-CAIL-CSRF';
 
+/** Cookie the worker delivers the token in (must match cloudflare/src/lib/csrf.ts). */
+export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
+
 let csrfTokenPromise: Promise<string> | null = null;
 
-async function requestCsrfToken(): Promise<string> {
-  const response = await fetch('/api/session', { credentials: 'include' });
-  const payload = await parseJson<{ sessionId: string; csrfToken?: string }>(response);
-  if (!payload.csrfToken) {
-    throw new Error('Session bootstrap did not return a CSRF token');
+/** Read a cookie value from document.cookie, or null if absent. */
+function readCookie(name: string): string | null {
+  const prefix = `${name}=`;
+  for (const part of document.cookie.split(';')) {
+    const trimmed = part.trim();
+    if (trimmed.startsWith(prefix)) {
+      return decodeURIComponent(trimmed.slice(prefix.length));
+    }
   }
-  return payload.csrfToken;
+  return null;
+}
+
+async function requestCsrfToken(): Promise<string> {
+  // Hit the bootstrap GET so the worker sets the cookie, then read it. The JSON
+  // body no longer carries the token (the amendment forbids it); the path-scoped
+  // cookie is the only delivery channel.
+  await fetch('/api/session', { credentials: 'include' });
+  const token = readCookie(CSRF_COOKIE_NAME);
+  if (!token) {
+    throw new Error('Session bootstrap did not set the CSRF cookie');
+  }
+  return token;
 }
 
 /**
- * Resolve the CSRF token, fetching /api/session once and caching the result. A
- * failed fetch is not cached, so a transient error can be retried on the next
+ * Resolve the CSRF token. If the cookie is already present (set by a prior
+ * bootstrap this page load) it is used without a round-trip; otherwise
+ * /api/session is fetched once to set it, and the result is cached. A failed
+ * fetch/read is not cached, so a transient error can be retried on the next
  * mutation. Callers that mutate must await this and send the token.
  */
 export function ensureCsrfToken(): Promise<string> {
+  const existing = readCookie(CSRF_COOKIE_NAME);
+  if (existing) return Promise.resolve(existing);
   if (!csrfTokenPromise) {
     csrfTokenPromise = requestCsrfToken().catch((error) => {
       csrfTokenPromise = null;

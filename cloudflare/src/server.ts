@@ -26,7 +26,7 @@ import { fetchCailModels } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
-import { csrfMiddleware, deriveCsrfToken, wsOriginAllowed } from './lib/csrf';
+import { csrfMiddleware, deriveCsrfToken, setCsrfCookie, wsOriginAllowed } from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { isAllowedUpload } from './lib/upload-validation';
 import {
@@ -171,14 +171,18 @@ app.use('/api/*', rateLimitMiddleware);
 
 app.get('/health', (c) => c.json({ ok: true, service: 'agent-studio' }));
 
-// The session bootstrap the frontend hits first also issues the per-session
-// CSRF token (rule 3): a safe GET is the only channel a first-party page has to
-// receive it before its first mutation. The frontend echoes it in X-CAIL-CSRF
-// on every mutating call and passes it as the WebSocket connect token.
+// The session bootstrap the frontend hits first also delivers the per-session
+// CSRF token (rule 3). Per the 2026-07-05 delivery amendment the token is
+// delivered ONLY via a path-scoped Set-Cookie (cail_csrf_agentstudio) — never
+// in the response body, because a same-origin sibling / user-content script
+// could `fetch()` this endpoint and read a body-delivered token. The page reads
+// the cookie (scoped to our path) and echoes it in X-CAIL-CSRF on every mutation
+// and as the WebSocket connect token. The body carries only the session id.
 app.get('/api/session', async (c) => {
   const sessionId = requireSession(c);
   const csrfToken = await deriveCsrfToken(sessionId, c.env.SESSION_SECRET);
-  return c.json({ sessionId, csrfToken });
+  setCsrfCookie(c, csrfToken);
+  return c.json({ sessionId });
 });
 
 app.get('/api/models', async (c) => {

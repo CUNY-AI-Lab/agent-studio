@@ -22,12 +22,27 @@
 // mirroring the key-derivation approach in lib/session.ts.
 
 import type { Context, MiddlewareHandler } from 'hono';
+import { setCookie } from 'hono/cookie';
 import type { Env } from '../env';
 import type { SessionVariables } from './session';
 import { CAIL_IDENTITY_HEADER } from './cail-identity';
 
 /** Custom header the frontend echoes the per-session token in (fleet convention). */
 export const CSRF_HEADER = 'X-CAIL-CSRF';
+
+/**
+ * Name of the path-scoped, script-readable cookie the token is delivered in
+ * (fleet contract §3¾ rule 3 delivery amendment, 2026-07-05). Delivery via
+ * Set-Cookie — a forbidden response header, unreadable by script even
+ * same-origin — is the one same-origin-proof channel: a sibling tool or
+ * `/sites/` user content can `fetch()` our endpoints with the ambient session
+ * and read a JSON/HTML body, but cannot read our Set-Cookie. `document.cookie`
+ * exposes the value only to documents under the cookie's Path prefix, which is
+ * what isolates siblings. NOT HttpOnly: our own page JS must read it to echo it
+ * in X-CAIL-CSRF. Token value stays the stateless HMAC (delivery is the pinned
+ * part; the value scheme is ours).
+ */
+export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
 
 /**
  * Query-param name carrying the per-session token on the WebSocket upgrade URL.
@@ -71,6 +86,43 @@ export async function deriveCsrfToken(sessionId: string, secret: string): Promis
   );
   const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`csrf:${sessionId}`));
   return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Resolve the Path the CSRF cookie is scoped to (fleet contract §3¾ rule 3
+ * delivery amendment). CAIL_BASE_PATH is the tool's serving prefix; production
+ * on tools.ailab sets '/agent-studio' so siblings can't read the cookie via
+ * document.cookie. Defaults to '/' (acceptable locally / on workers.dev, which
+ * have no same-origin siblings). A trailing slash is trimmed (except the bare
+ * root), and a missing leading slash is added, so any reasonable env value maps
+ * to a valid cookie Path.
+ */
+export function csrfCookiePath(env: { CAIL_BASE_PATH?: string }): string {
+  const raw = (env.CAIL_BASE_PATH ?? '').trim();
+  if (!raw || raw === '/') return '/';
+  const withLeading = raw.startsWith('/') ? raw : `/${raw}`;
+  const trimmed = withLeading.replace(/\/+$/, '');
+  return trimmed || '/';
+}
+
+/**
+ * Deliver the CSRF token to a first-party page via Set-Cookie (the pinned
+ * same-origin-proof channel — see CSRF_COOKIE_NAME). Called on the /api/session
+ * bootstrap GET. Attributes: Path = the tool's base path (scopes visibility to
+ * our documents), Secure on https, SameSite=Lax, NOT HttpOnly (our page JS
+ * reads it). The value is the stateless HMAC token; the server never stores it
+ * (verification re-derives), keeping this a true double-submit.
+ */
+export function setCsrfCookie(
+  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+  token: string,
+): void {
+  setCookie(c, CSRF_COOKIE_NAME, token, {
+    path: csrfCookiePath(c.env),
+    sameSite: 'Lax',
+    secure: new URL(c.req.url).protocol === 'https:',
+    httpOnly: false,
+  });
 }
 
 /** Constant-time string compare so token checks don't leak length/content via timing. */

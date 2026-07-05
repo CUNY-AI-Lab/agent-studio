@@ -14,11 +14,13 @@ import {
   timingSafeEqual,
   wsOriginAllowed,
   enforceCsrf,
+  csrfCookiePath,
   CSRF_HEADER,
   CSRF_WS_QUERY_PARAM,
+  CSRF_COOKIE_NAME,
 } from '../src/lib/csrf.ts';
 
-import { importServer, makeEnv, openSession, Session } from './helpers/env.mjs';
+import { importServer, makeEnv, openSession, Session, csrfCookieFrom } from './helpers/env.mjs';
 
 const app = await importServer();
 const CANONICAL = 'https://studio.test';
@@ -211,13 +213,72 @@ test('enforceCsrf: no origin headers + valid token passes; wrong token 403; miss
 // Route-level enforcement through the real app
 // ---------------------------------------------------------------------------
 
-test('route: /api/session issues a per-session CSRF token matching the derivation', async () => {
+test('route: /api/session delivers the CSRF token in a Set-Cookie matching the derivation', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
   const res = await session.request(app, '/api/session');
   const body = await res.json();
-  assert.match(body.csrfToken, /^[a-f0-9]{64}$/);
-  assert.equal(body.csrfToken, await deriveCsrfToken(body.sessionId, SECRET));
+  const cookieToken = csrfCookieFrom(res);
+  assert.match(cookieToken, /^[a-f0-9]{64}$/);
+  assert.equal(cookieToken, await deriveCsrfToken(body.sessionId, SECRET));
+});
+
+// Regression-pin the 2026-07-05 delivery amendment: the token must NEVER appear
+// in the response body (a same-origin sibling / user-content script could read
+// it there). It lives only in the path-scoped Set-Cookie.
+test('route: /api/session response body contains NO csrfToken field (delivery amendment)', async () => {
+  const { env } = makeEnv();
+  const session = new Session(env);
+  const res = await session.request(app, '/api/session');
+  const body = await res.json();
+  assert.equal('csrfToken' in body, false);
+  assert.equal(body.sessionId != null, true);
+  // Belt-and-suspenders: the raw body text must not contain the token either.
+  const cookieToken = csrfCookieFrom(res);
+  const res2 = await new Session(env).request(app, '/api/session');
+  const rawText = await res2.text();
+  assert.equal(rawText.includes(cookieToken), false);
+});
+
+test('route: /api/session CSRF cookie has the pinned attributes (name/path/samesite; not httponly; secure on https)', async () => {
+  const { env } = makeEnv();
+  const res = await new Session(env).request(app, '/api/session');
+  // Locate the specific Set-Cookie line for our cookie, unmerged when possible.
+  const lines =
+    typeof res.headers.getSetCookie === 'function'
+      ? res.headers.getSetCookie()
+      : [res.headers.get('set-cookie') || ''];
+  const line = lines.find((l) => l.includes(`${CSRF_COOKIE_NAME}=`)) || '';
+  assert.ok(line, 'CSRF Set-Cookie header is present');
+  assert.match(line, new RegExp(`(^|,\\s*)${CSRF_COOKIE_NAME}=[a-f0-9]{64}`));
+  // Path defaults to '/' (no CAIL_BASE_PATH in the test env).
+  assert.match(line, /;\s*Path=\/(?:;|$|,)/i);
+  assert.match(line, /;\s*SameSite=Lax/i);
+  // Secure because the harness serves over https://studio.test.
+  assert.match(line, /;\s*Secure/i);
+  // NOT HttpOnly — the page JS must read it via document.cookie.
+  assert.equal(/;\s*HttpOnly/i.test(line), false);
+});
+
+test('csrfCookiePath: defaults to / and honors CAIL_BASE_PATH (normalized)', () => {
+  assert.equal(csrfCookiePath({}), '/');
+  assert.equal(csrfCookiePath({ CAIL_BASE_PATH: '' }), '/');
+  assert.equal(csrfCookiePath({ CAIL_BASE_PATH: '/' }), '/');
+  assert.equal(csrfCookiePath({ CAIL_BASE_PATH: '/agent-studio' }), '/agent-studio');
+  assert.equal(csrfCookiePath({ CAIL_BASE_PATH: '/agent-studio/' }), '/agent-studio');
+  assert.equal(csrfCookiePath({ CAIL_BASE_PATH: 'agent-studio' }), '/agent-studio');
+});
+
+test('route: CSRF cookie Path follows CAIL_BASE_PATH when set', async () => {
+  const { env } = makeEnv();
+  env.CAIL_BASE_PATH = '/agent-studio';
+  const res = await new Session(env).request(app, '/api/session');
+  const lines =
+    typeof res.headers.getSetCookie === 'function'
+      ? res.headers.getSetCookie()
+      : [res.headers.get('set-cookie') || ''];
+  const line = lines.find((l) => l.includes(`${CSRF_COOKIE_NAME}=`)) || '';
+  assert.match(line, /;\s*Path=\/agent-studio(?:;|$|,)/i);
 });
 
 test('route: mutation with neither origin nor token -> 403', async () => {
