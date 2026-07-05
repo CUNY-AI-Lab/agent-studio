@@ -1,5 +1,5 @@
 import { AIChatAgent, type OnChatMessageOptions } from '@cloudflare/ai-chat';
-import { callable } from 'agents';
+import { callable, type Connection, type ConnectionContext } from 'agents';
 import { DynamicWorkerExecutor, type ExecuteResult } from '@cloudflare/codemode';
 import { createCodeTool, resolveProvider, aiTools } from '@cloudflare/codemode/ai';
 import { Workspace as RuntimeWorkspace } from '@cloudflare/shell';
@@ -50,6 +50,7 @@ import {
 } from '../lib/files';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { putWorkspace } from '../lib/workspaces';
+import { deriveCsrfToken, timingSafeEqual, wsOriginAllowed } from '../lib/csrf';
 
 const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
@@ -250,6 +251,69 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       if (typeof stored === 'string') {
         this.cailIdentityJwt = stored;
       }
+    }
+  }
+
+  /**
+   * The session id this DO is keyed to. The agent name is `${sessionId}-${wid}`
+   * and the session id is a 32-hex string; syncWorkspace also stamps it into
+   * state. Prefer state (authoritative, set on every open) and fall back to the
+   * name so the CSRF token can be derived even before the first sync.
+   */
+  private csrfSessionId(): string | null {
+    if (this.state.sessionId) return this.state.sessionId;
+    const match = /^([a-f0-9]{32})-/.exec(this.name);
+    return match ? match[1] : null;
+  }
+
+  /** Expected per-connection CSRF token for this DO's session (rule 3). */
+  private async expectedCsrfToken(): Promise<string | null> {
+    const sessionId = this.csrfSessionId();
+    if (!sessionId) return null;
+    return deriveCsrfToken(sessionId, this.env.SESSION_SECRET);
+  }
+
+  private async csrfTokenMatches(candidate: string | null): Promise<boolean> {
+    if (!candidate) return false;
+    const expected = await this.expectedCsrfToken();
+    return expected !== null && timingSafeEqual(candidate, expected);
+  }
+
+  /**
+   * WebSocket connect gate (rule 4). Enforced here rather than per-message
+   * because the `agents` framework dispatches RPC calls and chat requests inside
+   * base-class constructor wrappers that run before any subclass onMessage
+   * override — so the handshake is the only reliable seam a subclass owns for
+   * gating state-changing traffic on this socket.
+   *
+   * Two checks, both against the fleet contract:
+   *   * Origin (rule 4): re-checked here as defense-in-depth. server.ts already
+   *     blocks a cross-origin upgrade before routeAgentRequest; this covers any
+   *     future path that reaches the DO without that guard.
+   *   * CSRF token (rules 3 & 4): the first-party page connects with
+   *     `?csrfToken=<token>`, the per-session token issued via /api/session. A
+   *     sibling tool on the same host is same-origin but cannot read that token,
+   *     so it cannot open a mutating socket. A connection that fails either
+   *     check is closed (1008) — every message on this socket, chat or RPC,
+   *     mutates or spends, so there is no read-only-only client to preserve.
+   *
+   * The token is verified once, at accept, and the accepted connection is
+   * implicitly the "verified state on the connection" the contract calls for.
+   */
+  async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
+    if (!wsOriginAllowed(ctx.request, this.env.CAIL_CANONICAL_ORIGIN)) {
+      connection.close(1008, 'csrf_origin_mismatch');
+      return;
+    }
+    let token: string | null = null;
+    try {
+      token = new URL(ctx.request.url).searchParams.get('csrfToken');
+    } catch {
+      token = null;
+    }
+    if (!(await this.csrfTokenMatches(token))) {
+      connection.close(1008, 'csrf_token_invalid');
+      return;
     }
   }
 

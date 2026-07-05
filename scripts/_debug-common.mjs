@@ -30,10 +30,16 @@ export function parseArgs(argv) {
   return args;
 }
 
+// Mutating methods must carry the CSRF header (fleet contract §3¾ rule 3); safe
+// methods must not need it. Mirrors the frontend's mutatingFetch split.
+const CSRF_HEADER = 'X-CAIL-CSRF';
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 export class SessionClient {
   constructor(baseUrl, initialCookie) {
     this.baseUrl = new URL(baseUrl);
     this.cookie = initialCookie || '';
+    this.csrfToken = '';
   }
 
   updateCookie(response) {
@@ -49,6 +55,14 @@ export class SessionClient {
     const headers = new Headers(init.headers || {});
     if (this.cookie) {
       headers.set('Cookie', this.cookie);
+    }
+    // Exercise the protected path exactly as a first-party page does: attach the
+    // per-session CSRF token on every state-changing request. Absent both
+    // Sec-Fetch-Site and Origin (a non-browser client), the worker falls back to
+    // this token — so smoke passes WITH enforcement active, never by bypass.
+    const method = (init.method || 'GET').toUpperCase();
+    if (!SAFE_METHODS.has(method) && this.csrfToken) {
+      headers.set(CSRF_HEADER, this.csrfToken);
     }
     const response = await fetch(url, {
       ...init,
@@ -69,6 +83,9 @@ export class SessionClient {
 
   async ensureSession() {
     const payload = await this.json('/api/session');
+    if (payload.csrfToken) {
+      this.csrfToken = payload.csrfToken;
+    }
     return payload.sessionId;
   }
 }
@@ -139,6 +156,10 @@ export async function connectAgent(session, workspacePayload) {
     host: url.host,
     secure: url.protocol === 'https:',
     headers: session.cookie ? { Cookie: session.cookie } : undefined,
+    // Per-connection CSRF token on the WS upgrade (fleet contract §3¾ rule 4).
+    // The DO closes the socket at accept without it, so smoke exercises the
+    // protected handshake rather than bypassing it.
+    query: session.csrfToken ? { csrfToken: session.csrfToken } : undefined,
   });
   await client.ready;
   return client;

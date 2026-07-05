@@ -31,6 +31,54 @@ export function handleAuthRequired(status: number, payload: unknown): boolean {
   return true;
 }
 
+/**
+ * Per-session CSRF token (fleet contract §3¾ rule 3). The worker HMAC-derives it
+ * from the session and hands it back on the /api/session bootstrap GET; the
+ * frontend echoes it in X-CAIL-CSRF on every mutation and passes it as the
+ * WebSocket connect token. A sibling tool on the same host is same-origin but
+ * cannot read this value, which is what isolates siblings (the origin check
+ * alone cannot). Cached for the page's lifetime and fetched at most once.
+ */
+export const CSRF_HEADER = 'X-CAIL-CSRF';
+
+let csrfTokenPromise: Promise<string> | null = null;
+
+async function requestCsrfToken(): Promise<string> {
+  const response = await fetch('/api/session', { credentials: 'include' });
+  const payload = await parseJson<{ sessionId: string; csrfToken?: string }>(response);
+  if (!payload.csrfToken) {
+    throw new Error('Session bootstrap did not return a CSRF token');
+  }
+  return payload.csrfToken;
+}
+
+/**
+ * Resolve the CSRF token, fetching /api/session once and caching the result. A
+ * failed fetch is not cached, so a transient error can be retried on the next
+ * mutation. Callers that mutate must await this and send the token.
+ */
+export function ensureCsrfToken(): Promise<string> {
+  if (!csrfTokenPromise) {
+    csrfTokenPromise = requestCsrfToken().catch((error) => {
+      csrfTokenPromise = null;
+      throw error;
+    });
+  }
+  return csrfTokenPromise;
+}
+
+/**
+ * fetch() wrapper for state-changing calls: ensures the CSRF token and attaches
+ * it as X-CAIL-CSRF (merged with any caller-supplied headers). All mutating API
+ * helpers below route through this so no mutation can forget the header.
+ */
+export async function mutatingFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const token = await ensureCsrfToken();
+  const headers = new Headers(init.headers);
+  headers.set(CSRF_HEADER, token);
+  return fetch(input, { ...init, credentials: 'include', headers });
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ error: `Request failed with ${response.status}` }));
@@ -71,9 +119,8 @@ export async function createWorkspace(input: {
   name: string;
   description?: string;
 }): Promise<WorkspaceRecord> {
-  const response = await fetch('/api/workspaces', {
+  const response = await mutatingFetch('/api/workspaces', {
     method: 'POST',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
@@ -84,9 +131,8 @@ export async function createWorkspace(input: {
 export async function importWorkspaceBundle(file: File): Promise<{ workspaceId: string; workspace: WorkspaceRecord }> {
   const formData = new FormData();
   formData.append('bundle', file, file.name);
-  const response = await fetch('/api/workspaces/import', {
+  const response = await mutatingFetch('/api/workspaces/import', {
     method: 'POST',
-    credentials: 'include',
     body: formData,
   });
   return parseJson<{ workspaceId: string; workspace: WorkspaceRecord }>(response);
@@ -211,9 +257,8 @@ export async function updateWorkspace(
   workspaceId: string,
   input: { name?: string; description?: string; model?: string }
 ): Promise<WorkspaceRecord> {
-  const response = await fetch(`/api/workspaces/${workspaceId}`, {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}`, {
     method: 'PATCH',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
@@ -222,9 +267,8 @@ export async function updateWorkspace(
 }
 
 export async function deleteWorkspace(workspaceId: string): Promise<void> {
-  const response = await fetch(`/api/workspaces/${workspaceId}`, {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}`, {
     method: 'DELETE',
-    credentials: 'include',
   });
   await parseJson<{ success: boolean }>(response);
 }
@@ -236,9 +280,8 @@ export async function fetchGalleryItems(): Promise<GalleryItem[]> {
 }
 
 export async function cloneGalleryItem(galleryId: string): Promise<{ workspaceId: string; workspace: WorkspaceRecord }> {
-  const response = await fetch(`/api/gallery/${galleryId}`, {
+  const response = await mutatingFetch(`/api/gallery/${galleryId}`, {
     method: 'POST',
-    credentials: 'include',
   });
   return parseJson<{ workspaceId: string; workspace: WorkspaceRecord }>(response);
 }
@@ -255,9 +298,8 @@ export async function publishWorkspace(
   workspaceId: string,
   input: { title: string; description: string }
 ): Promise<{ item: GalleryItem; workspace: WorkspaceRecord }> {
-  const response = await fetch(`/api/workspaces/${workspaceId}/publish`, {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/publish`, {
     method: 'POST',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   });
@@ -265,9 +307,8 @@ export async function publishWorkspace(
 }
 
 export async function unpublishGalleryItem(galleryId: string): Promise<void> {
-  const response = await fetch(`/api/gallery/${galleryId}`, {
+  const response = await mutatingFetch(`/api/gallery/${galleryId}`, {
     method: 'DELETE',
-    credentials: 'include',
   });
   await parseJson<{ success: boolean }>(response);
 }
@@ -319,9 +360,8 @@ export async function fetchWorkspaceDownloads(workspaceId: string): Promise<Down
 }
 
 export async function clearWorkspaceDownloads(workspaceId: string): Promise<void> {
-  const response = await fetch(`/api/workspaces/${workspaceId}/downloads`, {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/downloads`, {
     method: 'DELETE',
-    credentials: 'include',
   });
   await parseJson<{ success: boolean }>(response);
 }
@@ -347,18 +387,16 @@ export async function uploadWorkspaceFiles(workspaceId: string, files: FileList 
   Array.from(files).forEach((file) => {
     formData.append('files', file, file.webkitRelativePath || file.name);
   });
-  const response = await fetch(`/api/workspaces/${workspaceId}/upload`, {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/upload`, {
     method: 'POST',
-    credentials: 'include',
     body: formData,
   });
   await parseJson<{ success: boolean }>(response);
 }
 
 export async function deleteWorkspaceFile(workspaceId: string, filePath: string): Promise<void> {
-  const response = await fetch(getWorkspaceFileUrl(workspaceId, filePath), {
+  const response = await mutatingFetch(getWorkspaceFileUrl(workspaceId, filePath), {
     method: 'DELETE',
-    credentials: 'include',
   });
   await parseJson<{ success: boolean }>(response);
 }
@@ -367,9 +405,8 @@ export async function executeWorkspaceRuntime(
   workspaceId: string,
   code: string
 ): Promise<WorkspaceRuntimeExecution> {
-  const response = await fetch(`/api/workspaces/${workspaceId}/runtime/execute`, {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/runtime/execute`, {
     method: 'POST',
-    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code }),
   });

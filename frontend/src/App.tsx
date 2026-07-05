@@ -34,6 +34,7 @@ import {
   clearWorkspaceDownloads,
   cloneGalleryItem,
   createWorkspace,
+  ensureCsrfToken,
   deleteWorkspace,
   deleteWorkspaceFile,
   executeWorkspaceRuntime,
@@ -218,6 +219,10 @@ function WorkspaceShell({
   const agent = useAgent<WorkspaceAgentClient, WorkspaceState>({
     agent: workspace.agent.className,
     name: workspace.agent.name,
+    // Per-connection CSRF token on the WebSocket upgrade (fleet contract §3¾
+    // rule 4). The DO verifies it once at accept and closes the socket if it is
+    // missing/invalid; a sibling tool is same-origin but cannot read this token.
+    query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
       setWorkspaceState(state);
     },

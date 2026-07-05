@@ -26,6 +26,7 @@ import { fetchCailModels } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
+import { csrfMiddleware, deriveCsrfToken, wsOriginAllowed } from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { isAllowedUpload } from './lib/upload-validation';
 import {
@@ -159,13 +160,26 @@ function previewHeaders(): Record<string, string> {
 }
 
 app.use('/api/*', sessionMiddleware);
+// CSRF enforcement runs after sessionMiddleware (it keys the fallback token by
+// the session id that middleware sets) and before rate limiting / handlers, so
+// a forged state-changing request is rejected with 403 before it does any work.
+// Safe methods (GET/HEAD) pass through untouched — see lib/csrf.ts.
+app.use('/api/*', csrfMiddleware);
 // Rate limiting runs after sessionMiddleware because it keys by the session id
 // that middleware sets. /health stays outside /api/* and is never limited.
 app.use('/api/*', rateLimitMiddleware);
 
 app.get('/health', (c) => c.json({ ok: true, service: 'agent-studio' }));
 
-app.get('/api/session', (c) => c.json({ sessionId: requireSession(c) }));
+// The session bootstrap the frontend hits first also issues the per-session
+// CSRF token (rule 3): a safe GET is the only channel a first-party page has to
+// receive it before its first mutation. The frontend echoes it in X-CAIL-CSRF
+// on every mutating call and passes it as the WebSocket connect token.
+app.get('/api/session', async (c) => {
+  const sessionId = requireSession(c);
+  const csrfToken = await deriveCsrfToken(sessionId, c.env.SESSION_SECRET);
+  return c.json({ sessionId, csrfToken });
+});
 
 app.get('/api/models', async (c) => {
   requireSession(c);
@@ -797,6 +811,17 @@ export { MigrationRegistry } from './migration-registry';
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // Origin-check the /agents/* WebSocket upgrade BEFORE routeAgentRequest
+    // accepts it (rule 4): the browser does not enforce same-origin on WS
+    // handshakes, and the connection-lifetime identity JWT means an origin
+    // mistake at accept time is unrecoverable. A present-but-mismatched Origin
+    // is rejected here; the per-connection CSRF token gate then runs inside the
+    // Durable Object on connect (see WorkspaceAgent.onConnect).
+    if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+      if (!wsOriginAllowed(request, env.CAIL_CANONICAL_ORIGIN)) {
+        return new Response('Forbidden: cross-origin WebSocket upgrade', { status: 403 });
+      }
+    }
     const agentResponse = await routeAgentRequest(request, env);
     if (agentResponse) {
       return agentResponse;

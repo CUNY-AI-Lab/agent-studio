@@ -370,27 +370,60 @@ export function cookieFrom(response) {
   return match ? `agent-studio-session=${match[1]}` : null;
 }
 
+const CSRF_HEADER = 'X-CAIL-CSRF';
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
 /**
  * A session bound to one signed cookie. `request(app, path, init)` issues the
  * cookie on the first call and carries it on every subsequent call, so a
  * Session instance behaves like one browser.
+ *
+ * It also mirrors a first-party page's CSRF behavior (fleet contract §3¾): it
+ * captures the per-session token from the /api/session bootstrap and attaches
+ * it as X-CAIL-CSRF on every state-changing request. With neither Sec-Fetch-Site
+ * nor Origin set, the worker falls back to that token — so ordinary route tests
+ * pass through the enforced path rather than around it. A test exercising the
+ * negative cases passes `init.rawCsrf` (see below) to override.
+ *
+ * `init.csrfToken` sets an explicit token (or '' to send none); `init.origin`
+ * and `init.secFetchSite` set those headers. Omit all three for the default
+ * "authenticated first-party page" behavior.
  */
 export class Session {
   constructor(env) {
     this.env = env;
     this.cookie = null;
+    this.csrfToken = null;
   }
 
   async request(app, appPath, init = {}) {
-    const headers = new Headers(init.headers || {});
+    const { csrfToken, origin, secFetchSite, ...fetchInit } = init;
+    const headers = new Headers(fetchInit.headers || {});
     if (this.cookie) headers.set('Cookie', this.cookie);
+
+    const method = (fetchInit.method || 'GET').toUpperCase();
+    if (!SAFE_METHODS.has(method)) {
+      // Explicit token/origin overrides win (negative-path tests); otherwise
+      // attach the captured session token like a real first-party page.
+      const token = csrfToken !== undefined ? csrfToken : this.csrfToken;
+      if (token) headers.set(CSRF_HEADER, token);
+      if (origin) headers.set('Origin', origin);
+      if (secFetchSite) headers.set('Sec-Fetch-Site', secFetchSite);
+    }
+
     const response = await app.fetch(
-      new Request(`https://studio.test${appPath}`, { ...init, headers }),
+      new Request(`https://studio.test${appPath}`, { ...fetchInit, headers }),
       this.env,
       {},
     );
     const next = cookieFrom(response);
     if (next) this.cookie = next;
+    // Capture the token the first time /api/session hands it back.
+    if (this.csrfToken === null && appPath.startsWith('/api/session') && response.ok) {
+      const clone = response.clone();
+      const body = await clone.json().catch(() => ({}));
+      if (body && typeof body.csrfToken === 'string') this.csrfToken = body.csrfToken;
+    }
     return response;
   }
 }

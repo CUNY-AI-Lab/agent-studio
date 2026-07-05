@@ -19,6 +19,12 @@ export interface Env {
   CAIL_MODEL?: string;
   CAIL_IDENTITY_JWT_SECRET?: string;
   CAIL_REQUIRE_IDENTITY?: string;
+  // CSRF canonical-origin override (fleet contract §3¾ rule 2). Unset in local
+  // dev / on workers.dev, where the request's own origin is canonical. Set to
+  // https://tools.ailab.gc.cuny.edu for that deployment, where the
+  // browser-visible origin differs from the worker's request URL. See
+  // src/lib/csrf.ts.
+  CAIL_CANONICAL_ORIGIN?: string;
   GIT_AUTH_TOKEN?: string;
   // CUNY Primo (Ex Libris) search API. When configured, web_fetch attaches
   // apikey/vid/scope server-side for the Primo host — the key never enters
