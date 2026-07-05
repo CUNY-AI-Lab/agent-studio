@@ -42,6 +42,11 @@ export function FilePreview({
     return <TextFilePreview url={url} filePath={panel.filePath} />;
   }
 
+  // Raw same-origin open is safe: the file-serving route sends
+  // `Content-Security-Policy: default-src 'none'; sandbox` + nosniff on every
+  // file, and `Content-Disposition: attachment` for active types
+  // (html/svg/xml). An active-type open downloads rather than executing on our
+  // origin; safe inline types still open/render normally.
   return (
     <div className="panel-file">
       <a href={url} target="_blank" rel="noreferrer">

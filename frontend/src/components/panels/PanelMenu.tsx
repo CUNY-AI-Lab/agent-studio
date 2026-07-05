@@ -78,6 +78,11 @@ export function PanelMenu({
           <button
         role="menuitem"
             onClick={() => {
+              // Raw same-origin open is safe: the file-serving route now sends
+              // `Content-Security-Policy: default-src 'none'; sandbox` + nosniff on
+              // every file, and `Content-Disposition: attachment` for active types
+              // (html/svg/xml). So an active-type open downloads instead of
+              // executing on our origin; safe types (png/pdf/...) still render inline.
               window.open(getWorkspaceFileUrl(workspaceId, filePath), '_blank', 'noopener,noreferrer');
               onCloseMenu();
             }}

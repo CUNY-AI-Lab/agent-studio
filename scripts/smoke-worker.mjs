@@ -92,28 +92,45 @@ async function main() {
     assert(patched.workspace.name === `${workspaceName} Updated`, 'Workspace patch did not update the name');
     log('workspace-patched', patched.workspace.name);
 
-    const html = '<!doctype html><html><body><h1>smoke ok</h1></body></html>';
-    const putFileResponse = await session.fetch(`/api/workspaces/${workspaceId}/files/index.html`, {
+    // AS-0-1: active-type uploads (e.g. text/html) are now rejected at the PUT door.
+    const evilHtmlResponse = await session.fetch(`/api/workspaces/${workspaceId}/files/index.html`, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      body: html,
+      body: '<!doctype html><script>alert(1)</script>',
+    });
+    assert(evilHtmlResponse.status === 400, `Active-type PUT should be rejected, got ${evilHtmlResponse.status}`);
+    log('active-put-rejected', String(evilHtmlResponse.status));
+
+    const markdown = '# smoke ok';
+    const putFileResponse = await session.fetch(`/api/workspaces/${workspaceId}/files/notes.md`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'text/markdown; charset=utf-8' },
+      body: markdown,
     });
     assert(putFileResponse.ok, `File write failed with ${putFileResponse.status}`);
-    log('file-written', 'index.html');
+    log('file-written', 'notes.md');
 
     const filesPayload = await session.json(`/api/workspaces/${workspaceId}/files`);
     assert(
-      Array.isArray(filesPayload.files) && filesPayload.files.some((file) => file.path === 'index.html'),
-      'Workspace files listing does not include index.html'
+      Array.isArray(filesPayload.files) && filesPayload.files.some((file) => file.path === 'notes.md'),
+      'Workspace files listing does not include notes.md'
     );
     log('files-listed', String(filesPayload.files.length));
 
-    const fileResponse = await session.fetch(`/api/workspaces/${workspaceId}/files/index.html`);
+    const fileResponse = await session.fetch(`/api/workspaces/${workspaceId}/files/notes.md`);
     assert(fileResponse.ok, `File fetch failed with ${fileResponse.status}`);
     const fileText = await fileResponse.text();
     assert(fileText.includes('smoke ok'), 'Fetched file content is incorrect');
-    assert((fileResponse.headers.get('content-type') || '').includes('text/html'), 'File content type is not text/html');
+    assert((fileResponse.headers.get('content-type') || '').includes('text/markdown'), 'File content type is not text/markdown');
     assert(fileResponse.headers.get('cache-control') === 'no-store', 'Workspace file cache-control should be no-store');
+    // AS-0-1: every served file must carry the sandbox CSP + nosniff. Markdown is
+    // a safe inline type, so it must NOT be forced to download.
+    assert(fileResponse.headers.get('x-content-type-options') === 'nosniff', 'Served file missing nosniff');
+    assert(
+      fileResponse.headers.get('content-security-policy') === "default-src 'none'; sandbox",
+      'Served file missing sandbox CSP'
+    );
+    assert(fileResponse.headers.get('content-disposition') === null, 'Safe inline type should not be attachment');
     log('file-fetched', fileResponse.headers.get('content-type') || 'unknown');
 
     const panelPayload = await session.json(`/api/workspaces/${workspaceId}/panels`, {

@@ -29,6 +29,7 @@ import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariabl
 import { csrfMiddleware, deriveCsrfToken, setCsrfCookie, wsOriginAllowed } from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { isAllowedUpload } from './lib/upload-validation';
+import { fileServingHeaders } from './lib/file-serving';
 import {
   createDefaultWorkspace,
   deleteWorkspace,
@@ -243,12 +244,14 @@ app.get('/api/gallery/:id/files/*', async (c) => {
     return c.json({ error: 'Gallery file not found' }, 404);
   }
 
+  const contentType = object.httpMetadata?.contentType || getMimeType(filePath);
   return new Response(object.body, {
     status: 200,
     headers: {
-      'Content-Type': object.httpMetadata?.contentType || getMimeType(filePath),
+      'Content-Type': contentType,
       'Content-Length': object.size.toString(),
       'Cache-Control': 'private, max-age=3600',
+      ...fileServingHeaders(contentType),
     },
   });
 });
@@ -669,12 +672,14 @@ app.get('/api/workspaces/:id/files/*', async (c) => {
     return c.json({ error: 'File not found' }, 404);
   }
 
+  const contentType = file.contentType || getMimeType(filePath);
   return new Response(file.data, {
     status: 200,
     headers: {
-      'Content-Type': file.contentType || getMimeType(filePath),
+      'Content-Type': contentType,
       'Content-Length': file.data.byteLength.toString(),
       'Cache-Control': 'no-store',
+      ...fileServingHeaders(contentType),
     },
   });
 });
@@ -688,6 +693,16 @@ app.put('/api/workspaces/:id/files/*', async (c) => {
   }
 
   const filePath = c.req.path.split(`/api/workspaces/${workspaceId}/files/`)[1] || '';
+  // Defense-in-depth: reject active/disallowed types (e.g. .html/.svg) at the
+  // write door. Insufficient alone — the agent's write_file tool bypasses this
+  // HTTP route — which is why the file-serving sandbox headers are the real
+  // containment (see lib/file-serving.ts). Strip any `; charset=` parameter so
+  // the bare MIME is matched against the allowlist (mirrors /upload's File.type).
+  const putContentType = c.req.header('content-type')?.split(';', 1)[0]?.trim() || undefined;
+  const uploadVerdict = isAllowedUpload({ name: filePath, type: putContentType });
+  if (!uploadVerdict.allowed) {
+    return c.json({ error: uploadVerdict.reason || 'File type not allowed' }, 400);
+  }
   const body = await c.req.arrayBuffer();
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.syncWorkspace(workspace, sessionId);
