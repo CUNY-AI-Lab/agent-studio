@@ -1,3 +1,31 @@
+/**
+ * Canonical set of panel `type` literals (AS-3-7). The same enum is restated in
+ * several hand-maintained places — the WorkspacePanelBase union below, the
+ * import.ts zod discriminatedUnion, the workspace-agent panel switch, and the
+ * frontend types.ts — with no compile-time link between them. This array is the
+ * single source of truth the zod schema and the drift test reference so a new
+ * panel type can't silently land in one copy but not the others.
+ *
+ * When you add a panel type: add it here AND to the WorkspacePanelBase `type`
+ * union below (keep them identical). The `satisfies` guard keeps this array in
+ * lockstep with that union at compile time.
+ */
+export const PANEL_TYPES = [
+  'chat',
+  'table',
+  'chart',
+  'cards',
+  'markdown',
+  'pdf',
+  'preview',
+  'fileTree',
+  'editor',
+  'file',
+  'detail',
+] as const;
+
+export type PanelType = (typeof PANEL_TYPES)[number];
+
 export interface WorkspaceRecord {
   id: string;
   name: string;
@@ -37,7 +65,7 @@ export interface WorkspaceViewport {
 
 interface WorkspacePanelBase {
   id: string;
-  type: 'chat' | 'table' | 'chart' | 'cards' | 'markdown' | 'pdf' | 'preview' | 'fileTree' | 'editor' | 'file' | 'detail';
+  type: PanelType;
   title?: string;
   layout?: PanelLayout;
   sourcePanelId?: string;

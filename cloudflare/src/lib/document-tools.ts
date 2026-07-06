@@ -41,6 +41,115 @@ export const MAX_XLSX_ROWS = 5_000;
 export const MAX_XLSX_SHEETS = 50;
 
 // ---------------------------------------------------------------------------
+// Input caps (zip-bomb / OOM defense — AS-2-5)
+//
+// The output caps above only trim what a caller *sees*; they run AFTER the
+// parser has fully materialized the document in memory. A tiny xlsx/docx (both
+// are ZIP containers) can declare gigabytes of uncompressed content and OOM the
+// isolate before any output cap is reached. We therefore pre-screen the raw
+// bytes BEFORE handing them to the parser: a compressed-size cap on the raw
+// input, plus a dependency-free ZIP central-directory scan that rejects
+// zip-bombs by their *declared* uncompressed size and entry count.
+// ---------------------------------------------------------------------------
+
+/** Reject xlsx/xls/csv input larger than this many compressed bytes on disk. */
+export const MAX_XLSX_INPUT_BYTES = 25 * 1024 * 1024; // 25 MB
+/** Reject a ZIP (xlsx) whose central directory lists more than this many entries. */
+export const MAX_ZIP_ENTRIES = 512;
+/** Reject a ZIP whose entries sum to more than this many declared uncompressed bytes. */
+export const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024; // 100 MB
+/** Reject a ZIP any single entry of which declares more than this many uncompressed bytes. */
+export const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 100 * 1024 * 1024; // 100 MB
+/** Reject PDF input larger than this many bytes before extraction. */
+export const MAX_PDF_INPUT_BYTES = 30 * 1024 * 1024; // 30 MB
+
+/**
+ * Dependency-free ZIP zip-bomb pre-check. Walks the End Of Central Directory
+ * record and the central-directory file headers, summing each entry's DECLARED
+ * uncompressed size (a 32-bit field in the CDFH — no decompression happens, so
+ * this stays cheap even for a forged bomb). Throws if the entry count or the
+ * declared uncompressed sizes exceed the caps above. This intentionally reads
+ * only the central directory: the whole point is to reject BEFORE any parser
+ * inflates the compressed data.
+ *
+ * Only ZIP containers are screened here; a non-ZIP input (e.g. a legacy .xls or
+ * a .csv passed to readXlsx) is left to the compressed-byte cap and the parser.
+ */
+export function assertZipWithinCaps(bytes: Uint8Array): void {
+  // "PK\x03\x04" (local file header) marks a ZIP. Anything else is not a ZIP
+  // container and is not screened by this function.
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    return;
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const EOCD_SIGNATURE = 0x06054b50;
+  const CDFH_SIGNATURE = 0x02014b50;
+
+  // Find the End Of Central Directory record: scan backwards from EOF. The EOCD
+  // is 22 bytes plus a comment of up to 65535 bytes, so we never look further
+  // back than that window.
+  const minEocd = 22;
+  if (bytes.length < minEocd) {
+    throw new Error('Invalid ZIP: file too small to contain a central directory');
+  }
+  const maxComment = 0xffff;
+  const scanStart = bytes.length - minEocd;
+  const scanEnd = Math.max(0, bytes.length - minEocd - maxComment);
+  let eocd = -1;
+  for (let i = scanStart; i >= scanEnd; i -= 1) {
+    if (view.getUint32(i, true) === EOCD_SIGNATURE) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) {
+    throw new Error('Invalid ZIP: End Of Central Directory record not found');
+  }
+
+  const entryCount = view.getUint16(eocd + 10, true);
+  const cdOffset = view.getUint32(eocd + 16, true);
+
+  if (entryCount > MAX_ZIP_ENTRIES) {
+    throw new Error(
+      `ZIP rejected: ${entryCount} entries exceeds the ${MAX_ZIP_ENTRIES}-entry cap (possible zip bomb)`,
+    );
+  }
+
+  // Walk the central directory. Each central-directory file header (CDFH) is
+  // 46 bytes fixed plus variable name/extra/comment fields; the 32-bit
+  // uncompressed size lives at offset 24 within the header.
+  let cursor = cdOffset;
+  let totalUncompressed = 0;
+  for (let n = 0; n < entryCount; n += 1) {
+    if (cursor + 46 > bytes.length) {
+      throw new Error('Invalid ZIP: central directory truncated');
+    }
+    if (view.getUint32(cursor, true) !== CDFH_SIGNATURE) {
+      throw new Error('Invalid ZIP: bad central-directory file header signature');
+    }
+    const uncompressedSize = view.getUint32(cursor + 24, true);
+    if (uncompressedSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
+      throw new Error(
+        `ZIP rejected: an entry declares ${uncompressedSize} uncompressed bytes, ` +
+          `over the ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES}-byte per-entry cap (possible zip bomb)`,
+      );
+    }
+    totalUncompressed += uncompressedSize;
+    if (totalUncompressed > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+      throw new Error(
+        `ZIP rejected: declared uncompressed size exceeds the ` +
+          `${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES}-byte total cap (possible zip bomb)`,
+      );
+    }
+    const nameLen = view.getUint16(cursor + 28, true);
+    const extraLen = view.getUint16(cursor + 30, true);
+    const commentLen = view.getUint16(cursor + 32, true);
+    cursor += 46 + nameLen + extraLen + commentLen;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // PDF
 // ---------------------------------------------------------------------------
 
@@ -69,6 +178,17 @@ export async function extractPdfText(
   bytes: Uint8Array,
   options: ExtractPdfTextOptions = {},
 ): Promise<ExtractPdfTextResult> {
+  // INPUT cap (AS-2-5): reject an oversized PDF before extractText materializes
+  // it. A PDF is not a ZIP, so a cheap central-directory scan isn't available;
+  // an object-count / stream-length bomb can't be pre-checked without a full
+  // parse. The honest residual bound is this raw byte cap + MAX_PDF_PAGES +
+  // MAX_PDF_TEXT_CHARS + pdf.js's own internal limits.
+  if (bytes.length > MAX_PDF_INPUT_BYTES) {
+    throw new Error(
+      `PDF rejected: ${bytes.length} bytes exceeds the ${MAX_PDF_INPUT_BYTES}-byte input cap for a parse operation`,
+    );
+  }
+
   // Pass bytes directly rather than via getDocumentProxy: the proxy path spins
   // up a pdf.js worker whose structured-clone transfer fails under some Node
   // versions, and unpdf manages the document lifecycle internally either way.
@@ -140,6 +260,17 @@ export interface ReadXlsxResult {
 
 /** Read one sheet of an xlsx/xls/csv workbook into JSON rows. */
 export function readXlsx(bytes: Uint8Array, options: ReadXlsxOptions = {}): ReadXlsxResult {
+  // INPUT caps (AS-2-5): screen the raw bytes BEFORE XLSX.read materializes the
+  // workbook. xlsx/xlsm/docx are ZIP containers, so a small compressed file can
+  // decompress to gigabytes and OOM the isolate. Cap the compressed input, then
+  // reject a zip-bomb by its declared uncompressed size / entry count.
+  if (bytes.length > MAX_XLSX_INPUT_BYTES) {
+    throw new Error(
+      `Workbook rejected: ${bytes.length} bytes exceeds the ${MAX_XLSX_INPUT_BYTES}-byte input cap for a parse operation`,
+    );
+  }
+  assertZipWithinCaps(bytes);
+
   const workbook = XLSX.read(bytes, { type: 'array' });
   const sheetNames = workbook.SheetNames;
   if (sheetNames.length === 0) {

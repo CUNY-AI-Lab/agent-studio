@@ -15,6 +15,9 @@ import {
   buildXlsx,
   buildDocx,
   MAX_XLSX_ROWS,
+  MAX_ZIP_ENTRIES,
+  MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES,
+  MAX_PDF_INPUT_BYTES,
 } from '../src/lib/document-tools.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -122,6 +125,92 @@ test('extractPdfText is safe to call repeatedly (input not detached)', async () 
   const second = await extractPdfText(fixturePdf);
   assert.equal(first.totalPages, second.totalPages);
   assert.match(second.text, /SPHINX/);
+});
+
+// ---------------------------------------------------------------------------
+// AS-2-5: zip-bomb / oversized-input pre-checks fire BEFORE the parser runs.
+//
+// forgeZip builds a real, structurally-valid ZIP (EOCD + one central-directory
+// file header per entry) but lets each entry LIE about its uncompressed size.
+// The bytes on disk stay tiny — we never allocate the declared payload — which
+// is exactly the zip-bomb shape the pre-check must reject without materializing.
+// ---------------------------------------------------------------------------
+function forgeZip({ entries }) {
+  // Each central-directory file header is 46 bytes + a 1-char name.
+  const NAME = 'f';
+  const cdParts = [];
+  let cursor = 0; // local-file-header offset; irrelevant to the size scan
+  for (const entry of entries) {
+    const cdfh = Buffer.alloc(46 + NAME.length);
+    cdfh.writeUInt32LE(0x02014b50, 0); // central-directory file header signature
+    cdfh.writeUInt32LE(entry.uncompressedSize >>> 0, 24); // declared uncompressed size
+    cdfh.writeUInt16LE(NAME.length, 28); // file name length
+    cdfh.writeUInt16LE(0, 30); // extra field length
+    cdfh.writeUInt16LE(0, 32); // comment length
+    cdfh.writeUInt32LE(cursor >>> 0, 42); // relative offset of local header
+    cdfh.write(NAME, 46, 'ascii');
+    cdParts.push(cdfh);
+    cursor += 30 + NAME.length; // pretend a local header exists
+  }
+  const centralDir = Buffer.concat(cdParts);
+  const cdOffset = 0; // no real local-file-header region; the scan only needs the CD
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); // EOCD signature
+  eocd.writeUInt16LE(entries.length, 8); // total entries on this disk
+  eocd.writeUInt16LE(entries.length, 10); // total entries
+  eocd.writeUInt32LE(centralDir.length, 12); // central directory size
+  eocd.writeUInt32LE(cdOffset, 16); // central directory offset
+  // Prefix "PK\x03\x04" so the scanner recognizes it as a ZIP; the central
+  // directory then sits at offset 0... so put the CD right after and point EOCD
+  // at it. Simplest: [PK\x03\x04 stub][central dir][eocd] with cdOffset=4.
+  const stub = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+  eocd.writeUInt32LE(stub.length, 16); // central directory offset = after the stub
+  return new Uint8Array(Buffer.concat([stub, centralDir, eocd]));
+}
+
+test('readXlsx rejects a zip with an oversized declared uncompressed size', () => {
+  const bomb = forgeZip({
+    entries: [{ uncompressedSize: MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES + 1 }],
+  });
+  assert.ok(bomb.length < 1000, 'forged bomb is tiny on disk');
+  assert.throws(() => readXlsx(bomb), /zip bomb|uncompressed/i);
+});
+
+test('readXlsx rejects a zip with too many entries', () => {
+  const entries = [];
+  for (let i = 0; i < MAX_ZIP_ENTRIES + 1; i += 1) entries.push({ uncompressedSize: 1 });
+  const bomb = forgeZip({ entries });
+  assert.throws(() => readXlsx(bomb), /entries exceeds|zip bomb/i);
+});
+
+test('readXlsx rejects a zip whose entries sum over the total uncompressed cap', () => {
+  // 200 entries each just under the per-entry cap → well over the 100 MB total.
+  const entries = [];
+  for (let i = 0; i < 200; i += 1) entries.push({ uncompressedSize: 90 * 1024 * 1024 });
+  const bomb = forgeZip({ entries });
+  assert.throws(() => readXlsx(bomb), /total cap|zip bomb/i);
+});
+
+test('readXlsx still parses a normal small xlsx (pre-check does not false-positive)', () => {
+  const bytes = buildXlsx([{ name: 'S', rows: [['a', 'b'], [1, 2]] }]);
+  const res = readXlsx(bytes);
+  assert.deepEqual(res.rows, [['a', 'b'], [1, 2]]);
+});
+
+test('extractPdfText rejects oversized PDF input before extraction', async () => {
+  // A buffer over the byte cap that starts like a PDF; must reject before parse.
+  const oversized = new Uint8Array(MAX_PDF_INPUT_BYTES + 1);
+  oversized[0] = 0x25; // '%'
+  oversized[1] = 0x50; // 'P'
+  oversized[2] = 0x44; // 'D'
+  oversized[3] = 0x46; // 'F'
+  await assert.rejects(() => extractPdfText(oversized), /input cap|exceeds/i);
+});
+
+test('extractPdfText still parses the normal fixture (input cap does not false-positive)', async () => {
+  const res = await extractPdfText(fixturePdf);
+  assert.equal(res.totalPages, 2);
+  assert.match(res.text, /SPHINX/);
 });
 
 test('row cap constant is exported and enforced as an upper bound', () => {

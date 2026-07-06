@@ -39,7 +39,7 @@ async () => {
   replacements.
 
 ## Output caps
-`parse_pdf` caps output defensively: ~200,000 characters and 500 pages per call.
+`parse_pdf` caps output defensively: ~{{MAX_PDF_TEXT_CHARS}} characters and {{MAX_PDF_PAGES}} pages per call.
 When `truncated` is true, either narrow with `maxPages` or process the document
 in slices. Never assume you received the whole document without checking
 `truncated` and `extractedPages`.

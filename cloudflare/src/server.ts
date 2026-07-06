@@ -21,7 +21,12 @@ import {
   readGalleryFile,
   sanitizeRelativePath,
 } from './lib/files';
-import { createOpaqueId, createWorkspaceAgentName } from './lib/ids';
+import {
+  createOpaqueId,
+  createWorkspaceAgentName,
+  isValidGalleryId,
+  isValidWorkspaceId,
+} from './lib/ids';
 import { fetchCailModels } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
@@ -105,6 +110,30 @@ app.onError((error, c) => {
   return c.json({ error: 'Internal error' }, 500);
 });
 
+// AS-3-6 boundary checks. `import` is a literal POST sub-route of
+// /api/workspaces, not a workspace id, so it is exempt from id-shape validation.
+async function validateWorkspaceIdParam(
+  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+  next: () => Promise<void>,
+): Promise<Response | void> {
+  const id = c.req.param('id') ?? '';
+  if (id === 'import') return next();
+  if (!isValidWorkspaceId(id)) {
+    return c.json({ error: 'Invalid workspace id' }, 400);
+  }
+  return next();
+}
+
+async function validateGalleryIdParam(
+  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+  next: () => Promise<void>,
+): Promise<Response | void> {
+  if (!isValidGalleryId(c.req.param('id') ?? '')) {
+    return c.json({ error: 'Invalid gallery id' }, 400);
+  }
+  return next();
+}
+
 function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
   return getAgentByName<Env, WorkspaceAgent>(
     env.WorkspaceAgent,
@@ -149,6 +178,15 @@ app.use('/api/*', csrfMiddleware);
 // Rate limiting runs after sessionMiddleware because it keys by the session id
 // that middleware sets. /health stays outside /api/* and is never limited.
 app.use('/api/*', rateLimitMiddleware);
+
+// AS-3-6: validate the :id path param shape at the route boundary before it is
+// interpolated into any R2 key. No traversal risk (R2 does not normalize ".."),
+// but a malformed id still yields a malformed key and a wasted round-trip.
+// `/api/workspaces/import` is a literal sub-route, not an :id, so exempt it.
+app.use('/api/workspaces/:id', validateWorkspaceIdParam);
+app.use('/api/workspaces/:id/*', validateWorkspaceIdParam);
+app.use('/api/gallery/:id', validateGalleryIdParam);
+app.use('/api/gallery/:id/*', validateGalleryIdParam);
 
 app.get('/health', (c) => c.json({ ok: true, service: 'agent-studio' }));
 
@@ -818,8 +856,29 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
 export { WorkspaceAgent };
 export { MigrationRegistry } from './migration-registry';
 
+// AS-3-10 deploy-footgun guard. CAIL_API_BASE ships as a `.invalid` placeholder
+// and CAIL_REQUIRE_IDENTITY defaults false — both intentional for local dev. On
+// the first request we warn loudly (once) if the placeholder was never replaced,
+// so a real deploy that forgot to set the model proxy is obvious in the logs. We
+// warn rather than throw: throwing would break local dev where the placeholder
+// is expected.
+let cailConfigChecked = false;
+function checkCailConfigOnce(env: Env): void {
+  if (cailConfigChecked) return;
+  cailConfigChecked = true;
+  const base = env.CAIL_API_BASE ?? '';
+  if (base.includes('REPLACE') || base.includes('.invalid')) {
+    console.warn(
+      `[startup] CAIL_API_BASE is still a placeholder (${base}); the CAIL model ` +
+        `proxy is unreachable. Set a real CAIL_API_BASE before deploying. ` +
+        `(Expected in local dev; a deploy footgun in production.)`,
+    );
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    checkCailConfigOnce(env);
     // Origin-check the /agents/* WebSocket upgrade BEFORE routeAgentRequest
     // accepts it (rule 4): the browser does not enforce same-origin on WS
     // handshakes, and the connection-lifetime identity JWT means an origin

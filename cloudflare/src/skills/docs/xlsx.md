@@ -19,7 +19,7 @@ async () => {
 - Rows come back as an array of arrays by default (first row is usually the
   header). Pass `asObjects: true` to get header-keyed objects instead.
 - Target a specific sheet with `sheet: "Sheet2"`; omit it for the first sheet.
-- Reads are capped at 5,000 rows per call — check `truncated` and `totalRows`,
+- Reads are capped at {{MAX_XLSX_ROWS}} rows per call — check `truncated` and `totalRows`,
   and pass `maxRows` to control the slice.
 
 ## Writing a workbook

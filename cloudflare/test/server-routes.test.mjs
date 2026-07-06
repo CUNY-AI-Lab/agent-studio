@@ -143,6 +143,17 @@ test('GET missing workspace id -> 404', async () => {
   assert.deepEqual(await res.json(), { error: 'Workspace not found' });
 });
 
+test('GET malformed workspace id -> 400 (AS-3-6 boundary check)', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  // Too short, wrong charset, and a traversal-ish string are all off-shape.
+  for (const bad of ['nope', '../secret', 'DEADBEEFDEADBEEFDEADBEEFDEADBEEF', 'deadbeef']) {
+    const res = await session.request(app, `/api/workspaces/${encodeURIComponent(bad)}`);
+    assert.equal(res.status, 400, `expected 400 for id "${bad}"`);
+    assert.deepEqual(await res.json(), { error: 'Invalid workspace id' });
+  }
+});
+
 test('cross-session isolation: session B cannot see session A workspace', async () => {
   const { env } = makeEnv();
   const a = new Session(env);
@@ -452,8 +463,13 @@ test('gallery: list is empty by default and 404s for unknown items', async () =>
   assert.equal(listRes.status, 200);
   assert.deepEqual((await listRes.json()).items, []);
 
-  const missRes = await session.request(app, '/api/gallery/nope');
+  // A well-formed-but-nonexistent gallery id (8 hex + '-' + 1 hex) 404s.
+  const missRes = await session.request(app, '/api/gallery/abcdef12-3');
   assert.equal(missRes.status, 404);
+
+  // A malformed gallery id is rejected at the boundary with 400 (AS-3-6).
+  const badRes = await session.request(app, '/api/gallery/nope');
+  assert.equal(badRes.status, 400);
 });
 
 test('gallery: publish a workspace -> appears in list -> get by id', async () => {
