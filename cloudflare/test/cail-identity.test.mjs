@@ -11,6 +11,8 @@ import {
   getCailIdentityFromRequest,
   cailIdentityRequired,
   cailAuthRequiredResponse,
+  verifyCredentialForSession,
+  sessionIdForSubject,
   CAIL_APP_SLUG,
   CAIL_IDENTITY_HEADER,
 } from '../src/lib/cail-identity.ts';
@@ -99,6 +101,71 @@ test('pins the algorithm: refuses a token that declares alg=none', async () => {
   const payloadB64 = b64urlJson(validPayload());
   const forged = `${headerB64}.${payloadB64}.`;
   assert.equal(await verifyIdentityJwt(forged, SECRET, NOW), null);
+});
+
+// ---- AS-3-2/AS-3-3: nbf claim completeness ----
+
+test('rejects a token whose nbf is in the future', async () => {
+  const token = await mintJwt(validPayload({ nbf: NOW + 60 }));
+  assert.equal(await verifyIdentityJwt(token, SECRET, NOW), null);
+});
+
+test('accepts a token whose nbf is in the past', async () => {
+  const token = await mintJwt(validPayload({ nbf: NOW - 60 }));
+  const identity = await verifyIdentityJwt(token, SECRET, NOW);
+  assert.ok(identity);
+  assert.equal(identity.subject, 'cail-abc123');
+});
+
+test('accepts a token with no nbf (nbf is optional)', async () => {
+  const token = await mintJwt(validPayload());
+  assert.ok(await verifyIdentityJwt(token, SECRET, NOW));
+});
+
+test('a non-number nbf is ignored (only enforced when numeric)', async () => {
+  const token = await mintJwt(validPayload({ nbf: 'soon' }));
+  // Non-numeric nbf does not gate; the token still verifies on its other claims.
+  assert.ok(await verifyIdentityJwt(token, SECRET, NOW));
+});
+
+// ---- AS-3-1: setCailCredential verify + subject-binding (via the shared helper) ----
+
+test('sessionIdForSubject is a 32-hex digest of cail:<subject>', async () => {
+  const id = await sessionIdForSubject('cail-abc123');
+  assert.match(id, /^[a-f0-9]{32}$/);
+  // Stable / deterministic.
+  assert.equal(id, await sessionIdForSubject('cail-abc123'));
+  assert.notEqual(id, await sessionIdForSubject('cail-other'));
+});
+
+test('verifyCredentialForSession accepts the correct-subject token', async () => {
+  const token = await mintJwt(validPayload());
+  const expected = await sessionIdForSubject('cail-abc123');
+  const identity = await verifyCredentialForSession(token, expected, SECRET, NOW);
+  assert.ok(identity);
+  assert.equal(identity.subject, 'cail-abc123');
+});
+
+test('verifyCredentialForSession rejects invalid / garbage tokens', async () => {
+  const expected = await sessionIdForSubject('cail-abc123');
+  assert.equal(await verifyCredentialForSession('not-a-jwt', expected, SECRET, NOW), null);
+  assert.equal(await verifyCredentialForSession('', expected, SECRET, NOW), null);
+  assert.equal(await verifyCredentialForSession(null, expected, SECRET, NOW), null);
+});
+
+test('verifyCredentialForSession rejects an expired token', async () => {
+  const token = await mintJwt(validPayload({ exp: NOW - 1 }));
+  const expected = await sessionIdForSubject('cail-abc123');
+  assert.equal(await verifyCredentialForSession(token, expected, SECRET, NOW), null);
+});
+
+test('verifyCredentialForSession rejects a valid token whose subject maps to a DIFFERENT session', async () => {
+  // A genuinely valid token, but for a foreign subject — cannot be installed
+  // onto this DO's session.
+  const token = await mintJwt(validPayload({ sub: 'cail-foreign' }));
+  const thisSession = await sessionIdForSubject('cail-abc123');
+  assert.notEqual(await sessionIdForSubject('cail-foreign'), thisSession);
+  assert.equal(await verifyCredentialForSession(token, thisSession, SECRET, NOW), null);
 });
 
 test('returns null when the secret is unset (identity disabled)', async () => {

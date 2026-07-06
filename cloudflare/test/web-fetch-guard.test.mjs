@@ -11,6 +11,8 @@ import {
   applyConfiguredApiParams,
   bearerProviderForHost,
   guardedWebFetch,
+  parseWebFetchAllowlist,
+  hostAllowlisted,
 } from '../src/lib/web-fetch-guard.ts';
 import { __resetTokenCacheForTests } from '../src/lib/api-token-broker.ts';
 
@@ -245,6 +247,88 @@ test('a redirect off the allowlisted host drops the Authorization header', async
   // Hop 1 (allowlisted host) carries the bearer; hop 2 (example.org) does not.
   assert.equal(apiCalls[0].authorization, 'Bearer TKN');
   assert.equal(apiCalls[1].authorization, undefined);
+});
+
+// ---- AS-1-1: optional destination allowlist (anti-DNS-rebind containment) ----
+
+test('parseWebFetchAllowlist returns null when unset/empty', () => {
+  assert.equal(parseWebFetchAllowlist(undefined), null);
+  assert.equal(parseWebFetchAllowlist(''), null);
+  assert.equal(parseWebFetchAllowlist('  ,  , '), null);
+});
+
+test('parseWebFetchAllowlist parses exact hosts and dot-suffixes case-insensitively', () => {
+  const list = parseWebFetchAllowlist('API.OpenAlex.org, .oclc.org , ');
+  assert.ok(list);
+  assert.equal(list.exact.has('api.openalex.org'), true);
+  assert.deepEqual(list.suffixes, ['.oclc.org']);
+});
+
+test('hostAllowlisted matches exact host and dot-suffix (incl. bare apex)', () => {
+  const list = parseWebFetchAllowlist('api.openalex.org, .oclc.org');
+  assert.equal(hostAllowlisted('api.openalex.org', list), true);
+  assert.equal(hostAllowlisted('API.OPENALEX.ORG', list), true);
+  assert.equal(hostAllowlisted('metadata.api.oclc.org', list), true); // subdomain
+  assert.equal(hostAllowlisted('oclc.org', list), true);              // bare apex
+  assert.equal(hostAllowlisted('evil.com', list), false);
+  assert.equal(hostAllowlisted('notoclc.org', list), false);          // not a real suffix
+});
+
+test('allowlist set: a non-allowlisted PUBLIC host (rebind vector) is blocked', () => {
+  const list = parseWebFetchAllowlist('api.openalex.org, .oclc.org');
+  // A perfectly public name that could DNS-rebind to a private IP: refused
+  // because its NAME is not on the list.
+  assert.throws(() => assertPublicHttpUrl('https://rebind.attacker.example/x', list), /allowlist/);
+  // An allowlisted host passes.
+  assert.equal(
+    assertPublicHttpUrl('https://api.openalex.org/works', list).hostname,
+    'api.openalex.org'
+  );
+  assert.equal(
+    assertPublicHttpUrl('https://metadata.api.oclc.org/x', list).hostname,
+    'metadata.api.oclc.org'
+  );
+  // Literal private targets are STILL blocked with the blocklist reason.
+  assert.throws(() => assertPublicHttpUrl('http://127.0.0.1/', list), /not allowed/);
+});
+
+test('allowlist unset: today behavior (literal-private blocked, public passes)', () => {
+  assert.equal(assertPublicHttpUrl('https://rebind.attacker.example/x').hostname, 'rebind.attacker.example');
+  assert.throws(() => assertPublicHttpUrl('http://127.0.0.1/'), /not allowed/);
+  assert.throws(() => assertPublicHttpUrl('http://169.254.169.254/'), /not allowed/);
+});
+
+test('guardedWebFetch with allowlist blocks a non-allowlisted host', async () => {
+  const fetchImpl = async () => new Response('nope', { status: 200 });
+  await assert.rejects(
+    () => guardedWebFetch('https://not-allowed.example/x', 'text',
+      { CAIL_WEBFETCH_ALLOWLIST: 'api.openalex.org' }, fetchImpl),
+    /allowlist/
+  );
+});
+
+test('guardedWebFetch with allowlist allows an allowlisted host', async () => {
+  const fetchImpl = async () =>
+    new Response('ok', { status: 200, headers: { 'content-type': 'text/plain' } });
+  const result = await guardedWebFetch('https://api.openalex.org/works', 'text',
+    { CAIL_WEBFETCH_ALLOWLIST: 'api.openalex.org' }, fetchImpl);
+  assert.equal(result.body, 'ok');
+});
+
+test('guardedWebFetch with allowlist blocks a redirect off the allowlist', async () => {
+  let n = 0;
+  const fetchImpl = async () => {
+    n += 1;
+    if (n === 1) {
+      return new Response(null, { status: 302, headers: { location: 'https://off-list.example/final' } });
+    }
+    return new Response('done', { status: 200, headers: { 'content-type': 'text/plain' } });
+  };
+  await assert.rejects(
+    () => guardedWebFetch('https://api.openalex.org/works', 'text',
+      { CAIL_WEBFETCH_ALLOWLIST: 'api.openalex.org' }, fetchImpl),
+    /allowlist/
+  );
 });
 
 test('a 401 from the API invalidates the token and retries exactly once', async () => {

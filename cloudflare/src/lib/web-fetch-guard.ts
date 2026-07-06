@@ -12,6 +12,26 @@
  * context or sandbox code. Bearer tokens (WorldCat, LibGuides) are attached
  * per-hop only when the hop's host is the allowlisted API host — a redirect off
  * that host must not carry them.
+ *
+ * SSRF / DNS-rebind note (AS-1-1): the literal-IP/suffix blocklist below is
+ * by-NAME only. A PUBLIC hostname whose DNS record resolves to 127.0.0.1 /
+ * 169.254.169.254 / a private range passes the name check on every hop. A true
+ * resolve-then-check is NOT possible in a Cloudflare Workers isolate — there is
+ * no in-isolate DNS API (no node:dns); `fetch` resolves the name internally,
+ * so we cannot see or pin the resolved IP before the connection is made.
+ *
+ * The deployment's real anti-rebind control is the OPTIONAL destination
+ * allowlist (CAIL_WEBFETCH_ALLOWLIST): when set, the initial URL and every
+ * redirect hop must match an allowlisted host or the fetch is blocked, so a
+ * public name that rebinds to a private IP is refused regardless of what it
+ * resolves to (its NAME isn't on the list). When the env is UNSET, behavior is
+ * unchanged (name-blocklist only) so the open research web still works.
+ *
+ * Residual baseline when the allowlist is unset: the name blocklist (correct
+ * for literal private/metadata/loopback targets) plus Cloudflare egress
+ * properties — a Workers isolate cannot reach its own loopback and has no
+ * Workers IMDS/metadata endpoint — so the classic 169.254.169.254 credential
+ * exfil path is not reachable even if a name rebinds to it.
  */
 
 import {
@@ -58,11 +78,69 @@ function isBlockedIpv6(hostname: string): boolean {
   return true;
 }
 
+/** Env carrying the optional destination allowlist (anti-rebind containment). */
+export interface WebFetchAllowlistEnv {
+  /**
+   * Comma-separated host patterns. When set, web_fetch (and every redirect hop)
+   * must match one of these hosts or be blocked. Each pattern is a hostname
+   * ("api.openalex.org") for an exact case-insensitive match, or a
+   * leading-dot suffix (".oclc.org") that matches that host and any subdomain
+   * of it. Unset => open-web behavior (name blocklist only).
+   */
+  CAIL_WEBFETCH_ALLOWLIST?: string;
+}
+
+/**
+ * Parse and normalize the allowlist once. Returns null when unset/empty (=>
+ * open-web mode). Each entry is lowercased and trimmed; a leading-dot entry is
+ * kept as a suffix rule, everything else is an exact-host rule.
+ */
+export function parseWebFetchAllowlist(
+  raw: string | undefined
+): { exact: Set<string>; suffixes: string[] } | null {
+  if (!raw) return null;
+  const exact = new Set<string>();
+  const suffixes: string[] = [];
+  for (const part of raw.split(',')) {
+    const entry = part.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry.startsWith('.')) {
+      // ".oclc.org" matches "oclc.org" itself and any subdomain of it.
+      suffixes.push(entry);
+    } else {
+      exact.add(entry);
+    }
+  }
+  if (exact.size === 0 && suffixes.length === 0) return null;
+  return { exact, suffixes };
+}
+
+/** True when `hostname` matches the parsed allowlist (exact or dot-suffix). */
+export function hostAllowlisted(
+  hostname: string,
+  allowlist: { exact: Set<string>; suffixes: string[] }
+): boolean {
+  const host = hostname.toLowerCase();
+  if (allowlist.exact.has(host)) return true;
+  for (const suffix of allowlist.suffixes) {
+    // ".oclc.org" matches "api.oclc.org" (endsWith) and "oclc.org" (bare).
+    if (host.endsWith(suffix) || host === suffix.slice(1)) return true;
+  }
+  return false;
+}
+
 /**
  * Throw unless the URL is plain public http(s). Applied to the initial URL
- * and to every redirect location.
+ * and to every redirect location. When an allowlist is supplied the host must
+ * additionally be on it — this is the deployment's anti-rebind control (a
+ * public name that resolves into private space is refused because its NAME is
+ * not allowlisted; see the module header for why in-isolate IP checks are
+ * impossible).
  */
-export function assertPublicHttpUrl(rawUrl: string): URL {
+export function assertPublicHttpUrl(
+  rawUrl: string,
+  allowlist?: { exact: Set<string>; suffixes: string[] } | null
+): URL {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -84,10 +162,15 @@ export function assertPublicHttpUrl(rawUrl: string): URL {
       `web_fetch: destination not allowed (${hostname}). Only public internet hosts are reachable.`
     );
   }
+  if (allowlist && !hostAllowlisted(hostname, allowlist)) {
+    throw new Error(
+      `web_fetch: destination not on the configured allowlist (${hostname}).`
+    );
+  }
   return url;
 }
 
-export interface WebFetchCredentialEnv extends TokenBrokerEnv {
+export interface WebFetchCredentialEnv extends TokenBrokerEnv, WebFetchAllowlistEnv {
   /** Primo search API base, e.g. https://api-na.hosted.exlibrisgroup.com/primo/v1/search */
   PRIMO_API_BASE?: string;
   PRIMO_API_KEY?: string;
@@ -181,7 +264,8 @@ export interface GuardedFetchResult {
 async function fetchFollowingRedirects(
   startUrl: URL,
   env: WebFetchCredentialEnv,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  allowlist: { exact: Set<string>; suffixes: string[] } | null
 ): Promise<{ response: Response; provider: TokenProvider | null }> {
   let url = startUrl;
   let response: Response | null = null;
@@ -209,7 +293,7 @@ async function fetchFollowingRedirects(
       if (hop === MAX_REDIRECTS) {
         throw new Error('web_fetch: too many redirects');
       }
-      url = assertPublicHttpUrl(new URL(location, url).toString());
+      url = assertPublicHttpUrl(new URL(location, url).toString(), allowlist);
       continue;
     }
     break;
@@ -231,12 +315,13 @@ export async function guardedWebFetch(
   env: WebFetchCredentialEnv,
   fetchImpl: typeof fetch = fetch
 ): Promise<GuardedFetchResult> {
-  const startUrl = applyConfiguredApiParams(assertPublicHttpUrl(rawUrl), env);
+  const allowlist = parseWebFetchAllowlist(env.CAIL_WEBFETCH_ALLOWLIST);
+  const startUrl = applyConfiguredApiParams(assertPublicHttpUrl(rawUrl, allowlist), env);
 
-  let { response, provider } = await fetchFollowingRedirects(startUrl, env, fetchImpl);
+  let { response, provider } = await fetchFollowingRedirects(startUrl, env, fetchImpl, allowlist);
   if (response.status === 401 && provider) {
     invalidateToken(provider);
-    ({ response } = await fetchFollowingRedirects(startUrl, env, fetchImpl));
+    ({ response } = await fetchFollowingRedirects(startUrl, env, fetchImpl, allowlist));
   }
 
   const contentType = response.headers.get('content-type') || '';

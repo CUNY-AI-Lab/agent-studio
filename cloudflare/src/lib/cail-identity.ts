@@ -104,6 +104,10 @@ export async function verifyIdentityJwt(
   if (!valid) return null;
 
   if (typeof payload.exp !== 'number' || payload.exp <= now) return null;
+  // Enforce nbf ("not before") only when present — the backbone contract makes
+  // it optional. No clock-skew allowance is applied (kept strict); if one is
+  // ever added it must stay ≤60s.
+  if (typeof payload.nbf === 'number' && payload.nbf > now) return null;
   if (payload.aud !== JWT_AUDIENCE) return null;
   if (typeof payload.iss !== 'string' || !payload.iss.endsWith(ISS_SUFFIX)) return null;
   if (typeof payload.sub !== 'string' || payload.sub === '') return null;
@@ -116,6 +120,47 @@ export async function verifyIdentityJwt(
       ? payload.entitlements.filter((e): e is string => typeof e === 'string')
       : [],
   };
+}
+
+/**
+ * Verify a client-supplied credential JWT AND bind it to an expected session id.
+ *
+ * Used by WorkspaceAgent.setCailCredential, which is a @callable RPC method any
+ * connected client can invoke over the WS channel — so an unverified string
+ * must never be accepted as the model-proxy credential, and even a genuinely
+ * valid token belonging to a DIFFERENT subject must not be installable onto
+ * this DO. We verify the HMAC/claims through the single verifier above, then
+ * derive the subject's session id the same way session.ts does and require it
+ * to equal this DO's session id.
+ *
+ * Returns the verified identity on success, or null when the token is
+ * invalid/expired OR its subject maps to a different session id. Never throws.
+ */
+export async function verifyCredentialForSession(
+  token: string | null | undefined,
+  expectedSessionId: string,
+  secret: string | undefined,
+  now?: number,
+): Promise<CailIdentity | null> {
+  const identity = await verifyIdentityJwt(token, secret, now);
+  if (!identity) return null;
+  const derived = await sessionIdForSubject(identity.subject);
+  if (derived !== expectedSessionId) return null;
+  return identity;
+}
+
+/**
+ * Derive the stable session id from a CAIL subject: SHA-256 over `cail:`+subject,
+ * first 16 bytes as hex. This is the single source of truth — session.ts's
+ * middleware imports it to key per-user data, and credential-binding above uses
+ * it so an installed credential's subject is always tied to the same session id
+ * the user's data lives under. Owned here (not in session.ts) so cail-identity
+ * stays leaf-level and there is no import cycle.
+ */
+export async function sessionIdForSubject(subject: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(`cail:${subject}`));
+  const bytes = new Uint8Array(digest).slice(0, 16);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 /**

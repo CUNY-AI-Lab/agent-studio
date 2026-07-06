@@ -27,6 +27,7 @@ import {
 } from '../domain/workspace';
 import type { Env } from '../env';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
+import { verifyCredentialForSession } from '../lib/cail-identity';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
 import {
   extractPdfText,
@@ -323,14 +324,42 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   /**
    * Store the caller's identity JWT for use as the model-proxy credential.
-   * Called server-side from the worker (where the gateway-injected header is
-   * available) on every workspace open. A null token is ignored so an
-   * anonymous read never clears a live credential mid-session.
+   *
+   * @callable methods are client-invokable over the WS RPC channel, so this
+   * must NOT trust its argument: it re-verifies the token through the same CAIL
+   * verifier the HTTP middleware uses (HMAC + all claims) AND binds the verified
+   * subject to THIS DO's session id. A garbage/expired token, or a genuinely
+   * valid token belonging to a DIFFERENT subject, is rejected — a client can
+   * never install a foreign credential onto someone else's workspace DO.
+   *
+   * The legitimate path (server.ts primeAgentCredential, after HTTP identity
+   * verification) still succeeds: that token is valid and its subject maps to
+   * exactly this DO's session id.
+   *
+   * A null token is ignored so an anonymous read never clears a live credential
+   * mid-session.
    */
   @callable()
   async setCailCredential(identityJwt: string | null): Promise<void> {
     if (!identityJwt) return;
     if (identityJwt === this.cailIdentityJwt) return;
+
+    const expectedSessionId = this.csrfSessionId();
+    if (!expectedSessionId) {
+      // No session id derivable yet (DO opened before first sync and the name
+      // is not in the expected `${sessionId}-${wid}` shape): refuse rather than
+      // store an unbindable credential.
+      throw new Error('setCailCredential: session id unavailable for credential binding');
+    }
+    const identity = await verifyCredentialForSession(
+      identityJwt,
+      expectedSessionId,
+      this.env.CAIL_IDENTITY_JWT_SECRET,
+    );
+    if (!identity) {
+      throw new Error('setCailCredential: rejected unverified or non-matching identity JWT');
+    }
+
     this.cailIdentityJwt = identityJwt;
     await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
   }

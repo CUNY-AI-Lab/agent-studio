@@ -6,6 +6,7 @@ import {
   cailAuthRequiredResponse,
   cailIdentityRequired,
   getCailIdentityFromRequest,
+  sessionIdForSubject,
   type CailIdentity,
 } from './cail-identity';
 import { runFirstLoginMigration } from './migration';
@@ -25,17 +26,9 @@ type SessionContext = Context<{
   Variables: SessionVariables;
 }>;
 
-/**
- * Derive a stable session id from the CAIL subject so all per-user data keys
- * to the pseudonymous subject (never email). The subject ("cail-<hex>") is
- * folded into the worker's opaque-id shape via SHA-256 so it slots into the
- * existing 32-hex session/agent-name machinery unchanged.
- */
-async function sessionIdForSubject(subject: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`cail:${subject}`));
-  const bytes = new Uint8Array(digest).slice(0, 16);
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
+// Session id derivation from the CAIL subject (SHA-256 over `cail:`+subject,
+// first 16 bytes hex) lives in cail-identity.ts as the single source of truth,
+// shared with credential-binding in the workspace DO. Imported above.
 
 function hexToBuffer(value: string): ArrayBuffer {
   const buffer = new ArrayBuffer(value.length / 2);

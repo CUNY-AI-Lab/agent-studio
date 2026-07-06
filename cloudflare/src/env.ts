@@ -34,6 +34,14 @@ export interface Env {
   // See src/lib/csrf.ts.
   CAIL_BASE_PATH?: string;
   GIT_AUTH_TOKEN?: string;
+  // Optional web_fetch destination allowlist (anti-DNS-rebind containment).
+  // Comma-separated host patterns: an exact host ("api.openalex.org") or a
+  // leading-dot suffix (".oclc.org" matches api.oclc.org and oclc.org). When
+  // set, web_fetch and every redirect hop must match or are blocked; when
+  // unset, the open research web works with the name-blocklist only. A true
+  // resolve-then-check is impossible in a Workers isolate (no DNS API), so this
+  // is the deployment's real rebind control. See src/lib/web-fetch-guard.ts.
+  CAIL_WEBFETCH_ALLOWLIST?: string;
   // CUNY Primo (Ex Libris) search API. When configured, web_fetch attaches
   // apikey/vid/scope server-side for the Primo host — the key never enters
   // model context. All optional; Primo search is simply unavailable without.
