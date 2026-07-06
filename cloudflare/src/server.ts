@@ -342,6 +342,8 @@ app.post('/api/workspaces/import', async (c) => {
     description: bundle.workspace.description,
     createdAt: now,
     updatedAt: now,
+    // Preserve a per-workspace model override across the export/import round-trip.
+    ...(bundle.workspace.model ? { model: bundle.workspace.model } : {}),
   };
 
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;

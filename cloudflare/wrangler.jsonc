@@ -48,8 +48,16 @@
   "r2_buckets": [
     {
       "binding": "WORKSPACE_FILES",
+      // Production data. `bucket_name` is the ONLY binding that touches real
+      // user workspaces/sessions/gallery objects.
       "bucket_name": "agent-studio",
-      "preview_bucket_name": "agent-studio"
+      // Isolation: `wrangler dev --remote` and preview/versioned deploys bind
+      // `preview_bucket_name` instead of `bucket_name`. This MUST be a distinct
+      // bucket so remote/preview reads/writes/DELETEs (deleteByPrefix, the
+      // first-login migration copy/delete) never touch production data — they
+      // share the `agent-studio/sessions/` key prefix otherwise. Create it once
+      // before remote/preview dev: `wrangler r2 bucket create agent-studio-preview`.
+      "preview_bucket_name": "agent-studio-preview"
     }
   ],
   // Rate Limiting bindings for the HTTP /api/* surface (see src/lib/rate-limit.ts).

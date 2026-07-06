@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { WorkspaceExportBundle } from './export';
+import { CAIL_MODEL_ID_PATTERN } from './workspace-validation';
 
 const scalarSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
 
@@ -17,6 +18,11 @@ const workspaceRecordSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   galleryId: z.string().optional(),
+  // Optional per-workspace model override. Export serializes the whole record
+  // verbatim, so a workspace with a model override would otherwise fail the
+  // .strict() parse on re-import. Same validation the PATCH route uses
+  // (single source of truth for the pattern).
+  model: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200).optional(),
 }).strict();
 
 const panelBaseSchema = z.object({

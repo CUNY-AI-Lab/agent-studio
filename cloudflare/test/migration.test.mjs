@@ -12,6 +12,7 @@ import {
   maybeMigrateAnonymousSession,
   migrateAnonymousSession,
 } from '../src/lib/migration.ts';
+import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
 
 const NOW = 1_800_000_000_000;
 
@@ -324,8 +325,9 @@ test('happy path: workspaces, files, messages, state, downloads, gallery all mov
   assert.equal(newAgent1.state.sessionId, SUBJECT);
   assert.equal(newAgent1.state.panels[0].title, 'First');
 
-  // Downloads carried over.
-  const downloads = await (await r2.get(`agent-studio/sessions/${SUBJECT}/workspaces/ws1/downloads.json`)).json();
+  // Downloads carried over (read via the storage-agnostic public reader; the
+  // seed used the legacy downloads.json blob, migration re-writes per-object).
+  const downloads = await getWorkspaceDownloads(env, SUBJECT, 'ws1');
   assert.equal(downloads[0].filename, 'x.txt');
 
   // Gallery authorship follows the user; other authors untouched.
