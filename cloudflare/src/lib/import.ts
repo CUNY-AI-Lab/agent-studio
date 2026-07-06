@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { WorkspaceExportBundle } from './export';
+import type { WorkspaceRecord } from '../domain/workspace';
 import { CAIL_MODEL_ID_PATTERN } from './workspace-validation';
 
 const scalarSchema = z.union([z.string(), z.number(), z.boolean(), z.null()]);
@@ -24,6 +25,32 @@ const workspaceRecordSchema = z.object({
   // (single source of truth for the pattern).
   model: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200).optional(),
 }).strict();
+
+// AS-2-2 drift guard (compile-time). `workspaceRecordSchema` above is a
+// hand-mirror of `WorkspaceRecord` (domain/workspace.ts). The original
+// AS-2-2 bug was a field added to the interface but not the schema; the fix
+// patched the field but left the *pattern* unguarded. This assertion fails
+// `tsc --noEmit` if the two ever diverge in EITHER direction — a field/type
+// added to one but not the other, an optionality mismatch, anything. It is a
+// zero-runtime type-level check (see cloudflare/README pattern note).
+//
+// Why not `satisfies z.ZodType<WorkspaceRecord>`: that only proves the schema
+// output is *assignable to* WorkspaceRecord (schema -> type). It would NOT
+// catch WorkspaceRecord gaining a field the schema lacks (the exact AS-2-2
+// shape). `TypesEqual` is the tuple-free bidirectional-identity idiom
+// (https://github.com/microsoft/TypeScript/issues/27024) which catches drift
+// both ways and treats optional properties exactly. The regex/max on `model`
+// are runtime-only refinements; they don't appear in `z.infer`, so the
+// inferred shape is still `model?: string` and equality holds.
+type TypesEqual<A, B> =
+  (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+// If this line errors, the schema and WorkspaceRecord have drifted. Reconcile
+// the two definitions; do NOT `as`-cast this away.
+const _workspaceRecordSchemaMatchesDomain: TypesEqual<
+  z.infer<typeof workspaceRecordSchema>,
+  WorkspaceRecord
+> = true;
+void _workspaceRecordSchemaMatchesDomain;
 
 const panelBaseSchema = z.object({
   id: z.string(),
