@@ -6,9 +6,10 @@
  * single source of truth the zod schema and the drift test reference so a new
  * panel type can't silently land in one copy but not the others.
  *
- * When you add a panel type: add it here AND to the WorkspacePanelBase `type`
- * union below (keep them identical). The `satisfies` guard keeps this array in
- * lockstep with that union at compile time.
+ * When you add a panel type: add it here. WorkspacePanelBase.type is typed as
+ * `PanelType` (= PANEL_TYPES[number]) below, so the panel-object union is locked
+ * to this array at compile time by that field type — there is no separate
+ * `satisfies` guard; the lock is the `type: PanelType` field itself.
  */
 export const PANEL_TYPES = [
   'chat',

@@ -1124,7 +1124,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         }),
         execute: async ({ filePath, sheet, maxRows, asObjects }) => {
           const bytes = await this.requireRuntimeFileBytes(filePath);
-          const result = readXlsx(bytes, { sheet, maxRows, asObjects });
+          const result = await readXlsx(bytes, { sheet, maxRows, asObjects });
           return { ok: true, filePath: sanitizeRelativePath(filePath), ...result };
         },
       }),

@@ -44,47 +44,70 @@ export const MAX_XLSX_SHEETS = 50;
 // Input caps (zip-bomb / OOM defense — AS-2-5)
 //
 // The output caps above only trim what a caller *sees*; they run AFTER the
-// parser has fully materialized the document in memory. A tiny xlsx/docx (both
-// are ZIP containers) can declare gigabytes of uncompressed content and OOM the
-// isolate before any output cap is reached. We therefore pre-screen the raw
-// bytes BEFORE handing them to the parser: a compressed-size cap on the raw
-// input, plus a dependency-free ZIP central-directory scan that rejects
-// zip-bombs by their *declared* uncompressed size and entry count.
+// parser has fully materialized the document in memory (SheetJS's XLSX.read
+// ignores the ZIP's declared uncompressed-size field and inflates the REAL
+// deflate stream, checking size only AFTER it has fully inflated). So a tiny
+// xlsx/docx (both ZIP containers) whose entry LIES about its uncompressed size
+// can still inflate to gigabytes and OOM the isolate before any output cap is
+// reached. deflate reaches ~1029:1, so even the 25 MB compressed-input cap
+// bounds worst-case inflation only at ~25 GB — not a real ceiling.
+//
+// The real defense is a bounded PRE-INFLATION pass (assertZipWithinCaps) that
+// runs BEFORE the parser: it locates each entry's compressed bytes from the
+// central directory + local header and streams them through a bounded
+// DecompressionStream with a RUNNING output-byte counter across all entries,
+// aborting the moment the cumulative decompressed size exceeds
+// MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES. That gives a hard memory ceiling regardless
+// of what the declared-size field claims. The entry-count and compressed-byte
+// caps stay as cheap fast rejects in front of it. There is NO declared-size
+// scan: it caught only over-declaring bombs and was theater against the real
+// under-declaring shape.
 // ---------------------------------------------------------------------------
 
 /** Reject xlsx/xls/csv input larger than this many compressed bytes on disk. */
 export const MAX_XLSX_INPUT_BYTES = 25 * 1024 * 1024; // 25 MB
 /** Reject a ZIP (xlsx) whose central directory lists more than this many entries. */
 export const MAX_ZIP_ENTRIES = 512;
-/** Reject a ZIP whose entries sum to more than this many declared uncompressed bytes. */
+/**
+ * Hard ceiling on the CUMULATIVE decompressed size across all ZIP entries,
+ * enforced by streaming decompression that aborts the instant it is exceeded.
+ * 100 MB is comfortably above any legitimate xlsx/docx we parse (a benign 15 MB
+ * xlsx inflates to well under this) yet an order of magnitude below the RSS
+ * budget that OOMs the isolate, so a bomb is stopped mid-inflation long before
+ * memory pressure. This is the *real* memory bound; it is independent of any
+ * declared-size field a forged ZIP might carry.
+ */
 export const MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES = 100 * 1024 * 1024; // 100 MB
-/** Reject a ZIP any single entry of which declares more than this many uncompressed bytes. */
-export const MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 100 * 1024 * 1024; // 100 MB
+
 /** Reject PDF input larger than this many bytes before extraction. */
 export const MAX_PDF_INPUT_BYTES = 30 * 1024 * 1024; // 30 MB
 
+const EOCD_SIGNATURE = 0x06054b50;
+const CDFH_SIGNATURE = 0x02014b50;
+const LFH_SIGNATURE = 0x04034b50;
+const METHOD_STORED = 0;
+const METHOD_DEFLATE = 8;
+
+interface ZipEntryRef {
+  method: number;
+  compressedSize: number;
+  localHeaderOffset: number;
+}
+
 /**
- * Dependency-free ZIP zip-bomb pre-check. Walks the End Of Central Directory
- * record and the central-directory file headers, summing each entry's DECLARED
- * uncompressed size (a 32-bit field in the CDFH — no decompression happens, so
- * this stays cheap even for a forged bomb). Throws if the entry count or the
- * declared uncompressed sizes exceed the caps above. This intentionally reads
- * only the central directory: the whole point is to reject BEFORE any parser
- * inflates the compressed data.
- *
- * Only ZIP containers are screened here; a non-ZIP input (e.g. a legacy .xls or
- * a .csv passed to readXlsx) is left to the compressed-byte cap and the parser.
+ * Locate the End Of Central Directory record and walk the central directory,
+ * returning each entry's compression method, compressed size, and local-header
+ * offset. Rejects on the cheap fast checks (entry count) here. No decompression
+ * happens in this pass — it only parses ZIP structure. Returns null for a
+ * non-ZIP input (which is then left to the parser).
  */
-export function assertZipWithinCaps(bytes: Uint8Array): void {
-  // "PK\x03\x04" (local file header) marks a ZIP. Anything else is not a ZIP
-  // container and is not screened by this function.
+function locateZipEntries(bytes: Uint8Array): ZipEntryRef[] | null {
+  // "PK" marks a ZIP. Anything else is not a ZIP container.
   if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
-    return;
+    return null;
   }
 
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const EOCD_SIGNATURE = 0x06054b50;
-  const CDFH_SIGNATURE = 0x02014b50;
 
   // Find the End Of Central Directory record: scan backwards from EOF. The EOCD
   // is 22 bytes plus a comment of up to 65535 bytes, so we never look further
@@ -117,10 +140,10 @@ export function assertZipWithinCaps(bytes: Uint8Array): void {
   }
 
   // Walk the central directory. Each central-directory file header (CDFH) is
-  // 46 bytes fixed plus variable name/extra/comment fields; the 32-bit
-  // uncompressed size lives at offset 24 within the header.
+  // 46 bytes fixed plus variable name/extra/comment fields. Field offsets:
+  //   +10 compression method, +20 compressed size, +42 local-header offset.
+  const entries: ZipEntryRef[] = [];
   let cursor = cdOffset;
-  let totalUncompressed = 0;
   for (let n = 0; n < entryCount; n += 1) {
     if (cursor + 46 > bytes.length) {
       throw new Error('Invalid ZIP: central directory truncated');
@@ -128,24 +151,137 @@ export function assertZipWithinCaps(bytes: Uint8Array): void {
     if (view.getUint32(cursor, true) !== CDFH_SIGNATURE) {
       throw new Error('Invalid ZIP: bad central-directory file header signature');
     }
-    const uncompressedSize = view.getUint32(cursor + 24, true);
-    if (uncompressedSize > MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES) {
-      throw new Error(
-        `ZIP rejected: an entry declares ${uncompressedSize} uncompressed bytes, ` +
-          `over the ${MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES}-byte per-entry cap (possible zip bomb)`,
-      );
-    }
-    totalUncompressed += uncompressedSize;
-    if (totalUncompressed > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
-      throw new Error(
-        `ZIP rejected: declared uncompressed size exceeds the ` +
-          `${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES}-byte total cap (possible zip bomb)`,
-      );
-    }
+    const method = view.getUint16(cursor + 10, true);
+    const compressedSize = view.getUint32(cursor + 20, true);
+    const localHeaderOffset = view.getUint32(cursor + 42, true);
+    entries.push({ method, compressedSize, localHeaderOffset });
     const nameLen = view.getUint16(cursor + 28, true);
     const extraLen = view.getUint16(cursor + 30, true);
     const commentLen = view.getUint16(cursor + 32, true);
     cursor += 46 + nameLen + extraLen + commentLen;
+  }
+  return entries;
+}
+
+/**
+ * Slice one entry's compressed bytes out of the ZIP. The local file header
+ * (signature 0x04034b50) restates the name/extra lengths, which can differ from
+ * the central directory's, so we read them from the local header to find where
+ * the compressed data actually starts.
+ */
+function sliceEntryCompressedData(
+  bytes: Uint8Array,
+  view: DataView,
+  entry: ZipEntryRef,
+): Uint8Array {
+  const off = entry.localHeaderOffset;
+  if (off + 30 > bytes.length) {
+    throw new Error('Invalid ZIP: local file header out of range');
+  }
+  if (view.getUint32(off, true) !== LFH_SIGNATURE) {
+    throw new Error('Invalid ZIP: bad local file header signature');
+  }
+  const nameLen = view.getUint16(off + 26, true);
+  const extraLen = view.getUint16(off + 28, true);
+  const dataStart = off + 30 + nameLen + extraLen;
+  const dataEnd = dataStart + entry.compressedSize;
+  if (dataEnd > bytes.length) {
+    throw new Error('Invalid ZIP: compressed data runs past end of file');
+  }
+  return bytes.subarray(dataStart, dataEnd);
+}
+
+/**
+ * Stream one deflate-raw block through a bounded DecompressionStream, adding to
+ * a running total and throwing the instant the cumulative output exceeds the
+ * cap. Returns the new running total. We never buffer the full inflated output:
+ * each chunk is counted and discarded, so the abort fires early on a bomb.
+ */
+async function inflateCounting(
+  compressed: Uint8Array,
+  runningTotal: number,
+): Promise<number> {
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  // Kick off the write without awaiting so we can drain the reader concurrently
+  // (a large stream can back-pressure otherwise). Surface write errors, but a
+  // deliberate reader.cancel() below can reject this — swallow that case.
+  const writeDone = (async () => {
+    // Cast: our ZIP bytes are always backed by a plain ArrayBuffer, but a
+    // subarray's generic type widens to ArrayBufferLike (which includes
+    // SharedArrayBuffer) and DecompressionStream's writer wants BufferSource.
+    await writer.write(compressed as unknown as Uint8Array<ArrayBuffer>);
+    await writer.close();
+  })().catch(() => {});
+
+  const reader = ds.readable.getReader();
+  let total = runningTotal;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+        await reader.cancel();
+        throw new Error(
+          `ZIP rejected: decompressed size exceeds the ` +
+            `${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES}-byte total cap (zip bomb aborted mid-inflation)`,
+        );
+      }
+    }
+  } finally {
+    await writeDone;
+  }
+  return total;
+}
+
+/**
+ * Bounded ZIP pre-inflation — the real memory ceiling for the zip-bomb / OOM
+ * defense (AS-2-5). Runs BEFORE XLSX.read. Steps:
+ *   1. Parse the central directory to get each entry's method, compressed size,
+ *      and local-header offset. Fast-reject on the entry-count cap here.
+ *   2. For each entry, slice its compressed bytes and DECOMPRESS them with a
+ *      running cumulative output counter: stored (method 0) bytes count as-is;
+ *      deflate (method 8) bytes stream through DecompressionStream('deflate-raw').
+ *      The instant the running total crosses MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES we
+ *      abort and throw — we do NOT inflate the whole archive first.
+ * Because the counter reads the ACTUAL inflated output (not the declared 32-bit
+ * uncompressed-size field, which a bomb can set to any lie), this bounds memory
+ * regardless of what the ZIP claims. An unknown compression method is rejected
+ * conservatively.
+ *
+ * Only ZIP containers are screened; a non-ZIP input (legacy .xls, .csv) returns
+ * without work and is left to the compressed-byte cap and the parser.
+ */
+export async function assertZipWithinCaps(bytes: Uint8Array): Promise<void> {
+  const entries = locateZipEntries(bytes);
+  if (entries === null) {
+    return;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+  let total = 0;
+  for (const entry of entries) {
+    const compressed = sliceEntryCompressedData(bytes, view, entry);
+    if (entry.method === METHOD_STORED) {
+      // Stored data is its own uncompressed size; just count it.
+      total += compressed.byteLength;
+      if (total > MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES) {
+        throw new Error(
+          `ZIP rejected: decompressed size exceeds the ` +
+            `${MAX_ZIP_TOTAL_UNCOMPRESSED_BYTES}-byte total cap (zip bomb aborted)`,
+        );
+      }
+    } else if (entry.method === METHOD_DEFLATE) {
+      total = await inflateCounting(compressed, total);
+    } else {
+      // Unknown/unsupported method (e.g. bzip2, lzma). xlsx/docx only use
+      // stored + deflate, so reject conservatively rather than trust a method
+      // we cannot bound.
+      throw new Error(
+        `ZIP rejected: unsupported compression method ${entry.method} (only stored/deflate are allowed)`,
+      );
+    }
   }
 }
 
@@ -259,17 +395,21 @@ export interface ReadXlsxResult {
 }
 
 /** Read one sheet of an xlsx/xls/csv workbook into JSON rows. */
-export function readXlsx(bytes: Uint8Array, options: ReadXlsxOptions = {}): ReadXlsxResult {
+export async function readXlsx(
+  bytes: Uint8Array,
+  options: ReadXlsxOptions = {},
+): Promise<ReadXlsxResult> {
   // INPUT caps (AS-2-5): screen the raw bytes BEFORE XLSX.read materializes the
   // workbook. xlsx/xlsm/docx are ZIP containers, so a small compressed file can
-  // decompress to gigabytes and OOM the isolate. Cap the compressed input, then
-  // reject a zip-bomb by its declared uncompressed size / entry count.
+  // decompress to gigabytes and OOM the isolate. First two are cheap fast
+  // rejects; assertZipWithinCaps then bounds ACTUAL inflated size (the real
+  // ceiling — XLSX.read ignores the ZIP's declared-size field).
   if (bytes.length > MAX_XLSX_INPUT_BYTES) {
     throw new Error(
       `Workbook rejected: ${bytes.length} bytes exceeds the ${MAX_XLSX_INPUT_BYTES}-byte input cap for a parse operation`,
     );
   }
-  assertZipWithinCaps(bytes);
+  await assertZipWithinCaps(bytes);
 
   const workbook = XLSX.read(bytes, { type: 'array' });
   const sheetNames = workbook.SheetNames;
