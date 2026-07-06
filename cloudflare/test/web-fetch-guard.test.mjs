@@ -68,6 +68,12 @@ test('localhost, private, link-local, and metadata destinations are blocked', ()
     'http://[fd00::1]/',
     'http://[fe80::1]/',
     'http://[::ffff:127.0.0.1]/',
+    // Trailing-dot (FQDN root) forms must not slip the name blocklist — the
+    // WHATWG parser preserves the dot on DNS names.
+    'http://localhost./',
+    'http://foo.local./',
+    'http://bar.internal./',
+    'http://service.internal.:8080/',
   ]) {
     assert.throws(() => assertPublicHttpUrl(url), /not allowed|invalid/, url);
   }

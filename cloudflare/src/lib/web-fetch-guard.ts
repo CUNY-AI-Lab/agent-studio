@@ -150,7 +150,11 @@ export function assertPublicHttpUrl(
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`web_fetch: only http(s) URLs are allowed, got ${url.protocol}`);
   }
-  const hostname = url.hostname.toLowerCase();
+  // Strip a single trailing dot (the FQDN root label): the WHATWG parser keeps
+  // it on DNS names, so `localhost.` / `foo.internal.` would otherwise slip the
+  // name blocklist below while still resolving to the same host. (IPv4 literals
+  // already have it stripped by the parser, so this is a no-op for them.)
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
   const blocked =
     BLOCKED_HOSTNAMES.has(hostname) ||
     BLOCKED_HOST_SUFFIXES.some((suffix) => hostname.endsWith(suffix)) ||
