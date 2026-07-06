@@ -105,18 +105,33 @@ export async function mutatingFetch(input: string, init: RequestInit = {}): Prom
   return fetch(input, { ...init, credentials: 'include', headers });
 }
 
+/**
+ * Read a failed response's JSON error envelope. Returns the parsed payload (for
+ * auth-required detection) and the extracted message, mirroring the worker's
+ * `{ error }` shape (and tolerating a `{ message }` variant). Falls back to a
+ * status string when the body isn't JSON or carries neither field. Shared by
+ * parseJson and fetchWorkspaceExport so their error extraction can't drift.
+ * Reads the body exactly once.
+ */
+async function readResponseError(
+  response: Response,
+): Promise<{ payload: unknown; message: string }> {
+  const payload = await response.json().catch(() => ({ error: `Request failed with ${response.status}` }));
+  const message = typeof payload === 'object' && payload !== null
+    ? ((payload as { message?: string; error?: string }).message
+      ?? (payload as { error?: string }).error)
+    : undefined;
+  return { payload, message: message || `Request failed with ${response.status}` };
+}
+
 async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: `Request failed with ${response.status}` }));
+    const { payload, message } = await readResponseError(response);
     if (handleAuthRequired(response.status, payload)) {
       // Redirecting to /login; reject with a benign message so callers stop.
       throw new Error('Authentication required');
     }
-    const message = typeof payload === 'object' && payload !== null
-      ? ((payload as { message?: string; error?: string }).message
-        ?? (payload as { error?: string }).error)
-      : undefined;
-    throw new Error(message || `Request failed with ${response.status}`);
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
@@ -359,8 +374,12 @@ export async function fetchWorkspaceExport(workspaceId: string): Promise<{ blob:
     credentials: 'include',
   });
   if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: `Request failed with ${response.status}` }));
-    throw new Error(payload.error || `Request failed with ${response.status}`);
+    // Same error extraction as parseJson (via readResponseError). Export does
+    // NOT route 401s through handleAuthRequired: it returns a Blob and runs from
+    // an already-authenticated workspace view, so a login redirect mid-download
+    // is worse than surfacing the error. That divergence is deliberate.
+    const { message } = await readResponseError(response);
+    throw new Error(message);
   }
 
   return {
