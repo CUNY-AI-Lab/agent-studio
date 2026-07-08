@@ -8,6 +8,12 @@ import {
   getMimeType,
 } from './files';
 
+export class GalleryError extends Error {
+  constructor(message: string, readonly status: 403 | 404) {
+    super(message);
+  }
+}
+
 function galleryManifestKey(id: string): string {
   return `${getGalleryPrefix(id)}manifest.json`;
 }
@@ -97,19 +103,28 @@ export async function publishWorkspace(args: {
   // (`sandbox allow-scripts`, no allow-same-origin in previewServingHeaders),
   // which forces an opaque origin so the served script can't reach same-origin
   // state even on a direct top-level open. See lib/file-serving.ts §3¾.
-  await Promise.all([
-    args.env.WORKSPACE_FILES.put(
-      galleryManifestKey(id),
-      JSON.stringify(item, null, 2),
-      { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
-    ),
-    args.env.WORKSPACE_FILES.put(
+  try {
+    const uploadResults = await Promise.allSettled(fileUploads);
+    const failedUpload = uploadResults.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (failedUpload) {
+      throw failedUpload.reason;
+    }
+    await args.env.WORKSPACE_FILES.put(
       galleryStateKey(id),
       JSON.stringify(args.state, null, 2),
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
-    ),
-    ...fileUploads,
-  ]);
+    );
+    await args.env.WORKSPACE_FILES.put(
+      galleryManifestKey(id),
+      JSON.stringify(item, null, 2),
+      { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
+    );
+  } catch (error) {
+    await deleteByPrefix(args.env, getGalleryPrefix(id)).catch(() => undefined);
+    throw error;
+  }
 
   return item;
 }
@@ -122,7 +137,7 @@ export async function cloneGalleryItem(args: {
 }): Promise<GalleryItemFull> {
   const item = await getGalleryItem(args.env, args.galleryId);
   if (!item) {
-    throw new Error('Gallery item not found');
+    throw new GalleryError('Gallery item not found', 404);
   }
 
   return item;
@@ -131,10 +146,10 @@ export async function cloneGalleryItem(args: {
 export async function unpublishGalleryItem(env: Env, galleryId: string, sessionId: string): Promise<void> {
   const item = await getGalleryItem(env, galleryId);
   if (!item) {
-    throw new Error('Gallery item not found');
+    throw new GalleryError('Gallery item not found', 404);
   }
   if (item.authorId !== sessionId) {
-    throw new Error('Not authorized to unpublish this item');
+    throw new GalleryError('Not authorized to unpublish this item', 403);
   }
 
   await deleteByPrefix(env, getGalleryPrefix(galleryId));

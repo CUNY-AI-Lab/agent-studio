@@ -2,10 +2,11 @@ import { getAgentByName, routeAgentRequest } from 'agents';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { WorkspaceAgent } from './agent/workspace-agent';
-import type { WorkspaceFileInfo, WorkspacePanel } from './domain/workspace';
+import type { WorkspaceFileInfo, WorkspacePanel, WorkspaceRecord } from './domain/workspace';
 import type { Env } from './env';
 import {
   cloneGalleryItem,
+  GalleryError,
   getGalleryItem,
   listGalleryItems,
   publishWorkspace as publishGalleryWorkspace,
@@ -27,7 +28,7 @@ import {
   isValidGalleryId,
   isValidWorkspaceId,
 } from './lib/ids';
-import { fetchCailModels } from './lib/cail-models';
+import { fetchCailModels, ModelCatalogAuthError } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
@@ -125,14 +126,29 @@ async function safeJson<T>(c: Context, fallback: T): Promise<T> {
 
 const app = new Hono<{
   Bindings: Env;
-  Variables: SessionVariables;
+  Variables: AppVariables;
 }>();
+
+type AppVariables = SessionVariables & {
+  workspace?: WorkspaceRecord;
+};
+
+type AppContext = Context<{
+  Bindings: Env;
+  Variables: AppVariables;
+}>;
 
 // Validation failures are client errors: routes validate with zod .parse and
 // rely on this mapping instead of try/catch at every call site.
 app.onError((error, c) => {
   if (error instanceof z.ZodError) {
     return c.json({ error: 'Invalid request body' }, 400);
+  }
+  if (error instanceof GalleryError) {
+    return c.json({ error: error.message }, error.status);
+  }
+  if (error instanceof ModelCatalogAuthError) {
+    return c.json({ error: 'Model catalog authentication failed' }, 502);
   }
   console.error('Unhandled route error', { path: c.req.path, error });
   return c.json({ error: 'Internal error' }, 500);
@@ -141,7 +157,7 @@ app.onError((error, c) => {
 // AS-3-6 boundary checks. `import` is a literal POST sub-route of
 // /api/workspaces, not a workspace id, so it is exempt from id-shape validation.
 async function validateWorkspaceIdParam(
-  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+  c: AppContext,
   next: () => Promise<void>,
 ): Promise<Response | void> {
   const id = c.req.param('id') ?? '';
@@ -153,7 +169,7 @@ async function validateWorkspaceIdParam(
 }
 
 async function validateGalleryIdParam(
-  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+  c: AppContext,
   next: () => Promise<void>,
 ): Promise<Response | void> {
   if (!isValidGalleryId(c.req.param('id') ?? '')) {
@@ -175,13 +191,55 @@ function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
  * is unavailable) can authenticate to the model proxy. No-op when anonymous.
  */
 async function primeAgentCredential(
-  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+  c: AppContext,
   agent: Awaited<ReturnType<typeof getWorkspaceAgent>>
 ): Promise<void> {
   const jwt = cailIdentityJwt(c);
   if (jwt) {
     await agent.setCailCredential(jwt);
   }
+}
+
+async function requireWorkspace(
+  c: AppContext,
+  next: () => Promise<void>,
+): Promise<Response | void> {
+  const sessionId = requireSession(c);
+  const workspaceId = c.req.param('id') ?? '';
+  if (workspaceId === 'import' && c.req.method === 'POST') return next();
+  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
+  if (!workspace) {
+    return c.json({ error: 'Workspace not found' }, 404);
+  }
+  c.set('workspace', workspace);
+  return next();
+}
+
+async function syncedWorkspaceAgent(
+  c: AppContext,
+  workspace: WorkspaceRecord,
+  options: { primeCredential?: boolean } = {},
+): Promise<{
+  sessionId: string;
+  workspaceId: string;
+  agent: Awaited<ReturnType<typeof getWorkspaceAgent>>;
+}> {
+  const sessionId = requireSession(c);
+  const workspaceId = workspace.id;
+  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
+  await agent.syncWorkspace(workspace, sessionId);
+  if (options.primeCredential) {
+    await primeAgentCredential(c, agent);
+  }
+  return { sessionId, workspaceId, agent };
+}
+
+function loadedWorkspace(c: AppContext): WorkspaceRecord {
+  const workspace = c.get('workspace');
+  if (!workspace) {
+    throw new Error('loadedWorkspace: workspace not loaded');
+  }
+  return workspace;
 }
 
 function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFileInfo[] {
@@ -213,6 +271,8 @@ app.use('/api/*', rateLimitMiddleware);
 // `/api/workspaces/import` is a literal sub-route, not an :id, so exempt it.
 app.use('/api/workspaces/:id', validateWorkspaceIdParam);
 app.use('/api/workspaces/:id/*', validateWorkspaceIdParam);
+app.use('/api/workspaces/:id', requireWorkspace);
+app.use('/api/workspaces/:id/*', requireWorkspace);
 app.use('/api/gallery/:id', validateGalleryIdParam);
 app.use('/api/gallery/:id/*', validateGalleryIdParam);
 
@@ -322,26 +382,46 @@ app.post('/api/gallery/:id', async (c) => {
   workspace.createdAt = now;
   workspace.updatedAt = now;
 
-  await putWorkspace(c.env, sessionId, workspace);
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
-  await primeAgentCredential(c, agent);
+  let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
-  const galleryFiles = await listGalleryFilesRecursive(c.env, sourceGalleryId);
-  await Promise.all(
-    galleryFiles
-      .filter((file) => !file.isDirectory)
-      .map(async (file) => {
-        const object = await readGalleryFile(c.env, sourceGalleryId, file.path);
-        if (!object) return;
-        await agent.writeWorkspaceFileContent(
-          sanitizeRelativePath(file.path),
-          await object.arrayBuffer(),
-          object.httpMetadata?.contentType || getMimeType(file.path)
-        );
-      })
-  );
-  await agent.replaceWorkspaceState(item.state, workspace, sessionId);
+  try {
+    await putWorkspace(c.env, sessionId, workspace);
+    ({ agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true }));
+
+    // Copy only the published file OBJECTS (a listed file that is missing from
+    // R2 is a genuine integrity failure). Panel `filePath`s that dangle — a
+    // reference to a file deleted before publish — are tolerated: the panel
+    // simply won't resolve its file, exactly as on the source workspace.
+    // Consume each R2 body before the next read so at most one connection is
+    // open at a time (Workers caps ~6 simultaneous open connections).
+    const galleryFiles = await listGalleryFilesRecursive(c.env, sourceGalleryId);
+    const missingPaths: string[] = [];
+    for (const file of galleryFiles) {
+      if (file.isDirectory) continue;
+      const filePath = sanitizeRelativePath(file.path);
+      const object = await readGalleryFile(c.env, sourceGalleryId, filePath);
+      if (!object) {
+        missingPaths.push(filePath);
+        continue;
+      }
+      await agent.writeWorkspaceFileContent(
+        filePath,
+        await object.arrayBuffer(),
+        object.httpMetadata?.contentType || getMimeType(filePath)
+      );
+    }
+    if (missingPaths.length > 0) {
+      throw new Error(`Gallery item ${sourceGalleryId} is missing file(s): ${missingPaths.join(', ')}`);
+    }
+    await agent.replaceWorkspaceState(item.state, workspace, sessionId);
+  } catch (error) {
+    if (agent) {
+      await agent.clearWorkspaceFiles().catch(() => undefined);
+    }
+    await deleteWorkspaceFiles(c.env, sessionId, workspaceId).catch(() => undefined);
+    await deleteWorkspace(c.env, sessionId, workspaceId).catch(() => undefined);
+    throw error;
+  }
 
   return c.json({ workspaceId, workspace }, 201);
 });
@@ -371,9 +451,7 @@ app.post('/api/workspaces', async (c) => {
   });
 
   await putWorkspace(c.env, sessionId, workspace);
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspace.id);
-  await agent.syncWorkspace(workspace, sessionId);
-  await primeAgentCredential(c, agent);
+  await syncedWorkspaceAgent(c, workspace, { primeCredential: true });
 
   return c.json({ workspace }, 201);
 });
@@ -417,9 +495,7 @@ app.post('/api/workspaces/import', async (c) => {
 
   try {
     await putWorkspace(c.env, sessionId, workspace);
-    agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-    await agent.syncWorkspace(workspace, sessionId);
-    await primeAgentCredential(c, agent);
+    ({ agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true }));
     await Promise.all(
       bundle.files.map((file) => agent!.writeWorkspaceFileContent(
         sanitizeRelativePath(file.path),
@@ -444,17 +520,11 @@ app.post('/api/workspaces/import', async (c) => {
 });
 
 app.get('/api/workspaces/:id', async (c) => {
+  const workspace = loadedWorkspace(c);
   const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
-
+  const workspaceId = workspace.id;
   const agentName = createWorkspaceAgentName(sessionId, workspaceId);
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
-  await primeAgentCredential(c, agent);
+  const { agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true });
   const [state, messages, files, runtime] = await Promise.all([
     agent.getSnapshot(),
     agent.getMessages(),
@@ -478,15 +548,8 @@ app.get('/api/workspaces/:id', async (c) => {
 });
 
 app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
-
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const workspace = loadedWorkspace(c);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.getSnapshot();
   const panel = state.panels.find((candidate) => candidate.id === c.req.param('panelId'));
   if (!panel || panel.type !== 'preview' || panel.filePath || !panel.content) {
@@ -501,11 +564,7 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
 
 app.delete('/api/workspaces/:id/downloads', async (c) => {
   const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspaceId = loadedWorkspace(c).id;
 
   await clearWorkspaceDownloads(c.env, sessionId, workspaceId);
   return c.json({ success: true });
@@ -513,58 +572,34 @@ app.delete('/api/workspaces/:id/downloads', async (c) => {
 
 app.get('/api/workspaces/:id/downloads', async (c) => {
   const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspaceId = loadedWorkspace(c).id;
 
   const downloads = await getWorkspaceDownloads(c.env, sessionId, workspaceId);
   return c.json({ downloads });
 });
 
 app.get('/api/workspaces/:id/runtime', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
-
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const workspace = loadedWorkspace(c);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const runtime = await agent.getRuntimeInfo();
 
   return c.json({ runtime });
 });
 
 app.get('/api/workspaces/:id/observability', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
-
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const workspace = loadedWorkspace(c);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const observability = await agent.getObservability();
 
   return c.json({ observability });
 });
 
 app.post('/api/workspaces/:id/runtime/execute', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> zod (code required) -> 400.
   const body = runtimeExecuteSchema.parse(await safeJson(c, {}));
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const execution = await agent.executeCode(body.code);
 
   return c.json({ execution });
@@ -572,11 +607,7 @@ app.post('/api/workspaces/:id/runtime/execute', async (c) => {
 
 app.patch('/api/workspaces/:id', async (c) => {
   const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> all-optional patch -> 200 no-op.
   const parsed = patchWorkspaceSchema.safeParse(await safeJson(c, {}));
@@ -593,22 +624,14 @@ app.patch('/api/workspaces/:id', async (c) => {
   };
 
   await putWorkspace(c.env, sessionId, nextWorkspace);
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(nextWorkspace, sessionId);
+  await syncedWorkspaceAgent(c, nextWorkspace);
 
   return c.json({ workspace: nextWorkspace });
 });
 
 app.get('/api/workspaces/:id/export', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
-
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const workspace = loadedWorkspace(c);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const [state, messages, files] = await Promise.all([
     agent.getSnapshot(),
     agent.getMessages(),
@@ -640,16 +663,11 @@ app.get('/api/workspaces/:id/export', async (c) => {
 
 app.post('/api/workspaces/:id/publish', async (c) => {
   const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> zod (title required) -> 400.
   const body = publishWorkspaceSchema.parse(await safeJson(c, {}));
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const [state, files] = await Promise.all([
     agent.getSnapshot(),
     agent.getWorkspaceFiles(),
@@ -679,46 +697,34 @@ app.post('/api/workspaces/:id/publish', async (c) => {
 
 app.delete('/api/workspaces/:id', async (c) => {
   const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
+  const workspaceId = workspace.id;
 
+  // Delete must not depend on hydration: syncWorkspace would run legacy
+  // hydration, so a workspace with an unreadable legacy file could never be
+  // deleted. Clear the runtime best-effort, then drop the R2 records.
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
-  await agent.clearWorkspaceFiles();
+  await agent.clearWorkspaceFiles().catch(() => undefined);
   await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
   await deleteWorkspace(c.env, sessionId, workspaceId);
   return c.json({ success: true });
 });
 
 app.get('/api/workspaces/:id/files', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
   const dir = c.req.query('dir') || '';
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const files = listDirectoryEntries(await agent.getWorkspaceFiles(), dir);
   return c.json({ files });
 });
 
 app.get('/api/workspaces/:id/files/*', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
+  const workspaceId = workspace.id;
 
   const filePath = c.req.path.split(`/api/workspaces/${workspaceId}/files/`)[1] || '';
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const file = await agent.readWorkspaceFileContent(filePath);
   if (!file) {
     return c.json({ error: 'File not found' }, 404);
@@ -737,12 +743,8 @@ app.get('/api/workspaces/:id/files/*', async (c) => {
 });
 
 app.put('/api/workspaces/:id/files/*', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
+  const workspaceId = workspace.id;
 
   const filePath = c.req.path.split(`/api/workspaces/${workspaceId}/files/`)[1] || '';
   // Defense-in-depth: reject active/disallowed types (e.g. .html/.svg) at the
@@ -756,34 +758,23 @@ app.put('/api/workspaces/:id/files/*', async (c) => {
     return c.json({ error: uploadVerdict.reason || 'File type not allowed' }, 400);
   }
   const body = await c.req.arrayBuffer();
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   await agent.writeWorkspaceFileContent(filePath, body, c.req.header('content-type') || undefined);
   return c.json({ success: true, filePath });
 });
 
 app.delete('/api/workspaces/:id/files/*', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
+  const workspaceId = workspace.id;
 
   const filePath = c.req.path.split(`/api/workspaces/${workspaceId}/files/`)[1] || '';
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   await agent.deleteWorkspaceFileContent(filePath);
   return c.json({ success: true, filePath });
 });
 
 app.post('/api/workspaces/:id/upload', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
   const form = await c.req.formData();
   const files = form.getAll('files').filter((item): item is File => item instanceof File);
@@ -796,8 +787,7 @@ app.post('/api/workspaces/:id/upload', async (c) => {
 
   let uploaded: Array<{ name: string; path: string; size: number }>;
   try {
-    const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-    await agent.syncWorkspace(workspace, sessionId);
+    const { agent } = await syncedWorkspaceAgent(c, workspace);
     uploaded = await Promise.all(
       files.map(async (file) => {
         if (file.size > MAX_UPLOAD_FILE_BYTES) {
@@ -827,12 +817,7 @@ app.post('/api/workspaces/:id/upload', async (c) => {
 });
 
 app.post('/api/workspaces/:id/panels', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
   // Shape-validate the panel with the same discriminated-union schema the
   // import path uses (lib/import.ts panelSchema) — a single source of truth so a
@@ -848,40 +833,27 @@ app.post('/api/workspaces/:id/panels', async (c) => {
     return c.json({ error: 'Invalid panel payload' }, 400);
   }
   const panel = parsed.data as WorkspacePanel;
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.addPanel(panel);
 
   return c.json({ success: true, state });
 });
 
 app.delete('/api/workspaces/:id/panels/:panelId', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.removePanel(c.req.param('panelId'));
 
   return c.json({ success: true, state });
 });
 
 app.patch('/api/workspaces/:id/layout', async (c) => {
-  const sessionId = requireSession(c);
-  const workspaceId = c.req.param('id');
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
-  if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
-  }
+  const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> all-optional patch -> 200 no-op.
   const patch = layoutSchema.parse(await safeJson(c, {}));
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.applyLayoutPatch(patch);
 
   return c.json({ success: true, state });

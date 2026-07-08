@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 
 import {
   fetchCailModels,
+  ModelCatalogAuthError,
   resetCailModelsCache,
 } from '../src/lib/cail-models.ts';
 import { DEFAULT_CAIL_MODEL } from '../src/lib/cail-model.ts';
@@ -45,6 +46,14 @@ function dataResponse(data) {
   return () =>
     new Response(JSON.stringify({ object: 'list', data }), {
       status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+}
+
+function cailErrorResponse(status, code, message) {
+  return () =>
+    new Response(JSON.stringify({ error: code, message }), {
+      status,
       headers: { 'Content-Type': 'application/json' },
     });
 }
@@ -116,31 +125,48 @@ test('falls back to the default model when the JWT is null', async () => {
   assert.equal(calls.length, 0);
 });
 
-test('falls back on a 500 after retrying once', async () => {
+test('falls back on a 500 after the shared client retries', async () => {
   const { fetchImpl, calls } = makeFetch([
     () => new Response('boom', { status: 500 }),
   ]);
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
   assert.equal(result.source, 'fallback');
-  assert.equal(calls.length, 2, '5xx is retried once');
+  assert.equal(calls.length > 1, true, '5xx is retried by the shared client');
 });
 
-test('does not retry a 4xx and falls back immediately', async () => {
+test('401 and 403 proxy responses fail loud as ModelCatalogAuthError', async () => {
+  for (const status of [401, 403]) {
+    resetCailModelsCache();
+    const { fetchImpl } = makeFetch([
+      cailErrorResponse(status, 'authentication_required', `auth failed ${status}`),
+    ]);
+    await assert.rejects(
+      () => fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl }),
+      (error) => {
+        assert.equal(error instanceof ModelCatalogAuthError, true);
+        assert.equal(error.message, `auth failed ${status}`);
+        return true;
+      },
+    );
+  }
+});
+
+test('non-auth 4xx falls back immediately', async () => {
   const { fetchImpl, calls } = makeFetch([
-    () => new Response('nope', { status: 403 }),
+    cailErrorResponse(429, 'quota_exceeded', 'quota exceeded'),
   ]);
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
   assert.equal(result.source, 'fallback');
   assert.equal(calls.length, 1, '4xx is not retried');
 });
 
-test('retries once on a network error, then falls back', async () => {
+test('falls back on a network error after the shared client retries', async () => {
   const { fetchImpl, calls } = makeFetch([
     () => { throw new Error('network down'); },
   ]);
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
   assert.equal(result.source, 'fallback');
-  assert.equal(calls.length, 2, 'network error is retried once');
+  assert.equal(calls.length > 1, true, 'network error is retried by the shared client');
 });
 
 test('falls back when the response fails shape validation', async () => {

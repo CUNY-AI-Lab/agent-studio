@@ -12,15 +12,20 @@
  * fields are parsed as free strings so an unknown `tier`/`status` value the
  * fleet adds later never fails the whole list — then normalize downstream.
  *
- * When the proxy is unreachable (no base URL, anonymous, upstream error, or a
- * response that fails shape validation) we fall back to a single-entry list of
- * the configured default model, so the picker always has something to show and
- * chat never breaks. Only the proxy list is cached (globally, ~5 min); the
- * catalog is not per-user beyond auth, so one cache serves everyone.
+ * When the proxy is unreachable (no base URL, anonymous, non-auth upstream
+ * error, or a response that fails shape validation) we fall back to a
+ * single-entry list of the configured default model, so the picker always has
+ * something to show and chat never breaks. A proxy 401/403 for a
+ * gateway-verified identity is config/secret drift and throws
+ * ModelCatalogAuthError instead — masking it with a working-looking picker
+ * would hide a broken deployment. Only the proxy list is cached (globally,
+ * ~5 min); the catalog is not per-user beyond auth, so one cache serves
+ * everyone.
  */
 
+import { CailError, createCailClient } from '@cuny-ai-lab/cail-client';
 import { z } from 'zod';
-import { CAIL_APP_SLUG, CAIL_IDENTITY_HEADER } from './cail-identity';
+import { CAIL_APP_SLUG } from './cail-identity';
 import { resolveCailModelName, type CailModelEnv } from './cail-model';
 
 export type CailModelTier = 'recommended' | 'advanced';
@@ -52,6 +57,8 @@ export interface CailModelsResult {
   models: CailModelInfo[];
   source: 'proxy' | 'fallback';
 }
+
+export class ModelCatalogAuthError extends Error {}
 
 export interface FetchCailModelsOptions {
   env: CailModelEnv;
@@ -158,24 +165,9 @@ function fallbackResult(env: CailModelEnv): CailModelsResult {
   };
 }
 
-async function requestModels(
-  apiBase: string,
-  identityJwt: string,
-  fetchImpl: typeof fetch
-): Promise<Response> {
-  return fetchImpl(`${apiBase.replace(/\/+$/, '')}/models`, {
-    method: 'GET',
-    headers: {
-      [CAIL_IDENTITY_HEADER]: identityJwt,
-      'X-CAIL-App': CAIL_APP_SLUG,
-    },
-  });
-}
-
 /**
  * Fetch the curated model catalog from the proxy, or fall back to the single
- * configured default. Retries once on a network error or 5xx; never retries a
- * 4xx (auth/quota — retrying won't help).
+ * configured default. The shared CAIL client owns the retry and error contract.
  */
 export async function fetchCailModels(options: FetchCailModelsOptions): Promise<CailModelsResult> {
   const { env, identityJwt } = options;
@@ -190,23 +182,21 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
     return { models: proxyCache.models, source: 'proxy' };
   }
 
-  let response: Response | null = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      response = await requestModels(apiBase, identityJwt, fetchImpl);
-    } catch {
-      response = null; // network error — eligible for one retry
+  let response: Response;
+  try {
+    const cail = createCailClient({
+      baseUrl: apiBase,
+      app: CAIL_APP_SLUG,
+      onAuthRequired: () => {},
+      fetchImpl,
+    });
+    // The curated catalog lives at /models on the proxy root; /v1/* is the AI
+    // Gateway passthrough surface, not this endpoint.
+    response = await cail.call('/models', { method: 'GET' }, { kind: 'jwt', token: identityJwt });
+  } catch (error) {
+    if (error instanceof CailError && (error.status === 401 || error.status === 403)) {
+      throw new ModelCatalogAuthError(error.message);
     }
-    if (response && response.status >= 400 && response.status < 500) {
-      return fallbackResult(env); // do not retry 4xx
-    }
-    if (response && response.ok) {
-      break;
-    }
-    // network error or 5xx: retry once, then give up
-  }
-
-  if (!response || !response.ok) {
     return fallbackResult(env);
   }
 

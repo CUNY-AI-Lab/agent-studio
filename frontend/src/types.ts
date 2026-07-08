@@ -243,10 +243,6 @@ export interface WorkspaceAgentClient {
   executeCode(code: string): Promise<WorkspaceRuntimeExecution>;
   addPanel(panel: WorkspacePanel): Promise<WorkspaceState>;
   removePanel(panelId: string): Promise<WorkspaceState>;
-  movePanel(
-    panelId: string,
-    position: { x: number; y: number; width?: number; height?: number }
-  ): Promise<WorkspaceState>;
   applyLayoutPatch(patch: {
     panels?: Record<string, PanelLayout>;
     groups?: PanelGroup[];

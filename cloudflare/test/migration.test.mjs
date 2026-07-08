@@ -13,6 +13,7 @@ import {
   migrateAnonymousSession,
 } from '../src/lib/migration.ts';
 import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
+import { MockR2 } from './helpers/env.mjs';
 
 const NOW = 1_800_000_000_000;
 
@@ -20,92 +21,13 @@ const NOW = 1_800_000_000_000;
 // In-memory doubles
 // ---------------------------------------------------------------------------
 
-/** Minimal R2 bucket covering get/put/list/delete as the lib code uses them. */
-class MockR2 {
-  constructor() {
-    this.store = new Map();
-  }
-
-  async get(key) {
-    const entry = this.store.get(key);
-    if (!entry) return null;
-    const text = typeof entry.value === 'string'
-      ? entry.value
-      : new TextDecoder().decode(entry.value);
-    return {
-      key,
-      size: text.length,
-      etag: 'mock',
-      httpMetadata: entry.httpMetadata,
-      customMetadata: entry.customMetadata,
-      body: text,
-      json: async () => JSON.parse(text),
-      text: async () => text,
-      arrayBuffer: async () => new TextEncoder().encode(text).buffer,
-    };
-  }
-
-  async put(key, value, opts = {}) {
-    const stored = typeof value === 'string'
-      ? value
-      : value instanceof ArrayBuffer
-        ? new Uint8Array(value)
-        : ArrayBuffer.isView(value)
-          ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-          : String(value);
-    this.store.set(key, {
-      value: stored,
-      httpMetadata: opts.httpMetadata,
-      customMetadata: opts.customMetadata,
-    });
-  }
-
-  async delete(keys) {
-    for (const key of Array.isArray(keys) ? keys : [keys]) {
-      this.store.delete(key);
-    }
-  }
-
-  async list({ prefix = '', delimiter, cursor } = {}) {
-    const keys = [...this.store.keys()].filter((key) => key.startsWith(prefix)).sort();
-    if (!delimiter) {
-      return {
-        objects: keys.map((key) => ({ key, size: 1, etag: 'mock', uploaded: new Date() })),
-        delimitedPrefixes: [],
-        truncated: false,
-        cursor: undefined,
-      };
-    }
-    const objects = [];
-    const delimited = new Set();
-    for (const key of keys) {
-      const rest = key.slice(prefix.length);
-      const index = rest.indexOf(delimiter);
-      if (index >= 0) {
-        delimited.add(prefix + rest.slice(0, index + 1));
-      } else {
-        objects.push({ key, size: 1, etag: 'mock', uploaded: new Date() });
-      }
-    }
-    return {
-      objects,
-      delimitedPrefixes: [...delimited],
-      truncated: false,
-      cursor: undefined,
-    };
-  }
-
-  keysWithPrefix(prefix) {
-    return [...this.store.keys()].filter((key) => key.startsWith(prefix)).sort();
-  }
-}
-
 /** In-memory WorkspaceAgent double covering the MigratableAgent surface. */
 class FakeAgent {
   constructor() {
     this.state = { panels: [], viewport: { x: 0, y: 0, zoom: 1 }, groups: [], connections: [] };
     this.messages = [];
     this.files = new Map(); // path -> { text, contentType }
+    this.unreadablePaths = new Set();
     this.cleared = false;
     this.syncCount = 0;
   }
@@ -129,6 +51,7 @@ class FakeAgent {
   }
 
   async readWorkspaceFileContent(filePath) {
+    if (this.unreadablePaths.has(filePath)) return null;
     const entry = this.files.get(filePath);
     if (!entry) return null;
     return {
@@ -384,6 +307,75 @@ test('idempotency: a second full run is a no-op with identical final state', asy
   assert.deepEqual([...r2.store.keys()].sort(), snapshotKeys);
   const agent = await pool.getAgent(SUBJECT, 'ws1');
   assert.equal(agent.files.get('notes.md').text, 'hello');
+});
+
+test('listed-but-unreadable files fail migration without deleting anonymous data or marking done', async () => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = makeEnv(r2);
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', {
+    'ok.txt': 'ok',
+    'missing.txt': 'listed only',
+  });
+  const source = await pool.getAgent(ANON, 'ws1');
+  source.unreadablePaths.add('missing.txt');
+  const registry = new FakeRegistry();
+
+  await assert.rejects(
+    maybeMigrateAnonymousSession({
+      env,
+      anonSessionId: ANON,
+      subjectSessionId: SUBJECT,
+      registry,
+      getAgent: pool.getAgent,
+    }),
+    /migration: listed file missing\.txt could not be read from workspace ws1/,
+  );
+
+  assert.equal(registry.record.status, 'failed');
+  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
+  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
+  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, false);
+});
+
+test('retry after a listed-file read failure succeeds and completes cleanup', async () => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = makeEnv(r2);
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', {
+    'ok.txt': 'ok',
+    'missing.txt': 'readable later',
+  });
+  const source = await pool.getAgent(ANON, 'ws1');
+  source.unreadablePaths.add('missing.txt');
+  const registry = new FakeRegistry();
+
+  await assert.rejects(
+    maybeMigrateAnonymousSession({
+      env,
+      anonSessionId: ANON,
+      subjectSessionId: SUBJECT,
+      registry,
+      getAgent: pool.getAgent,
+    }),
+    /missing\.txt/,
+  );
+
+  source.unreadablePaths.delete('missing.txt');
+  const retry = await maybeMigrateAnonymousSession({
+    env,
+    anonSessionId: ANON,
+    subjectSessionId: SUBJECT,
+    registry,
+    getAgent: pool.getAgent,
+  });
+
+  assert.equal(retry, 'migrated');
+  assert.equal(registry.record.status, 'done');
+  const target = await pool.getAgent(SUBJECT, 'ws1');
+  assert.equal(target.files.get('ok.txt').text, 'ok');
+  assert.equal(target.files.get('missing.txt').text, 'readable later');
+  assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
 });
 
 // ---------------------------------------------------------------------------

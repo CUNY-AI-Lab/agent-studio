@@ -42,13 +42,11 @@ import {
 import { getSkillContent, SKILLS } from '../skills';
 import { buildWorkspaceAgentSystemPrompt } from './instructions';
 import {
-  deleteByPrefix,
   getMimeType,
-  getWorkspaceFilesPrefix,
-  readWorkspaceFile,
-  listWorkspaceFilesRecursive,
   sanitizeRelativePath,
+  toRuntimePath,
 } from '../lib/files';
+import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { putWorkspace } from '../lib/workspaces';
 import { deriveCsrfToken, timingSafeEqual, wsOriginAllowed } from '../lib/csrf';
@@ -60,6 +58,7 @@ const MAX_INLINE_MARKDOWN_CHARS = 3000;
 const MAX_OBSERVABILITY_EVENTS = 400;
 const MAX_OBSERVABILITY_REQUESTS = 20;
 const OBSERVABILITY_STALL_MS = 15_000;
+const HYDRATION_COMPLETE_KEY = 'runtimeWorkspaceHydrated:v1';
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -76,10 +75,6 @@ function inferFilePanelType(filePath: string): 'pdf' | 'preview' | 'editor' {
   if (filePath.toLowerCase().endsWith('.pdf')) return 'pdf';
   if (/\.(html?|svg)$/i.test(filePath)) return 'preview';
   return 'editor';
-}
-
-function toRuntimePath(filePath: string): string {
-  return `/${sanitizeRelativePath(filePath)}`;
 }
 
 function fromRuntimePath(filePath: string): string {
@@ -235,6 +230,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private observabilityEvents: WorkspaceObservabilityEvent[] = [];
   private observabilityRequests = new Map<string, WorkspaceObservabilityRequest>();
   private observabilitySequence = 0;
+  private hydrationComplete = false;
+  private hydrationPromise: Promise<void> | null = null;
   /**
    * The caller's verified X-CAIL-Identity-JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
@@ -656,29 +653,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   @callable()
-  async movePanel(
-    panelId: string,
-    position: { x: number; y: number; width?: number; height?: number }
-  ): Promise<WorkspaceState> {
-    const panels = this.state.panels.map((panel) => {
-      if (panel.id !== panelId) return panel;
-      return {
-        ...panel,
-        layout: {
-          ...panel.layout,
-          x: clamp(position.x, 0, 100000),
-          y: clamp(position.y, 0, 100000),
-          ...(position.width ? { width: clamp(position.width, 100, 10000) } : {}),
-          ...(position.height ? { height: clamp(position.height, 60, 10000) } : {}),
-        },
-      };
-    });
-
-    this.setState({ ...this.state, panels });
-    return this.state;
-  }
-
-  @callable()
   async applyLayoutPatch(patch: LayoutPatch): Promise<WorkspaceState> {
     const panels = this.state.panels.map((panel) => {
       const nextLayout = patch.panels?.[panel.id];
@@ -977,7 +951,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       list_files: _listFiles,
       read_file: _readFile,
       write_file: _writeFile,
-      delete_file: _deleteFile,
       ...codeModeTools
     } = tools;
 
@@ -1053,15 +1026,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           } else {
             await runtime.writeFile(runtimePath, content, mimeType);
           }
-          return { ok: true, filePath: relativePath };
-        },
-      }),
-      delete_file: tool({
-        description: 'Delete a file from the current workspace.',
-        inputSchema: z.object({ filePath: z.string() }),
-        execute: async ({ filePath }) => {
-          const relativePath = sanitizeRelativePath(filePath);
-          await this.getRuntimeWorkspace().rm(toRuntimePath(relativePath), { force: true });
           return { ok: true, filePath: relativePath };
         },
       }),
@@ -1367,7 +1331,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   private buildModelTools(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
     const {
-      delete_file: _deleteFile,
       web_fetch: _webFetch,
       // Document tools are codemode-only: bulk extracted content must flow
       // through sandbox code, not directly into model tool-result context.
@@ -1394,28 +1357,25 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   private async ensureRuntimeWorkspaceHydrated(workspace: WorkspaceRecord, sessionId: string): Promise<void> {
-    const runtime = this.getRuntimeWorkspace();
-    const info = await runtime.getWorkspaceInfo();
-    if (info.fileCount > 0 || info.directoryCount > 0) {
+    if (this.hydrationComplete) return;
+    if (await this.ctx.storage.get(HYDRATION_COMPLETE_KEY)) {
+      this.hydrationComplete = true;
       return;
     }
-
-    const legacyFiles = await listWorkspaceFilesRecursive(this.env, sessionId, workspace.id);
-    const leafFiles = legacyFiles.filter((file) => !file.isDirectory);
-    await Promise.all(
-      leafFiles.map(async (file) => {
-        const object = await readWorkspaceFile(this.env, sessionId, workspace.id, file.path);
-        if (!object) return;
-        await runtime.writeFileBytes(
-          toRuntimePath(file.path),
-          new Uint8Array(await object.arrayBuffer()),
-          object.httpMetadata?.contentType || getMimeType(file.path)
-        );
-      })
-    );
-
-    if (leafFiles.length > 0) {
-      await deleteByPrefix(this.env, getWorkspaceFilesPrefix(sessionId, workspace.id));
+    if (this.hydrationPromise) {
+      await this.hydrationPromise;
+      return;
+    }
+    const runtime = this.getRuntimeWorkspace();
+    this.hydrationPromise = (async () => {
+      await hydrateLegacyWorkspaceFiles(this.env, sessionId, workspace.id, runtime);
+      await this.ctx.storage.put(HYDRATION_COMPLETE_KEY, true);
+      this.hydrationComplete = true;
+    })();
+    try {
+      await this.hydrationPromise;
+    } finally {
+      this.hydrationPromise = null;
     }
   }
 
@@ -1433,6 +1393,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const entries = await Promise.all(paths.map(async (path) => {
       const stat = await runtime.lstat(path);
       if (!stat) return null;
+      if (stat.type !== 'file' && stat.type !== 'directory') return null;
       const relativePath = fromRuntimePath(stat.path);
       if (!relativePath) return null;
       return {
