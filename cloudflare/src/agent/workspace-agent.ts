@@ -655,29 +655,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   @callable()
-  async movePanel(
-    panelId: string,
-    position: { x: number; y: number; width?: number; height?: number }
-  ): Promise<WorkspaceState> {
-    const panels = this.state.panels.map((panel) => {
-      if (panel.id !== panelId) return panel;
-      return {
-        ...panel,
-        layout: {
-          ...panel.layout,
-          x: clamp(position.x, 0, 100000),
-          y: clamp(position.y, 0, 100000),
-          ...(position.width ? { width: clamp(position.width, 100, 10000) } : {}),
-          ...(position.height ? { height: clamp(position.height, 60, 10000) } : {}),
-        },
-      };
-    });
-
-    this.setState({ ...this.state, panels });
-    return this.state;
-  }
-
-  @callable()
   async applyLayoutPatch(patch: LayoutPatch): Promise<WorkspaceState> {
     const panels = this.state.panels.map((panel) => {
       const nextLayout = patch.panels?.[panel.id];
@@ -976,7 +953,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       list_files: _listFiles,
       read_file: _readFile,
       write_file: _writeFile,
-      delete_file: _deleteFile,
       ...codeModeTools
     } = tools;
 
@@ -1052,15 +1028,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           } else {
             await runtime.writeFile(runtimePath, content, mimeType);
           }
-          return { ok: true, filePath: relativePath };
-        },
-      }),
-      delete_file: tool({
-        description: 'Delete a file from the current workspace.',
-        inputSchema: z.object({ filePath: z.string() }),
-        execute: async ({ filePath }) => {
-          const relativePath = sanitizeRelativePath(filePath);
-          await this.getRuntimeWorkspace().rm(toRuntimePath(relativePath), { force: true });
           return { ok: true, filePath: relativePath };
         },
       }),
@@ -1366,7 +1333,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   private buildModelTools(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
     const {
-      delete_file: _deleteFile,
       web_fetch: _webFetch,
       // Document tools are codemode-only: bulk extracted content must flow
       // through sandbox code, not directly into model tool-result context.

@@ -13,92 +13,13 @@ import {
   migrateAnonymousSession,
 } from '../src/lib/migration.ts';
 import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
+import { MockR2 } from './helpers/env.mjs';
 
 const NOW = 1_800_000_000_000;
 
 // ---------------------------------------------------------------------------
 // In-memory doubles
 // ---------------------------------------------------------------------------
-
-/** Minimal R2 bucket covering get/put/list/delete as the lib code uses them. */
-class MockR2 {
-  constructor() {
-    this.store = new Map();
-  }
-
-  async get(key) {
-    const entry = this.store.get(key);
-    if (!entry) return null;
-    const text = typeof entry.value === 'string'
-      ? entry.value
-      : new TextDecoder().decode(entry.value);
-    return {
-      key,
-      size: text.length,
-      etag: 'mock',
-      httpMetadata: entry.httpMetadata,
-      customMetadata: entry.customMetadata,
-      body: text,
-      json: async () => JSON.parse(text),
-      text: async () => text,
-      arrayBuffer: async () => new TextEncoder().encode(text).buffer,
-    };
-  }
-
-  async put(key, value, opts = {}) {
-    const stored = typeof value === 'string'
-      ? value
-      : value instanceof ArrayBuffer
-        ? new Uint8Array(value)
-        : ArrayBuffer.isView(value)
-          ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
-          : String(value);
-    this.store.set(key, {
-      value: stored,
-      httpMetadata: opts.httpMetadata,
-      customMetadata: opts.customMetadata,
-    });
-  }
-
-  async delete(keys) {
-    for (const key of Array.isArray(keys) ? keys : [keys]) {
-      this.store.delete(key);
-    }
-  }
-
-  async list({ prefix = '', delimiter, cursor } = {}) {
-    const keys = [...this.store.keys()].filter((key) => key.startsWith(prefix)).sort();
-    if (!delimiter) {
-      return {
-        objects: keys.map((key) => ({ key, size: 1, etag: 'mock', uploaded: new Date() })),
-        delimitedPrefixes: [],
-        truncated: false,
-        cursor: undefined,
-      };
-    }
-    const objects = [];
-    const delimited = new Set();
-    for (const key of keys) {
-      const rest = key.slice(prefix.length);
-      const index = rest.indexOf(delimiter);
-      if (index >= 0) {
-        delimited.add(prefix + rest.slice(0, index + 1));
-      } else {
-        objects.push({ key, size: 1, etag: 'mock', uploaded: new Date() });
-      }
-    }
-    return {
-      objects,
-      delimitedPrefixes: [...delimited],
-      truncated: false,
-      cursor: undefined,
-    };
-  }
-
-  keysWithPrefix(prefix) {
-    return [...this.store.keys()].filter((key) => key.startsWith(prefix)).sort();
-  }
-}
 
 /** In-memory WorkspaceAgent double covering the MigratableAgent surface. */
 class FakeAgent {

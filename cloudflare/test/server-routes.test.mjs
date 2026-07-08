@@ -288,6 +288,25 @@ test('files on a missing workspace -> 404', async () => {
   assert.equal(res.status, 404);
 });
 
+test('observability: missing workspace 404s and created workspace returns snapshot shape', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+
+  const missing = await session.request(app, '/api/workspaces/deadbeefdeadbeefdeadbeefdeadbeef/observability');
+  assert.equal(missing.status, 404);
+  assert.deepEqual(await missing.json(), { error: 'Workspace not found' });
+
+  const workspace = await createWorkspace(session);
+  const res = await session.request(app, `/api/workspaces/${workspace.id}/observability`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    observability: {
+      requests: [],
+      events: [],
+    },
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Upload route
 // ---------------------------------------------------------------------------
@@ -685,6 +704,22 @@ test('gallery: publish with invalid body returns 400 (ZodError mapped by onError
     jsonInit('POST', { title: 'only title' }), // missing description
   );
   assert.equal(res.status, 400);
+});
+
+test('/api/models returns fallback catalog in anonymous no-proxy env', async () => {
+  resetCailModelsCache();
+  const { env } = makeEnv();
+  const session = new Session(env);
+
+  const res = await session.request(app, '/api/models');
+  assert.equal(res.status, 200);
+  const body = await res.json();
+  assert.deepEqual(Object.keys(body).sort(), ['default', 'models', 'source']);
+  assert.equal(body.source, 'fallback');
+  assert.equal(body.models.length, 1);
+  assert.equal(body.default, body.models[0].id);
+  assert.equal(body.models[0].recommended, true);
+  resetCailModelsCache();
 });
 
 test('/api/models surfaces proxy auth failure as 502', async () => {

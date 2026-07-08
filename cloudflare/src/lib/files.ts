@@ -72,18 +72,13 @@ function getRelativePath(prefix: string, key: string): string {
   return key.startsWith(prefix) ? key.slice(prefix.length) : key;
 }
 
-export async function listWorkspaceFiles(
-  env: Env,
-  sessionId: string,
-  workspaceId: string,
-  dir = ''
-): Promise<WorkspaceFileInfo[]> {
+async function listFilesUnderPrefix(env: Env, basePrefix: string, dir = ''): Promise<WorkspaceFileInfo[]> {
   const relativeDir = normalizeRelativePath(dir);
-  const prefix = `${getWorkspaceFilesPrefix(sessionId, workspaceId)}${relativeDir ? `${relativeDir}/` : ''}`;
+  const prefix = `${basePrefix}${relativeDir ? `${relativeDir}/` : ''}`;
   const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/' });
 
   const directories = listing.delimitedPrefixes.map((nextPrefix) => {
-    const relativePath = getRelativePath(getWorkspaceFilesPrefix(sessionId, workspaceId), nextPrefix).replace(/\/$/, '');
+    const relativePath = getRelativePath(basePrefix, nextPrefix).replace(/\/$/, '');
     return {
       name: relativePath.split('/').pop() || relativePath,
       path: relativePath,
@@ -92,7 +87,7 @@ export async function listWorkspaceFiles(
   });
 
   const files = listing.objects.map((object) => {
-    const relativePath = getRelativePath(getWorkspaceFilesPrefix(sessionId, workspaceId), object.key);
+    const relativePath = getRelativePath(basePrefix, object.key);
     return {
       name: relativePath.split('/').pop() || relativePath,
       path: relativePath,
@@ -108,6 +103,25 @@ export async function listWorkspaceFiles(
     if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
     return left.path.localeCompare(right.path);
   });
+}
+
+async function listFilesUnderPrefixRecursive(env: Env, basePrefix: string, dir = ''): Promise<WorkspaceFileInfo[]> {
+  const entries = await listFilesUnderPrefix(env, basePrefix, dir);
+  const nested = await Promise.all(
+    entries
+      .filter((entry) => entry.isDirectory)
+      .map((entry) => listFilesUnderPrefixRecursive(env, basePrefix, entry.path))
+  );
+  return [...entries, ...nested.flat()];
+}
+
+export async function listWorkspaceFiles(
+  env: Env,
+  sessionId: string,
+  workspaceId: string,
+  dir = ''
+): Promise<WorkspaceFileInfo[]> {
+  return listFilesUnderPrefix(env, getWorkspaceFilesPrefix(sessionId, workspaceId), dir);
 }
 
 export async function listWorkspaceFilesRecursive(
@@ -116,13 +130,7 @@ export async function listWorkspaceFilesRecursive(
   workspaceId: string,
   dir = ''
 ): Promise<WorkspaceFileInfo[]> {
-  const entries = await listWorkspaceFiles(env, sessionId, workspaceId, dir);
-  const nested = await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory)
-      .map((entry) => listWorkspaceFilesRecursive(env, sessionId, workspaceId, entry.path))
-  );
-  return [...entries, ...nested.flat()];
+  return listFilesUnderPrefixRecursive(env, getWorkspaceFilesPrefix(sessionId, workspaceId), dir);
 }
 
 export async function listGalleryFiles(
@@ -130,36 +138,7 @@ export async function listGalleryFiles(
   galleryId: string,
   dir = ''
 ): Promise<WorkspaceFileInfo[]> {
-  const relativeDir = normalizeRelativePath(dir);
-  const prefix = `${getGalleryFilesPrefix(galleryId)}${relativeDir ? `${relativeDir}/` : ''}`;
-  const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/' });
-
-  const directories = listing.delimitedPrefixes.map((nextPrefix) => {
-    const relativePath = getRelativePath(getGalleryFilesPrefix(galleryId), nextPrefix).replace(/\/$/, '');
-    return {
-      name: relativePath.split('/').pop() || relativePath,
-      path: relativePath,
-      isDirectory: true,
-    } satisfies WorkspaceFileInfo;
-  });
-
-  const files = listing.objects.map((object) => {
-    const relativePath = getRelativePath(getGalleryFilesPrefix(galleryId), object.key);
-    return {
-      name: relativePath.split('/').pop() || relativePath,
-      path: relativePath,
-      isDirectory: false,
-      size: object.size,
-      uploadedAt: object.uploaded?.toISOString(),
-      modifiedAt: object.uploaded?.toISOString(),
-      etag: object.etag,
-    } satisfies WorkspaceFileInfo;
-  });
-
-  return [...directories, ...files].sort((left, right) => {
-    if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
-    return left.path.localeCompare(right.path);
-  });
+  return listFilesUnderPrefix(env, getGalleryFilesPrefix(galleryId), dir);
 }
 
 export async function listGalleryFilesRecursive(
@@ -167,13 +146,7 @@ export async function listGalleryFilesRecursive(
   galleryId: string,
   dir = ''
 ): Promise<WorkspaceFileInfo[]> {
-  const entries = await listGalleryFiles(env, galleryId, dir);
-  const nested = await Promise.all(
-    entries
-      .filter((entry) => entry.isDirectory)
-      .map((entry) => listGalleryFilesRecursive(env, galleryId, entry.path))
-  );
-  return [...entries, ...nested.flat()];
+  return listFilesUnderPrefixRecursive(env, getGalleryFilesPrefix(galleryId), dir);
 }
 
 export async function readWorkspaceFile(
@@ -193,39 +166,6 @@ export async function readGalleryFile(
   return env.WORKSPACE_FILES.get(getGalleryFileKey(galleryId, filePath));
 }
 
-export async function readWorkspaceFileText(
-  env: Env,
-  sessionId: string,
-  workspaceId: string,
-  filePath: string
-): Promise<string | null> {
-  const object = await readWorkspaceFile(env, sessionId, workspaceId, filePath);
-  return object ? object.text() : null;
-}
-
-export async function writeWorkspaceFile(
-  env: Env,
-  sessionId: string,
-  workspaceId: string,
-  filePath: string,
-  body: string | ArrayBuffer | ArrayBufferView | ReadableStream,
-  contentType?: string
-): Promise<void> {
-  const key = getWorkspaceFileKey(sessionId, workspaceId, filePath);
-  await env.WORKSPACE_FILES.put(key, body, {
-    httpMetadata: contentType ? { contentType } : undefined,
-  });
-}
-
-export async function deleteWorkspaceFile(
-  env: Env,
-  sessionId: string,
-  workspaceId: string,
-  filePath: string
-): Promise<void> {
-  await env.WORKSPACE_FILES.delete(getWorkspaceFileKey(sessionId, workspaceId, filePath));
-}
-
 export async function deleteWorkspaceFiles(env: Env, sessionId: string, workspaceId: string): Promise<void> {
   const prefix = getWorkspacePrefix(sessionId, workspaceId);
   await deleteByPrefix(env, prefix);
@@ -238,24 +178,6 @@ export async function deleteByPrefix(env: Env, prefix: string): Promise<void> {
     const listing = await env.WORKSPACE_FILES.list({ prefix, cursor });
     if (listing.objects.length > 0) {
       await env.WORKSPACE_FILES.delete(listing.objects.map((object) => object.key));
-    }
-    cursor = listing.truncated ? listing.cursor : undefined;
-  } while (cursor);
-}
-
-export async function copyPrefix(env: Env, fromPrefix: string, toPrefix: string): Promise<void> {
-  let cursor: string | undefined;
-
-  do {
-    const listing = await env.WORKSPACE_FILES.list({ prefix: fromPrefix, cursor });
-    for (const object of listing.objects) {
-      const source = await env.WORKSPACE_FILES.get(object.key);
-      if (!source) continue;
-      const relativeKey = object.key.slice(fromPrefix.length);
-      await env.WORKSPACE_FILES.put(`${toPrefix}${relativeKey}`, source.body, {
-        httpMetadata: source.httpMetadata,
-        customMetadata: source.customMetadata,
-      });
     }
     cursor = listing.truncated ? listing.cursor : undefined;
   } while (cursor);

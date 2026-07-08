@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE_STATE, type WorkspaceRecord } from '../domain/workspace';
+import type { WorkspaceRecord } from '../domain/workspace';
 import type { Env } from '../env';
 import { getWorkspacePrefix } from './files';
 
@@ -53,12 +53,5 @@ export function createDefaultWorkspace(args: {
     description: args.description || '',
     createdAt: now,
     updatedAt: now,
-  };
-}
-
-export function ensureWorkspaceStateShape(workspace: WorkspaceRecord) {
-  return {
-    ...DEFAULT_WORKSPACE_STATE,
-    workspace,
   };
 }
