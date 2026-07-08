@@ -172,6 +172,53 @@ test('guardedWebFetch json format returns a JSON string body', async () => {
   assert.deepEqual(JSON.parse(result.body), { results: [1, 2] });
 });
 
+test('guardedWebFetch rejects Content-Length over the response cap before reading', async () => {
+  let readerRequested = false;
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    headers: new Headers({
+      'content-type': 'text/plain',
+      'content-length': String(5 * 1024 * 1024 + 1),
+    }),
+    body: {
+      getReader() {
+        readerRequested = true;
+        throw new Error('body should not be read');
+      },
+    },
+  });
+
+  await assert.rejects(
+    () => guardedWebFetch('https://example.com/large', 'text', {}, fetchImpl),
+    /web_fetch: response exceeds 5242880 bytes/,
+  );
+  assert.equal(readerRequested, false);
+});
+
+test('guardedWebFetch rejects streamed responses that exceed the response cap', async () => {
+  const chunk = new Uint8Array(1024 * 1024);
+  let sent = 0;
+  let canceled = false;
+  const stream = new ReadableStream({
+    pull(controller) {
+      sent += 1;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      canceled = true;
+    },
+  });
+  const fetchImpl = async () =>
+    new Response(stream, { status: 200, headers: { 'content-type': 'text/plain' } });
+
+  await assert.rejects(
+    () => guardedWebFetch('https://example.com/stream-large', 'text', {}, fetchImpl),
+    /web_fetch: response exceeds 5242880 bytes/,
+  );
+  assert.equal(canceled, true);
+});
+
 test('bearerProviderForHost matches only allowlisted hosts with configured creds', () => {
   assert.equal(bearerProviderForHost('metadata.api.oclc.org', WORLDCAT_ENV), 'worldcat');
   assert.equal(bearerProviderForHost('metadata.api.oclc.org', {}), null);

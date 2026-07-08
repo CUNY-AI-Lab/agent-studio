@@ -19,11 +19,16 @@ import {
   openSession,
   Session,
   makeImportBundle,
+  seedGalleryItem,
 } from './helpers/env.mjs';
+import { CAIL_IDENTITY_HEADER } from '../src/lib/cail-identity.ts';
+import { resetCailModelsCache } from '../src/lib/cail-models.ts';
 
 const app = await importServer();
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
+const CAIL_TEST_SECRET = 'test-shared-secret';
+const encoder = new TextEncoder();
 
 function jsonInit(method, body) {
   return { method, headers: JSON_HEADERS, body: JSON.stringify(body) };
@@ -33,6 +38,40 @@ async function createWorkspace(session, name = 'Workspace') {
   const res = await session.request(app, '/api/workspaces', jsonInit('POST', { name }));
   assert.equal(res.status, 201);
   return (await res.json()).workspace;
+}
+
+function b64url(bytes) {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlJson(obj) {
+  return b64url(encoder.encode(JSON.stringify(obj)));
+}
+
+async function mintIdentityJwt(overrides = {}) {
+  const headerB64 = b64urlJson({ alg: 'HS256', typ: 'JWT' });
+  const payloadB64 = b64urlJson({
+    sub: 'cail-route-test',
+    aud: 'cail-internal',
+    iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    email: 'route-test@gc.cuny.edu',
+    name: 'Route Test',
+    entitlements: ['tools', 'agent-studio'],
+    ...overrides,
+  });
+  const signingInput = `${headerB64}.${payloadB64}`;
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(CAIL_TEST_SECRET),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(signingInput));
+  return `${signingInput}.${b64url(new Uint8Array(sig))}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -497,6 +536,36 @@ test('gallery: publish a workspace -> appears in list -> get by id', async () =>
   assert.equal((await getRes.json()).item.id, pub.item.id);
 });
 
+test('gallery: publish cleans up when a listed file cannot be read', async () => {
+  const { env, r2, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Broken Publish');
+
+  await session.request(app, `/api/workspaces/${workspace.id}/files/missing.md`, {
+    method: 'PUT',
+    headers: { 'content-type': 'text/markdown' },
+    body: 'listed but unreadable',
+  });
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+  const originalRead = agent.readWorkspaceFileContent.bind(agent);
+  agent.readWorkspaceFileContent = async (filePath) => (
+    filePath === 'missing.md'
+      ? null
+      : originalRead(filePath)
+  );
+
+  const pubRes = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/publish`,
+    jsonInit('POST', { title: 'Should Fail', description: 'missing file' }),
+  );
+  assert.equal(pubRes.status, 500);
+  assert.deepEqual(r2.keysWithPrefix('agent-studio/gallery/items/'), []);
+
+  const listRes = await session.request(app, '/api/gallery');
+  assert.deepEqual((await listRes.json()).items, []);
+});
+
 test('gallery: clone (POST /api/gallery/:id) creates a workspace from a published item', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -529,6 +598,38 @@ test('gallery: clone (POST /api/gallery/:id) creates a workspace from a publishe
   assert.ok(ids.includes(clone.workspaceId));
 });
 
+test('gallery: clone missing item returns 404', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+
+  const res = await session.request(app, '/api/gallery/abcdef12-3', { method: 'POST' });
+  assert.equal(res.status, 404);
+  assert.deepEqual(await res.json(), { error: 'Gallery item not found' });
+});
+
+test('gallery: clone fails loud and removes the workspace when a file-backed panel is missing', async () => {
+  const { env, r2 } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const galleryId = 'abcdef12-3';
+  seedGalleryItem(r2, galleryId, sessionId, { title: 'Broken Clone' });
+  await r2.put(
+    `agent-studio/gallery/items/${galleryId}/state.json`,
+    JSON.stringify({
+      sessionId: null,
+      workspace: null,
+      panels: [{ id: 'p-file', type: 'markdown', filePath: 'missing.md' }],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [],
+    }),
+  );
+
+  const cloneRes = await session.request(app, `/api/gallery/${galleryId}`, { method: 'POST' });
+  assert.equal(cloneRes.status, 500);
+  const list = await (await session.request(app, '/api/workspaces')).json();
+  assert.deepEqual(list.workspaces, []);
+});
+
 test('gallery: unpublish (DELETE /api/gallery/:id) by the author removes the item', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -553,6 +654,27 @@ test('gallery: unpublish (DELETE /api/gallery/:id) by the author removes the ite
   assert.equal(detail.workspace.galleryId, undefined);
 });
 
+test('gallery: unpublish by a different session returns 403 and keeps the item', async () => {
+  const { env } = makeEnv();
+  const { session: author } = await openSession(app, env);
+  const { session: other } = await openSession(app, env);
+  const workspace = await createWorkspace(author, 'Protected Gallery Item');
+  const pub = await (
+    await author.request(
+      app,
+      `/api/workspaces/${workspace.id}/publish`,
+      jsonInit('POST', { title: 'Protected', description: 'owned by author' }),
+    )
+  ).json();
+
+  const delRes = await other.request(app, `/api/gallery/${pub.item.id}`, { method: 'DELETE' });
+  assert.equal(delRes.status, 403);
+  assert.deepEqual(await delRes.json(), { error: 'Not authorized to unpublish this item' });
+
+  const getRes = await author.request(app, `/api/gallery/${pub.item.id}`);
+  assert.equal(getRes.status, 200);
+});
+
 test('gallery: publish with invalid body returns 400 (ZodError mapped by onError)', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -563,6 +685,32 @@ test('gallery: publish with invalid body returns 400 (ZodError mapped by onError
     jsonInit('POST', { title: 'only title' }), // missing description
   );
   assert.equal(res.status, 400);
+});
+
+test('/api/models surfaces proxy auth failure as 502', async () => {
+  resetCailModelsCache();
+  const { env } = makeEnv();
+  env.CAIL_API_BASE = 'https://proxy.example';
+  env.CAIL_IDENTITY_JWT_SECRET = CAIL_TEST_SECRET;
+  const token = await mintIdentityJwt();
+  const session = new Session(env);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ error: 'authentication_required', message: 'bad gateway auth' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  try {
+    const res = await session.request(app, '/api/models', {
+      headers: { [CAIL_IDENTITY_HEADER]: token },
+    });
+    assert.equal(res.status, 502);
+    assert.deepEqual(await res.json(), { error: 'Model catalog authentication failed' });
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetCailModelsCache();
+  }
 });
 
 // ---------------------------------------------------------------------------

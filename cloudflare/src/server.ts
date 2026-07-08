@@ -6,6 +6,7 @@ import type { WorkspaceFileInfo, WorkspacePanel } from './domain/workspace';
 import type { Env } from './env';
 import {
   cloneGalleryItem,
+  GalleryError,
   getGalleryItem,
   listGalleryItems,
   publishWorkspace as publishGalleryWorkspace,
@@ -27,7 +28,7 @@ import {
   isValidGalleryId,
   isValidWorkspaceId,
 } from './lib/ids';
-import { fetchCailModels } from './lib/cail-models';
+import { fetchCailModels, ModelCatalogAuthError } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
@@ -134,6 +135,12 @@ app.onError((error, c) => {
   if (error instanceof z.ZodError) {
     return c.json({ error: 'Invalid request body' }, 400);
   }
+  if (error instanceof GalleryError) {
+    return c.json({ error: error.message }, error.status);
+  }
+  if (error instanceof ModelCatalogAuthError) {
+    return c.json({ error: 'Model catalog authentication failed' }, 502);
+  }
   console.error('Unhandled route error', { path: c.req.path, error });
   return c.json({ error: 'Internal error' }, 500);
 });
@@ -195,6 +202,14 @@ function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFi
       if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
       return left.path.localeCompare(right.path);
     });
+}
+
+function stateFilePaths(panels: WorkspacePanel[]): string[] {
+  return panels.flatMap((panel) => (
+    'filePath' in panel && typeof panel.filePath === 'string' && panel.filePath
+      ? [panel.filePath]
+      : []
+  ));
 }
 
 app.use('/api/*', sessionMiddleware);
@@ -322,26 +337,50 @@ app.post('/api/gallery/:id', async (c) => {
   workspace.createdAt = now;
   workspace.updatedAt = now;
 
-  await putWorkspace(c.env, sessionId, workspace);
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.syncWorkspace(workspace, sessionId);
-  await primeAgentCredential(c, agent);
+  let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
-  const galleryFiles = await listGalleryFilesRecursive(c.env, sourceGalleryId);
-  await Promise.all(
-    galleryFiles
-      .filter((file) => !file.isDirectory)
-      .map(async (file) => {
-        const object = await readGalleryFile(c.env, sourceGalleryId, file.path);
-        if (!object) return;
-        await agent.writeWorkspaceFileContent(
-          sanitizeRelativePath(file.path),
-          await object.arrayBuffer(),
-          object.httpMetadata?.contentType || getMimeType(file.path)
+  try {
+    await putWorkspace(c.env, sessionId, workspace);
+    agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
+    await agent.syncWorkspace(workspace, sessionId);
+    await primeAgentCredential(c, agent);
+
+    const galleryFiles = await listGalleryFilesRecursive(c.env, sourceGalleryId);
+    const expectedPaths = new Set([
+      ...galleryFiles.filter((file) => !file.isDirectory).map((file) => file.path),
+      ...stateFilePaths(item.state.panels),
+    ]);
+    const fileReads = await Promise.all(
+      [...expectedPaths].map(async (filePath) => ({
+        filePath,
+        object: await readGalleryFile(c.env, sourceGalleryId, filePath),
+      }))
+    );
+    const missingPaths = fileReads
+      .filter(({ object }) => !object)
+      .map(({ filePath }) => filePath);
+    if (missingPaths.length > 0) {
+      throw new Error(`Gallery item ${sourceGalleryId} is missing file(s): ${missingPaths.join(', ')}`);
+    }
+
+    await Promise.all(
+      fileReads.map(async ({ filePath, object }) => {
+        await agent!.writeWorkspaceFileContent(
+          sanitizeRelativePath(filePath),
+          await object!.arrayBuffer(),
+          object!.httpMetadata?.contentType || getMimeType(filePath)
         );
       })
-  );
-  await agent.replaceWorkspaceState(item.state, workspace, sessionId);
+    );
+    await agent.replaceWorkspaceState(item.state, workspace, sessionId);
+  } catch (error) {
+    if (agent) {
+      await agent.clearWorkspaceFiles().catch(() => undefined);
+    }
+    await deleteWorkspaceFiles(c.env, sessionId, workspaceId).catch(() => undefined);
+    await deleteWorkspace(c.env, sessionId, workspaceId).catch(() => undefined);
+    throw error;
+  }
 
   return c.json({ workspaceId, workspace }, 201);
 });

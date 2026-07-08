@@ -247,12 +247,58 @@ export function applyConfiguredApiParams(url: URL, env: WebFetchCredentialEnv): 
 }
 
 const MAX_REDIRECTS = 5;
+// Workers memory is bounded; cap web_fetch bodies before buffering for tool output.
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 export interface GuardedFetchResult {
   ok: boolean;
   status: number;
   contentType: string;
   body: string;
+}
+
+function responseSizeError(): Error {
+  return new Error(`web_fetch: response exceeds ${MAX_RESPONSE_BYTES} bytes`);
+}
+
+async function readCappedResponseText(response: Response): Promise<string> {
+  const contentLength = response.headers.get('content-length');
+  if (contentLength) {
+    const parsed = Number.parseInt(contentLength, 10);
+    if (Number.isFinite(parsed) && parsed > MAX_RESPONSE_BYTES) {
+      throw responseSizeError();
+    }
+  }
+
+  if (!response.body) return '';
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw responseSizeError();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 /**
@@ -329,7 +375,8 @@ export async function guardedWebFetch(
   }
 
   const contentType = response.headers.get('content-type') || '';
-  const body = format === 'json' ? JSON.stringify(await response.json()) : await response.text();
+  const text = await readCappedResponseText(response);
+  const body = format === 'json' ? JSON.stringify(JSON.parse(text)) : text;
   return {
     ok: response.ok,
     status: response.status,
