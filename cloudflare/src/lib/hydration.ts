@@ -5,16 +5,12 @@ import {
   getWorkspaceFilesPrefix,
   listWorkspaceFilesRecursive,
   readWorkspaceFile,
-  sanitizeRelativePath,
+  toRuntimePath,
 } from './files';
 
 export interface HydrationRuntime {
   lstat(path: string): Promise<{ type: string } | null>;
   writeFileBytes(path: string, bytes: Uint8Array, contentType: string): Promise<unknown>;
-}
-
-function toRuntimePath(filePath: string): string {
-  return `/${sanitizeRelativePath(filePath)}`;
 }
 
 /**

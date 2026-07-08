@@ -174,6 +174,25 @@ test('workspace lifecycle: create -> list -> get -> patch -> delete', async () =
   assert.equal(emptyList.workspaces.length, 0);
 });
 
+test('DELETE workspace succeeds even if workspace sync would fail', async () => {
+  const { env, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Broken Hydration');
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+  const syncCountBeforeDelete = agent.syncCount;
+  agent.syncWorkspace = async () => {
+    throw new Error('simulated hydration failure');
+  };
+
+  const delRes = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(delRes.status, 200);
+  assert.deepEqual(await delRes.json(), { success: true });
+  assert.equal(agent.syncCount, syncCountBeforeDelete);
+
+  const list = await (await session.request(app, '/api/workspaces')).json();
+  assert.deepEqual(list.workspaces, []);
+});
+
 test('GET missing workspace id -> 404', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -191,6 +210,36 @@ test('GET malformed workspace id -> 400 (AS-3-6 boundary check)', async () => {
     assert.equal(res.status, 400, `expected 400 for id "${bad}"`);
     assert.deepEqual(await res.json(), { error: 'Invalid workspace id' });
   }
+});
+
+test('non-POST /api/workspaces/import is treated as a missing workspace', async () => {
+  const { env, r2 } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Existing');
+
+  const getRes = await session.request(app, '/api/workspaces/import');
+  assert.equal(getRes.status, 404);
+  assert.deepEqual(await getRes.json(), { error: 'Workspace not found' });
+
+  const patchRes = await session.request(
+    app,
+    '/api/workspaces/import',
+    jsonInit('PATCH', { name: 'x' }),
+  );
+  assert.equal(patchRes.status, 404);
+  assert.deepEqual(await patchRes.json(), { error: 'Workspace not found' });
+
+  const deleteRes = await session.request(app, '/api/workspaces/import', { method: 'DELETE' });
+  assert.equal(deleteRes.status, 404);
+  assert.deepEqual(await deleteRes.json(), { error: 'Workspace not found' });
+
+  const list = await (await session.request(app, '/api/workspaces')).json();
+  assert.deepEqual(list.workspaces.map((entry) => entry.id), [workspace.id]);
+  assert.deepEqual(
+    r2.keysWithPrefix(`agent-studio/sessions/${sessionId}/workspaces/`)
+      .filter((key) => key.includes('/undefined/') || key.includes('/import/')),
+    [],
+  );
 });
 
 test('cross-session isolation: session B cannot see session A workspace', async () => {
@@ -565,6 +614,11 @@ test('gallery: publish cleans up when a listed file cannot be read', async () =>
     headers: { 'content-type': 'text/markdown' },
     body: 'listed but unreadable',
   });
+  await session.request(app, `/api/workspaces/${workspace.id}/files/keep.md`, {
+    method: 'PUT',
+    headers: { 'content-type': 'text/markdown' },
+    body: 'must not orphan',
+  });
   const agent = agents.get(`${sessionId}-${workspace.id}`);
   const originalRead = agent.readWorkspaceFileContent.bind(agent);
   agent.readWorkspaceFileContent = async (filePath) => (
@@ -626,7 +680,7 @@ test('gallery: clone missing item returns 404', async () => {
   assert.deepEqual(await res.json(), { error: 'Gallery item not found' });
 });
 
-test('gallery: clone fails loud and removes the workspace when a file-backed panel is missing', async () => {
+test('gallery: clone succeeds when a panel references a file that was never published', async () => {
   const { env, r2 } = makeEnv();
   const { session, sessionId } = await openSession(app, env);
   const galleryId = 'abcdef12-3';
@@ -644,7 +698,31 @@ test('gallery: clone fails loud and removes the workspace when a file-backed pan
   );
 
   const cloneRes = await session.request(app, `/api/gallery/${galleryId}`, { method: 'POST' });
+  assert.equal(cloneRes.status, 201);
+  const clone = await cloneRes.json();
+
+  const list = await (await session.request(app, '/api/workspaces')).json();
+  assert.deepEqual(list.workspaces.map((workspace) => workspace.id), [clone.workspaceId]);
+
+  const detail = await (await session.request(app, `/api/workspaces/${clone.workspaceId}`)).json();
+  assert.deepEqual(detail.state.panels, [{ id: 'p-file', type: 'markdown', filePath: 'missing.md' }]);
+  const files = await (await session.request(app, `/api/workspaces/${clone.workspaceId}/files`)).json();
+  assert.deepEqual(files.files, []);
+});
+
+test('gallery: clone fails loud and removes the workspace when a listed gallery file is unreadable', async () => {
+  const { env, r2 } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const galleryId = 'abcdef12-3';
+  const missingKey = `agent-studio/gallery/items/${galleryId}/files/missing.md`;
+  seedGalleryItem(r2, galleryId, sessionId, { title: 'Broken Clone' });
+  await r2.put(missingKey, 'gone');
+  const originalGet = r2.get.bind(r2);
+  r2.get = async (key) => (key === missingKey ? null : originalGet(key));
+
+  const cloneRes = await session.request(app, `/api/gallery/${galleryId}`, { method: 'POST' });
   assert.equal(cloneRes.status, 500);
+
   const list = await (await session.request(app, '/api/workspaces')).json();
   assert.deepEqual(list.workspaces, []);
 });

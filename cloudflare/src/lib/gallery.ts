@@ -82,7 +82,6 @@ export async function publishWorkspace(args: {
     artifactCount: shareablePanelCount + fileCount,
   };
 
-  let wroteObject = false;
   const fileUploads = args.files
     .filter((file) => !file.isDirectory)
     .map(async (file) => {
@@ -94,7 +93,6 @@ export async function publishWorkspace(args: {
       await args.env.WORKSPACE_FILES.put(getGalleryFileKey(id, file.path), content.data, {
         httpMetadata: { contentType: content.contentType || getMimeType(file.path) },
       });
-      wroteObject = true;
     });
 
   // §3¾ defense-in-depth: an inline `type:'preview'` panel (content, no
@@ -106,23 +104,25 @@ export async function publishWorkspace(args: {
   // which forces an opaque origin so the served script can't reach same-origin
   // state even on a direct top-level open. See lib/file-serving.ts §3¾.
   try {
-    await Promise.all(fileUploads);
+    const uploadResults = await Promise.allSettled(fileUploads);
+    const failedUpload = uploadResults.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (failedUpload) {
+      throw failedUpload.reason;
+    }
     await args.env.WORKSPACE_FILES.put(
       galleryStateKey(id),
       JSON.stringify(args.state, null, 2),
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
     );
-    wroteObject = true;
     await args.env.WORKSPACE_FILES.put(
       galleryManifestKey(id),
       JSON.stringify(item, null, 2),
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
     );
-    wroteObject = true;
   } catch (error) {
-    if (wroteObject) {
-      await deleteByPrefix(args.env, getGalleryPrefix(id)).catch(() => undefined);
-    }
+    await deleteByPrefix(args.env, getGalleryPrefix(id)).catch(() => undefined);
     throw error;
   }
 

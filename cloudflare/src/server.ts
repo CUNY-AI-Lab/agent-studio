@@ -206,7 +206,7 @@ async function requireWorkspace(
 ): Promise<Response | void> {
   const sessionId = requireSession(c);
   const workspaceId = c.req.param('id') ?? '';
-  if (workspaceId === 'import') return next();
+  if (workspaceId === 'import' && c.req.method === 'POST') return next();
   const workspace = await getWorkspace(c.env, sessionId, workspaceId);
   if (!workspace) {
     return c.json({ error: 'Workspace not found' }, 404);
@@ -235,7 +235,11 @@ async function syncedWorkspaceAgent(
 }
 
 function loadedWorkspace(c: AppContext): WorkspaceRecord {
-  return c.get('workspace') as WorkspaceRecord;
+  const workspace = c.get('workspace');
+  if (!workspace) {
+    throw new Error('loadedWorkspace: workspace not loaded');
+  }
+  return workspace;
 }
 
 function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFileInfo[] {
@@ -249,14 +253,6 @@ function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFi
       if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
       return left.path.localeCompare(right.path);
     });
-}
-
-function stateFilePaths(panels: WorkspacePanel[]): string[] {
-  return panels.flatMap((panel) => (
-    'filePath' in panel && typeof panel.filePath === 'string' && panel.filePath
-      ? [panel.filePath]
-      : []
-  ));
 }
 
 app.use('/api/*', sessionMiddleware);
@@ -392,33 +388,31 @@ app.post('/api/gallery/:id', async (c) => {
     await putWorkspace(c.env, sessionId, workspace);
     ({ agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true }));
 
+    // Copy only the published file OBJECTS (a listed file that is missing from
+    // R2 is a genuine integrity failure). Panel `filePath`s that dangle — a
+    // reference to a file deleted before publish — are tolerated: the panel
+    // simply won't resolve its file, exactly as on the source workspace.
+    // Consume each R2 body before the next read so at most one connection is
+    // open at a time (Workers caps ~6 simultaneous open connections).
     const galleryFiles = await listGalleryFilesRecursive(c.env, sourceGalleryId);
-    const expectedPaths = new Set([
-      ...galleryFiles.filter((file) => !file.isDirectory).map((file) => file.path),
-      ...stateFilePaths(item.state.panels),
-    ]);
-    const fileReads = await Promise.all(
-      [...expectedPaths].map(async (filePath) => ({
+    const missingPaths: string[] = [];
+    for (const file of galleryFiles) {
+      if (file.isDirectory) continue;
+      const filePath = sanitizeRelativePath(file.path);
+      const object = await readGalleryFile(c.env, sourceGalleryId, filePath);
+      if (!object) {
+        missingPaths.push(filePath);
+        continue;
+      }
+      await agent.writeWorkspaceFileContent(
         filePath,
-        object: await readGalleryFile(c.env, sourceGalleryId, filePath),
-      }))
-    );
-    const missingPaths = fileReads
-      .filter(({ object }) => !object)
-      .map(({ filePath }) => filePath);
+        await object.arrayBuffer(),
+        object.httpMetadata?.contentType || getMimeType(filePath)
+      );
+    }
     if (missingPaths.length > 0) {
       throw new Error(`Gallery item ${sourceGalleryId} is missing file(s): ${missingPaths.join(', ')}`);
     }
-
-    await Promise.all(
-      fileReads.map(async ({ filePath, object }) => {
-        await agent!.writeWorkspaceFileContent(
-          sanitizeRelativePath(filePath),
-          await object!.arrayBuffer(),
-          object!.httpMetadata?.contentType || getMimeType(filePath)
-        );
-      })
-    );
     await agent.replaceWorkspaceState(item.state, workspace, sessionId);
   } catch (error) {
     if (agent) {
@@ -706,8 +700,11 @@ app.delete('/api/workspaces/:id', async (c) => {
   const workspace = loadedWorkspace(c);
   const workspaceId = workspace.id;
 
-  const { agent } = await syncedWorkspaceAgent(c, workspace);
-  await agent.clearWorkspaceFiles();
+  // Delete must not depend on hydration: syncWorkspace would run legacy
+  // hydration, so a workspace with an unreadable legacy file could never be
+  // deleted. Clear the runtime best-effort, then drop the R2 records.
+  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
+  await agent.clearWorkspaceFiles().catch(() => undefined);
   await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
   await deleteWorkspace(c.env, sessionId, workspaceId);
   return c.json({ success: true });

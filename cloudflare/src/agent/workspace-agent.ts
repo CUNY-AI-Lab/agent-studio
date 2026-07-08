@@ -44,6 +44,7 @@ import { buildWorkspaceAgentSystemPrompt } from './instructions';
 import {
   getMimeType,
   sanitizeRelativePath,
+  toRuntimePath,
 } from '../lib/files';
 import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
@@ -74,10 +75,6 @@ function inferFilePanelType(filePath: string): 'pdf' | 'preview' | 'editor' {
   if (filePath.toLowerCase().endsWith('.pdf')) return 'pdf';
   if (/\.(html?|svg)$/i.test(filePath)) return 'preview';
   return 'editor';
-}
-
-function toRuntimePath(filePath: string): string {
-  return `/${sanitizeRelativePath(filePath)}`;
 }
 
 function fromRuntimePath(filePath: string): string {
@@ -234,6 +231,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private observabilityRequests = new Map<string, WorkspaceObservabilityRequest>();
   private observabilitySequence = 0;
   private hydrationComplete = false;
+  private hydrationPromise: Promise<void> | null = null;
   /**
    * The caller's verified X-CAIL-Identity-JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
@@ -1364,10 +1362,21 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.hydrationComplete = true;
       return;
     }
+    if (this.hydrationPromise) {
+      await this.hydrationPromise;
+      return;
+    }
     const runtime = this.getRuntimeWorkspace();
-    await hydrateLegacyWorkspaceFiles(this.env, sessionId, workspace.id, runtime);
-    await this.ctx.storage.put(HYDRATION_COMPLETE_KEY, true);
-    this.hydrationComplete = true;
+    this.hydrationPromise = (async () => {
+      await hydrateLegacyWorkspaceFiles(this.env, sessionId, workspace.id, runtime);
+      await this.ctx.storage.put(HYDRATION_COMPLETE_KEY, true);
+      this.hydrationComplete = true;
+    })();
+    try {
+      await this.hydrationPromise;
+    } finally {
+      this.hydrationPromise = null;
+    }
   }
 
   private async listRuntimeFiles(): Promise<Array<{
@@ -1384,6 +1393,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const entries = await Promise.all(paths.map(async (path) => {
       const stat = await runtime.lstat(path);
       if (!stat) return null;
+      if (stat.type !== 'file' && stat.type !== 'directory') return null;
       const relativePath = fromRuntimePath(stat.path);
       if (!relativePath) return null;
       return {

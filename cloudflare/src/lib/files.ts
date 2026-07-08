@@ -42,6 +42,10 @@ export function sanitizeRelativePath(path: string): string {
   return normalizeRelativePath(path);
 }
 
+export function toRuntimePath(filePath: string): string {
+  return `/${sanitizeRelativePath(filePath)}`;
+}
+
 export function getWorkspaceFilesPrefix(sessionId: string, workspaceId: string): string {
   return `${APP_PREFIX}/sessions/${sessionId}/workspaces/${workspaceId}/files/`;
 }
