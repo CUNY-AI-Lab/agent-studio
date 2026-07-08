@@ -106,6 +106,7 @@ class FakeAgent {
     this.state = { panels: [], viewport: { x: 0, y: 0, zoom: 1 }, groups: [], connections: [] };
     this.messages = [];
     this.files = new Map(); // path -> { text, contentType }
+    this.unreadablePaths = new Set();
     this.cleared = false;
     this.syncCount = 0;
   }
@@ -129,6 +130,7 @@ class FakeAgent {
   }
 
   async readWorkspaceFileContent(filePath) {
+    if (this.unreadablePaths.has(filePath)) return null;
     const entry = this.files.get(filePath);
     if (!entry) return null;
     return {
@@ -384,6 +386,75 @@ test('idempotency: a second full run is a no-op with identical final state', asy
   assert.deepEqual([...r2.store.keys()].sort(), snapshotKeys);
   const agent = await pool.getAgent(SUBJECT, 'ws1');
   assert.equal(agent.files.get('notes.md').text, 'hello');
+});
+
+test('listed-but-unreadable files fail migration without deleting anonymous data or marking done', async () => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = makeEnv(r2);
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', {
+    'ok.txt': 'ok',
+    'missing.txt': 'listed only',
+  });
+  const source = await pool.getAgent(ANON, 'ws1');
+  source.unreadablePaths.add('missing.txt');
+  const registry = new FakeRegistry();
+
+  await assert.rejects(
+    maybeMigrateAnonymousSession({
+      env,
+      anonSessionId: ANON,
+      subjectSessionId: SUBJECT,
+      registry,
+      getAgent: pool.getAgent,
+    }),
+    /migration: listed file missing\.txt could not be read from workspace ws1/,
+  );
+
+  assert.equal(registry.record.status, 'failed');
+  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
+  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
+  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, false);
+});
+
+test('retry after a listed-file read failure succeeds and completes cleanup', async () => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = makeEnv(r2);
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', {
+    'ok.txt': 'ok',
+    'missing.txt': 'readable later',
+  });
+  const source = await pool.getAgent(ANON, 'ws1');
+  source.unreadablePaths.add('missing.txt');
+  const registry = new FakeRegistry();
+
+  await assert.rejects(
+    maybeMigrateAnonymousSession({
+      env,
+      anonSessionId: ANON,
+      subjectSessionId: SUBJECT,
+      registry,
+      getAgent: pool.getAgent,
+    }),
+    /missing\.txt/,
+  );
+
+  source.unreadablePaths.delete('missing.txt');
+  const retry = await maybeMigrateAnonymousSession({
+    env,
+    anonSessionId: ANON,
+    subjectSessionId: SUBJECT,
+    registry,
+    getAgent: pool.getAgent,
+  });
+
+  assert.equal(retry, 'migrated');
+  assert.equal(registry.record.status, 'done');
+  const target = await pool.getAgent(SUBJECT, 'ws1');
+  assert.equal(target.files.get('ok.txt').text, 'ok');
+  assert.equal(target.files.get('missing.txt').text, 'readable later');
+  assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
 });
 
 // ---------------------------------------------------------------------------

@@ -189,7 +189,11 @@ export async function migrateAnonymousSession(
     for (const file of files) {
       if (file.isDirectory) continue;
       const content = await oldAgent.readWorkspaceFileContent(file.path);
-      if (!content) continue;
+      if (!content) {
+        throw new Error(
+          `migration: listed file ${file.path} could not be read from workspace ${workspace.id}`
+        );
+      }
       await newAgent.writeWorkspaceFileContent(
         file.path,
         content.data,

@@ -6,11 +6,11 @@
 // *where the request came from*. This module adds the two tool-side defenses
 // the gate does not provide:
 //
-//   * Rule 2 — origin-check: accept only same-origin requests (Sec-Fetch-Site:
-//     same-origin, or Origin exactly equal to the canonical origin). A missing
-//     Sec-Fetch-Site AND missing Origin falls back to the token check, never to
-//     trust. `same-site` (cross-origin within the registrable domain) is
-//     rejected — the 2026-07-05 clarification makes this required, not extra.
+//   * Rule 2 — origin-check: reject non-same-origin requests. Same-origin and
+//     absent origin headers both fall through to the token check; origin headers
+//     can reject, never authorize. `same-site` (cross-origin within the
+//     registrable domain) is rejected — the 2026-07-05 clarification makes this
+//     required, not extra.
 //   * Rule 3 — per-session token: an HMAC-derived, per-session token the tool
 //     issues to its own first-party pages and requires echoed in X-CAIL-CSRF on
 //     every mutation. A sibling tool can't read it; a cross-site page can't set
@@ -139,10 +139,10 @@ export type OriginVerdict = 'same-origin' | 'reject' | 'absent';
 
 /**
  * Classify a request's origin against the canonical origin, per rule 2:
- *   * Sec-Fetch-Site: same-origin  -> same-origin (accept).
+ *   * Sec-Fetch-Site: same-origin  -> same-origin (token still required).
  *   * Sec-Fetch-Site present but not same-origin (same-site/cross-site/none)
  *     -> reject. `same-site` is a mismatch by the 2026-07-05 clarification.
- *   * Origin header exactly equal to canonical -> same-origin (accept).
+ *   * Origin header exactly equal to canonical -> same-origin (token still required).
  *   * Origin header present but different       -> reject.
  *   * BOTH Sec-Fetch-Site and Origin absent     -> absent (defer to token).
  * We prefer Sec-Fetch-Site (browser-set, unforgeable by page script) over
@@ -171,6 +171,8 @@ function hasIdentityJwt(c: Context): boolean {
  * Verify the origin + token contract for one HTTP request. Returns null when
  * the request is allowed, or a 403 Response when it must be rejected. Safe
  * methods pass untouched (rule 1 forbids state changes on them anyway).
+ * Origin headers can only reject; every unsafe cookie-authenticated request
+ * must carry the per-session token.
  *
  * Bearer sk-cail-* API clients (no ambient cookie in play) would be accepted on
  * the key alone; Agent Studio has no Bearer path today, so this is a documented
@@ -188,12 +190,11 @@ export async function enforceCsrf(
     canonical,
   );
 
-  if (verdict === 'same-origin') return null;
   if (verdict === 'reject') {
     return c.json({ error: 'csrf_origin_mismatch' }, 403);
   }
 
-  // Both headers absent: fall back to the per-session token (never to trust).
+  // Same-origin and absent headers both prove nothing about sibling tools.
   const provided = c.req.header(CSRF_HEADER);
   if (!provided) {
     return c.json({ error: 'csrf_token_missing' }, 403);

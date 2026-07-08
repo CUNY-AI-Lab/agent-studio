@@ -42,13 +42,10 @@ import {
 import { getSkillContent, SKILLS } from '../skills';
 import { buildWorkspaceAgentSystemPrompt } from './instructions';
 import {
-  deleteByPrefix,
   getMimeType,
-  getWorkspaceFilesPrefix,
-  readWorkspaceFile,
-  listWorkspaceFilesRecursive,
   sanitizeRelativePath,
 } from '../lib/files';
+import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { putWorkspace } from '../lib/workspaces';
 import { deriveCsrfToken, timingSafeEqual, wsOriginAllowed } from '../lib/csrf';
@@ -60,6 +57,7 @@ const MAX_INLINE_MARKDOWN_CHARS = 3000;
 const MAX_OBSERVABILITY_EVENTS = 400;
 const MAX_OBSERVABILITY_REQUESTS = 20;
 const OBSERVABILITY_STALL_MS = 15_000;
+const HYDRATION_COMPLETE_KEY = 'runtimeWorkspaceHydrated:v1';
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -235,6 +233,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private observabilityEvents: WorkspaceObservabilityEvent[] = [];
   private observabilityRequests = new Map<string, WorkspaceObservabilityRequest>();
   private observabilitySequence = 0;
+  private hydrationComplete = false;
   /**
    * The caller's verified X-CAIL-Identity-JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
@@ -1394,29 +1393,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   private async ensureRuntimeWorkspaceHydrated(workspace: WorkspaceRecord, sessionId: string): Promise<void> {
-    const runtime = this.getRuntimeWorkspace();
-    const info = await runtime.getWorkspaceInfo();
-    if (info.fileCount > 0 || info.directoryCount > 0) {
+    if (this.hydrationComplete) return;
+    if (await this.ctx.storage.get(HYDRATION_COMPLETE_KEY)) {
+      this.hydrationComplete = true;
       return;
     }
-
-    const legacyFiles = await listWorkspaceFilesRecursive(this.env, sessionId, workspace.id);
-    const leafFiles = legacyFiles.filter((file) => !file.isDirectory);
-    await Promise.all(
-      leafFiles.map(async (file) => {
-        const object = await readWorkspaceFile(this.env, sessionId, workspace.id, file.path);
-        if (!object) return;
-        await runtime.writeFileBytes(
-          toRuntimePath(file.path),
-          new Uint8Array(await object.arrayBuffer()),
-          object.httpMetadata?.contentType || getMimeType(file.path)
-        );
-      })
-    );
-
-    if (leafFiles.length > 0) {
-      await deleteByPrefix(this.env, getWorkspaceFilesPrefix(sessionId, workspace.id));
-    }
+    const runtime = this.getRuntimeWorkspace();
+    await hydrateLegacyWorkspaceFiles(this.env, sessionId, workspace.id, runtime);
+    await this.ctx.storage.put(HYDRATION_COMPLETE_KEY, true);
+    this.hydrationComplete = true;
   }
 
   private async listRuntimeFiles(): Promise<Array<{

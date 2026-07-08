@@ -166,11 +166,28 @@ test('enforceCsrf: GET passes untouched', async () => {
   assert.equal(rejection, null);
 });
 
-test('enforceCsrf: POST with Sec-Fetch-Site same-origin passes', async () => {
+test('enforceCsrf: POST with Sec-Fetch-Site same-origin and no token is rejected 403', async () => {
   const rejection = await enforceCsrf(
     fakeContext({ method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } }),
   );
-  assert.equal(rejection, null);
+  assert.equal(rejection.status, 403);
+  assert.deepEqual(rejection.__json, { error: 'csrf_token_missing' });
+});
+
+test('enforceCsrf: POST with Sec-Fetch-Site same-origin requires a valid token', async () => {
+  const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  const token = await deriveCsrfToken(sessionId, SECRET);
+
+  const good = await enforceCsrf(
+    fakeContext({ method: 'POST', sessionId, headers: { 'Sec-Fetch-Site': 'same-origin', [CSRF_HEADER]: token } }),
+  );
+  assert.equal(good, null);
+
+  const wrong = await enforceCsrf(
+    fakeContext({ method: 'POST', sessionId, headers: { 'Sec-Fetch-Site': 'same-origin', [CSRF_HEADER]: 'nope' } }),
+  );
+  assert.equal(wrong.status, 403);
+  assert.deepEqual(wrong.__json, { error: 'csrf_token_invalid' });
 });
 
 test('enforceCsrf: POST with Sec-Fetch-Site same-site is rejected 403', async () => {
@@ -180,9 +197,11 @@ test('enforceCsrf: POST with Sec-Fetch-Site same-site is rejected 403', async ()
   assert.equal(rejection.status, 403);
 });
 
-test('enforceCsrf: POST with exact Origin passes; wrong Origin 403', async () => {
+test('enforceCsrf: POST with exact Origin still requires a valid token; wrong Origin 403', async () => {
+  const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  const token = await deriveCsrfToken(sessionId, SECRET);
   const ok = await enforceCsrf(
-    fakeContext({ method: 'POST', headers: { Origin: 'https://studio.test' } }),
+    fakeContext({ method: 'POST', sessionId, headers: { Origin: 'https://studio.test', [CSRF_HEADER]: token } }),
   );
   assert.equal(ok, null);
   const bad = await enforceCsrf(
@@ -293,7 +312,7 @@ test('route: mutation with neither origin nor token -> 403', async () => {
   assert.equal((await res.json()).error, 'csrf_token_missing');
 });
 
-test('route: mutation with Sec-Fetch-Site same-origin passes (no token needed)', async () => {
+test('route: mutation with Sec-Fetch-Site same-origin and no token -> 403', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const res = await session.request(app, '/api/workspaces', {
@@ -301,7 +320,26 @@ test('route: mutation with Sec-Fetch-Site same-origin passes (no token needed)',
     csrfToken: '',
     secFetchSite: 'same-origin',
   });
-  assert.equal(res.status, 201);
+  assert.equal(res.status, 403);
+  assert.equal((await res.json()).error, 'csrf_token_missing');
+});
+
+test('route: mutation with Sec-Fetch-Site same-origin requires the session token', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const ok = await session.request(app, '/api/workspaces', {
+    ...jsonInit('POST', { name: 'Same-origin valid token' }),
+    secFetchSite: 'same-origin',
+  });
+  assert.equal(ok.status, 201);
+
+  const wrong = await session.request(app, '/api/workspaces', {
+    ...jsonInit('POST', { name: 'Same-origin wrong token' }),
+    csrfToken: 'deadbeef'.repeat(8),
+    secFetchSite: 'same-origin',
+  });
+  assert.equal(wrong.status, 403);
+  assert.equal((await wrong.json()).error, 'csrf_token_invalid');
 });
 
 test('route: mutation with Sec-Fetch-Site same-site -> 403', async () => {
@@ -316,13 +354,12 @@ test('route: mutation with Sec-Fetch-Site same-site -> 403', async () => {
   assert.equal((await res.json()).error, 'csrf_origin_mismatch');
 });
 
-test('route: mutation with exact Origin passes; foreign Origin 403', async () => {
+test('route: mutation with exact Origin and valid token passes; foreign Origin 403', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
 
   const ok = await session.request(app, '/api/workspaces', {
     ...jsonInit('POST', { name: 'Exact origin' }),
-    csrfToken: '',
     origin: 'https://studio.test',
   });
   assert.equal(ok.status, 201);
