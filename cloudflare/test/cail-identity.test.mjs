@@ -13,6 +13,7 @@ import {
   cailAuthRequiredResponse,
   verifyCredentialForSession,
   sessionIdForSubject,
+  CAIL_ALLOWED_ISSUERS,
   CAIL_APP_SLUG,
   CAIL_IDENTITY_HEADER,
 } from '../src/lib/cail-identity.ts';
@@ -53,6 +54,10 @@ async function mintJwt(payload, { secret = SECRET, alg = 'HS256' } = {}) {
 }
 
 const NOW = 1_800_000_000;
+// Standard opts for direct verifier calls: fixed clock + the worker's exact
+// issuer allowlist. verifyIdentityJwt is now the shared @cuny-ai-lab package
+// (opts object), not the old (token, secret, now) positional form.
+const OPTS = { now: NOW, allowedIssuers: CAIL_ALLOWED_ISSUERS };
 function validPayload(overrides = {}) {
   return {
     sub: 'cail-abc123',
@@ -68,7 +73,7 @@ function validPayload(overrides = {}) {
 
 test('verifies a well-formed token and returns the subject', async () => {
   const token = await mintJwt(validPayload());
-  const identity = await verifyIdentityJwt(token, SECRET, NOW);
+  const identity = await verifyIdentityJwt(token, SECRET, OPTS);
   assert.ok(identity);
   assert.equal(identity.subject, 'cail-abc123');
   assert.equal(identity.email, 'someone@gc.cuny.edu');
@@ -77,22 +82,41 @@ test('verifies a well-formed token and returns the subject', async () => {
 
 test('rejects a token signed with the wrong secret', async () => {
   const token = await mintJwt(validPayload(), { secret: 'other-secret' });
-  assert.equal(await verifyIdentityJwt(token, SECRET, NOW), null);
+  assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
 });
 
-test('rejects an expired token', async () => {
-  const token = await mintJwt(validPayload({ exp: NOW - 1 }));
-  assert.equal(await verifyIdentityJwt(token, SECRET, NOW), null);
+test('rejects an expired token (beyond the clock tolerance)', async () => {
+  // The shared verifier allows 60s of leeway; put exp well outside it.
+  const token = await mintJwt(validPayload({ exp: NOW - 120 }));
+  assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
 });
 
 test('rejects the wrong audience', async () => {
   const token = await mintJwt(validPayload({ aud: 'someone-else' }));
-  assert.equal(await verifyIdentityJwt(token, SECRET, NOW), null);
+  assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
 });
 
-test('rejects an issuer not ending in /cail-sso', async () => {
+test('rejects an issuer not in the allowlist', async () => {
   const token = await mintJwt(validPayload({ iss: 'https://evil.example/oauth' }));
-  assert.equal(await verifyIdentityJwt(token, SECRET, NOW), null);
+  assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
+});
+
+test('rejects a look-alike /cail-sso issuer not in the allowlist (Codex #3)', async () => {
+  // https://evil.example/cail-sso PASSED the old endsWith("/cail-sso") suffix
+  // check. The shared verifier uses an EXACT allowlist, so it is rejected —
+  // this pins that the migration tightened the issuer check (closes the
+  // AS-3 iss drift), not merely re-implemented it.
+  const token = await mintJwt(validPayload({ iss: 'https://evil.example/cail-sso' }));
+  assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
+});
+
+test('accepts the staging issuer (it is listed in the allowlist)', async () => {
+  const token = await mintJwt(
+    validPayload({ iss: 'https://tools.cuny.qzz.io/cail-sso' }),
+  );
+  const identity = await verifyIdentityJwt(token, SECRET, OPTS);
+  assert.ok(identity);
+  assert.equal(identity.subject, 'cail-abc123');
 });
 
 test('pins the algorithm: refuses a token that declares alg=none', async () => {
@@ -100,32 +124,35 @@ test('pins the algorithm: refuses a token that declares alg=none', async () => {
   const headerB64 = b64urlJson({ alg: 'none', typ: 'JWT' });
   const payloadB64 = b64urlJson(validPayload());
   const forged = `${headerB64}.${payloadB64}.`;
-  assert.equal(await verifyIdentityJwt(forged, SECRET, NOW), null);
+  assert.equal(await verifyIdentityJwt(forged, SECRET, OPTS), null);
 });
 
 // ---- AS-3-2/AS-3-3: nbf claim completeness ----
 
-test('rejects a token whose nbf is in the future', async () => {
-  const token = await mintJwt(validPayload({ nbf: NOW + 60 }));
-  assert.equal(await verifyIdentityJwt(token, SECRET, NOW), null);
+test('rejects a token whose nbf is beyond the clock tolerance', async () => {
+  // 60s leeway applies to nbf too; put it well past the tolerance.
+  const token = await mintJwt(validPayload({ nbf: NOW + 120 }));
+  assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
 });
 
 test('accepts a token whose nbf is in the past', async () => {
   const token = await mintJwt(validPayload({ nbf: NOW - 60 }));
-  const identity = await verifyIdentityJwt(token, SECRET, NOW);
+  const identity = await verifyIdentityJwt(token, SECRET, OPTS);
   assert.ok(identity);
   assert.equal(identity.subject, 'cail-abc123');
 });
 
 test('accepts a token with no nbf (nbf is optional)', async () => {
   const token = await mintJwt(validPayload());
-  assert.ok(await verifyIdentityJwt(token, SECRET, NOW));
+  assert.ok(await verifyIdentityJwt(token, SECRET, OPTS));
 });
 
-test('a non-number nbf is ignored (only enforced when numeric)', async () => {
+test('rejects a token whose nbf is present but not a number (I9 tightening)', async () => {
+  // The old vendored verifier ignored a non-numeric nbf and still accepted the
+  // token. The shared verifier treats a present-but-non-number nbf as invalid
+  // and rejects — the intended tightening (AS-3-2/3-3 nbf drift closed).
   const token = await mintJwt(validPayload({ nbf: 'soon' }));
-  // Non-numeric nbf does not gate; the token still verifies on its other claims.
-  assert.ok(await verifyIdentityJwt(token, SECRET, NOW));
+  assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
 });
 
 // ---- AS-3-1: setCailCredential verify + subject-binding (via the shared helper) ----
@@ -154,7 +181,8 @@ test('verifyCredentialForSession rejects invalid / garbage tokens', async () => 
 });
 
 test('verifyCredentialForSession rejects an expired token', async () => {
-  const token = await mintJwt(validPayload({ exp: NOW - 1 }));
+  // Beyond the 60s clock tolerance the shared verifier applies.
+  const token = await mintJwt(validPayload({ exp: NOW - 120 }));
   const expected = await sessionIdForSubject('cail-abc123');
   assert.equal(await verifyCredentialForSession(token, expected, SECRET, NOW), null);
 });
@@ -168,14 +196,17 @@ test('verifyCredentialForSession rejects a valid token whose subject maps to a D
   assert.equal(await verifyCredentialForSession(token, thisSession, SECRET, NOW), null);
 });
 
-test('returns null when the secret is unset (identity disabled)', async () => {
-  const token = await mintJwt(validPayload());
-  assert.equal(await verifyIdentityJwt(token, undefined, NOW), null);
+test('returns null for a malformed token', async () => {
+  assert.equal(await verifyIdentityJwt('not-a-jwt', SECRET, OPTS), null);
+  assert.equal(await verifyIdentityJwt('a.b', SECRET, OPTS), null);
 });
 
-test('returns null for a malformed token', async () => {
-  assert.equal(await verifyIdentityJwt('not-a-jwt', SECRET, NOW), null);
-  assert.equal(await verifyIdentityJwt('a.b', SECRET, NOW), null);
+test('rejects a valid token when the allowlist is empty (fail closed)', async () => {
+  // The shared verifier rejects EVERY token when allowedIssuers is absent/empty
+  // — even a canonical issuer. This is the fail-closed guarantee that replaces
+  // the old suffix check.
+  const token = await mintJwt(validPayload());
+  assert.equal(await verifyIdentityJwt(token, SECRET, { now: NOW, allowedIssuers: [] }), null);
 });
 
 test('getCailIdentityFromRequest surfaces the raw token and identity', async () => {
@@ -192,6 +223,17 @@ test('getCailIdentityFromRequest surfaces the raw token and identity', async () 
 test('getCailIdentityFromRequest returns null with no header', async () => {
   const req = new Request('https://agent-studio.example/api/session');
   const result = await getCailIdentityFromRequest(req, { CAIL_IDENTITY_JWT_SECRET: SECRET }, NOW);
+  assert.equal(result, null);
+});
+
+test('getCailIdentityFromRequest returns null when the secret is unset (identity disabled)', async () => {
+  // Even with a well-formed token present, an unconfigured secret means every
+  // request is anonymous — the wrapper guards this before the shared verifier.
+  const token = await mintJwt(validPayload());
+  const req = new Request('https://agent-studio.example/api/session', {
+    headers: { [CAIL_IDENTITY_HEADER]: token },
+  });
+  const result = await getCailIdentityFromRequest(req, {}, NOW);
   assert.equal(result, null);
 });
 

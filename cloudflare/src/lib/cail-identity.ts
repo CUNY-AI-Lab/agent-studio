@@ -7,11 +7,14 @@
  * them. Identity is accepted ONLY from a X-CAIL-Identity-JWT that verifies
  * against the shared secret.
  *
- * Contract (see cail-gateway docs/INTEGRATION.md and
- * key-service/src/identity.ts): HS256 with a pinned algorithm, aud
- * "cail-internal", iss ending "/cail-sso", exp enforced. The stable
- * pseudonymous `subject` ("cail-<hex>") is the only durable key for
- * per-user data — never key anything by email.
+ * The JWT verifier is the shared @cuny-ai-lab/cail-identity primitive — one
+ * source of truth across the CAIL fleet (HS256 pinned, aud "cail-internal",
+ * exp/nbf with 60s leeway, and an EXACT issuer allowlist). This module keeps
+ * only the agent-studio-specific glue around it: header/slug constants, the
+ * request/credential wrappers, the subject→session derivation, and the
+ * enforcement flag + 401 envelope. The stable pseudonymous `subject`
+ * ("cail-<hex>") is the only durable key for per-user data — never key
+ * anything by email.
  *
  * If CAIL_IDENTITY_JWT_SECRET is unset, identity is disabled and every
  * request is anonymous (pre-rollout behavior). CAIL_REQUIRE_IDENTITY="true"
@@ -20,19 +23,27 @@
  * CAIL_SSO_MODE=enforce lands on the gateway.
  */
 
+import {
+  verifyIdentityJwt,
+  CAIL_CANONICAL_ISSUER,
+  CAIL_STAGING_ISSUER,
+  type CailIdentity,
+} from '@cuny-ai-lab/cail-identity';
+
+export { verifyIdentityJwt };
+export type { CailIdentity };
+
 export const CAIL_IDENTITY_HEADER = 'X-CAIL-Identity-JWT';
 export const CAIL_APP_SLUG = 'agent-studio';
 
-const JWT_AUDIENCE = 'cail-internal';
-const ISS_SUFFIX = '/cail-sso';
-
-export interface CailIdentity {
-  /** Stable pseudonymous CAIL subject ("cail-<hex>"). The only durable key. */
-  subject: string;
-  email?: string;
-  name?: string;
-  entitlements: string[];
-}
+/**
+ * The issuers this worker trusts, passed to the shared verifier as an EXACT
+ * allowlist (I8). Both prod and staging gateways are accepted; any other `iss`
+ * — including a look-alike like `https://evil.example/cail-sso` that the old
+ * suffix check would have waved through — is rejected. Fail closed: this list
+ * is the ONLY way an issuer becomes trusted.
+ */
+export const CAIL_ALLOWED_ISSUERS = [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER];
 
 export interface CailIdentityEnv {
   CAIL_IDENTITY_JWT_SECRET?: string;
@@ -40,87 +51,6 @@ export interface CailIdentityEnv {
 }
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
-
-function base64UrlDecode(segment: string): Uint8Array<ArrayBuffer> | null {
-  try {
-    const padded = segment.replace(/-/g, '+').replace(/_/g, '/');
-    const binary = atob(padded + '='.repeat((4 - (padded.length % 4)) % 4));
-    const bytes = new Uint8Array(new ArrayBuffer(binary.length));
-    for (let i = 0; i < binary.length; i += 1) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Verify a raw X-CAIL-Identity-JWT string against the shared secret.
- * Returns the identity, or null when the token is missing/invalid/expired.
- * Never throws. Pins HS256 — the token never picks its own algorithm.
- */
-export async function verifyIdentityJwt(
-  token: string | null | undefined,
-  secret: string | undefined,
-  now: number = Math.floor(Date.now() / 1000),
-): Promise<CailIdentity | null> {
-  if (!secret || !token) return null;
-
-  const parts = token.split('.');
-  if (parts.length !== 3) return null;
-  const [headerB64, payloadB64, signatureB64] = parts;
-
-  const headerBytes = base64UrlDecode(headerB64);
-  const payloadBytes = base64UrlDecode(payloadB64);
-  const signature = base64UrlDecode(signatureB64);
-  if (!headerBytes || !payloadBytes || !signature) return null;
-
-  let header: { alg?: string };
-  let payload: Record<string, unknown>;
-  try {
-    header = JSON.parse(decoder.decode(headerBytes));
-    payload = JSON.parse(decoder.decode(payloadBytes));
-  } catch {
-    return null;
-  }
-  // Pin the algorithm — never let the token pick it.
-  if (header.alg !== 'HS256') return null;
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    encoder.encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['verify'],
-  );
-  const valid = await crypto.subtle.verify(
-    'HMAC',
-    key,
-    signature,
-    encoder.encode(`${headerB64}.${payloadB64}`),
-  );
-  if (!valid) return null;
-
-  if (typeof payload.exp !== 'number' || payload.exp <= now) return null;
-  // Enforce nbf ("not before") only when present — the backbone contract makes
-  // it optional. No clock-skew allowance is applied (kept strict); if one is
-  // ever added it must stay ≤60s.
-  if (typeof payload.nbf === 'number' && payload.nbf > now) return null;
-  if (payload.aud !== JWT_AUDIENCE) return null;
-  if (typeof payload.iss !== 'string' || !payload.iss.endsWith(ISS_SUFFIX)) return null;
-  if (typeof payload.sub !== 'string' || payload.sub === '') return null;
-
-  return {
-    subject: payload.sub,
-    email: typeof payload.email === 'string' ? payload.email : undefined,
-    name: typeof payload.name === 'string' ? payload.name : undefined,
-    entitlements: Array.isArray(payload.entitlements)
-      ? payload.entitlements.filter((e): e is string => typeof e === 'string')
-      : [],
-  };
-}
 
 /**
  * Verify a client-supplied credential JWT AND bind it to an expected session id.
@@ -142,7 +72,14 @@ export async function verifyCredentialForSession(
   secret: string | undefined,
   now?: number,
 ): Promise<CailIdentity | null> {
-  const identity = await verifyIdentityJwt(token, secret, now);
+  // The shared verifier requires a present token+secret and an explicit issuer
+  // allowlist; guard the "identity disabled / no token" cases here so callers
+  // keep passing `string | undefined` unchanged.
+  if (!secret || !token) return null;
+  const identity = await verifyIdentityJwt(token, secret, {
+    allowedIssuers: CAIL_ALLOWED_ISSUERS,
+    now,
+  });
   if (!identity) return null;
   const derived = await sessionIdForSubject(identity.subject);
   if (derived !== expectedSessionId) return null;
@@ -175,7 +112,14 @@ export async function getCailIdentityFromRequest(
 ): Promise<{ token: string; identity: CailIdentity } | null> {
   const token = request.headers.get(CAIL_IDENTITY_HEADER);
   if (!token) return null;
-  const identity = await verifyIdentityJwt(token, env.CAIL_IDENTITY_JWT_SECRET, now);
+  const secret = env.CAIL_IDENTITY_JWT_SECRET;
+  // No secret configured → identity disabled (anonymous). Guard before the
+  // shared verifier, which requires a present secret.
+  if (!secret) return null;
+  const identity = await verifyIdentityJwt(token, secret, {
+    allowedIssuers: CAIL_ALLOWED_ISSUERS,
+    now,
+  });
   if (!identity) return null;
   return { token, identity };
 }
