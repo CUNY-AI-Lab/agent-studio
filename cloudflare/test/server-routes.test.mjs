@@ -826,6 +826,35 @@ test('/api/models surfaces proxy auth failure as 502', async () => {
   }
 });
 
+test('/api/models surfaces proxy quota exhaustion as 429', async () => {
+  resetCailModelsCache();
+  const { env } = makeEnv();
+  env.CAIL_API_BASE = 'https://proxy.example';
+  env.CAIL_IDENTITY_JWT_SECRET = CAIL_TEST_SECRET;
+  const token = await mintIdentityJwt();
+  const session = new Session(env);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ error: 'quota_exceeded', message: 'quota exhausted' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  try {
+    const res = await session.request(app, '/api/models', {
+      headers: { [CAIL_IDENTITY_HEADER]: token },
+    });
+    assert.equal(res.status, 429);
+    assert.deepEqual(await res.json(), {
+      error: 'quota_exceeded',
+      message: 'quota exhausted',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetCailModelsCache();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Export / import
 // ---------------------------------------------------------------------------

@@ -10,6 +10,7 @@ import assert from 'node:assert/strict';
 import {
   fetchCailModels,
   ModelCatalogAuthError,
+  ModelCatalogQuotaError,
   resetCailModelsCache,
 } from '../src/lib/cail-models.ts';
 import { DEFAULT_CAIL_MODEL } from '../src/lib/cail-model.ts';
@@ -151,9 +152,24 @@ test('401 and 403 proxy responses fail loud as ModelCatalogAuthError', async () 
   }
 });
 
-test('non-auth 4xx falls back immediately', async () => {
+test('429 proxy responses fail loud as ModelCatalogQuotaError without retrying', async () => {
   const { fetchImpl, calls } = makeFetch([
     cailErrorResponse(429, 'quota_exceeded', 'quota exceeded'),
+  ]);
+  await assert.rejects(
+    () => fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl }),
+    (error) => {
+      assert.equal(error instanceof ModelCatalogQuotaError, true);
+      assert.equal(error.message, 'quota exceeded');
+      return true;
+    },
+  );
+  assert.equal(calls.length, 1, '4xx is not retried');
+});
+
+test('non-auth, non-quota 4xx falls back immediately', async () => {
+  const { fetchImpl, calls } = makeFetch([
+    cailErrorResponse(400, 'bad_request', 'bad request'),
   ]);
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
   assert.equal(result.source, 'fallback');

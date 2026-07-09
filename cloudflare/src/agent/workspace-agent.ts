@@ -50,6 +50,9 @@ import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { putWorkspace } from '../lib/workspaces';
 import { deriveCsrfToken, timingSafeEqual, wsOriginAllowed } from '../lib/csrf';
+import { assertClientStateIdentity } from '../lib/agent-state-guard';
+import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
+import { quotaSignalFromError } from '../lib/quota-error';
 
 const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
@@ -319,6 +322,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
+  validateStateChange(nextState: WorkspaceState, source: 'server' | unknown): void {
+    if (source === 'server') return;
+    assertClientStateIdentity(this.name, nextState);
+  }
+
   /**
    * Store the caller's identity JWT for use as the model-proxy credential.
    *
@@ -519,7 +527,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
             requestId,
             error,
           });
-          return 'Agent Studio hit an internal error while streaming this response.';
+          const quota = quotaSignalFromError(error);
+          return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
       });
     } catch (error) {
@@ -930,7 +939,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       tools: [
         aiTools(codeModeTools),
         stateTools(this.getRuntimeWorkspace()),
-        gitTools(this.getRuntimeWorkspace(), { token: this.env.GIT_AUTH_TOKEN }),
+        guardGitToken(gitTools(this.getRuntimeWorkspace()), {
+          token: this.env.GIT_AUTH_TOKEN,
+          allowedHosts: parseGitAllowedHosts(this.env),
+        }),
       ],
       executor: this.createCodeExecutor(),
       description: CODEMODE_DESCRIPTION,
@@ -942,7 +954,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return [
       resolveProvider(aiTools(codeModeTools)),
       resolveProvider(stateTools(this.getRuntimeWorkspace())),
-      resolveProvider(gitTools(this.getRuntimeWorkspace(), { token: this.env.GIT_AUTH_TOKEN })),
+      resolveProvider(guardGitToken(gitTools(this.getRuntimeWorkspace()), {
+        token: this.env.GIT_AUTH_TOKEN,
+        allowedHosts: parseGitAllowedHosts(this.env),
+      })),
     ];
   }
 

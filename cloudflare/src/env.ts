@@ -34,6 +34,11 @@ export interface Env {
   // See src/lib/csrf.ts.
   CAIL_BASE_PATH?: string;
   GIT_AUTH_TOKEN?: string;
+  // Comma-separated host allowlist for GIT_AUTH_TOKEN injection. The default git token
+  // is attached to clone/fetch/pull/push ONLY when the target URL host matches one of
+  // these exact hostnames. Unset/empty = the token is never attached to user-supplied
+  // git URLs (safe default). See src/lib/git-guard.ts.
+  GIT_AUTH_ALLOWED_HOSTS?: string;
   // Optional web_fetch destination allowlist (anti-DNS-rebind containment).
   // Comma-separated host patterns: an exact host ("api.openalex.org") or a
   // leading-dot suffix (".oclc.org" matches api.oclc.org and oclc.org). When

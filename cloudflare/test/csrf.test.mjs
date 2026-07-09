@@ -12,6 +12,8 @@ import {
   canonicalOrigin,
   deriveCsrfToken,
   timingSafeEqual,
+  wsAgentCsrfValid,
+  wsAgentSessionIdFromPath,
   wsOriginAllowed,
   enforceCsrf,
   csrfCookiePath,
@@ -140,6 +142,54 @@ test('wsOriginAllowed: override changes what counts as same-origin', () => {
   });
   assert.equal(wsOriginAllowed(req, 'https://tools.ailab.gc.cuny.edu'), true);
   assert.equal(wsOriginAllowed(req), false); // without override, origin != request origin
+});
+
+test('wsAgentSessionIdFromPath: extracts canonical agent session ids only', () => {
+  const sessionId = 'a'.repeat(32);
+  const workspaceId = 'b'.repeat(32);
+  assert.equal(
+    wsAgentSessionIdFromPath(`/agents/workspace-agent/${sessionId}-${workspaceId}`),
+    sessionId,
+  );
+  assert.equal(wsAgentSessionIdFromPath('/api/workspaces'), null);
+  assert.equal(wsAgentSessionIdFromPath('/agents/workspace-agent/not-an-agent-name'), null);
+});
+
+test('wsAgentCsrfValid: accepts a correctly signed agent connection token', async () => {
+  const sessionId = 'a'.repeat(32);
+  const workspaceId = 'b'.repeat(32);
+  const token = await deriveCsrfToken(sessionId, SECRET);
+  const request = new Request(
+    `https://studio.test/agents/workspace-agent/${sessionId}-${workspaceId}?csrfToken=${token}`,
+  );
+  assert.equal(await wsAgentCsrfValid(request, SECRET), true);
+});
+
+test('wsAgentCsrfValid: rejects wrong, missing, and non-agent tokens', async () => {
+  const sessionId = 'a'.repeat(32);
+  const workspaceId = 'b'.repeat(32);
+  const base = `https://studio.test/agents/workspace-agent/${sessionId}-${workspaceId}`;
+  assert.equal(await wsAgentCsrfValid(new Request(`${base}?csrfToken=wrong`), SECRET), false);
+  assert.equal(await wsAgentCsrfValid(new Request(base), SECRET), false);
+  assert.equal(
+    await wsAgentCsrfValid(new Request('https://studio.test/api/workspaces?csrfToken=wrong'), SECRET),
+    false,
+  );
+});
+
+test('route: agent WebSocket without a token is rejected before routing to the DO', async () => {
+  const { env } = makeEnv();
+  const sessionId = 'a'.repeat(32);
+  const workspaceId = 'b'.repeat(32);
+  const response = await app.fetch(
+    new Request(
+      `https://studio.test/agents/workspace-agent/${sessionId}-${workspaceId}`,
+      { headers: { Upgrade: 'websocket' } },
+    ),
+    env,
+    {},
+  );
+  assert.equal(response.status, 403);
 });
 
 // ---------------------------------------------------------------------------

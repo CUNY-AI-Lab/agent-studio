@@ -74,6 +74,7 @@ import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { clampNumber, formatFileSize, makeClientId } from './lib/format';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
+import { quotaMessageFromChatError } from './lib/quotaError';
 import {
   type ContextualChatTarget,
   type ContextualThreadMessage,
@@ -260,6 +261,13 @@ function WorkspaceShell({
           handleAuthRequired(401, { error: 'authentication_required' });
           return;
         }
+      }
+      // Surface CAIL quota exhaustion distinctly (the stream error text carries a
+      // { type: 'quota_exceeded', ... } JSON signal from the worker — see quota-error.ts).
+      const quotaMessage = quotaMessageFromChatError(chatError);
+      if (quotaMessage) {
+        setError(quotaMessage);
+        return;
       }
       console.error('Workspace chat error', chatError);
       void dumpWorkspaceObservability();

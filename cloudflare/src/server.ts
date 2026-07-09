@@ -28,11 +28,22 @@ import {
   isValidGalleryId,
   isValidWorkspaceId,
 } from './lib/ids';
-import { fetchCailModels, ModelCatalogAuthError } from './lib/cail-models';
+import {
+  fetchCailModels,
+  ModelCatalogAuthError,
+  ModelCatalogQuotaError,
+} from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
-import { csrfMiddleware, deriveCsrfToken, setCsrfCookie, wsOriginAllowed } from './lib/csrf';
+import {
+  csrfMiddleware,
+  deriveCsrfToken,
+  setCsrfCookie,
+  wsAgentCsrfValid,
+  wsAgentSessionIdFromPath,
+  wsOriginAllowed,
+} from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { isAllowedUpload } from './lib/upload-validation';
 import { fileServingHeaders, previewServingHeaders } from './lib/file-serving';
@@ -149,6 +160,9 @@ app.onError((error, c) => {
   }
   if (error instanceof ModelCatalogAuthError) {
     return c.json({ error: 'Model catalog authentication failed' }, 502);
+  }
+  if (error instanceof ModelCatalogQuotaError) {
+    return c.json({ error: 'quota_exceeded', message: error.message }, 429);
   }
   console.error('Unhandled route error', { path: c.req.path, error });
   return c.json({ error: 'Internal error' }, 500);
@@ -894,6 +908,13 @@ export default {
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       if (!wsOriginAllowed(request, env.CAIL_CANONICAL_ORIGIN)) {
         return new Response('Forbidden: cross-origin WebSocket upgrade', { status: 403 });
+      }
+      // Reject an unauthenticated /agents/* socket at the edge, before routeAgentRequest
+      // instantiates the DO — the SDK sends the full persisted state on connect BEFORE the
+      // DO's onConnect can close the socket, so the token must be checked here (A2).
+      const wsPath = new URL(request.url).pathname;
+      if (wsAgentSessionIdFromPath(wsPath) && !(await wsAgentCsrfValid(request, env.SESSION_SECRET))) {
+        return new Response('Forbidden: missing or invalid connection token', { status: 403 });
       }
     }
     const agentResponse = await routeAgentRequest(request, env);

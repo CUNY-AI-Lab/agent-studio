@@ -251,3 +251,34 @@ export function wsOriginAllowed(request: Request, canonicalOverride?: string): b
   // reject -> block the upgrade.
   return verdict !== 'reject';
 }
+
+/** Session id embedded in an /agents/<ns>/<sessionId>-<wid> WS path, or null. */
+export function wsAgentSessionIdFromPath(pathname: string): string | null {
+  const parts = pathname.split('/').filter(Boolean);
+  if (parts[0] !== 'agents') return null;
+  const name = parts[2];
+  if (!name) return null;
+  const match = /^([0-9a-f]{32})-/.exec(name);
+  return match ? match[1] : null;
+}
+
+/**
+ * Validate the per-connection CSRF token on an /agents/* WS upgrade at the edge.
+ * Mirrors WorkspaceAgent.onConnect's check but runs before routeAgentRequest, so an
+ * unauthorized socket never reaches the DO (no state frame is queued). Returns false
+ * for a non-agent path, a missing/oddly-shaped name, a missing token, or a mismatch.
+ */
+export async function wsAgentCsrfValid(request: Request, secret: string): Promise<boolean> {
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return false;
+  }
+  const sessionId = wsAgentSessionIdFromPath(url.pathname);
+  if (!sessionId) return false;
+  const token = url.searchParams.get(CSRF_WS_QUERY_PARAM);
+  if (!token) return false;
+  const expected = await deriveCsrfToken(sessionId, secret);
+  return timingSafeEqual(token, expected);
+}
