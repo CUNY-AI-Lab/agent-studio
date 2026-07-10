@@ -34,6 +34,21 @@ function isHeavyRequest(method: string, path: string): boolean {
   return HEAVY_PATH_PATTERNS.some((pattern) => path.includes(pattern));
 }
 
+/**
+ * Enforce the HEAVY limit for an operation invoked OUTSIDE the HTTP middleware
+ * (for example, a @callable Agent RPC). Same fail-open contract: no binding
+ * means the call is allowed.
+ */
+export async function checkHeavyRpcLimit(
+  env: { HEAVY_RATE_LIMIT?: RateLimit },
+  key: string,
+): Promise<boolean> {
+  const limiter = env.HEAVY_RATE_LIMIT;
+  if (!limiter) return true;
+  const { success } = await limiter.limit({ key });
+  return success;
+}
+
 export const rateLimitMiddleware: MiddlewareHandler<{
   Bindings: Env;
   Variables: SessionVariables;

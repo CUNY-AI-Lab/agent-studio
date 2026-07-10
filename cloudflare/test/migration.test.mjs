@@ -32,12 +32,17 @@ class FakeAgent {
     this.unreadablePaths = new Set();
     this.cleared = false;
     this.syncCount = 0;
+    this.frozen = false;
   }
 
   async syncWorkspace(workspace, sessionId) {
     this.syncCount += 1;
     this.workspace = workspace;
     this.sessionId = sessionId;
+  }
+
+  async freezeForMigration() {
+    this.frozen = true;
   }
 
   async getSnapshot() {
@@ -266,6 +271,8 @@ test('happy path: workspaces, files, messages, state, downloads, gallery all mov
   assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
   assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, true);
   assert.equal((await pool.getAgent(ANON, 'ws2')).cleared, true);
+  assert.equal((await pool.getAgent(ANON, 'ws1')).frozen, true);
+  assert.equal((await pool.getAgent(ANON, 'ws2')).frozen, true);
 });
 
 test('merge without overwrite: subject-owned workspace ids are never touched', async () => {

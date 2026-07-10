@@ -194,6 +194,20 @@ test('DELETE workspace succeeds even if workspace sync would fail', async () => 
   assert.deepEqual(list.workspaces, []);
 });
 
+test('DELETE workspace removes its separate runtime R2 prefix', async () => {
+  const { env, r2 } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Runtime Cleanup');
+  const runtimeKey = `agent-studio/runtime/${sessionId}-${workspace.id}/foo.txt`;
+  await r2.put(runtimeKey, 'orphan candidate');
+  assert.ok(await r2.get(runtimeKey));
+
+  const res = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+
+  assert.equal(res.status, 200);
+  assert.equal(await r2.get(runtimeKey), null);
+});
+
 test('GET missing workspace id -> 404', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -395,6 +409,25 @@ test('upload: disallowed extension (.exe) is rejected with 400', async () => {
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /\.exe.*not allowed/);
   assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
+});
+
+test('upload: one disallowed file prevents every file in the batch from being written', async () => {
+  const { env, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+
+  const form = new FormData();
+  form.append('files', new File(['safe'], 'notes.txt', { type: 'text/plain' }));
+  form.append('files', new File(['MZ'], 'payload.exe', { type: 'application/octet-stream' }));
+  const res = await session.request(app, `/api/workspaces/${workspace.id}/upload`, {
+    method: 'POST',
+    body: form,
+  });
+
+  assert.equal(res.status, 400);
+  assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
+  const listed = await session.request(app, `/api/workspaces/${workspace.id}/files`);
+  assert.deepEqual((await listed.json()).files, []);
 });
 
 test('upload: a file over the 25 MB limit is rejected with 400', async () => {

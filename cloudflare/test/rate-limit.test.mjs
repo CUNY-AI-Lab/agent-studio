@@ -16,6 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { importServer, makeEnv, openSession, Session } from './helpers/env.mjs';
+import { checkHeavyRpcLimit } from '../src/lib/rate-limit.ts';
 
 const app = await importServer();
 
@@ -47,6 +48,24 @@ async function createWorkspace(session) {
   assert.equal(res.status, 201);
   return (await res.json()).workspace;
 }
+
+// ---------------------------------------------------------------------------
+// Callable RPC helper
+// ---------------------------------------------------------------------------
+
+test('checkHeavyRpcLimit fails open and passes the supplied key to the limiter', async () => {
+  assert.equal(await checkHeavyRpcLimit({}, 'absent-key'), true);
+
+  for (const success of [true, false]) {
+    const limiter = makeFakeLimiter(success);
+    const allowed = await checkHeavyRpcLimit(
+      { HEAVY_RATE_LIMIT: limiter.binding },
+      `rpc-key-${success}`,
+    );
+    assert.equal(allowed, success);
+    assert.deepEqual(limiter.keys, [`rpc-key-${success}`]);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Fail open

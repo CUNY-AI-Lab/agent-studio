@@ -84,6 +84,7 @@ export async function importServer() {
 export class MockR2 {
   constructor() {
     this.store = new Map();
+    this.etagCounter = 0;
   }
 
   async get(key) {
@@ -93,8 +94,8 @@ export class MockR2 {
     return {
       key,
       size: bytes.byteLength,
-      etag: 'mock',
-      uploaded: new Date(0),
+      etag: entry.etag,
+      uploaded: entry.uploaded,
       httpMetadata: entry.httpMetadata,
       customMetadata: entry.customMetadata,
       body: bytes,
@@ -105,6 +106,11 @@ export class MockR2 {
   }
 
   async put(key, value, opts = {}) {
+    const expectedEtag = opts.onlyIf?.etagMatches;
+    if (expectedEtag !== undefined && this.store.get(key)?.etag !== expectedEtag) {
+      return null;
+    }
+
     let bytes;
     if (typeof value === 'string') {
       bytes = new TextEncoder().encode(value);
@@ -115,11 +121,16 @@ export class MockR2 {
     } else {
       bytes = new TextEncoder().encode(String(value));
     }
+    const etag = String(this.etagCounter += 1);
+    const uploaded = new Date(0);
     this.store.set(key, {
       value: bytes,
+      etag,
+      uploaded,
       httpMetadata: opts.httpMetadata,
       customMetadata: opts.customMetadata,
     });
+    return { key, size: bytes.byteLength, etag, uploaded };
   }
 
   async delete(keys) {
@@ -132,7 +143,12 @@ export class MockR2 {
     const keys = [...this.store.keys()].filter((key) => key.startsWith(prefix)).sort();
     const toObject = (key) => {
       const entry = this.store.get(key);
-      return { key, size: entry ? entry.value.byteLength : 0, etag: 'mock', uploaded: new Date(0) };
+      return {
+        key,
+        size: entry ? entry.value.byteLength : 0,
+        etag: entry?.etag || '',
+        uploaded: entry?.uploaded || new Date(0),
+      };
     };
     if (!delimiter) {
       return { objects: keys.map(toObject), delimitedPrefixes: [], truncated: false, cursor: undefined };
@@ -182,6 +198,7 @@ export class FakeWorkspaceAgent {
     this.files = new Map(); // path -> { bytes: Uint8Array, contentType }
     this.credential = null;
     this.syncCount = 0;
+    this.frozen = false;
   }
 
   async fetch() {
@@ -201,6 +218,10 @@ export class FakeWorkspaceAgent {
       workspace,
       panels: this.state.panels,
     };
+  }
+
+  async freezeForMigration() {
+    this.frozen = true;
   }
 
   async replaceWorkspaceState(state, workspace, sessionId) {

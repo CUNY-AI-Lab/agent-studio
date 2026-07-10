@@ -104,6 +104,7 @@ export function decideClaim(
  */
 export interface MigratableAgent {
   syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void>;
+  freezeForMigration(): Promise<void>;
   getSnapshot(): Promise<WorkspaceState>;
   getMessages(): Promise<UIMessage[]>;
   getWorkspaceFiles(): Promise<Array<{ path: string; isDirectory: boolean }>>;
@@ -179,6 +180,7 @@ export async function migrateAnonymousSession(
     // the old DO's runtime, so the runtime file listing below is complete.
     await oldAgent.syncWorkspace(workspace, anonSessionId);
     await newAgent.syncWorkspace(workspace, subjectSessionId);
+    await oldAgent.freezeForMigration();
 
     const [state, messages, files] = await Promise.all([
       oldAgent.getSnapshot(),

@@ -8,9 +8,17 @@ function workspaceMetadataKey(sessionId: string, workspaceId: string): string {
 
 export async function listWorkspaces(env: Env, sessionId: string): Promise<WorkspaceRecord[]> {
   const prefix = `agent-studio/sessions/${sessionId}/workspaces/`;
-  const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/' });
+  const prefixes: string[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/', cursor });
+    prefixes.push(...listing.delimitedPrefixes);
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+
   const items = await Promise.all(
-    listing.delimitedPrefixes.map(async (workspacePrefix) => {
+    prefixes.map(async (workspacePrefix) => {
       const workspaceId = workspacePrefix.slice(prefix.length).replace(/\/$/, '');
       if (!workspaceId) return null;
       const value = await env.WORKSPACE_FILES.get(workspaceMetadataKey(sessionId, workspaceId));
@@ -29,12 +37,42 @@ export async function getWorkspace(env: Env, sessionId: string, workspaceId: str
   return value ? value.json<WorkspaceRecord>() : null;
 }
 
+export async function getWorkspaceWithEtag(
+  env: Env,
+  sessionId: string,
+  workspaceId: string
+): Promise<{ workspace: WorkspaceRecord; etag: string } | null> {
+  const value = await env.WORKSPACE_FILES.get(workspaceMetadataKey(sessionId, workspaceId));
+  if (!value) return null;
+  return {
+    workspace: await value.json<WorkspaceRecord>(),
+    etag: value.etag,
+  };
+}
+
 export async function putWorkspace(env: Env, sessionId: string, workspace: WorkspaceRecord): Promise<void> {
   await env.WORKSPACE_FILES.put(
     workspaceMetadataKey(sessionId, workspace.id),
     JSON.stringify(workspace, null, 2),
     { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
   );
+}
+
+export async function putWorkspaceIfMatch(
+  env: Env,
+  sessionId: string,
+  workspace: WorkspaceRecord,
+  etag: string
+): Promise<boolean> {
+  const result = await env.WORKSPACE_FILES.put(
+    workspaceMetadataKey(sessionId, workspace.id),
+    JSON.stringify(workspace, null, 2),
+    {
+      httpMetadata: { contentType: 'application/json; charset=utf-8' },
+      onlyIf: { etagMatches: etag },
+    }
+  );
+  return result !== null;
 }
 
 export async function deleteWorkspace(env: Env, sessionId: string, workspaceId: string): Promise<void> {
