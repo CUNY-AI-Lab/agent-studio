@@ -68,11 +68,12 @@ test('fail open: no rate-limit binding -> requests flow normally', async () => {
 
 test('over limit: binding returns success:false -> 429 + envelope + Retry-After', async () => {
   const { env } = makeEnv();
+  // Bootstrap the first-party token before denying the protected GET; otherwise
+  // the read CSRF gate correctly wins with 403 before rate limiting runs.
+  const { session } = await openSession(app, env);
   const general = makeFakeLimiter(false);
   env.API_RATE_LIMIT = general.binding;
 
-  const { session } = await openSession(app, env);
-  general.keys.length = 0; // discard the /api/session consult openSession made
   const res = await session.request(app, '/api/workspaces');
 
   assert.equal(res.status, 429);

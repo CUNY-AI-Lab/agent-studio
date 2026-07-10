@@ -37,7 +37,9 @@ import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
 import {
+  CSRF_COOKIE_NAME,
   csrfMiddleware,
+  csrfReadMiddleware,
   deriveCsrfToken,
   setCsrfCookie,
   wsAgentCsrfValid,
@@ -273,8 +275,12 @@ app.use('/api/*', sessionMiddleware);
 // CSRF enforcement runs after sessionMiddleware (it keys the fallback token by
 // the session id that middleware sets) and before rate limiting / handlers, so
 // a forged state-changing request is rejected with 403 before it does any work.
-// Safe methods (GET/HEAD) pass through untouched — see lib/csrf.ts.
+// Safe methods pass through this mutation gate — sensitive workspace GET/HEAD
+// requests are covered by the path-specific read gate immediately below.
 app.use('/api/*', csrfMiddleware);
+app.use('/api/workspaces', csrfReadMiddleware);
+app.use('/api/workspaces/:id', csrfReadMiddleware);
+app.use('/api/workspaces/:id/*', csrfReadMiddleware);
 // Rate limiting runs after sessionMiddleware because it keys by the session id
 // that middleware sets. /health stays outside /api/* and is never limited.
 app.use('/api/*', rateLimitMiddleware);
@@ -876,12 +882,11 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
 export { WorkspaceAgent };
 export { MigrationRegistry } from './migration-registry';
 
-// AS-3-10 deploy-footgun guard. CAIL_API_BASE ships as a `.invalid` placeholder
-// and CAIL_REQUIRE_IDENTITY defaults false — both intentional for local dev. On
-// the first request we warn loudly (once) if the placeholder was never replaced,
-// so a real deploy that forgot to set the model proxy is obvious in the logs. We
-// warn rather than throw: throwing would break local dev where the placeholder
-// is expected.
+// AS-3-10 deploy-footgun guard. Several intentionally permissive local-dev
+// defaults are unsafe on the shared production host. Warn loudly once so a
+// deploy that missed its injected model proxy, identity gate, or cookie base
+// path is obvious in logs. We warn rather than throw because those defaults are
+// expected locally.
 let cailConfigChecked = false;
 function checkCailConfigOnce(env: Env): void {
   if (cailConfigChecked) return;
@@ -892,6 +897,24 @@ function checkCailConfigOnce(env: Env): void {
       `[startup] CAIL_API_BASE is still a placeholder (${base}); the CAIL model ` +
         `proxy is unreachable. Set a real CAIL_API_BASE before deploying. ` +
         `(Expected in local dev; a deploy footgun in production.)`,
+    );
+  }
+  if (env.CAIL_REQUIRE_IDENTITY !== 'true') {
+    console.warn(
+      `[startup] CAIL_REQUIRE_IDENTITY is not "true"; anonymous requests reaching this ` +
+        `Worker directly (e.g. workers.dev) are accepted. Set it to "true" when ` +
+        `CAIL_SSO_MODE=enforce lands on the gateway.`,
+    );
+  }
+  if (!env.CAIL_BASE_PATH || !env.CAIL_BASE_PATH.trim()) {
+    const sharedHost = Boolean(env.CAIL_CANONICAL_ORIGIN);
+    console.warn(
+      `[startup] CAIL_BASE_PATH is unset; the ${CSRF_COOKIE_NAME} cookie is scoped to '/' ` +
+        `and readable by every script on this host.` +
+        (sharedHost
+          ? ` On the shared tools.ailab host (CAIL_CANONICAL_ORIGIN is set) this exposes the ` +
+            `CSRF token to sibling tools — set CAIL_BASE_PATH (e.g. "/agent-studio").`
+          : ` (Fine locally / on workers.dev with no same-origin siblings.)`),
     );
   }
 }

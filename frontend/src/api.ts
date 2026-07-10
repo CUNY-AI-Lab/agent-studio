@@ -38,10 +38,10 @@ export function handleAuthRequired(status: number, payload: unknown): boolean {
  * NOT appear in any response body, so a same-origin sibling / user-content
  * script that `fetch()`es our endpoints can't read it). Set-Cookie is
  * script-unreadable; the cookie's Path scopes document.cookie visibility to our
- * own pages. We read it here and echo it in X-CAIL-CSRF on every mutation and as
- * the WebSocket connect token. A sibling tool is same-origin but, being outside
- * our path prefix, never sees the cookie — which is what isolates siblings (the
- * origin check alone cannot).
+ * own pages. We read it here and echo it in X-CAIL-CSRF on every mutation,
+ * sensitive workspace read, and as the WebSocket connect token. A sibling tool
+ * is same-origin but, being outside our path prefix, never sees the cookie —
+ * which is what isolates siblings (the origin check alone cannot).
  */
 export const CSRF_HEADER = 'X-CAIL-CSRF';
 
@@ -93,12 +93,25 @@ export function ensureCsrfToken(): Promise<string> {
   return csrfTokenPromise;
 }
 
+/** Synchronous cookie read of the CSRF token (null if the bootstrap has not run). */
+export function csrfTokenFromCookie(): string | null {
+  return readCookie(CSRF_COOKIE_NAME);
+}
+
 /**
  * fetch() wrapper for state-changing calls: ensures the CSRF token and attaches
  * it as X-CAIL-CSRF (merged with any caller-supplied headers). All mutating API
  * helpers below route through this so no mutation can forget the header.
  */
 export async function mutatingFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const token = await ensureCsrfToken();
+  const headers = new Headers(init.headers);
+  headers.set(CSRF_HEADER, token);
+  return fetch(input, { ...init, credentials: 'include', headers });
+}
+
+/** fetch() wrapper for sensitive workspace reads. */
+export async function readingFetch(input: string, init: RequestInit = {}): Promise<Response> {
   const token = await ensureCsrfToken();
   const headers = new Headers(init.headers);
   headers.set(CSRF_HEADER, token);
@@ -151,7 +164,7 @@ function parseFilename(contentDisposition: string | null, fallback: string): str
 }
 
 export async function fetchWorkspaces(): Promise<WorkspaceRecord[]> {
-  const response = await fetch('/api/workspaces', { credentials: 'include' });
+  const response = await readingFetch('/api/workspaces');
   const payload = await parseJson<{ workspaces: WorkspaceRecord[] }>(response);
   return payload.workspaces;
 }
@@ -355,24 +368,18 @@ export async function unpublishGalleryItem(galleryId: string): Promise<void> {
 }
 
 export async function fetchWorkspace(workspaceId: string): Promise<WorkspaceResponse> {
-  const response = await fetch(`/api/workspaces/${workspaceId}`, {
-    credentials: 'include',
-  });
+  const response = await readingFetch(`/api/workspaces/${workspaceId}`);
   return parseJson<WorkspaceResponse>(response);
 }
 
 export async function fetchWorkspaceObservability(workspaceId: string): Promise<WorkspaceObservabilitySnapshot> {
-  const response = await fetch(`/api/workspaces/${workspaceId}/observability`, {
-    credentials: 'include',
-  });
+  const response = await readingFetch(`/api/workspaces/${workspaceId}/observability`);
   const payload = await parseJson<{ observability: WorkspaceObservabilitySnapshot }>(response);
   return payload.observability;
 }
 
 export async function fetchWorkspaceExport(workspaceId: string): Promise<{ blob: Blob; filename: string }> {
-  const response = await fetch(`/api/workspaces/${workspaceId}/export`, {
-    credentials: 'include',
-  });
+  const response = await readingFetch(`/api/workspaces/${workspaceId}/export`);
   if (!response.ok) {
     // Same error extraction as parseJson (via readResponseError). Export does
     // NOT route 401s through handleAuthRequired: it returns a Blob and runs from
@@ -389,17 +396,13 @@ export async function fetchWorkspaceExport(workspaceId: string): Promise<{ blob:
 }
 
 export async function fetchWorkspaceFiles(workspaceId: string): Promise<WorkspaceFileInfo[]> {
-  const response = await fetch(`/api/workspaces/${workspaceId}/files`, {
-    credentials: 'include',
-  });
+  const response = await readingFetch(`/api/workspaces/${workspaceId}/files`);
   const payload = await parseJson<{ files: WorkspaceFileInfo[] }>(response);
   return payload.files;
 }
 
 export async function fetchWorkspaceDownloads(workspaceId: string): Promise<DownloadRequest[]> {
-  const response = await fetch(`/api/workspaces/${workspaceId}/downloads`, {
-    credentials: 'include',
-  });
+  const response = await readingFetch(`/api/workspaces/${workspaceId}/downloads`);
   const payload = await parseJson<{ downloads: DownloadRequest[] }>(response);
   return payload.downloads;
 }
@@ -412,7 +415,9 @@ export async function clearWorkspaceDownloads(workspaceId: string): Promise<void
 }
 
 export function getWorkspaceFileUrl(workspaceId: string, filePath: string): string {
-  return `/api/workspaces/${workspaceId}/files/${encodePath(filePath)}`;
+  const path = `/api/workspaces/${workspaceId}/files/${encodePath(filePath)}`;
+  const token = csrfTokenFromCookie();
+  return token !== null ? `${path}?csrfToken=${encodeURIComponent(token)}` : path;
 }
 
 export function getGalleryFileUrl(galleryId: string, filePath: string): string {
@@ -420,7 +425,9 @@ export function getGalleryFileUrl(galleryId: string, filePath: string): string {
 }
 
 export function getWorkspacePanelPreviewUrl(workspaceId: string, panelId: string): string {
-  return `/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`;
+  const path = `/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`;
+  const token = csrfTokenFromCookie();
+  return token !== null ? `${path}?csrfToken=${encodeURIComponent(token)}` : path;
 }
 
 export function getGalleryPanelPreviewUrl(galleryId: string, panelId: string): string {

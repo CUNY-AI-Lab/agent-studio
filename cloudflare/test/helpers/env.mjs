@@ -402,10 +402,10 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  * It also mirrors a first-party page's CSRF behavior (fleet contract §3¾): it
  * captures the per-session token from the /api/session bootstrap's Set-Cookie
  * header (the delivery channel; never the body) and attaches it as X-CAIL-CSRF
- * on every state-changing request. With neither Sec-Fetch-Site
+ * on every state-changing request and GET/HEAD read. With neither Sec-Fetch-Site
  * nor Origin set, the worker falls back to that token — so ordinary route tests
  * pass through the enforced path rather than around it. A test exercising the
- * negative cases passes `init.rawCsrf` (see below) to override.
+ * negative cases passes `init.csrfToken` (see below) to override.
  *
  * `init.csrfToken` sets an explicit token (or '' to send none); `init.origin`
  * and `init.secFetchSite` set those headers. Omit all three for the default
@@ -424,11 +424,13 @@ export class Session {
     if (this.cookie) headers.set('Cookie', this.cookie);
 
     const method = (fetchInit.method || 'GET').toUpperCase();
-    if (!SAFE_METHODS.has(method)) {
-      // Explicit token/origin overrides win (negative-path tests); otherwise
-      // attach the captured session token like a real first-party page.
-      const token = csrfToken !== undefined ? csrfToken : this.csrfToken;
+    const token = csrfToken !== undefined ? csrfToken : this.csrfToken;
+    if (method === 'GET' || method === 'HEAD' || !SAFE_METHODS.has(method)) {
+      // Explicit token overrides win (including '' for negative-path tests);
+      // otherwise attach the captured token like a real first-party page.
       if (token) headers.set(CSRF_HEADER, token);
+    }
+    if (!SAFE_METHODS.has(method)) {
       if (origin) headers.set('Origin', origin);
       if (secFetchSite) headers.set('Sec-Fetch-Site', secFetchSite);
     }
@@ -462,6 +464,8 @@ export async function openSession(app, env) {
 // Fixtures
 // ---------------------------------------------------------------------------
 
+// `authorId` is the already-derived opaque gallery owner tag. Keeping hashing
+// out of this synchronous fixture makes each caller explicit about the secret.
 export function seedGalleryItem(r2, id, authorId, overrides = {}) {
   const manifest = {
     id,

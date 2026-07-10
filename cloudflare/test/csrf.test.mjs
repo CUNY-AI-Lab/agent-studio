@@ -16,6 +16,7 @@ import {
   wsAgentSessionIdFromPath,
   wsOriginAllowed,
   enforceCsrf,
+  enforceCsrfRead,
   csrfCookiePath,
   CSRF_HEADER,
   CSRF_WS_QUERY_PARAM,
@@ -196,14 +197,20 @@ test('route: agent WebSocket without a token is rejected before routing to the D
 // enforceCsrf (pure, with a minimal Hono-like context double)
 // ---------------------------------------------------------------------------
 
-function fakeContext({ method, headers = {}, sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef', env = {} }) {
+function fakeContext({
+  method,
+  headers = {},
+  sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef',
+  env = {},
+  url = 'https://studio.test/api/workspaces',
+}) {
   const lower = {};
   for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
   return {
     env: { SESSION_SECRET: SECRET, ...env },
     req: {
       method,
-      url: 'https://studio.test/api/workspaces',
+      url,
       header: (name) => lower[name.toLowerCase()] ?? undefined,
     },
     get: (key) => (key === 'sessionId' ? sessionId : undefined),
@@ -214,6 +221,37 @@ function fakeContext({ method, headers = {}, sessionId = 'deadbeefdeadbeefdeadbe
 test('enforceCsrf: GET passes untouched', async () => {
   const rejection = await enforceCsrf(fakeContext({ method: 'GET' }));
   assert.equal(rejection, null);
+});
+
+test('enforceCsrfRead: GET/HEAD require a valid token from the header or query', async () => {
+  const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
+  const token = await deriveCsrfToken(sessionId, SECRET);
+
+  assert.equal(
+    await enforceCsrfRead(fakeContext({ method: 'GET', sessionId, headers: { [CSRF_HEADER]: token } })),
+    null,
+  );
+  assert.equal(
+    await enforceCsrfRead(fakeContext({
+      method: 'HEAD',
+      sessionId,
+      url: `https://studio.test/api/workspaces?csrfToken=${token}`,
+    })),
+    null,
+  );
+
+  const missing = await enforceCsrfRead(fakeContext({ method: 'GET', sessionId }));
+  assert.equal(missing.status, 403);
+  assert.deepEqual(missing.__json, { error: 'csrf_token_missing' });
+
+  const invalid = await enforceCsrfRead(fakeContext({
+    method: 'GET',
+    sessionId,
+    headers: { [CSRF_HEADER]: 'wrong' },
+  }));
+  assert.equal(invalid.status, 403);
+  assert.deepEqual(invalid.__json, { error: 'csrf_token_invalid' });
+  assert.equal(await enforceCsrfRead(fakeContext({ method: 'POST', sessionId })), null);
 });
 
 test('enforceCsrf: POST with Sec-Fetch-Site same-origin and no token is rejected 403', async () => {
@@ -336,6 +374,7 @@ test('csrfCookiePath: defaults to / and honors CAIL_BASE_PATH (normalized)', () 
   assert.equal(csrfCookiePath({ CAIL_BASE_PATH: '/agent-studio' }), '/agent-studio');
   assert.equal(csrfCookiePath({ CAIL_BASE_PATH: '/agent-studio/' }), '/agent-studio');
   assert.equal(csrfCookiePath({ CAIL_BASE_PATH: 'agent-studio' }), '/agent-studio');
+  assert.equal(csrfCookiePath({ CAIL_BASE_PATH: 'agent-studio/' }), '/agent-studio');
 });
 
 test('route: CSRF cookie Path follows CAIL_BASE_PATH when set', async () => {
@@ -439,13 +478,50 @@ test('route: mutation with no origin + valid token passes; wrong token 403', asy
   assert.equal((await bad.json()).error, 'csrf_token_invalid');
 });
 
-test('route: GET routes are unaffected by CSRF enforcement', async () => {
+test('route: workspace list GET requires the valid first-party token', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
-  // A cross-site Origin on a GET must not be blocked (rule 1: GETs never mutate).
-  const res = await session.request(app, '/api/workspaces', {
-    origin: 'https://evil.example',
+  const missing = await session.request(app, '/api/workspaces', { csrfToken: '' });
+  assert.equal(missing.status, 403);
+  assert.deepEqual(await missing.json(), { error: 'csrf_token_missing' });
+
+  const valid = await session.request(app, '/api/workspaces');
+  assert.equal(valid.status, 200);
+});
+
+test('route: workspace file GET accepts query token and rejects a missing token', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await session.request(
+    app,
+    '/api/workspaces',
+    jsonInit('POST', { name: 'Read-gated file' }),
+  ).then((response) => response.json()).then((body) => body.workspace);
+  const filePath = `/api/workspaces/${workspace.id}/files/readme.md`;
+  const put = await session.request(app, filePath, {
+    method: 'PUT',
+    headers: { 'content-type': 'text/markdown' },
+    body: '# protected',
   });
+  assert.equal(put.status, 200);
+
+  const missing = await session.request(app, filePath, { csrfToken: '' });
+  assert.equal(missing.status, 403);
+  assert.deepEqual(await missing.json(), { error: 'csrf_token_missing' });
+
+  const query = await session.request(
+    app,
+    `${filePath}?csrfToken=${encodeURIComponent(session.csrfToken)}`,
+    { csrfToken: '' },
+  );
+  assert.equal(query.status, 200);
+  assert.equal(await query.text(), '# protected');
+});
+
+test('route: public gallery GET remains ungated', async () => {
+  const { env } = makeEnv();
+  const session = new Session(env);
+  const res = await session.request(app, '/api/gallery', { csrfToken: '' });
   assert.equal(res.status, 200);
 });
 

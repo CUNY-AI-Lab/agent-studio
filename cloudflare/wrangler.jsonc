@@ -95,6 +95,10 @@
     // Fail closed: reject anonymous model calls with 401. Turn on ("true") at
     // the same time CAIL_SSO_MODE=enforce lands on the gateway. Left "false"
     // pre-rollout so local/dev without the gate stays usable.
+    // CAIL_BASE_PATH and CAIL_CANONICAL_ORIGIN are injected at deploy for the
+    // shared host (mirroring the existing canonical-origin handling) rather
+    // than checked in: local dev serves at '/'. Leaving CAIL_BASE_PATH unset on
+    // that shared host makes the script-readable CSRF cookie host-wide.
     "CAIL_REQUIRE_IDENTITY": "false"
   },
   // Secrets (never in this file; set via `wrangler secret put`):
