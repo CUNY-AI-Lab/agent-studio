@@ -214,8 +214,14 @@ export interface ModelCatalog {
   default: string;
 }
 
+export class ModelsQuotaError extends Error {}
+
 export async function fetchModels(): Promise<ModelCatalog> {
   const response = await fetch('/api/models', { credentials: 'include' });
+  if (response.status === 429) {
+    const { message } = await readResponseError(response);
+    throw new ModelsQuotaError(message);
+  }
   return parseJson<ModelCatalog>(response);
 }
 

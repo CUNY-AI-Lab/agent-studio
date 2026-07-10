@@ -22,6 +22,7 @@ export function ChatPanel({
   onRetry,
   onDumpTrace,
   canRetry,
+  errorNotice,
   selectedScopeLabel,
   onClearScope,
 }: {
@@ -34,6 +35,7 @@ export function ChatPanel({
   onRetry: () => void;
   onDumpTrace: () => void;
   canRetry: boolean;
+  errorNotice?: string | null;
   selectedScopeLabel: string | null;
   onClearScope: () => void;
 }) {
@@ -77,7 +79,9 @@ export function ChatPanel({
         <div className="border-b border-destructive/20 bg-destructive/8 px-4 py-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="space-y-1">
-              <p className="text-sm font-medium text-destructive">The last response failed before it finished.</p>
+              <p className="text-sm font-medium text-destructive">
+                {errorNotice ?? 'The last response failed before it finished.'}
+              </p>
               <p className="text-xs text-muted-foreground">
                 Retry the last turn or clear the thread and continue.
               </p>

@@ -1,4 +1,4 @@
-import { Download, Keyboard, MessageSquare, RotateCcw, Trash2 } from 'lucide-react';
+import { Download, Keyboard, MessageSquare, RotateCcw, Share2, Trash2 } from 'lucide-react';
 import { ThemeToggle } from '../ThemeToggle';
 import { buildModelPickerView, type ModelCatalog } from '../../api';
 
@@ -15,6 +15,7 @@ export function WorkspaceHeader({
   tileCount,
   fileCount,
   modelCatalog,
+  modelQuotaNotice,
   workspaceModel,
   onModelChange,
   onGoHome,
@@ -41,6 +42,7 @@ export function WorkspaceHeader({
   tileCount: number;
   fileCount: number;
   modelCatalog: ModelCatalog | null;
+  modelQuotaNotice: string | null;
   workspaceModel: string | undefined;
   onModelChange: (modelId: string) => void;
   onGoHome: () => void;
@@ -118,7 +120,16 @@ export function WorkspaceHeader({
               ) : null}
             </select>
           );
-        })() : null}
+        })() : modelQuotaNotice ? (
+          <select
+            className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 transition-colors cursor-not-allowed opacity-60 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            disabled
+            title={modelQuotaNotice}
+            aria-label="Agent model (unavailable: quota reached)"
+          >
+            <option>Models unavailable — quota reached</option>
+          </select>
+        ) : null}
         <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onRefresh} title="Refresh" aria-label="Refresh workspace">
           <RotateCcw size={16} aria-hidden="true" />
         </button>
@@ -140,6 +151,26 @@ export function WorkspaceHeader({
               Publish
             </button>
           ) : null
+        ) : galleryId ? (
+          <button
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onUnpublish}
+            disabled={publishing}
+            title="Unpublish from gallery"
+            aria-label="Unpublish from gallery"
+          >
+            <Share2 size={16} aria-hidden="true" />
+          </button>
+        ) : publishableArtifactCount > 0 ? (
+          <button
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            onClick={onOpenPublishModal}
+            disabled={publishing}
+            title="Publish to gallery"
+            aria-label="Publish to gallery"
+          >
+            <Share2 size={16} aria-hidden="true" />
+          </button>
         ) : null}
         <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onExport} title="Export" aria-label="Export workspace">
           <Download size={16} aria-hidden="true" />
