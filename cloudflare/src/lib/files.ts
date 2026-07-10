@@ -54,6 +54,10 @@ export function getWorkspacePrefix(sessionId: string, workspaceId: string): stri
   return `${APP_PREFIX}/sessions/${sessionId}/workspaces/${workspaceId}/`;
 }
 
+export function getRuntimeFilesPrefix(sessionId: string, workspaceId: string): string {
+  return `${APP_PREFIX}/runtime/${sessionId}-${workspaceId}/`;
+}
+
 export function getGalleryPrefix(galleryId?: string): string {
   return galleryId
     ? `${APP_PREFIX}/gallery/items/${galleryId}/`
@@ -79,9 +83,18 @@ function getRelativePath(prefix: string, key: string): string {
 async function listFilesUnderPrefix(env: Env, basePrefix: string, dir = ''): Promise<WorkspaceFileInfo[]> {
   const relativeDir = normalizeRelativePath(dir);
   const prefix = `${basePrefix}${relativeDir ? `${relativeDir}/` : ''}`;
-  const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/' });
+  const objects: R2Object[] = [];
+  const delimitedPrefixes: string[] = [];
+  let cursor: string | undefined;
 
-  const directories = listing.delimitedPrefixes.map((nextPrefix) => {
+  do {
+    const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/', cursor });
+    objects.push(...listing.objects);
+    delimitedPrefixes.push(...listing.delimitedPrefixes);
+    cursor = listing.truncated ? listing.cursor : undefined;
+  } while (cursor);
+
+  const directories = delimitedPrefixes.map((nextPrefix) => {
     const relativePath = getRelativePath(basePrefix, nextPrefix).replace(/\/$/, '');
     return {
       name: relativePath.split('/').pop() || relativePath,
@@ -90,7 +103,7 @@ async function listFilesUnderPrefix(env: Env, basePrefix: string, dir = ''): Pro
     } satisfies WorkspaceFileInfo;
   });
 
-  const files = listing.objects.map((object) => {
+  const files = objects.map((object) => {
     const relativePath = getRelativePath(basePrefix, object.key);
     return {
       name: relativePath.split('/').pop() || relativePath,

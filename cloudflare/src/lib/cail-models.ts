@@ -18,9 +18,10 @@
  * something to show and chat never breaks. A proxy 401/403 for a
  * gateway-verified identity is config/secret drift and throws
  * ModelCatalogAuthError instead — masking it with a working-looking picker
- * would hide a broken deployment. Only the proxy list is cached (globally,
- * ~5 min); the catalog is not per-user beyond auth, so one cache serves
- * everyone.
+ * would hide a broken deployment. A proxy 429 similarly throws
+ * ModelCatalogQuotaError so an over-quota user never sees a working-looking
+ * fallback. Only the proxy list is cached (globally, ~5 min); the catalog is
+ * not per-user beyond auth, so one cache serves everyone.
  */
 
 import { CailError, createCailClient } from '@cuny-ai-lab/cail-client';
@@ -59,6 +60,7 @@ export interface CailModelsResult {
 }
 
 export class ModelCatalogAuthError extends Error {}
+export class ModelCatalogQuotaError extends Error {}
 
 export interface FetchCailModelsOptions {
   env: CailModelEnv;
@@ -196,6 +198,9 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
   } catch (error) {
     if (error instanceof CailError && (error.status === 401 || error.status === 403)) {
       throw new ModelCatalogAuthError(error.message);
+    }
+    if (error instanceof CailError && error.status === 429) {
+      throw new ModelCatalogQuotaError(error.message);
     }
     return fallbackResult(env);
   }

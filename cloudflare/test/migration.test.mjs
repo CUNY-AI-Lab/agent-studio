@@ -13,9 +13,11 @@ import {
   migrateAnonymousSession,
 } from '../src/lib/migration.ts';
 import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
+import { galleryOwnerTag } from '../src/lib/gallery.ts';
 import { MockR2 } from './helpers/env.mjs';
 
 const NOW = 1_800_000_000_000;
+const SESSION_SECRET = 'ab'.repeat(32);
 
 // ---------------------------------------------------------------------------
 // In-memory doubles
@@ -30,12 +32,17 @@ class FakeAgent {
     this.unreadablePaths = new Set();
     this.cleared = false;
     this.syncCount = 0;
+    this.frozen = false;
   }
 
   async syncWorkspace(workspace, sessionId) {
     this.syncCount += 1;
     this.workspace = workspace;
     this.sessionId = sessionId;
+  }
+
+  async freezeForMigration() {
+    this.frozen = true;
   }
 
   async getSnapshot() {
@@ -164,15 +171,16 @@ async function seedWorkspace(r2, pool, sessionId, workspaceId, name, files = {},
 }
 
 async function seedGalleryItem(r2, id, authorId) {
+  const ownerTag = await galleryOwnerTag(authorId, SESSION_SECRET);
   await r2.put(
     `agent-studio/gallery/items/${id}/manifest.json`,
-    JSON.stringify({ id, title: 't', description: 'd', authorId, publishedAt: new Date(NOW).toISOString(), artifactCount: 0 })
+    JSON.stringify({ id, title: 't', description: 'd', authorId: ownerTag, publishedAt: new Date(NOW).toISOString(), artifactCount: 0 })
   );
   await r2.put(`agent-studio/gallery/items/${id}/state.json`, JSON.stringify({ panels: [] }));
 }
 
 function makeEnv(r2) {
-  return { WORKSPACE_FILES: r2 };
+  return { WORKSPACE_FILES: r2, SESSION_SECRET };
 }
 
 // ---------------------------------------------------------------------------
@@ -255,14 +263,16 @@ test('happy path: workspaces, files, messages, state, downloads, gallery all mov
 
   // Gallery authorship follows the user; other authors untouched.
   const gal1 = await (await r2.get('agent-studio/gallery/items/gal1/manifest.json')).json();
-  assert.equal(gal1.authorId, SUBJECT);
+  assert.equal(gal1.authorId, await galleryOwnerTag(SUBJECT, SESSION_SECRET));
   const gal2 = await (await r2.get('agent-studio/gallery/items/gal2/manifest.json')).json();
-  assert.equal(gal2.authorId, 'someone-else');
+  assert.equal(gal2.authorId, await galleryOwnerTag('someone-else', SESSION_SECRET));
 
   // Anonymous namespace deleted; old agents cleared.
   assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
   assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, true);
   assert.equal((await pool.getAgent(ANON, 'ws2')).cleared, true);
+  assert.equal((await pool.getAgent(ANON, 'ws1')).frozen, true);
+  assert.equal((await pool.getAgent(ANON, 'ws2')).frozen, true);
 });
 
 test('merge without overwrite: subject-owned workspace ids are never touched', async () => {
@@ -512,7 +522,7 @@ async function makeMiddlewareApp() {
   const r2 = new MockR2();
   const registry = new FakeRegistry();
   const env = {
-    SESSION_SECRET: 'ab'.repeat(32),
+    SESSION_SECRET,
     CAIL_IDENTITY_JWT_SECRET: JWT_SECRET,
     WORKSPACE_FILES: r2,
     MIGRATION_REGISTRY: {
@@ -569,7 +579,7 @@ test('middleware: first authenticated request with legacy cookie migrates once a
 
   // Migration ran: gallery ownership moved, claim recorded done.
   const manifest = await (await r2.get('agent-studio/gallery/items/galM/manifest.json')).json();
-  assert.equal(manifest.authorId, subjectSessionId);
+  assert.equal(manifest.authorId, await galleryOwnerTag(subjectSessionId, SESSION_SECRET));
   assert.equal(registry.record.status, 'done');
   assert.equal(registry.record.subjectSessionId, subjectSessionId);
 

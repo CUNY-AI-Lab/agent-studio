@@ -16,6 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { importServer, makeEnv, openSession, Session } from './helpers/env.mjs';
+import { checkHeavyRpcLimit } from '../src/lib/rate-limit.ts';
 
 const app = await importServer();
 
@@ -49,6 +50,24 @@ async function createWorkspace(session) {
 }
 
 // ---------------------------------------------------------------------------
+// Callable RPC helper
+// ---------------------------------------------------------------------------
+
+test('checkHeavyRpcLimit fails open and passes the supplied key to the limiter', async () => {
+  assert.equal(await checkHeavyRpcLimit({}, 'absent-key'), true);
+
+  for (const success of [true, false]) {
+    const limiter = makeFakeLimiter(success);
+    const allowed = await checkHeavyRpcLimit(
+      { HEAVY_RATE_LIMIT: limiter.binding },
+      `rpc-key-${success}`,
+    );
+    assert.equal(allowed, success);
+    assert.deepEqual(limiter.keys, [`rpc-key-${success}`]);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Fail open
 // ---------------------------------------------------------------------------
 
@@ -68,11 +87,12 @@ test('fail open: no rate-limit binding -> requests flow normally', async () => {
 
 test('over limit: binding returns success:false -> 429 + envelope + Retry-After', async () => {
   const { env } = makeEnv();
+  // Bootstrap the first-party token before denying the protected GET; otherwise
+  // the read CSRF gate correctly wins with 403 before rate limiting runs.
+  const { session } = await openSession(app, env);
   const general = makeFakeLimiter(false);
   env.API_RATE_LIMIT = general.binding;
 
-  const { session } = await openSession(app, env);
-  general.keys.length = 0; // discard the /api/session consult openSession made
   const res = await session.request(app, '/api/workspaces');
 
   assert.equal(res.status, 429);

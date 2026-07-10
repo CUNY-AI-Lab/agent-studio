@@ -47,6 +47,7 @@ import {
   fetchWorkspaceFiles,
   fetchWorkspaces,
   fetchModels,
+  ModelsQuotaError,
   getWorkspaceFileUrl,
   importWorkspaceBundle,
   publishWorkspace,
@@ -74,6 +75,7 @@ import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { clampNumber, formatFileSize, makeClientId } from './lib/format';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
+import { quotaMessageFromChatError } from './lib/quotaError';
 import {
   type ContextualChatTarget,
   type ContextualThreadMessage,
@@ -124,11 +126,13 @@ function WorkspaceShell({
   const [composer, setComposer] = useState('');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [chatErrorNotice, setChatErrorNotice] = useState<string | null>(null);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
   const [deletingWorkspace, setDeletingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState(workspace.workspace.name);
   const [workspaceDescription, setWorkspaceDescription] = useState(workspace.workspace.description);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  const [modelQuotaNotice, setModelQuotaNotice] = useState<string | null>(null);
   const [workspaceModel, setWorkspaceModel] = useState<string | undefined>(workspace.workspace.model);
   const [publishModalOpen, setPublishModalOpen] = useState(false);
   const [publishTitle, setPublishTitle] = useState(workspace.workspace.name);
@@ -261,6 +265,13 @@ function WorkspaceShell({
           return;
         }
       }
+      // Surface CAIL quota exhaustion distinctly (the stream error text carries a
+      // { type: 'quota_exceeded', ... } JSON signal from the worker — see quota-error.ts).
+      const quotaMessage = quotaMessageFromChatError(chatError);
+      if (quotaMessage) {
+        setChatErrorNotice(quotaMessage);
+        return;
+      }
       console.error('Workspace chat error', chatError);
       void dumpWorkspaceObservability();
     },
@@ -286,6 +297,7 @@ function WorkspaceShell({
     options?: Parameters<typeof chat.sendMessage>[1],
   ) => {
     chat.clearError();
+    setChatErrorNotice(null);
     return chat.sendMessage({ text }, options);
   }, [chat]);
 
@@ -345,12 +357,19 @@ function WorkspaceShell({
 
   useEffect(() => {
     let cancelled = false;
+    setModelQuotaNotice(null);
     void fetchModels()
       .then((catalog) => {
-        if (!cancelled) setModelCatalog(catalog);
+        if (!cancelled) {
+          setModelCatalog(catalog);
+          setModelQuotaNotice(null);
+        }
       })
-      .catch(() => {
-        // Non-fatal: the picker just stays hidden if the catalog can't load.
+      .catch((nextError) => {
+        if (!cancelled && nextError instanceof ModelsQuotaError) {
+          setModelQuotaNotice(nextError.message || 'Model list unavailable: usage quota reached.');
+        }
+        // Other failures remain non-fatal and leave the picker hidden.
       });
     return () => {
       cancelled = true;
@@ -1906,9 +1925,11 @@ function WorkspaceShell({
   const handleChatClear = useCallback(() => {
     chat.clearHistory();
     chat.clearError();
+    setChatErrorNotice(null);
   }, [chat]);
 
   const handleChatRetry = useCallback(() => {
+    setChatErrorNotice(null);
     if ('regenerate' in chat && typeof chat.regenerate === 'function') {
       chat.clearError();
       void chat.regenerate();
@@ -2084,9 +2105,15 @@ function WorkspaceShell({
     }
   }, [refreshWorkspaceFiles, showToast, workspace.workspace.id]);
 
+  const handleOpenPublishModal = useCallback(() => {
+    setPublishTitle(workspaceName);
+    setPublishDescription(workspaceDescription);
+    setPublishModalOpen(true);
+  }, [workspaceDescription, workspaceName]);
+
   const handlePublish = useCallback(async () => {
-    const nextTitle = workspaceName.trim() || publishTitle.trim();
-    const nextDescription = workspaceDescription.trim() || publishDescription.trim();
+    const nextTitle = publishTitle.trim();
+    const nextDescription = publishDescription.trim();
     if (!nextTitle || !nextDescription) return;
     setPublishing(true);
     setError(null);
@@ -2103,7 +2130,7 @@ function WorkspaceShell({
     } finally {
       setPublishing(false);
     }
-  }, [publishDescription, publishTitle, refreshWorkspace, showToast, workspace.workspace.id, workspaceDescription, workspaceName]);
+  }, [publishDescription, publishTitle, refreshWorkspace, showToast, workspace.workspace.id]);
 
   const handleUnpublish = useCallback(async () => {
     if (!workspace.workspace.galleryId) return;
@@ -2586,6 +2613,7 @@ function WorkspaceShell({
         void dumpWorkspaceObservability();
       }}
       canRetry={Boolean(lastUserPrompt)}
+      errorNotice={chatErrorNotice}
       selectedScopeLabel={selectedScopeLabel}
       onClearScope={clearSelection}
     />
@@ -2640,6 +2668,7 @@ function WorkspaceShell({
           tileCount={workspaceState.panels.filter((p) => p.type !== 'chat').length}
           fileCount={workspaceFileEntries.length}
           modelCatalog={modelCatalog}
+          modelQuotaNotice={modelQuotaNotice}
           workspaceModel={workspaceModel}
           onModelChange={(modelId) => void handleModelChange(modelId)}
           onGoHome={onGoHome}
@@ -2653,7 +2682,7 @@ function WorkspaceShell({
           publishing={publishing}
           publishableArtifactCount={publishableArtifactCount}
           onUnpublish={() => void handleUnpublish()}
-          onOpenPublishModal={() => setPublishModalOpen(true)}
+          onOpenPublishModal={handleOpenPublishModal}
           isDockedChatLayout={isDockedChatLayout}
           chatOpen={chatOpen}
           onToggleChat={() => setChatOpen((current) => !current)}

@@ -125,6 +125,40 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(headers.get(CSRF_HEADER)).toBeTruthy();
   });
 
+  it('readingFetch attaches the X-CAIL-CSRF header with the cookie token', async () => {
+    const { readingFetch, CSRF_HEADER } = await loadApi();
+    const token = 'e'.repeat(64);
+    stubCookie(`${CSRF_COOKIE}=${token}`);
+    const spy = mockFetch(() => new Response('{}', { status: 200 }));
+
+    await readingFetch('/api/workspaces');
+
+    const call = spy.mock.calls[0];
+    const headers = new Headers(call[1]?.headers);
+    expect(headers.get(CSRF_HEADER)).toBe(token);
+    expect(call[1]?.credentials).toBe('include');
+  });
+
+  it('workspace element URLs include the cookie token while gallery URLs stay public', async () => {
+    const token = 'query token/value';
+    stubCookie(`${CSRF_COOKIE}=${encodeURIComponent(token)}`);
+    const {
+      getGalleryFileUrl,
+      getGalleryPanelPreviewUrl,
+      getWorkspaceFileUrl,
+      getWorkspacePanelPreviewUrl,
+    } = await loadApi();
+
+    expect(getWorkspaceFileUrl('ws', 'notes/read me.md')).toBe(
+      `/api/workspaces/ws/files/notes/read%20me.md?csrfToken=${encodeURIComponent(token)}`,
+    );
+    expect(getWorkspacePanelPreviewUrl('ws', 'panel one')).toBe(
+      `/api/workspaces/ws/panels/panel%20one/preview?csrfToken=${encodeURIComponent(token)}`,
+    );
+    expect(getGalleryFileUrl('gallery', 'notes/read me.md')).not.toContain('csrfToken=');
+    expect(getGalleryPanelPreviewUrl('gallery', 'panel one')).not.toContain('csrfToken=');
+  });
+
   it('a bootstrap that sets no cookie rejects and is not cached (retried next call)', async () => {
     const { ensureCsrfToken } = await loadApi();
     const cookie = stubCookie();

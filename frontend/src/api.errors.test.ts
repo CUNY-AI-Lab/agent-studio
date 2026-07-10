@@ -25,7 +25,12 @@ function jsonResponse(body: unknown, status: number) {
 }
 
 describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () => {
-  beforeEach(() => vi.unstubAllGlobals());
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal('document', {
+      cookie: `cail_csrf_agentstudio=${'a'.repeat(64)}`,
+    } as Document);
+  });
   afterEach(() => vi.unstubAllGlobals());
 
   it('surfaces the worker `{ error }` envelope message', async () => {
@@ -79,7 +84,36 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
       return jsonResponse({}, 200);
     });
     const { blob, filename } = await fetchWorkspaceExport('ws-1');
-    expect(blob).toBeInstanceOf(Blob);
+    // Response.blob() comes from undici's realm under Vitest, so instanceof the
+    // jsdom Blob constructor is false even though the returned object is valid.
+    expect(blob.type).toBe('application/json');
+    expect(await blob.text()).toBe('{"version":1}');
     expect(filename).toBe('my-space.agent-studio.json');
+  });
+});
+
+describe('fetchModels quota errors', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('throws ModelsQuotaError with the worker quota message for a 429', async () => {
+    const { fetchModels, ModelsQuotaError } = await loadApi();
+    mockFetch(() => jsonResponse({
+      error: 'quota_exceeded',
+      message: 'You have used your $10 monthly AI budget.',
+    }, 429));
+
+    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(ModelsQuotaError);
+    expect(error).toHaveProperty('message', 'You have used your $10 monthly AI budget.');
+  });
+
+  it('keeps non-429 failures as plain errors', async () => {
+    const { fetchModels, ModelsQuotaError } = await loadApi();
+    mockFetch(() => jsonResponse({ message: 'Catalog failed upstream' }, 500));
+
+    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ModelsQuotaError);
+    expect(error).toHaveProperty('message', 'Catalog failed upstream');
   });
 });

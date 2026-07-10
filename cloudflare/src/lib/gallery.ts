@@ -22,6 +22,30 @@ function galleryStateKey(id: string): string {
   return `${getGalleryPrefix(id)}state.json`;
 }
 
+/**
+ * Opaque, keyed owner tag for a gallery manifest. HMAC-SHA-256(SESSION_SECRET) over
+ * `gallery-owner:<sessionId>`, hex. Lets unpublish/reassign authorize the owner by
+ * comparing hashes, WITHOUT publishing the subject-derived session id to the
+ * world-readable manifest (which, paired with workspace.id, would reconstruct the DO
+ * name). Deterministic + stateless, mirroring lib/csrf.ts deriveCsrfToken.
+ */
+export async function galleryOwnerTag(sessionId: string, secret: string): Promise<string> {
+  const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyMaterial,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    new TextEncoder().encode(`gallery-owner:${sessionId}`),
+  );
+  return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export async function listGalleryItems(env: Env): Promise<GalleryItem[]> {
   const listing = await env.WORKSPACE_FILES.list({ prefix: getGalleryPrefix(), delimiter: '/' });
   const items = await Promise.all(
@@ -77,7 +101,7 @@ export async function publishWorkspace(args: {
     title: args.title,
     description: args.description,
     prompt: args.workspace.description,
-    authorId: args.sessionId,
+    authorId: await galleryOwnerTag(args.sessionId, args.env.SESSION_SECRET),
     publishedAt: new Date().toISOString(),
     artifactCount: shareablePanelCount + fileCount,
   };
@@ -111,9 +135,16 @@ export async function publishWorkspace(args: {
     if (failedUpload) {
       throw failedUpload.reason;
     }
+    const publishedState = {
+      ...args.state,
+      sessionId: null,
+      workspace: args.state.workspace
+        ? { ...args.state.workspace, id: '' }
+        : args.state.workspace,
+    };
     await args.env.WORKSPACE_FILES.put(
       galleryStateKey(id),
-      JSON.stringify(args.state, null, 2),
+      JSON.stringify(publishedState, null, 2),
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
     );
     await args.env.WORKSPACE_FILES.put(
@@ -148,7 +179,7 @@ export async function unpublishGalleryItem(env: Env, galleryId: string, sessionI
   if (!item) {
     throw new GalleryError('Gallery item not found', 404);
   }
-  if (item.authorId !== sessionId) {
+  if (item.authorId !== await galleryOwnerTag(sessionId, env.SESSION_SECRET)) {
     throw new GalleryError('Not authorized to unpublish this item', 403);
   }
 
@@ -157,9 +188,10 @@ export async function unpublishGalleryItem(env: Env, galleryId: string, sessionI
 
 /**
  * Move gallery-item ownership from one session id to another (first-login
- * migration): every manifest authored by `fromSessionId` is rewritten to
- * `toSessionId` so unpublish rights follow the user into their subject
- * namespace. Items authored by anyone else are untouched. Idempotent.
+ * migration): every manifest whose opaque owner tag matches `fromSessionId`
+ * is rewritten with the tag for `toSessionId` so unpublish rights follow the
+ * user into their subject namespace. Items authored by anyone else are
+ * untouched. Idempotent.
  * Returns the number of manifests rewritten.
  */
 export async function reassignGalleryAuthor(
@@ -168,10 +200,12 @@ export async function reassignGalleryAuthor(
   toSessionId: string
 ): Promise<number> {
   const items = await listGalleryItems(env);
+  const fromTag = await galleryOwnerTag(fromSessionId, env.SESSION_SECRET);
+  const toTag = await galleryOwnerTag(toSessionId, env.SESSION_SECRET);
   let reassigned = 0;
   for (const item of items) {
-    if (item.authorId !== fromSessionId) continue;
-    const next: GalleryItem = { ...item, authorId: toSessionId };
+    if (item.authorId !== fromTag) continue;
+    const next: GalleryItem = { ...item, authorId: toTag };
     await env.WORKSPACE_FILES.put(
       galleryManifestKey(item.id),
       JSON.stringify(next, null, 2),

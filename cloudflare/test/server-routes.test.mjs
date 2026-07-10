@@ -23,6 +23,7 @@ import {
 } from './helpers/env.mjs';
 import { CAIL_IDENTITY_HEADER } from '../src/lib/cail-identity.ts';
 import { resetCailModelsCache } from '../src/lib/cail-models.ts';
+import { galleryOwnerTag } from '../src/lib/gallery.ts';
 
 const app = await importServer();
 
@@ -191,6 +192,20 @@ test('DELETE workspace succeeds even if workspace sync would fail', async () => 
 
   const list = await (await session.request(app, '/api/workspaces')).json();
   assert.deepEqual(list.workspaces, []);
+});
+
+test('DELETE workspace removes its separate runtime R2 prefix', async () => {
+  const { env, r2 } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Runtime Cleanup');
+  const runtimeKey = `agent-studio/runtime/${sessionId}-${workspace.id}/foo.txt`;
+  await r2.put(runtimeKey, 'orphan candidate');
+  assert.ok(await r2.get(runtimeKey));
+
+  const res = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+
+  assert.equal(res.status, 200);
+  assert.equal(await r2.get(runtimeKey), null);
 });
 
 test('GET missing workspace id -> 404', async () => {
@@ -394,6 +409,25 @@ test('upload: disallowed extension (.exe) is rejected with 400', async () => {
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /\.exe.*not allowed/);
   assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
+});
+
+test('upload: one disallowed file prevents every file in the batch from being written', async () => {
+  const { env, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+
+  const form = new FormData();
+  form.append('files', new File(['safe'], 'notes.txt', { type: 'text/plain' }));
+  form.append('files', new File(['MZ'], 'payload.exe', { type: 'application/octet-stream' }));
+  const res = await session.request(app, `/api/workspaces/${workspace.id}/upload`, {
+    method: 'POST',
+    body: form,
+  });
+
+  assert.equal(res.status, 400);
+  assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
+  const listed = await session.request(app, `/api/workspaces/${workspace.id}/files`);
+  assert.deepEqual((await listed.json()).files, []);
 });
 
 test('upload: a file over the 25 MB limit is rejected with 400', async () => {
@@ -604,6 +638,37 @@ test('gallery: publish a workspace -> appears in list -> get by id', async () =>
   assert.equal((await getRes.json()).item.id, pub.item.id);
 });
 
+test('gallery: publish redacts DO naming fields and keeps ownership via an opaque tag', async () => {
+  const { env, r2 } = makeEnv();
+  const { session: author, sessionId } = await openSession(app, env);
+  const { session: other } = await openSession(app, env);
+  const workspace = await createWorkspace(author, 'Identity-safe publish');
+
+  const pubRes = await author.request(
+    app,
+    `/api/workspaces/${workspace.id}/publish`,
+    jsonInit('POST', { title: 'Identity Safe', description: 'No DO name components' }),
+  );
+  assert.equal(pubRes.status, 201);
+  const { item } = await pubRes.json();
+
+  const prefix = `agent-studio/gallery/items/${item.id}/`;
+  const manifest = await (await r2.get(`${prefix}manifest.json`)).json();
+  const publishedState = await (await r2.get(`${prefix}state.json`)).json();
+  assert.notEqual(manifest.authorId, sessionId);
+  assert.equal(manifest.authorId, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
+  assert.equal(publishedState.sessionId, null);
+  assert.equal(publishedState.workspace.id, '');
+
+  const forbidden = await other.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
+  assert.equal(forbidden.status, 403);
+  assert.deepEqual(await forbidden.json(), { error: 'Not authorized to unpublish this item' });
+
+  const removed = await author.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
+  assert.equal(removed.status, 200);
+  assert.equal(await r2.get(`${prefix}manifest.json`), null);
+});
+
 test('gallery: publish cleans up when a listed file cannot be read', async () => {
   const { env, r2, agents } = makeEnv();
   const { session, sessionId } = await openSession(app, env);
@@ -684,7 +749,12 @@ test('gallery: clone succeeds when a panel references a file that was never publ
   const { env, r2 } = makeEnv();
   const { session, sessionId } = await openSession(app, env);
   const galleryId = 'abcdef12-3';
-  seedGalleryItem(r2, galleryId, sessionId, { title: 'Broken Clone' });
+  seedGalleryItem(
+    r2,
+    galleryId,
+    await galleryOwnerTag(sessionId, env.SESSION_SECRET),
+    { title: 'Broken Clone' },
+  );
   await r2.put(
     `agent-studio/gallery/items/${galleryId}/state.json`,
     JSON.stringify({
@@ -715,7 +785,12 @@ test('gallery: clone fails loud and removes the workspace when a listed gallery 
   const { session, sessionId } = await openSession(app, env);
   const galleryId = 'abcdef12-3';
   const missingKey = `agent-studio/gallery/items/${galleryId}/files/missing.md`;
-  seedGalleryItem(r2, galleryId, sessionId, { title: 'Broken Clone' });
+  seedGalleryItem(
+    r2,
+    galleryId,
+    await galleryOwnerTag(sessionId, env.SESSION_SECRET),
+    { title: 'Broken Clone' },
+  );
   await r2.put(missingKey, 'gone');
   const originalGet = r2.get.bind(r2);
   r2.get = async (key) => (key === missingKey ? null : originalGet(key));
@@ -820,6 +895,35 @@ test('/api/models surfaces proxy auth failure as 502', async () => {
     });
     assert.equal(res.status, 502);
     assert.deepEqual(await res.json(), { error: 'Model catalog authentication failed' });
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetCailModelsCache();
+  }
+});
+
+test('/api/models surfaces proxy quota exhaustion as 429', async () => {
+  resetCailModelsCache();
+  const { env } = makeEnv();
+  env.CAIL_API_BASE = 'https://proxy.example';
+  env.CAIL_IDENTITY_JWT_SECRET = CAIL_TEST_SECRET;
+  const token = await mintIdentityJwt();
+  const session = new Session(env);
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () =>
+    new Response(JSON.stringify({ error: 'quota_exceeded', message: 'quota exhausted' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  try {
+    const res = await session.request(app, '/api/models', {
+      headers: { [CAIL_IDENTITY_HEADER]: token },
+    });
+    assert.equal(res.status, 429);
+    assert.deepEqual(await res.json(), {
+      error: 'quota_exceeded',
+      message: 'quota exhausted',
+    });
   } finally {
     globalThis.fetch = originalFetch;
     resetCailModelsCache();

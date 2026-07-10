@@ -39,6 +39,18 @@ describe('ChatPanel', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
   });
 
+  it('shows a quota-specific error notice instead of the generic sentence', () => {
+    render(
+      <ChatPanel
+        {...baseProps}
+        status="error"
+        errorNotice="You have reached your usage quota. Try again later."
+      />
+    );
+    expect(screen.getByText('You have reached your usage quota. Try again later.')).toBeInTheDocument();
+    expect(screen.queryByText('The last response failed before it finished.')).not.toBeInTheDocument();
+  });
+
   it('submits the trimmed composer and clears it on Enter', async () => {
     const onSubmit = vi.fn();
     const onComposerChange = vi.fn();

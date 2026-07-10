@@ -13,9 +13,10 @@
 //     required, not extra.
 //   * Rule 3 — per-session token: an HMAC-derived, per-session token the tool
 //     issues to its own first-party pages and requires echoed in X-CAIL-CSRF on
-//     every mutation. A sibling tool can't read it; a cross-site page can't set
-//     the custom header without a CORS preflight we never approve. This — not
-//     the origin check — is what isolates sibling tools on the same host.
+//     every mutation and sensitive workspace read. A sibling tool can't read
+//     it; a cross-site page can't set the custom header without a CORS preflight
+//     we never approve. This — not the origin check — is what isolates sibling
+//     tools on the same host.
 //
 // The token is HMAC-derived from SESSION_SECRET over `csrf:<sessionId>`
 // (deterministic, stateless, sibling tools can't mint it without the secret),
@@ -45,9 +46,9 @@ export const CSRF_HEADER = 'X-CAIL-CSRF';
 export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
 
 /**
- * Query-param name carrying the per-session token on the WebSocket upgrade URL.
- * The DO verifies it once at accept (see WorkspaceAgent.onConnect) — the
- * connection-level equivalent of the X-CAIL-CSRF header on HTTP mutations.
+ * Query-param name carrying the per-session token on WebSocket upgrades and
+ * sensitive element-src GETs (which cannot set X-CAIL-CSRF). The DO verifies
+ * it once at accept (see WorkspaceAgent.onConnect) for WebSockets.
  */
 export const CSRF_WS_QUERY_PARAM = 'csrfToken';
 
@@ -208,6 +209,33 @@ export async function enforceCsrf(
 }
 
 /**
+ * Require the per-session CSRF token on a sensitive READ (rule 3 extended to GET). The
+ * token proves first-party origin: a same-origin sibling cannot read the path-scoped
+ * cookie, so it cannot supply the token. Accepts header or ?csrfToken= (for element-src).
+ * Only enforces GET/HEAD; other methods are covered by enforceCsrf. Returns 403 or null.
+ */
+export async function enforceCsrfRead(
+  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
+): Promise<Response | null> {
+  const method = c.req.method.toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') return null;
+  let queryToken: string | null = null;
+  try {
+    queryToken = new URL(c.req.url).searchParams.get(CSRF_WS_QUERY_PARAM);
+  } catch {
+    queryToken = null;
+  }
+  const provided = c.req.header(CSRF_HEADER) ?? queryToken;
+  if (!provided) return c.json({ error: 'csrf_token_missing' }, 403);
+  const sessionId = c.get('sessionId');
+  const expected = await deriveCsrfToken(sessionId, c.env.SESSION_SECRET);
+  if (!timingSafeEqual(provided, expected)) {
+    return c.json({ error: 'csrf_token_invalid' }, 403);
+  }
+  return null;
+}
+
+/**
  * Hono middleware wrapping enforceCsrf. Mount AFTER sessionMiddleware so
  * c.get('sessionId') is populated (the token keys off it).
  */
@@ -216,6 +244,15 @@ export const csrfMiddleware: MiddlewareHandler<{
   Variables: SessionVariables;
 }> = async (c, next) => {
   const rejection = await enforceCsrf(c);
+  if (rejection) return rejection;
+  return next();
+};
+
+export const csrfReadMiddleware: MiddlewareHandler<{
+  Bindings: Env;
+  Variables: SessionVariables;
+}> = async (c, next) => {
+  const rejection = await enforceCsrfRead(c);
   if (rejection) return rejection;
   return next();
 };
@@ -250,4 +287,35 @@ export function wsOriginAllowed(request: Request, canonicalOverride?: string): b
   // same-origin -> allow; absent -> allow (defer to the connect token gate);
   // reject -> block the upgrade.
   return verdict !== 'reject';
+}
+
+/** Session id embedded in an /agents/<ns>/<sessionId>-<wid> WS path, or null. */
+export function wsAgentSessionIdFromPath(pathname: string): string | null {
+  const parts = pathname.split('/').filter(Boolean);
+  if (parts[0] !== 'agents') return null;
+  const name = parts[2];
+  if (!name) return null;
+  const match = /^([0-9a-f]{32})-/.exec(name);
+  return match ? match[1] : null;
+}
+
+/**
+ * Validate the per-connection CSRF token on an /agents/* WS upgrade at the edge.
+ * Mirrors WorkspaceAgent.onConnect's check but runs before routeAgentRequest, so an
+ * unauthorized socket never reaches the DO (no state frame is queued). Returns false
+ * for a non-agent path, a missing/oddly-shaped name, a missing token, or a mismatch.
+ */
+export async function wsAgentCsrfValid(request: Request, secret: string): Promise<boolean> {
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    return false;
+  }
+  const sessionId = wsAgentSessionIdFromPath(url.pathname);
+  if (!sessionId) return false;
+  const token = url.searchParams.get(CSRF_WS_QUERY_PARAM);
+  if (!token) return false;
+  const expected = await deriveCsrfToken(sessionId, secret);
+  return timingSafeEqual(token, expected);
 }

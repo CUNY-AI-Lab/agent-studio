@@ -16,8 +16,10 @@ import { createWorkspaceExportBundle } from './lib/export';
 import { decodeWorkspaceImportFile, panelSchema, parseWorkspaceImportBundle } from './lib/import';
 import { clearWorkspaceDownloads, getWorkspaceDownloads } from './lib/downloads';
 import {
+  deleteByPrefix,
   deleteWorkspaceFiles,
   getMimeType,
+  getRuntimeFilesPrefix,
   listGalleryFilesRecursive,
   readGalleryFile,
   sanitizeRelativePath,
@@ -28,11 +30,24 @@ import {
   isValidGalleryId,
   isValidWorkspaceId,
 } from './lib/ids';
-import { fetchCailModels, ModelCatalogAuthError } from './lib/cail-models';
+import {
+  fetchCailModels,
+  ModelCatalogAuthError,
+  ModelCatalogQuotaError,
+} from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
-import { csrfMiddleware, deriveCsrfToken, setCsrfCookie, wsOriginAllowed } from './lib/csrf';
+import {
+  CSRF_COOKIE_NAME,
+  csrfMiddleware,
+  csrfReadMiddleware,
+  deriveCsrfToken,
+  setCsrfCookie,
+  wsAgentCsrfValid,
+  wsAgentSessionIdFromPath,
+  wsOriginAllowed,
+} from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { isAllowedUpload } from './lib/upload-validation';
 import { fileServingHeaders, previewServingHeaders } from './lib/file-serving';
@@ -40,8 +55,10 @@ import {
   createDefaultWorkspace,
   deleteWorkspace,
   getWorkspace,
+  getWorkspaceWithEtag,
   listWorkspaces,
   putWorkspace,
+  putWorkspaceIfMatch,
 } from './lib/workspaces';
 
 const createWorkspaceSchema = z.object({
@@ -149,6 +166,9 @@ app.onError((error, c) => {
   }
   if (error instanceof ModelCatalogAuthError) {
     return c.json({ error: 'Model catalog authentication failed' }, 502);
+  }
+  if (error instanceof ModelCatalogQuotaError) {
+    return c.json({ error: 'quota_exceeded', message: error.message }, 429);
   }
   console.error('Unhandled route error', { path: c.req.path, error });
   return c.json({ error: 'Internal error' }, 500);
@@ -259,8 +279,12 @@ app.use('/api/*', sessionMiddleware);
 // CSRF enforcement runs after sessionMiddleware (it keys the fallback token by
 // the session id that middleware sets) and before rate limiting / handlers, so
 // a forged state-changing request is rejected with 403 before it does any work.
-// Safe methods (GET/HEAD) pass through untouched — see lib/csrf.ts.
+// Safe methods pass through this mutation gate — sensitive workspace GET/HEAD
+// requests are covered by the path-specific read gate immediately below.
 app.use('/api/*', csrfMiddleware);
+app.use('/api/workspaces', csrfReadMiddleware);
+app.use('/api/workspaces/:id', csrfReadMiddleware);
+app.use('/api/workspaces/:id/*', csrfReadMiddleware);
 // Rate limiting runs after sessionMiddleware because it keys by the session id
 // that middleware sets. /health stays outside /api/* and is never limited.
 app.use('/api/*', rateLimitMiddleware);
@@ -615,15 +639,27 @@ app.patch('/api/workspaces/:id', async (c) => {
     return c.json({ error: 'Invalid workspace update' }, 400);
   }
   const patch = parsed.data;
-  const nextWorkspace = {
-    ...workspace,
-    ...(patch.name !== undefined ? { name: patch.name } : {}),
-    ...(patch.description !== undefined ? { description: patch.description } : {}),
-    ...(patch.model !== undefined ? { model: patch.model } : {}),
-    updatedAt: new Date().toISOString(),
-  };
 
-  await putWorkspace(c.env, sessionId, nextWorkspace);
+  // CAS retry so two concurrent field edits don't clobber each other (A12).
+  let nextWorkspace: WorkspaceRecord | null = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const current = await getWorkspaceWithEtag(c.env, sessionId, workspace.id);
+    if (!current) return c.json({ error: 'Workspace not found' }, 404);
+    const candidate: WorkspaceRecord = {
+      ...current.workspace,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(patch.model !== undefined ? { model: patch.model } : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    if (await putWorkspaceIfMatch(c.env, sessionId, candidate, current.etag)) {
+      nextWorkspace = candidate;
+      break;
+    }
+  }
+  if (!nextWorkspace) {
+    return c.json({ error: 'Conflicting concurrent update; retry' }, 409);
+  }
   await syncedWorkspaceAgent(c, nextWorkspace);
 
   return c.json({ workspace: nextWorkspace });
@@ -706,6 +742,9 @@ app.delete('/api/workspaces/:id', async (c) => {
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.clearWorkspaceFiles().catch(() => undefined);
   await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
+  // Runtime files live under a separate prefix the sessions-prefix delete
+  // misses. This authoritative cleanup fails loud so deletion stays retryable.
+  await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId));
   await deleteWorkspace(c.env, sessionId, workspaceId);
   return c.json({ success: true });
 });
@@ -785,35 +824,40 @@ app.post('/api/workspaces/:id/upload', async (c) => {
     return c.json({ error: `Upload limit is ${MAX_UPLOAD_FILE_COUNT} files per request` }, 400);
   }
 
-  let uploaded: Array<{ name: string; path: string; size: number }>;
-  try {
-    const { agent } = await syncedWorkspaceAgent(c, workspace);
-    uploaded = await Promise.all(
-      files.map(async (file) => {
-        if (file.size > MAX_UPLOAD_FILE_BYTES) {
-          throw new Error(`${file.name} exceeds the 25 MB upload limit`);
-        }
-        const verdict = isAllowedUpload(file);
-        if (!verdict.allowed) {
-          throw new Error(`${file.name}: ${verdict.reason}`);
-        }
+  // Phase 1: validate all files before writing any of them.
+  for (const file of files) {
+    if (file.size > MAX_UPLOAD_FILE_BYTES) {
+      return c.json({ error: `${file.name} exceeds the 25 MB upload limit` }, 400);
+    }
+    const verdict = isAllowedUpload(file);
+    if (!verdict.allowed) {
+      return c.json({ error: `${file.name}: ${verdict.reason}` }, 400);
+    }
+  }
 
-        const filePath = sanitizeRelativePath(file.name.trim());
-        await agent.writeWorkspaceFileContent(filePath, await file.arrayBuffer(), file.type || undefined);
-        return {
-          name: filePath.split('/').pop() || filePath,
-          path: filePath,
-          size: file.size,
-        };
-      })
-    );
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
+  const written: string[] = [];
+  try {
+    const uploaded = [];
+    for (const file of files) {
+      const filePath = sanitizeRelativePath(file.name.trim());
+      await agent.writeWorkspaceFileContent(filePath, await file.arrayBuffer(), file.type || undefined);
+      written.push(filePath);
+      uploaded.push({
+        name: filePath.split('/').pop() || filePath,
+        path: filePath,
+        size: file.size,
+      });
+    }
+    return c.json({ success: true, files: uploaded }, 201);
   } catch (error) {
+    await Promise.all(
+      written.map((filePath) => agent.deleteWorkspaceFileContent(filePath).catch(() => undefined))
+    );
     return c.json({
       error: error instanceof Error ? error.message : 'Upload failed',
     }, 400);
   }
-
-  return c.json({ success: true, files: uploaded }, 201);
 });
 
 app.post('/api/workspaces/:id/panels', async (c) => {
@@ -862,12 +906,11 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
 export { WorkspaceAgent };
 export { MigrationRegistry } from './migration-registry';
 
-// AS-3-10 deploy-footgun guard. CAIL_API_BASE ships as a `.invalid` placeholder
-// and CAIL_REQUIRE_IDENTITY defaults false — both intentional for local dev. On
-// the first request we warn loudly (once) if the placeholder was never replaced,
-// so a real deploy that forgot to set the model proxy is obvious in the logs. We
-// warn rather than throw: throwing would break local dev where the placeholder
-// is expected.
+// AS-3-10 deploy-footgun guard. Several intentionally permissive local-dev
+// defaults are unsafe on the shared production host. Warn loudly once so a
+// deploy that missed its injected model proxy, identity gate, or cookie base
+// path is obvious in logs. We warn rather than throw because those defaults are
+// expected locally.
 let cailConfigChecked = false;
 function checkCailConfigOnce(env: Env): void {
   if (cailConfigChecked) return;
@@ -878,6 +921,24 @@ function checkCailConfigOnce(env: Env): void {
       `[startup] CAIL_API_BASE is still a placeholder (${base}); the CAIL model ` +
         `proxy is unreachable. Set a real CAIL_API_BASE before deploying. ` +
         `(Expected in local dev; a deploy footgun in production.)`,
+    );
+  }
+  if (env.CAIL_REQUIRE_IDENTITY !== 'true') {
+    console.warn(
+      `[startup] CAIL_REQUIRE_IDENTITY is not "true"; anonymous requests reaching this ` +
+        `Worker directly (e.g. workers.dev) are accepted. Set it to "true" when ` +
+        `CAIL_SSO_MODE=enforce lands on the gateway.`,
+    );
+  }
+  if (!env.CAIL_BASE_PATH || !env.CAIL_BASE_PATH.trim()) {
+    const sharedHost = Boolean(env.CAIL_CANONICAL_ORIGIN);
+    console.warn(
+      `[startup] CAIL_BASE_PATH is unset; the ${CSRF_COOKIE_NAME} cookie is scoped to '/' ` +
+        `and readable by every script on this host.` +
+        (sharedHost
+          ? ` On the shared tools.ailab host (CAIL_CANONICAL_ORIGIN is set) this exposes the ` +
+            `CSRF token to sibling tools — set CAIL_BASE_PATH (e.g. "/agent-studio").`
+          : ` (Fine locally / on workers.dev with no same-origin siblings.)`),
     );
   }
 }
@@ -894,6 +955,13 @@ export default {
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       if (!wsOriginAllowed(request, env.CAIL_CANONICAL_ORIGIN)) {
         return new Response('Forbidden: cross-origin WebSocket upgrade', { status: 403 });
+      }
+      // Reject an unauthenticated /agents/* socket at the edge, before routeAgentRequest
+      // instantiates the DO — the SDK sends the full persisted state on connect BEFORE the
+      // DO's onConnect can close the socket, so the token must be checked here (A2).
+      const wsPath = new URL(request.url).pathname;
+      if (wsAgentSessionIdFromPath(wsPath) && !(await wsAgentCsrfValid(request, env.SESSION_SECRET))) {
+        return new Response('Forbidden: missing or invalid connection token', { status: 403 });
       }
     }
     const agentResponse = await routeAgentRequest(request, env);

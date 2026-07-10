@@ -50,6 +50,10 @@ import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { putWorkspace } from '../lib/workspaces';
 import { deriveCsrfToken, timingSafeEqual, wsOriginAllowed } from '../lib/csrf';
+import { assertClientStateIdentity } from '../lib/agent-state-guard';
+import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
+import { quotaSignalFromError } from '../lib/quota-error';
+import { checkHeavyRpcLimit } from '../lib/rate-limit';
 
 const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
@@ -59,6 +63,7 @@ const MAX_OBSERVABILITY_EVENTS = 400;
 const MAX_OBSERVABILITY_REQUESTS = 20;
 const OBSERVABILITY_STALL_MS = 15_000;
 const HYDRATION_COMPLETE_KEY = 'runtimeWorkspaceHydrated:v1';
+const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -232,6 +237,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private observabilitySequence = 0;
   private hydrationComplete = false;
   private hydrationPromise: Promise<void> | null = null;
+  private migrationFrozen = false;
   /**
    * The caller's verified X-CAIL-Identity-JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
@@ -249,6 +255,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       if (typeof stored === 'string') {
         this.cailIdentityJwt = stored;
       }
+    }
+    if (await this.ctx.storage.get(MIGRATION_FROZEN_KEY)) {
+      this.migrationFrozen = true;
     }
   }
 
@@ -319,6 +328,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
+  validateStateChange(nextState: WorkspaceState, source: 'server' | unknown): void {
+    if (source === 'server') return;
+    assertClientStateIdentity(this.name, nextState);
+  }
+
   /**
    * Store the caller's identity JWT for use as the model-proxy credential.
    *
@@ -375,6 +389,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.setState(nextState);
   }
 
+  @callable()
+  async freezeForMigration(): Promise<void> {
+    this.migrationFrozen = true;
+    await this.ctx.storage.put(MIGRATION_FROZEN_KEY, true);
+  }
+
   async replaceWorkspaceState(state: WorkspaceState, workspace: WorkspaceRecord, sessionId: string): Promise<void> {
     this.setState({
       ...state,
@@ -388,6 +408,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async onChatMessage(_onFinish?: unknown, options?: OnChatMessageOptions) {
+    this.assertNotFrozen();
     const workspace = this.requireWorkspace();
     const sessionId = this.requireSessionId();
     const requestId = options?.requestId ?? 'unknown';
@@ -519,7 +540,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
             requestId,
             error,
           });
-          return 'Agent Studio hit an internal error while streaming this response.';
+          const quota = quotaSignalFromError(error);
+          return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
       });
     } catch (error) {
@@ -570,6 +592,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   @callable()
   async executeCode(code: string): Promise<ExecuteResult> {
+    this.assertNotFrozen();
+    const rateKey = this.csrfSessionId() ?? this.requireSessionId();
+    if (!(await checkHeavyRpcLimit(this.env, rateKey))) {
+      throw new Error('rate_limited: too many code executions — try again shortly.');
+    }
     const workspace = this.requireWorkspace();
     const sessionId = this.requireSessionId();
     const tools = this.buildHostTools(workspace, sessionId);
@@ -604,6 +631,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     data: string | ArrayBuffer | Uint8Array,
     contentType?: string
   ): Promise<{ ok: true; filePath: string }> {
+    this.assertNotFrozen();
     const runtime = this.getRuntimeWorkspace();
     const relativePath = sanitizeRelativePath(filePath);
     if (typeof data === 'string') {
@@ -616,6 +644,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   @callable()
   async deleteWorkspaceFileContent(filePath: string): Promise<{ ok: true; filePath: string }> {
+    this.assertNotFrozen();
     const runtime = this.getRuntimeWorkspace();
     const relativePath = sanitizeRelativePath(filePath);
     await runtime.rm(toRuntimePath(relativePath), { force: true });
@@ -633,12 +662,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   @callable()
   async addPanel(panel: WorkspacePanel): Promise<WorkspaceState> {
+    this.assertNotFrozen();
     this.upsertPanel(panel);
     return this.state;
   }
 
   @callable()
   async removePanel(panelId: string): Promise<WorkspaceState> {
+    this.assertNotFrozen();
     this.setState({
       ...this.state,
       panels: this.state.panels.filter((panel) => panel.id !== panelId),
@@ -654,6 +685,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   @callable()
   async applyLayoutPatch(patch: LayoutPatch): Promise<WorkspaceState> {
+    this.assertNotFrozen();
     const panels = this.state.panels.map((panel) => {
       const nextLayout = patch.panels?.[panel.id];
       if (!nextLayout) return panel;
@@ -930,7 +962,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       tools: [
         aiTools(codeModeTools),
         stateTools(this.getRuntimeWorkspace()),
-        gitTools(this.getRuntimeWorkspace(), { token: this.env.GIT_AUTH_TOKEN }),
+        guardGitToken(gitTools(this.getRuntimeWorkspace()), {
+          token: this.env.GIT_AUTH_TOKEN,
+          allowedHosts: parseGitAllowedHosts(this.env),
+        }),
       ],
       executor: this.createCodeExecutor(),
       description: CODEMODE_DESCRIPTION,
@@ -942,7 +977,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return [
       resolveProvider(aiTools(codeModeTools)),
       resolveProvider(stateTools(this.getRuntimeWorkspace())),
-      resolveProvider(gitTools(this.getRuntimeWorkspace(), { token: this.env.GIT_AUTH_TOKEN })),
+      resolveProvider(guardGitToken(gitTools(this.getRuntimeWorkspace()), {
+        token: this.env.GIT_AUTH_TOKEN,
+        allowedHosts: parseGitAllowedHosts(this.env),
+      })),
     ];
   }
 
@@ -1469,6 +1507,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       throw new Error('Workspace session is not initialized');
     }
     return this.state.sessionId;
+  }
+
+  private assertNotFrozen(): void {
+    if (this.migrationFrozen) {
+      throw new Error('workspace is frozen for migration');
+    }
   }
 
   private upsertPanel(panel: WorkspacePanel): void {
