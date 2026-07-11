@@ -21,7 +21,7 @@ import type { SessionVariables } from './session';
  *
  * NOT covered here: the WebSocket chat path (/agents/*) does not pass through
  * /api middleware. Per-message limiting belongs inside the DO and needs product
- * thinking about long agent turns — tracked as the known remainder in PLAN.md.
+ * thinking about long agent turns.
  */
 
 // POST paths that hit expensive operations and get the tighter HEAVY namespace.

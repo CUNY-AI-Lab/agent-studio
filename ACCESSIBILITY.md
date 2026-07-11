@@ -127,9 +127,9 @@ dialog fields. Icon-only buttons have `aria-label`s and their icons are
 Automated (jsdom + Testing Library, behavioral — no ARIA-tree snapshots):
 
 ```bash
-npm --prefix frontend run test        # includes the a11y suites below
-npm --prefix frontend run typecheck
-npm --prefix frontend run build
+bun run test:frontend        # includes the a11y suites below
+bun run --cwd frontend typecheck
+bun run --cwd frontend build
 ```
 
 Key a11y test files:
@@ -143,7 +143,7 @@ Key a11y test files:
 - `frontend/src/components/workspace/PublishDialog.test.tsx` — dialog + trap + Escape
 - `frontend/src/components/workspace/WorkspaceToast.test.tsx` — status live region
 
-Manual (keyboard only): boot `npm run dev`, open a workspace, and Tab from the
+Manual (keyboard only): boot `bun run dev`, open a workspace, and Tab from the
 top — you should reach the skip link, header controls, files, then the canvas
 and a tile. Arrow-move the tile, press `M` for its menu, `?` for the shortcut
 sheet, and confirm dialogs trap focus and restore it on Escape.

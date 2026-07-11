@@ -3,18 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.5",
+  "workspaces": [
+    "cloudflare",
+    "frontend"
+  ],
   "scripts": {
-    "dev": "npm --prefix ./cloudflare run dev",
-    "dev:worker": "npm --prefix ./cloudflare run dev",
-    "dev:frontend": "npm --prefix ./frontend run dev",
-    "build": "npm --prefix ./frontend run build && npm --prefix ./cloudflare run typecheck",
-    "typecheck": "npm --prefix ./cloudflare run typecheck && npm --prefix ./frontend run typecheck",
-    "test": "npm --prefix ./cloudflare run test",
-    "preview": "npm --prefix ./frontend run preview",
-    "smoke": "node ./scripts/smoke-worker.mjs",
-    "deploy": "npm --prefix ./cloudflare run deploy",
-    "install:all": "npm --prefix ./frontend install && npm --prefix ./cloudflare install",
-    "chat:debug": "node ./scripts/workspace-chat-debug.mjs",
-    "trace": "node ./scripts/workspace-observability.mjs"
+    "dev": "bun run --cwd cloudflare dev",
+    "dev:worker": "bun run --cwd cloudflare dev",
+    "dev:frontend": "bun run --cwd frontend dev",
+    "build": "bun run --cwd frontend build && bun run --cwd cloudflare typecheck",
+    "typecheck": "bun run --cwd cloudflare typecheck && bun run --cwd frontend typecheck",
+    "test": "bun run test:backend && bun run test:frontend",
+    "test:backend": "bun run --cwd cloudflare test",
+    "test:frontend": "bun run --cwd frontend test",
+    "preview": "bun run --cwd frontend preview",
+    "smoke": "bun ./scripts/smoke-worker.mjs",
+    "deploy": "bun run --cwd cloudflare deploy",
+    "chat:debug": "bun ./scripts/workspace-chat-debug.mjs",
+    "trace": "bun ./scripts/workspace-observability.mjs"
   }
 }

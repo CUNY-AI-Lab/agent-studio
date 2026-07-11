@@ -2,7 +2,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
 
 @import "tailwindcss";
-/* @import "tw-animate-css"; — disabled: caused edge glow effects */
 @plugin "@tailwindcss/typography";
 
 @custom-variant dark (&:is(.dark *));

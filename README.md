@@ -1,24 +1,22 @@
 # Agent Studio
 
-Agent Studio is now a single Cloudflare-native application.
+Agent Studio is a Cloudflare-native research workspace application.
 
-- [cloudflare](/Users/stephenzweibel/Apps/agent-studio/cloudflare): Worker API, Durable Object agent, Dynamic Worker runtime, R2-backed workspace storage, and static asset hosting
-- [frontend](/Users/stephenzweibel/Apps/agent-studio/frontend): React/Vite client served by the worker
-
-The legacy Next.js + runner implementation lives on the `main` branch (it remains the source of the live pm2 deployment); this lineage replaces it and is the deployment target once the institutional Cloudflare contract signs.
+- [cloudflare](./cloudflare): Worker API, Durable Object agent, Dynamic Worker runtime, R2-backed workspace storage, and static asset hosting
+- [frontend](./frontend): React/Vite client served by the worker
 
 ## Requirements
 
-- Node.js 20+
-- npm
+- Bun 1.3.5
+- Node.js 22 (backend tests run on Node's test runner)
 - Wrangler / Cloudflare auth for worker development and deploys
 
 ## Setup
 
-Install both active packages:
+Install the workspace from the repository root:
 
 ```bash
-npm run install:all
+bun install
 ```
 
 Create the worker env file:
@@ -66,21 +64,30 @@ cookie, that namespace's workspaces, chat history, files, and gallery
 authorship are copied into the subject namespace exactly once (claim-once via
 the `MigrationRegistry` Durable Object; see `cloudflare/src/lib/migration.ts`).
 
+## Product surface
+
+- Create blank workspaces or start from a prompt; export and import complete workspace bundles.
+- Stream agent chat, retry failed turns, choose an allowed model, and surface authentication or quota failures.
+- Upload and download files; render text, CSV, images, PDF, HTML previews, tables, charts, cards, and linked detail views.
+- Arrange canvas tiles with pointer or keyboard controls, groups, connections, contextual chat, minimize/maximize, alignment, distribution, and zoom.
+- Publish workspace metadata and artifacts to the public gallery, open shared gallery URLs, clone published workspaces, and unpublish owned items.
+- Run isolated JavaScript through the Dynamic Worker boundary with guarded research API access and host-side PDF, XLSX, and DOCX tools.
+
 ## Running
 
 Worker-first local development:
 
 ```bash
-npm run dev
+bun run dev
 ```
 
-This runs Wrangler from [cloudflare](/Users/stephenzweibel/Apps/agent-studio/cloudflare), builds [frontend](/Users/stephenzweibel/Apps/agent-studio/frontend), and serves the client from the worker.
+This runs Wrangler from [cloudflare](./cloudflare), builds [frontend](./frontend), and serves the client from the worker.
 
 Split local workflows are also available:
 
 ```bash
-npm run dev:worker
-npm run dev:frontend
+bun run dev:worker
+bun run dev:frontend
 ```
 
 `dev:frontend` proxies `/api`, `/agents`, and `/health` to `http://127.0.0.1:8787` by default.
@@ -88,8 +95,9 @@ npm run dev:frontend
 ## Verification
 
 ```bash
-npm run typecheck
-npm run build
+bun run typecheck
+bun run test
+bun run build
 ```
 
 ## Architecture

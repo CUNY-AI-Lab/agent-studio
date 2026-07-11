@@ -21,13 +21,12 @@
     "docx": "^9.7.1",
     "hono": "^4.12.27",
     "unpdf": "^1.6.2",
-    "workers-ai-provider": "^3.1.8",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260401.1",
-    "pdf-lib": "^1.17.1",
+    "jszip": "^3.10.1",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "wrangler": "^4.105.0"

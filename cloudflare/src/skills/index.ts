@@ -14,7 +14,7 @@
  * document skills are restored as host-side JS capabilities (codemode tools;
  * see cloudflare/src/lib/document-tools.ts). Not carried over: pptx (no
  * generation path yet), and pdf/docx editing + xlsx formulas are deferred —
- * see PLAN.md.
+ * see the root README.
  */
 
 import { SKILL_DOCS } from './docs.generated';
