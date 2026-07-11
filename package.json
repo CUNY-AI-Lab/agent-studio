@@ -8,6 +8,9 @@
     "cloudflare",
     "frontend"
   ],
+  "overrides": {
+    "partyserver": "0.3.3"
+  },
   "scripts": {
     "dev": "bun run --cwd cloudflare dev",
     "dev:worker": "bun run --cwd cloudflare dev",
