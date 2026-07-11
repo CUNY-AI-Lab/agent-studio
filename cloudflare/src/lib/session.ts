@@ -11,7 +11,7 @@ import {
 } from './cail-identity';
 import { runFirstLoginMigration } from './migration';
 
-export const SESSION_COOKIE_NAME = 'agent-studio-session';
+const SESSION_COOKIE_NAME = 'agent-studio-session';
 
 export type SessionVariables = {
   sessionId: string;

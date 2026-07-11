@@ -2,7 +2,7 @@
 // Extension is the primary gate; the browser-supplied MIME type is checked
 // when present but a missing/generic type doesn't reject a valid extension.
 
-export const ALLOWED_UPLOAD_TYPES = new Set([
+const ALLOWED_UPLOAD_TYPES = new Set([
   // Documents
   'application/pdf',
   'text/plain',
@@ -22,7 +22,7 @@ export const ALLOWED_UPLOAD_TYPES = new Set([
   'text/xml',
 ]);
 
-export const ALLOWED_UPLOAD_EXTENSIONS = new Set([
+const ALLOWED_UPLOAD_EXTENSIONS = new Set([
   '.pdf', '.txt', '.csv', '.md', '.json',
   '.xlsx', '.xls',
   '.jpg', '.jpeg', '.png', '.gif', '.webp',

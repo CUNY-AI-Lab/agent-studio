@@ -221,7 +221,7 @@ export interface LayoutPatch {
   viewport?: WorkspaceViewport;
 }
 
-export const DEFAULT_VIEWPORT: WorkspaceViewport = {
+const DEFAULT_VIEWPORT: WorkspaceViewport = {
   x: 0,
   y: 0,
   zoom: 1,

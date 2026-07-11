@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampNumber, formatFileSize, formatRuntimeValue, makeClientId } from './format';
+import { clampNumber, formatFileSize, makeClientId } from './format';
 
 describe('clampNumber', () => {
   it('clamps to the range', () => {
@@ -19,20 +19,6 @@ describe('formatFileSize', () => {
 
   it('treats missing size as zero', () => {
     expect(formatFileSize(undefined)).toBe('0 B');
-  });
-});
-
-describe('formatRuntimeValue', () => {
-  it('passes strings through and pretty-prints objects', () => {
-    expect(formatRuntimeValue('hi')).toBe('hi');
-    expect(formatRuntimeValue({ a: 1 })).toBe('{\n  "a": 1\n}');
-    expect(formatRuntimeValue(undefined)).toBe('undefined');
-  });
-
-  it('falls back to String() for non-serializable values', () => {
-    const circular: Record<string, unknown> = {};
-    circular.self = circular;
-    expect(formatRuntimeValue(circular)).toBe('[object Object]');
   });
 });
 

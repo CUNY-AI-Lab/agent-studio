@@ -23,16 +23,6 @@ export function formatRelativeTime(value?: string): string {
   return new Date(value).toLocaleDateString();
 }
 
-export function formatRuntimeValue(value: unknown): string {
-  if (value === undefined) return 'undefined';
-  if (typeof value === 'string') return value;
-  try {
-    return JSON.stringify(value, null, 2);
-  } catch {
-    return String(value);
-  }
-}
-
 export function makeClientId(prefix: string) {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return `${prefix}-${crypto.randomUUID()}`;

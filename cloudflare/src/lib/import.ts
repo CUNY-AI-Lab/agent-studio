@@ -146,7 +146,7 @@ const workspaceExportFileSchema = z.object({
   content: z.string(),
 }).strict();
 
-export const workspaceImportBundleSchema = z.object({
+const workspaceImportBundleSchema = z.object({
   version: z.literal(1),
   exportedAt: z.string(),
   workspace: workspaceRecordSchema,

@@ -64,11 +64,11 @@ export function getGalleryPrefix(galleryId?: string): string {
     : `${APP_PREFIX}/gallery/items/`;
 }
 
-export function getGalleryFilesPrefix(galleryId: string): string {
+function getGalleryFilesPrefix(galleryId: string): string {
   return `${getGalleryPrefix(galleryId)}files/`;
 }
 
-export function getWorkspaceFileKey(sessionId: string, workspaceId: string, filePath: string): string {
+function getWorkspaceFileKey(sessionId: string, workspaceId: string, filePath: string): string {
   return `${getWorkspaceFilesPrefix(sessionId, workspaceId)}${normalizeRelativePath(filePath)}`;
 }
 
@@ -148,14 +148,6 @@ export async function listWorkspaceFilesRecursive(
   dir = ''
 ): Promise<WorkspaceFileInfo[]> {
   return listFilesUnderPrefixRecursive(env, getWorkspaceFilesPrefix(sessionId, workspaceId), dir);
-}
-
-export async function listGalleryFiles(
-  env: Env,
-  galleryId: string,
-  dir = ''
-): Promise<WorkspaceFileInfo[]> {
-  return listFilesUnderPrefix(env, getGalleryFilesPrefix(galleryId), dir);
 }
 
 export async function listGalleryFilesRecursive(
