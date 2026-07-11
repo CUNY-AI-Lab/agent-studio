@@ -45,10 +45,10 @@ export function parseArgs(argv) {
   return args;
 }
 
-// Mutating methods must carry the CSRF header (fleet contract §3¾ rule 3); safe
-// methods must not need it. Mirrors the frontend's mutatingFetch split.
+// Protected workspace reads and every mutation carry the CSRF header (fleet
+// contract §3¾ rule 3). Sending it on public reads is harmless and keeps this
+// non-browser client aligned with both frontend fetch wrappers.
 const CSRF_HEADER = 'X-CAIL-CSRF';
-const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export class SessionClient {
   constructor(baseUrl, initialCookie) {
@@ -77,12 +77,10 @@ export class SessionClient {
     if (this.cookie) {
       headers.set('Cookie', this.cookie);
     }
-    // Exercise the protected path exactly as a first-party page does: attach the
-    // per-session CSRF token on every state-changing request. Absent both
-    // Sec-Fetch-Site and Origin (a non-browser client), the worker falls back to
-    // this token — so smoke passes WITH enforcement active, never by bypass.
-    const method = (init.method || 'GET').toUpperCase();
-    if (!SAFE_METHODS.has(method) && this.csrfToken) {
+    // Exercise the protected path exactly as a first-party page does. Absent
+    // both Sec-Fetch-Site and Origin (a non-browser client), the worker falls
+    // back to this token — so smoke passes with enforcement active.
+    if (this.csrfToken) {
       headers.set(CSRF_HEADER, this.csrfToken);
     }
     const response = await fetch(url, {
