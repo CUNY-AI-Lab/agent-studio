@@ -388,6 +388,43 @@ test('retry after a listed-file read failure succeeds and completes cleanup', as
   assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
 });
 
+test('corrupt anon downloads blob fails migration loudly instead of silently dropping deliverables', async (t) => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = makeEnv(r2);
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'notes.md': 'hello' });
+  const legacyKey = `agent-studio/sessions/${ANON}/workspaces/ws1/downloads.json`;
+  await r2.put(legacyKey, '{corrupt, not json');
+  const registry = new FakeRegistry();
+
+  t.mock.method(console, 'error', () => {});
+  // Old behavior: the corrupt blob was read as "no downloads", migration
+  // "succeeded", and the anonymous namespace was deleted — the user's queued
+  // deliverables vanished with no trace. Now the read fails loudly.
+  await assert.rejects(
+    maybeMigrateAnonymousSession({
+      env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: pool.getAgent,
+    }),
+    /corrupt stored download object/,
+  );
+
+  // Claim marked failed for retry; nothing anonymous was deleted or marked done.
+  assert.equal(registry.record.status, 'failed');
+  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
+  assert.ok(await r2.get(legacyKey), 'corrupt blob preserved for repair, not dropped');
+  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
+
+  // Repairing the blob lets a retry complete and carry the download over.
+  await r2.put(legacyKey, JSON.stringify([{ filename: 'x.txt', format: 'txt', data: 'x' }]));
+  const retry = await maybeMigrateAnonymousSession({
+    env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: pool.getAgent,
+  });
+  assert.equal(retry, 'migrated');
+  assert.equal(registry.record.status, 'done');
+  const downloads = await getWorkspaceDownloads(env, SUBJECT, 'ws1');
+  assert.deepEqual(downloads.map((d) => d.filename), ['x.txt']);
+});
+
 // ---------------------------------------------------------------------------
 // Claim-once + concurrency (orchestration)
 // ---------------------------------------------------------------------------

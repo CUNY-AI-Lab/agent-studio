@@ -101,6 +101,86 @@ test('legacy downloads.json blob is still readable (backward-read)', async () =>
   assert.deepEqual(await getWorkspaceDownloads(env, SESSION, WS), []);
 });
 
+// ---------------------------------------------------------------------------
+// Corrupt-object observability (readJson-swallow regression, fallback rule):
+// a parse failure on an object that EXISTS must never be silently read as
+// "record absent". Default reads stay resilient but log the corrupt key;
+// onCorrupt: 'throw' (the migration mode) propagates instead of returning
+// empty.
+// ---------------------------------------------------------------------------
+
+const LEGACY_KEY = `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads.json`;
+
+test('corrupt legacy downloads.json is logged with its key, not silently read as empty', async (t) => {
+  const r2 = new MockR2();
+  const env = envWith(r2);
+  await r2.put(LEGACY_KEY, '{not valid json');
+  await addWorkspaceDownload(env, SESSION, WS, { filename: 'ok.txt', format: 'txt', data: 'ok' });
+
+  const errors = t.mock.method(console, 'error', () => {});
+  const downloads = await getWorkspaceDownloads(env, SESSION, WS);
+
+  // Listing stays up (one bad object cannot take it down)...
+  assert.deepEqual(downloads.map((d) => d.filename), ['ok.txt']);
+  // ...but the corruption is visible, with the offending key.
+  assert.equal(errors.mock.callCount(), 1);
+  const [message, context] = errors.mock.calls[0].arguments;
+  assert.match(message, /corrupt/);
+  assert.equal(context.key, LEGACY_KEY);
+});
+
+test('corrupt per-object download is logged and skipped; good entries survive', async (t) => {
+  const r2 = new MockR2();
+  const env = envWith(r2);
+  await addWorkspaceDownload(env, SESSION, WS, { filename: 'good.txt', format: 'txt', data: 'g' });
+  const prefix = `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads/`;
+  const badParseKey = `${prefix}0000000000000000-bad-parse.json`;
+  const badShapeKey = `${prefix}0000000000000001-bad-shape.json`;
+  await r2.put(badParseKey, '{truncated');
+  await r2.put(badShapeKey, JSON.stringify({ seq: 1, createdAt: 'x' })); // no download payload
+
+  const errors = t.mock.method(console, 'error', () => {});
+  const downloads = await getWorkspaceDownloads(env, SESSION, WS);
+
+  assert.deepEqual(downloads.map((d) => d.filename), ['good.txt']);
+  const loggedKeys = errors.mock.calls.map((call) => call.arguments[1].key).sort();
+  assert.deepEqual(loggedKeys, [badParseKey, badShapeKey]);
+});
+
+test("onCorrupt: 'throw' propagates a corrupt legacy blob instead of reading it as empty", async (t) => {
+  const r2 = new MockR2();
+  const env = envWith(r2);
+  await r2.put(LEGACY_KEY, '{not valid json');
+
+  t.mock.method(console, 'error', () => {});
+  await assert.rejects(
+    getWorkspaceDownloads(env, SESSION, WS, { onCorrupt: 'throw' }),
+    /corrupt stored download object at .*downloads\.json/
+  );
+});
+
+test("onCorrupt: 'throw' propagates a corrupt per-object entry", async (t) => {
+  const r2 = new MockR2();
+  const env = envWith(r2);
+  const prefix = `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads/`;
+  await r2.put(`${prefix}0000000000000000-bad.json`, '{truncated');
+
+  t.mock.method(console, 'error', () => {});
+  await assert.rejects(
+    getWorkspaceDownloads(env, SESSION, WS, { onCorrupt: 'throw' }),
+    /corrupt stored download object/
+  );
+});
+
+test('a genuinely absent legacy blob is still plain emptiness — no log, no throw', async (t) => {
+  const r2 = new MockR2();
+  const env = envWith(r2);
+
+  const errors = t.mock.method(console, 'error', () => {});
+  assert.deepEqual(await getWorkspaceDownloads(env, SESSION, WS, { onCorrupt: 'throw' }), []);
+  assert.equal(errors.mock.callCount(), 0);
+});
+
 test('putWorkspaceDownloads replaces the set (migration helper)', async () => {
   const r2 = new MockR2();
   const env = envWith(r2);

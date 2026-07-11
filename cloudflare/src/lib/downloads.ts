@@ -23,6 +23,38 @@ interface StoredDownload {
   download: DownloadRequest;
 }
 
+export interface ReadDownloadsOptions {
+  /**
+   * What to do when a download object EXISTS in R2 but cannot be parsed (or
+   * fails the shape check). A missing object is always treated as "no
+   * downloads" — that is the only case that genuinely means absence.
+   *
+   * - 'skip' (default): log the corrupt key and omit that entry, so one bad
+   *   object cannot take down the whole listing. Used by the read/serve
+   *   routes, where partial results beat a 500 for content the user can
+   *   regenerate.
+   * - 'throw': log and propagate an error. Used by the first-login migration,
+   *   where a corrupt record must NOT be read as "nothing to migrate": the
+   *   anonymous namespace is deleted after migration, so silently equating
+   *   corruption with absence would permanently drop queued deliverables.
+   *   Throwing routes into the migration's fail-and-retry path instead.
+   */
+  onCorrupt?: 'skip' | 'throw';
+}
+
+// Every corrupt-object sighting is logged with its key — a parse failure on an
+// existing object is never silently equated with absence.
+function reportCorruptDownloadObject(
+  key: string,
+  error: unknown,
+  onCorrupt: 'skip' | 'throw'
+): void {
+  console.error('downloads: corrupt stored download object', { key, error });
+  if (onCorrupt === 'throw') {
+    throw new Error(`downloads: corrupt stored download object at ${key}`, { cause: error });
+  }
+}
+
 // Legacy single-blob key, kept only for backward reads (see getWorkspaceDownloads).
 function getLegacyDownloadsKey(sessionId: string, workspaceId: string): string {
   return `${getWorkspacePrefix(sessionId, workspaceId)}downloads.json`;
@@ -53,23 +85,36 @@ function makeDownloadKey(sessionId: string, workspaceId: string, seq: number): s
 async function readLegacyDownloads(
   env: Env,
   sessionId: string,
-  workspaceId: string
+  workspaceId: string,
+  onCorrupt: 'skip' | 'throw'
 ): Promise<DownloadRequest[]> {
-  const object = await env.WORKSPACE_FILES.get(getLegacyDownloadsKey(sessionId, workspaceId));
+  const key = getLegacyDownloadsKey(sessionId, workspaceId);
+  const object = await env.WORKSPACE_FILES.get(key);
+  // No object at the legacy key is the one case that truly means "no legacy
+  // downloads". Anything past this point is an existing object that must
+  // parse; failures are reported, never silently read as empty.
   if (!object) return [];
+  let parsed: unknown;
   try {
-    const parsed = await object.json<DownloadRequest[]>();
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
+    parsed = await object.json();
+  } catch (error) {
+    reportCorruptDownloadObject(key, error, onCorrupt);
     return [];
   }
+  if (!Array.isArray(parsed)) {
+    reportCorruptDownloadObject(key, new Error('expected a JSON array'), onCorrupt);
+    return [];
+  }
+  return parsed as DownloadRequest[];
 }
 
 export async function getWorkspaceDownloads(
   env: Env,
   sessionId: string,
-  workspaceId: string
+  workspaceId: string,
+  options: ReadDownloadsOptions = {}
 ): Promise<DownloadRequest[]> {
+  const onCorrupt = options.onCorrupt ?? 'skip';
   const prefix = getDownloadsPrefix(sessionId, workspaceId);
   const stored: StoredDownload[] = [];
 
@@ -79,16 +124,25 @@ export async function getWorkspaceDownloads(
     const objects = await Promise.all(
       listing.objects.map(async (object) => {
         const body = await env.WORKSPACE_FILES.get(object.key);
+        // Absent despite being listed = deleted between list and get (e.g. a
+        // concurrent clear) — genuinely gone, safe to skip silently.
         if (!body) return null;
+        let parsed: StoredDownload;
         try {
-          const parsed = await body.json<StoredDownload>();
-          if (parsed && typeof parsed === 'object' && parsed.download) {
-            return { key: object.key, value: parsed };
-          }
-        } catch {
-          // ignore malformed objects
+          parsed = await body.json<StoredDownload>();
+        } catch (error) {
+          reportCorruptDownloadObject(object.key, error, onCorrupt);
+          return null;
         }
-        return null;
+        if (!(parsed && typeof parsed === 'object' && parsed.download)) {
+          reportCorruptDownloadObject(
+            object.key,
+            new Error('missing download payload'),
+            onCorrupt
+          );
+          return null;
+        }
+        return { key: object.key, value: parsed };
       })
     );
     for (const entry of objects) {
@@ -103,7 +157,7 @@ export async function getWorkspaceDownloads(
   // Backward-read: fold in any pre-migration downloads.json content, preserving
   // its order ahead of the per-object entries. New writes only ever go to the
   // per-object prefix, so this blob is read-only legacy.
-  const legacy = await readLegacyDownloads(env, sessionId, workspaceId);
+  const legacy = await readLegacyDownloads(env, sessionId, workspaceId, onCorrupt);
   return legacy.length > 0 ? [...legacy, ...current] : current;
 }
 

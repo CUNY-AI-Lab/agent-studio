@@ -207,10 +207,19 @@ export async function migrateAnonymousSession(
     await newAgent.persistMessages(messages);
 
     // Queued downloads are transient; carry them over only when the target
-    // has none, so nothing subject-owned is clobbered.
-    const anonDownloads = await getWorkspaceDownloads(env, anonSessionId, workspace.id);
+    // has none, so nothing subject-owned is clobbered. Both reads use
+    // onCorrupt: 'throw' — this branch DECIDES based on emptiness, and the
+    // anonymous namespace is deleted below, so a corrupt record read as
+    // "empty" would either silently drop the user's queued deliverables
+    // (anon side) or clobber subject-owned ones (target side). Failing here
+    // routes into the migration's fail-and-retry path instead.
+    const anonDownloads = await getWorkspaceDownloads(env, anonSessionId, workspace.id, {
+      onCorrupt: 'throw',
+    });
     if (anonDownloads.length > 0) {
-      const targetDownloads = await getWorkspaceDownloads(env, subjectSessionId, workspace.id);
+      const targetDownloads = await getWorkspaceDownloads(env, subjectSessionId, workspace.id, {
+        onCorrupt: 'throw',
+      });
       if (targetDownloads.length === 0) {
         await putWorkspaceDownloads(env, subjectSessionId, workspace.id, anonDownloads);
       }
