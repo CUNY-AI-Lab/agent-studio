@@ -50,7 +50,7 @@ import {
 } from '../lib/files';
 import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
-import { putWorkspace } from '../lib/workspaces';
+import { updateWorkspaceWithRetry } from '../lib/workspaces';
 import { deriveCsrfToken, timingSafeEqual, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
@@ -705,11 +705,40 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       };
     });
 
+    // Connections and groups merge per id, like panels (V3): a patch upserts
+    // only the entries it names and never implicitly deletes the rest, so a
+    // stale client snapshot can't erase a concurrent server-side change (e.g.
+    // removePanel filtering connections, or another tab's group edit).
+    // Deletions are explicit: groups via patch.removeGroups; connections only
+    // server-side (removePanel). Merged entries referencing panels that no
+    // longer exist are dropped, so a stale patch can't resurrect a removed
+    // panel's connections or group membership.
+    const panelIds = new Set(panels.map((panel) => panel.id));
+
+    const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
+    for (const connection of patch.connections ?? []) {
+      connectionsById.set(connection.id, connection);
+    }
+    const connections = [...connectionsById.values()].filter(
+      (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId)
+    );
+
+    const groupsById = new Map(this.state.groups.map((group) => [group.id, group]));
+    for (const group of patch.groups ?? []) {
+      groupsById.set(group.id, group);
+    }
+    for (const groupId of patch.removeGroups ?? []) {
+      groupsById.delete(groupId);
+    }
+    const groups = [...groupsById.values()]
+      .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
+      .filter((group) => group.panelIds.length >= 2);
+
     this.setState({
       ...this.state,
       panels,
-      groups: patch.groups ?? this.state.groups,
-      connections: patch.connections ?? this.state.connections,
+      groups,
+      connections,
       viewport: patch.viewport ?? this.state.viewport,
     });
     return this.state;
@@ -1333,15 +1362,25 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           description: z.string().optional(),
         }),
         execute: async ({ name, description }) => {
-          const nextWorkspace = {
-            ...workspace,
-            name: name ?? workspace.name,
-            description: description ?? workspace.description,
+          // CAS update (V2): `workspace` was captured at turn start, so a
+          // blind put of it would revert a PATCH (e.g. a model override) that
+          // landed while this turn was streaming. Patch the freshly read
+          // record through the etag CAS instead.
+          const result = await updateWorkspaceWithRetry(this.env, sessionId, workspace.id, (current) => ({
+            ...current,
+            name: name ?? current.name,
+            description: description ?? current.description,
             updatedAt: new Date().toISOString(),
-          };
-          await putWorkspace(this.env, sessionId, nextWorkspace);
-          await this.syncWorkspace(nextWorkspace, sessionId);
-          return nextWorkspace;
+          }));
+          if (!result.ok) {
+            throw new Error(
+              result.reason === 'not-found'
+                ? `Workspace record not found: ${workspace.id}`
+                : 'Conflicting concurrent workspace update; retry'
+            );
+          }
+          await this.syncWorkspace(result.workspace, sessionId);
+          return result.workspace;
         },
       }),
     };

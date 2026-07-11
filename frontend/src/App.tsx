@@ -64,6 +64,7 @@ import {
   type LayoutMap,
 } from './lib/panelLayout';
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
+import { computeGroupsDelta } from './lib/groupDelta';
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { clampNumber, makeClientId } from './lib/format';
@@ -571,12 +572,17 @@ function WorkspaceShell({
 
     if (missingConnections.length === 0) return;
 
-    const nextConnections = [...workspaceState.connections, ...missingConnections];
-    setWorkspaceState((current) => ({
-      ...current,
-      connections: nextConnections,
-    }));
-    void agent.call('applyLayoutPatch', [{ connections: nextConnections }]);
+    setWorkspaceState((current) => {
+      const known = new Set(current.connections.map((connection) => connection.id));
+      const additions = missingConnections.filter((connection) => !known.has(connection.id));
+      if (additions.length === 0) return current;
+      return { ...current, connections: [...current.connections, ...additions] };
+    });
+    // Send only the NEW connections: the server merges per id, so shipping the
+    // whole array would let this tab's stale snapshot resurrect a connection
+    // the server concurrently removed (removePanel) or drop one another tab
+    // added.
+    void agent.call('applyLayoutPatch', [{ connections: missingConnections }]);
   }, [agent, artifactPanels, workspaceState.connections]);
 
   useEffect(() => {
@@ -1260,12 +1266,22 @@ function WorkspaceShell({
   }, [agent]);
 
   const saveGroups = useCallback(async (groups: WorkspaceState['groups']) => {
+    // Every caller computes `groups` from the same workspaceState.groups
+    // snapshot this callback closes over, so diffing against it yields exactly
+    // what THIS edit changed. The server merges groups per id, so sending only
+    // the delta (plus explicit removals) keeps a concurrent edit to a
+    // different group in another tab alive (V3).
+    const { upserts, removeIds } = computeGroupsDelta(workspaceState.groups, groups);
     setWorkspaceState((current) => ({
       ...current,
       groups,
     }));
-    await agent.call('applyLayoutPatch', [{ groups }]);
-  }, [agent]);
+    if (upserts.length === 0 && removeIds.length === 0) return;
+    await agent.call('applyLayoutPatch', [{
+      ...(upserts.length > 0 ? { groups: upserts } : {}),
+      ...(removeIds.length > 0 ? { removeGroups: removeIds } : {}),
+    }]);
+  }, [agent, workspaceState.groups]);
 
   const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
     setWorkspaceState((current) => {

@@ -55,10 +55,9 @@ import {
   createDefaultWorkspace,
   deleteWorkspace,
   getWorkspace,
-  getWorkspaceWithEtag,
   listWorkspaces,
   putWorkspace,
-  putWorkspaceIfMatch,
+  updateWorkspaceWithRetry,
 } from './lib/workspaces';
 
 const createWorkspaceSchema = z.object({
@@ -426,11 +425,22 @@ app.delete('/api/gallery/:id', async (c) => {
   const sessionId = requireSession(c);
   await unpublishGalleryItem(c.env, c.req.param('id'), sessionId);
 
+  const galleryId = c.req.param('id');
   const workspaces = await listWorkspaces(c.env, sessionId);
   await Promise.all(workspaces.map(async (workspace) => {
-    if (workspace.galleryId !== c.req.param('id')) return;
-    const nextWorkspace = { ...workspace, galleryId: undefined, updatedAt: new Date().toISOString() };
-    await putWorkspace(c.env, sessionId, nextWorkspace);
+    if (workspace.galleryId !== galleryId) return;
+    // CAS rewrite (V2): the record came from the listWorkspaces read above, so
+    // a blind put would revert a concurrent PATCH. Re-check the galleryId on
+    // the fresh read; skip when another writer already cleared or changed it.
+    const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) =>
+      current.galleryId === galleryId
+        ? { ...current, galleryId: undefined, updatedAt: new Date().toISOString() }
+        : null
+    );
+    // not-found: the workspace was deleted concurrently — nothing to rewrite.
+    if (!result.ok && result.reason === 'conflict') {
+      throw new Error(`Conflicting concurrent update while clearing galleryId on workspace ${workspace.id}`);
+    }
   }));
 
   return c.json({ success: true });
@@ -613,28 +623,21 @@ app.patch('/api/workspaces/:id', async (c) => {
   const patch = parsed.data;
 
   // CAS retry so two concurrent field edits don't clobber each other (A12).
-  let nextWorkspace: WorkspaceRecord | null = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const current = await getWorkspaceWithEtag(c.env, sessionId, workspace.id);
-    if (!current) return c.json({ error: 'Workspace not found' }, 404);
-    const candidate: WorkspaceRecord = {
-      ...current.workspace,
-      ...(patch.name !== undefined ? { name: patch.name } : {}),
-      ...(patch.description !== undefined ? { description: patch.description } : {}),
-      ...(patch.model !== undefined ? { model: patch.model } : {}),
-      updatedAt: new Date().toISOString(),
-    };
-    if (await putWorkspaceIfMatch(c.env, sessionId, candidate, current.etag)) {
-      nextWorkspace = candidate;
-      break;
-    }
+  const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => ({
+    ...current,
+    ...(patch.name !== undefined ? { name: patch.name } : {}),
+    ...(patch.description !== undefined ? { description: patch.description } : {}),
+    ...(patch.model !== undefined ? { model: patch.model } : {}),
+    updatedAt: new Date().toISOString(),
+  }));
+  if (!result.ok) {
+    return result.reason === 'not-found'
+      ? c.json({ error: 'Workspace not found' }, 404)
+      : c.json({ error: 'Conflicting concurrent update; retry' }, 409);
   }
-  if (!nextWorkspace) {
-    return c.json({ error: 'Conflicting concurrent update; retry' }, 409);
-  }
-  await syncedWorkspaceAgent(c, nextWorkspace);
+  await syncedWorkspaceAgent(c, result.workspace);
 
-  return c.json({ workspace: nextWorkspace });
+  return c.json({ workspace: result.workspace });
 });
 
 app.get('/api/workspaces/:id/export', async (c) => {
@@ -692,15 +695,22 @@ app.post('/api/workspaces/:id/publish', async (c) => {
     readFile: (filePath) => agent.readWorkspaceFileContent(filePath),
   });
 
-  const nextWorkspace = {
-    ...workspace,
+  // CAS stamp (V2): the record was captured at request start, so a blind put
+  // here would revert a PATCH (e.g. a model override) that landed while the
+  // gallery item was being published.
+  const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => ({
+    ...current,
     galleryId: item.id,
     updatedAt: new Date().toISOString(),
-  };
-  await putWorkspace(c.env, sessionId, nextWorkspace);
-  await agent.syncWorkspace(nextWorkspace, sessionId);
+  }));
+  if (!result.ok) {
+    return result.reason === 'not-found'
+      ? c.json({ error: 'Workspace not found' }, 404)
+      : c.json({ error: 'Conflicting concurrent update; retry' }, 409);
+  }
+  await agent.syncWorkspace(result.workspace, sessionId);
 
-  return c.json({ item, workspace: nextWorkspace }, 201);
+  return c.json({ item, workspace: result.workspace }, 201);
 });
 
 app.delete('/api/workspaces/:id', async (c) => {

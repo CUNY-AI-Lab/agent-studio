@@ -314,7 +314,18 @@ export class FakeWorkspaceAgent {
   }
 
   async removePanel(panelId) {
-    this.state = { ...this.state, panels: this.state.panels.filter((panel) => panel.id !== panelId) };
+    // Mirrors the real DO: removing a panel also drops its connections and
+    // filters it out of groups (collapsing groups below two members).
+    this.state = {
+      ...this.state,
+      panels: this.state.panels.filter((panel) => panel.id !== panelId),
+      groups: this.state.groups
+        .map((group) => ({ ...group, panelIds: group.panelIds.filter((id) => id !== panelId) }))
+        .filter((group) => group.panelIds.length >= 2),
+      connections: this.state.connections.filter(
+        (connection) => connection.sourceId !== panelId && connection.targetId !== panelId,
+      ),
+    };
     return this.state;
   }
 
@@ -324,11 +335,27 @@ export class FakeWorkspaceAgent {
       if (!next) return panel;
       return { ...panel, layout: { ...panel.layout, ...next } };
     });
+
+    // Mirrors the real DO (V3): groups/connections are per-id upserts, group
+    // removal is explicit, and entries referencing missing panels are dropped.
+    const panelIds = new Set(panels.map((panel) => panel.id));
+    const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
+    for (const connection of patch.connections ?? []) connectionsById.set(connection.id, connection);
+    const connections = [...connectionsById.values()].filter(
+      (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId),
+    );
+    const groupsById = new Map(this.state.groups.map((group) => [group.id, group]));
+    for (const group of patch.groups ?? []) groupsById.set(group.id, group);
+    for (const groupId of patch.removeGroups ?? []) groupsById.delete(groupId);
+    const groups = [...groupsById.values()]
+      .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
+      .filter((group) => group.panelIds.length >= 2);
+
     this.state = {
       ...this.state,
       panels,
-      ...(patch.groups ? { groups: patch.groups } : {}),
-      ...(patch.connections ? { connections: patch.connections } : {}),
+      groups,
+      connections,
       ...(patch.viewport ? { viewport: patch.viewport } : {}),
     };
     return this.state;

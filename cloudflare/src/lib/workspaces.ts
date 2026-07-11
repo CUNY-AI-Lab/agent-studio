@@ -75,6 +75,39 @@ export async function putWorkspaceIfMatch(
   return result !== null;
 }
 
+export type WorkspaceUpdateResult =
+  | { ok: true; workspace: WorkspaceRecord }
+  | { ok: false; reason: 'not-found' | 'conflict' };
+
+/**
+ * Read-modify-write a workspace record through the etag CAS (A12): every
+ * writer that mutates an EXISTING record must go through here (or the
+ * equivalent explicit putWorkspaceIfMatch loop) so a write built from a
+ * record captured earlier can't silently revert a concurrent update.
+ *
+ * `mutate` receives the freshly read record and returns the candidate to
+ * store, or `null` to signal "nothing to change" (treated as success with
+ * the current record). Retries up to `attempts` times on etag mismatch.
+ */
+export async function updateWorkspaceWithRetry(
+  env: Env,
+  sessionId: string,
+  workspaceId: string,
+  mutate: (current: WorkspaceRecord) => WorkspaceRecord | null,
+  attempts = 3
+): Promise<WorkspaceUpdateResult> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const current = await getWorkspaceWithEtag(env, sessionId, workspaceId);
+    if (!current) return { ok: false, reason: 'not-found' };
+    const candidate = mutate(current.workspace);
+    if (candidate === null) return { ok: true, workspace: current.workspace };
+    if (await putWorkspaceIfMatch(env, sessionId, candidate, current.etag)) {
+      return { ok: true, workspace: candidate };
+    }
+  }
+  return { ok: false, reason: 'conflict' };
+}
+
 export async function deleteWorkspace(env: Env, sessionId: string, workspaceId: string): Promise<void> {
   await env.WORKSPACE_FILES.delete(workspaceMetadataKey(sessionId, workspaceId));
 }

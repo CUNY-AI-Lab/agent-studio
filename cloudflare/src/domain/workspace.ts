@@ -214,9 +214,17 @@ export interface WorkspaceFileInfo {
   etag?: string;
 }
 
+/**
+ * Partial layout update. Like `panels`, the `groups` and `connections` arrays
+ * are per-id UPSERTS of just the entries the client changed — never a whole
+ * replacement snapshot — so a stale client array can't erase concurrent
+ * server-side changes. Group deletion is explicit via `removeGroups`;
+ * connections are only ever removed server-side (removePanel).
+ */
 export interface LayoutPatch {
   panels?: Record<string, PanelLayout>;
   groups?: PanelGroup[];
+  removeGroups?: string[];
   connections?: PanelConnection[];
   viewport?: WorkspaceViewport;
 }
