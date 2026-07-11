@@ -2,19 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
-import {
-  getToolName,
-  isTextUIPart,
-  isToolUIPart,
-} from 'ai';
 import { toPng } from 'html-to-image';
 import { HomePage } from './components/HomePage';
-import { ConnectionLines as LegacyConnectionLines } from './components/canvas/ConnectionLines';
-import { ContextualChatPopover as LegacyContextualChatPopover } from './components/canvas/ContextualChatPopover';
-import { DraggablePanel as LegacyDraggablePanel } from './components/canvas/DraggablePanel';
-import { GroupBoundary as LegacyGroupBoundary } from './components/canvas/GroupBoundary';
-import { SelectionBox as LegacySelectionBox } from './components/canvas/SelectionBox';
-import { SelectionToolbar as LegacySelectionToolbar } from './components/canvas/SelectionToolbar';
+import { ConnectionLines } from './components/canvas/ConnectionLines';
+import { ContextualChatPopover } from './components/canvas/ContextualChatPopover';
+import { DraggablePanel } from './components/canvas/DraggablePanel';
+import { GroupBoundary } from './components/canvas/GroupBoundary';
+import { SelectionBox } from './components/canvas/SelectionBox';
+import { SelectionToolbar } from './components/canvas/SelectionToolbar';
 import { CanvasZoomControls } from './components/canvas/CanvasZoomControls';
 import { ReadOnlyCanvas } from './components/canvas/ReadOnlyCanvas';
 import { PanelBody } from './components/panels/PanelBody';
@@ -36,8 +31,6 @@ import {
   createWorkspace,
   ensureCsrfToken,
   deleteWorkspace,
-  deleteWorkspaceFile,
-  executeWorkspaceRuntime,
   fetchGalleryItem,
   fetchGalleryItems,
   fetchWorkspaceDownloads,
@@ -73,7 +66,7 @@ import {
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
-import { clampNumber, formatFileSize, makeClientId } from './lib/format';
+import { clampNumber, makeClientId } from './lib/format';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
 import {
@@ -102,7 +95,6 @@ import type {
   WorkspaceFileInfo,
   WorkspacePanel,
   WorkspaceResponse,
-  WorkspaceRuntimeExecution,
   WorkspaceState,
 } from './types';
 
@@ -128,7 +120,6 @@ function WorkspaceShell({
   const [error, setError] = useState<string | null>(null);
   const [chatErrorNotice, setChatErrorNotice] = useState<string | null>(null);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
-  const [deletingWorkspace, setDeletingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState(workspace.workspace.name);
   const [workspaceDescription, setWorkspaceDescription] = useState(workspace.workspace.description);
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
@@ -138,13 +129,6 @@ function WorkspaceShell({
   const [publishTitle, setPublishTitle] = useState(workspace.workspace.name);
   const [publishDescription, setPublishDescription] = useState(workspace.workspace.description);
   const [publishing, setPublishing] = useState(false);
-  const [downloadingExport, setDownloadingExport] = useState(false);
-  const [runtimeCode, setRuntimeCode] = useState('');
-  const [runtimeRunning, setRuntimeRunning] = useState(false);
-  const [runtimeExecution, setRuntimeExecution] = useState<(WorkspaceRuntimeExecution & {
-    code: string;
-    executedAt: string;
-  }) | null>(null);
   const [viewportWidth, setViewportWidth] = useState(
     typeof window !== 'undefined' ? window.innerWidth : 1440
   );
@@ -311,8 +295,6 @@ function WorkspaceShell({
     setPublishModalOpen(false);
     setPublishTitle(workspace.workspace.name);
     setPublishDescription(workspace.workspace.description);
-    setRuntimeCode('');
-    setRuntimeExecution(null);
     setSelectedPanelIds(new Set());
     setHoveredPanelId(null);
     setHoveredToolbarPanelId(null);
@@ -1721,19 +1703,6 @@ function WorkspaceShell({
     showToast(`Ungrouped "${groupName}"`);
   }, [saveGroups, selectedGroup, showToast, workspaceState.groups]);
 
-  const detachSelectedPanel = useCallback(async () => {
-    if (!singleSelectedPanel || !singleSelectedPanelGroup) return;
-    const nextGroups = workspaceState.groups.flatMap((group) => {
-      if (group.id !== singleSelectedPanelGroup.id) return [group];
-      const panelIds = group.panelIds.filter((panelId) => panelId !== singleSelectedPanel.id);
-      return panelIds.length >= 2
-        ? [{ ...group, panelIds }]
-        : [];
-    });
-    await saveGroups(nextGroups);
-    clearSelection();
-  }, [clearSelection, saveGroups, singleSelectedPanel, singleSelectedPanelGroup, workspaceState.groups]);
-
   const removePanelFromGroup = useCallback(async (panelId: string) => {
     const currentGroup = workspaceState.groups.find((group) => group.panelIds.includes(panelId));
     if (!currentGroup) return;
@@ -2094,17 +2063,6 @@ function WorkspaceShell({
     }
   }, [refreshWorkspace, workspace.workspace.id, workspaceModel]);
 
-  const handleFileDelete = useCallback(async (file: WorkspaceFileInfo) => {
-    setError(null);
-    try {
-      await deleteWorkspaceFile(workspace.workspace.id, file.path);
-      await refreshWorkspaceFiles();
-      showToast(`Deleted ${getFileName(file.path)}`, 'info');
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to delete file');
-    }
-  }, [refreshWorkspaceFiles, showToast, workspace.workspace.id]);
-
   const handleOpenPublishModal = useCallback(() => {
     setPublishTitle(workspaceName);
     setPublishDescription(workspaceDescription);
@@ -2148,7 +2106,6 @@ function WorkspaceShell({
   }, [refreshWorkspace, showToast, workspace.workspace.galleryId]);
 
   const handleExportDownload = useCallback(async () => {
-    setDownloadingExport(true);
     setError(null);
     try {
       const { blob, filename } = await fetchWorkspaceExport(workspace.workspace.id);
@@ -2162,37 +2119,8 @@ function WorkspaceShell({
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to export workspace');
-    } finally {
-      setDownloadingExport(false);
     }
   }, [workspace.workspace.id]);
-
-  const handleRuntimeExecute = useCallback(async () => {
-    const code = runtimeCode.trim();
-    if (!code || runtimeRunning) return;
-
-    setRuntimeRunning(true);
-    try {
-      const execution = await executeWorkspaceRuntime(workspace.workspace.id, code);
-      setRuntimeExecution({
-        ...execution,
-        code,
-        executedAt: new Date().toISOString(),
-      });
-      await refreshWorkspaceFiles({ announceChanges: true, scrollToChanged: false });
-      await drainWorkspaceDownloads();
-    } catch (nextError) {
-      setRuntimeExecution({
-        result: undefined,
-        error: nextError instanceof Error ? nextError.message : 'Runtime execution failed',
-        logs: [],
-        code,
-        executedAt: new Date().toISOString(),
-      });
-    } finally {
-      setRuntimeRunning(false);
-    }
-  }, [drainWorkspaceDownloads, refreshWorkspaceFiles, runtimeCode, runtimeRunning, workspace.workspace.id]);
 
   useEffect(() => {
     const pending = contextualPendingRef.current;
@@ -2377,28 +2305,6 @@ function WorkspaceShell({
     selectedPanelIds,
     ungroupSelection,
   ]);
-
-  const handleCanvasWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if ((event.target as HTMLElement).closest('.artifact-content')) return;
-    event.preventDefault();
-    const relative = getViewportRelativePoint(event.clientX, event.clientY);
-    if (!relative) return;
-
-    const viewport = viewportRef.current;
-    const nextZoom = clampNumber(
-      event.deltaY < 0 ? viewport.zoom * 1.1 : viewport.zoom / 1.1,
-      0.35,
-      2.5
-    );
-    const canvasX = (relative.x - viewport.x) / viewport.zoom;
-    const canvasY = (relative.y - viewport.y) / viewport.zoom;
-
-    updateViewport({
-      x: relative.x - canvasX * nextZoom,
-      y: relative.y - canvasY * nextZoom,
-      zoom: nextZoom,
-    });
-  }, [getViewportRelativePoint, updateViewport]);
 
   const handleCanvasPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     // Only handle left mouse button for selection
@@ -2812,7 +2718,7 @@ function WorkspaceShell({
                 <div className="canvas-content relative">
 
               {workspaceState.groups.map((group) => (
-                <LegacyGroupBoundary
+                <GroupBoundary
                   key={group.id}
                   group={group}
                   panelLayouts={panelLayouts}
@@ -2838,7 +2744,7 @@ function WorkspaceShell({
                   }}
                 />
               ))}
-              <LegacyConnectionLines
+              <ConnectionLines
                 panelLayouts={panelLayouts}
                 connections={visibleConnections}
                 animatingConnectionIds={animatingConnectionIds}
@@ -2858,7 +2764,7 @@ function WorkspaceShell({
               {visiblePanels.map((panel, index) => {
                 const layout = panelLayouts[panel.id] ?? inferPanelLayout(panel, index);
                 return (
-                  <LegacyDraggablePanel
+                  <DraggablePanel
                     key={panel.id}
                     id={panel.id}
                     layout={layout}
@@ -2921,17 +2827,17 @@ function WorkspaceShell({
                         }}
                       />
                     </div>
-                  </LegacyDraggablePanel>
+                  </DraggablePanel>
                 );
               })}
                 </div>
               </TransformComponent>
             </TransformWrapper>
             {isSelectingBox && selectionBoxStart && selectionBoxEnd ? (
-              <LegacySelectionBox start={selectionBoxStart} end={selectionBoxEnd} />
+              <SelectionBox start={selectionBoxStart} end={selectionBoxEnd} />
             ) : null}
             {showToolbar ? (
-              <LegacySelectionToolbar
+              <SelectionToolbar
                 selectedPanelId={selectedPanelIds.size > 0 ? (singleSelectedPanel && !selectedGroup ? singleSelectedPanel.id : null) : (toolbarPanel?.id ?? null)}
                 selectedGroupId={selectedPanelIds.size > 0 ? (selectedGroup?.id ?? null) : null}
                 selectedPanelIds={toolbarPanelIds}
@@ -2978,7 +2884,7 @@ function WorkspaceShell({
               />
             ) : null}
             {contextualChatTarget && contextualAnchor ? (
-              <LegacyContextualChatPopover
+              <ContextualChatPopover
                 anchor={contextualAnchor}
                 viewport={workspaceState.viewport}
                 viewportSize={canvasViewportSize}
@@ -3090,7 +2996,6 @@ export default function App() {
   const [loading, setLoading] = useState(!!initialWorkspaceId || !!initialGalleryId);
   const [creating, setCreating] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [pendingInitialPrompt, setPendingInitialPrompt] = useState<{ workspaceId: string; prompt: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -3170,24 +3075,14 @@ export default function App() {
 
   const handleDeleteWorkspace = useCallback(async () => {
     if (!selectedWorkspaceId) return;
-    setDeleting(true);
     setError(null);
     try {
       await deleteWorkspace(selectedWorkspaceId);
-      const remaining = await fetchWorkspaces();
-      setWorkspaces(remaining);
-      const nextId = remaining[0]?.id ?? null;
-      setSelectedWorkspaceId(nextId);
-      if (!nextId) {
-        setSelectedWorkspace(null);
-        setLoading(false);
-      }
+      await loadWorkspaces();
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to delete workspace');
-    } finally {
-      setDeleting(false);
     }
-  }, [selectedWorkspaceId]);
+  }, [loadWorkspaces, selectedWorkspaceId]);
 
   const handleCloneGalleryItem = useCallback(async (galleryId: string) => {
     setError(null);
@@ -3222,29 +3117,13 @@ export default function App() {
     }
   }, [loadWorkspaces]);
 
-  const handleCreateFromPrompt = useCallback(async (prompt: string) => {
+  const handleCreateWorkspace = useCallback(async (prompt?: string) => {
     setCreating(true);
     setError(null);
     try {
       const workspace = await createWorkspace({ name: 'New Workspace' });
       await loadWorkspaces();
-      setPendingInitialPrompt({ workspaceId: workspace.id, prompt });
-      setSelectedGalleryId(null);
-      setSelectedWorkspaceId(workspace.id);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to create workspace');
-    } finally {
-      setCreating(false);
-    }
-  }, [loadWorkspaces]);
-
-  const handleStartBlank = useCallback(async () => {
-    setCreating(true);
-    setError(null);
-    try {
-      const workspace = await createWorkspace({ name: 'New Workspace' });
-      await loadWorkspaces();
-      setPendingInitialPrompt(null);
+      setPendingInitialPrompt(prompt ? { workspaceId: workspace.id, prompt } : null);
       setSelectedGalleryId(null);
       setSelectedWorkspaceId(workspace.id);
     } catch (nextError) {
@@ -3295,6 +3174,7 @@ export default function App() {
           title={selectedGallery.title}
           description={selectedGallery.description}
           state={selectedGallery.state}
+          onGoHome={handleGoHome}
         />
       </div>
     );
@@ -3338,15 +3218,17 @@ export default function App() {
     <HomePage
       workspaces={workspaces}
       galleryItems={galleryItems}
-      onCreateWorkspace={handleCreateFromPrompt}
+      onCreateWorkspace={(prompt) => handleCreateWorkspace(prompt)}
       onSelectWorkspace={(id) => {
         setPendingInitialPrompt(null);
         setSelectedGalleryId(null);
         setSelectedWorkspaceId(id);
       }}
       onCloneGalleryItem={handleCloneGalleryItem}
-      onStartBlank={handleStartBlank}
-      creating={creating}
+      onStartBlank={() => handleCreateWorkspace()}
+      onImportWorkspace={handleImportBundle}
+      busy={creating || importing}
+      importing={importing}
     />
   );
 }

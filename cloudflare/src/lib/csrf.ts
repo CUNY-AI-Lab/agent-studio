@@ -26,7 +26,6 @@ import type { Context, MiddlewareHandler } from 'hono';
 import { setCookie } from 'hono/cookie';
 import type { Env } from '../env';
 import type { SessionVariables } from './session';
-import { CAIL_IDENTITY_HEADER } from './cail-identity';
 
 /** Custom header the frontend echoes the per-session token in (fleet convention). */
 export const CSRF_HEADER = 'X-CAIL-CSRF';
@@ -161,11 +160,6 @@ export function classifyOrigin(
     return origin === canonical ? 'same-origin' : 'reject';
   }
   return 'absent';
-}
-
-/** Whether a request carries a CAIL identity JWT (the gate-injected credential). */
-function hasIdentityJwt(c: Context): boolean {
-  return Boolean(c.req.header(CAIL_IDENTITY_HEADER));
 }
 
 /**

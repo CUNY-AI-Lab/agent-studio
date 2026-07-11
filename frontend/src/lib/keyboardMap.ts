@@ -4,7 +4,7 @@
  * with the handlers in App.tsx (WorkspaceShell) and components/canvas/*.
  */
 
-export interface KeyboardShortcut {
+interface KeyboardShortcut {
   /** Human-readable key combo, e.g. "Arrow keys" or "Cmd / Ctrl + G". */
   keys: string;
   /** What the combo does when the canvas or a tile has focus. */

@@ -3,8 +3,8 @@ import { Layout } from 'lucide-react';
 import { buildPanelLayouts, inferPanelLayout } from '../../lib/panelLayout';
 import { getPanelTitle } from '../../lib/panelFiles';
 import type { WorkspaceState } from '../../types';
-import { ConnectionLines as LegacyConnectionLines } from './ConnectionLines';
-import { GroupBoundary as LegacyGroupBoundary } from './GroupBoundary';
+import { ConnectionLines } from './ConnectionLines';
+import { GroupBoundary } from './GroupBoundary';
 import { PanelBody } from '../panels/PanelBody';
 
 export function ReadOnlyCanvas({
@@ -12,11 +12,13 @@ export function ReadOnlyCanvas({
   title,
   description,
   state,
+  onGoHome,
 }: {
   galleryId: string;
   title: string;
   description: string;
   state: WorkspaceState;
+  onGoHome: () => void;
 }) {
   const visiblePanels = state.panels.filter((panel) => panel.type !== 'chat');
   const panelLayouts = useMemo(() => buildPanelLayouts(visiblePanels), [visiblePanels]);
@@ -29,6 +31,17 @@ export function ReadOnlyCanvas({
   return (
     <section className="flex-1 flex flex-col min-h-0">
       <header className="canvas-header flex items-center gap-4 px-6 py-3">
+        <button
+          type="button"
+          onClick={onGoHome}
+          className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          title="Back to home"
+          aria-label="Back to home"
+        >
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
+          </svg>
+        </button>
         <div className="flex-1 min-w-0">
           <h2 className="font-serif text-lg font-medium truncate">{title}</h2>
           <p className="text-sm text-muted-foreground truncate">{description}</p>
@@ -37,7 +50,7 @@ export function ReadOnlyCanvas({
 
       <div className="canvas-bg flex-1 relative overflow-auto">
         {state.groups.map((group) => (
-          <LegacyGroupBoundary
+          <GroupBoundary
             key={group.id}
             group={group}
             panelLayouts={panelLayouts}
@@ -46,7 +59,7 @@ export function ReadOnlyCanvas({
             scale={1}
           />
         ))}
-        <LegacyConnectionLines
+        <ConnectionLines
           panelLayouts={panelLayouts}
           connections={state.connections.filter((connection) => visiblePanelIds.has(connection.sourceId) && visiblePanelIds.has(connection.targetId))}
           panelTitles={panelTitles}

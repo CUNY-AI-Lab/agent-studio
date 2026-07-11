@@ -6,7 +6,6 @@ import type {
   WorkspaceObservabilitySnapshot,
   WorkspaceRecord,
   WorkspaceResponse,
-  WorkspaceRuntimeExecution,
 } from './types';
 
 /**
@@ -450,24 +449,4 @@ export async function uploadWorkspaceFiles(workspaceId: string, files: FileList 
     body: formData,
   });
   await parseJson<{ success: boolean }>(response);
-}
-
-export async function deleteWorkspaceFile(workspaceId: string, filePath: string): Promise<void> {
-  const response = await mutatingFetch(getWorkspaceFileUrl(workspaceId, filePath), {
-    method: 'DELETE',
-  });
-  await parseJson<{ success: boolean }>(response);
-}
-
-export async function executeWorkspaceRuntime(
-  workspaceId: string,
-  code: string
-): Promise<WorkspaceRuntimeExecution> {
-  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/runtime/execute`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
-  });
-  const payload = await parseJson<{ execution: WorkspaceRuntimeExecution }>(response);
-  return payload.execution;
 }

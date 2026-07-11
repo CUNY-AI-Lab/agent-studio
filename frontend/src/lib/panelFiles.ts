@@ -6,7 +6,7 @@ export function getFileName(filePath: string): string {
   return filePath.split('/').pop() || filePath;
 }
 
-export function getFileExtension(filePath: string): string {
+function getFileExtension(filePath: string): string {
   const dotIndex = filePath.lastIndexOf('.');
   return dotIndex >= 0 ? filePath.slice(dotIndex).toLowerCase() : '';
 }

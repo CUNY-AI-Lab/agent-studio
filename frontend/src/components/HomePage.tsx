@@ -16,7 +16,9 @@ interface HomePageProps {
   onSelectWorkspace: (id: string) => void;
   onCloneGalleryItem: (id: string) => Promise<void>;
   onStartBlank: () => Promise<void>;
-  creating: boolean;
+  onImportWorkspace: (file: File | null) => Promise<void>;
+  busy: boolean;
+  importing: boolean;
 }
 
 export function HomePage({
@@ -26,19 +28,21 @@ export function HomePage({
   onSelectWorkspace,
   onCloneGalleryItem,
   onStartBlank,
-  creating,
+  onImportWorkspace,
+  busy,
+  importing,
 }: HomePageProps) {
   const [prompt, setPrompt] = useState('');
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || creating) return;
+    if (!prompt.trim() || busy) return;
     await onCreateWorkspace(prompt.trim());
     setPrompt('');
   };
 
   const handleExamplePrompt = async (p: string) => {
-    if (creating) return;
+    if (busy) return;
     await onCreateWorkspace(p);
   };
 
@@ -82,11 +86,11 @@ export function HomePage({
                 placeholder="Ask anything or describe what you want to build..."
                 className="w-full px-5 py-4 pr-14 text-base rounded-2xl border border-border bg-card transition-all focus:outline-none focus:border-primary/50 focus:shadow-lg focus:shadow-primary/5"
                 autoFocus
-                disabled={creating}
+                disabled={busy}
               />
               <button
                 type="submit"
-                disabled={!prompt.trim() || creating}
+                disabled={!prompt.trim() || busy}
                 className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-primary text-primary-foreground rounded-xl transition-all hover:opacity-90 disabled:opacity-40"
                 aria-label="Start"
               >
@@ -106,12 +110,12 @@ export function HomePage({
               <span className="text-xs text-muted-foreground/70">{galleryItems.length} shared</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {galleryItems.slice(0, 6).map((item) => (
+              {galleryItems.map((item) => (
                 <button
                   key={item.id}
                   type="button"
                   onClick={() => onCloneGalleryItem(item.id)}
-                  disabled={creating}
+                  disabled={busy}
                   className="w-full text-left p-4 rounded-xl border border-border/50 bg-card/50 transition-all hover:border-primary/30 hover:bg-card group disabled:opacity-50"
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
@@ -141,7 +145,7 @@ export function HomePage({
                   key={example.label}
                   type="button"
                   onClick={() => handleExamplePrompt(example.prompt)}
-                  disabled={creating}
+                  disabled={busy}
                   className="px-4 py-2 text-sm rounded-full border border-border bg-card/50 text-muted-foreground transition-all hover:border-primary/30 hover:text-foreground hover:bg-card disabled:opacity-50"
                 >
                   {example.label}
@@ -152,15 +156,29 @@ export function HomePage({
         )}
 
         {/* Start blank */}
-        <section className="mb-12 animate-fade-in-up text-center" style={{ animationDelay: '200ms' }}>
+        <section className="mb-12 animate-fade-in-up flex flex-wrap justify-center gap-2" style={{ animationDelay: '200ms' }}>
           <button
             type="button"
             onClick={onStartBlank}
-            disabled={creating}
+            disabled={busy}
             className="px-4 py-2 text-sm rounded-full border border-dashed border-border/50 text-muted-foreground/70 transition-all hover:border-border hover:text-muted-foreground disabled:opacity-50"
           >
             Start blank
           </button>
+          <label className="px-4 py-2 text-sm rounded-full border border-dashed border-border/50 text-muted-foreground/70 transition-all hover:border-border hover:text-muted-foreground has-[:disabled]:opacity-50 has-[:disabled]:cursor-not-allowed cursor-pointer focus-within:ring-2 focus-within:ring-ring">
+            {importing ? 'Importing…' : 'Import workspace'}
+            <input
+              className="sr-only"
+              type="file"
+              accept=".json,.agent-studio.json,application/json"
+              disabled={busy}
+              aria-label="Import workspace bundle"
+              onChange={(event) => {
+                void onImportWorkspace(event.target.files?.[0] ?? null);
+                event.currentTarget.value = '';
+              }}
+            />
+          </label>
         </section>
 
         {/* Your Workspaces */}
@@ -170,7 +188,7 @@ export function HomePage({
               <h2 className="text-sm font-medium text-muted-foreground">Your Workspaces</h2>
             </div>
             <div className="grid gap-2">
-              {workspaces.slice(0, 8).map((ws) => (
+              {workspaces.map((ws) => (
                 <button
                   key={ws.id}
                   type="button"
@@ -193,11 +211,6 @@ export function HomePage({
                 </button>
               ))}
             </div>
-            {workspaces.length > 8 && (
-              <p className="text-xs text-muted-foreground/70 text-center mt-3">
-                +{workspaces.length - 8} more
-              </p>
-            )}
           </section>
         )}
 
