@@ -139,6 +139,34 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(call[1]?.credentials).toBe('include');
   });
 
+  it('refreshes a stale token once when the worker rotates the session', async () => {
+    const { readingFetch, CSRF_HEADER } = await loadApi();
+    const oldToken = 'e'.repeat(64);
+    const newToken = 'f'.repeat(64);
+    const cookie = stubCookie(`${CSRF_COOKIE}=${oldToken}`);
+    const spy = mockFetch((input) => {
+      if (String(input).includes('/api/session')) {
+        cookie.set(`${CSRF_COOKIE}=${newToken}`);
+        return sessionResponse();
+      }
+      const workspaceCalls = spy.mock.calls.filter((call) => String(call[0]).includes('/api/workspaces'));
+      return workspaceCalls.length === 1
+        ? new Response(JSON.stringify({ error: 'csrf_token_invalid' }), {
+            status: 403,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : new Response('{}', { status: 200 });
+    });
+
+    const response = await readingFetch('/api/workspaces');
+
+    expect(response.status).toBe(200);
+    expect(spy).toHaveBeenCalledTimes(3);
+    const workspaceCalls = spy.mock.calls.filter((call) => String(call[0]).includes('/api/workspaces'));
+    expect(new Headers(workspaceCalls[0][1]?.headers).get(CSRF_HEADER)).toBe(oldToken);
+    expect(new Headers(workspaceCalls[1][1]?.headers).get(CSRF_HEADER)).toBe(newToken);
+  });
+
   it('workspace element URLs include the cookie token while gallery URLs stay public', async () => {
     const token = 'query token/value';
     stubCookie(`${CSRF_COOKIE}=${encodeURIComponent(token)}`);

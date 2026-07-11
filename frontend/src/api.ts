@@ -65,7 +65,10 @@ async function requestCsrfToken(): Promise<string> {
   // Hit the bootstrap GET so the worker sets the cookie, then read it. The JSON
   // body no longer carries the token (the amendment forbids it); the path-scoped
   // cookie is the only delivery channel.
-  await fetch('/api/session', { credentials: 'include' });
+  const response = await fetch('/api/session', { credentials: 'include' });
+  if (!response.ok) {
+    throw new Error(`Session bootstrap failed with ${response.status}`);
+  }
   const token = readCookie(CSRF_COOKIE_NAME);
   if (!token) {
     throw new Error('Session bootstrap did not set the CSRF cookie');
@@ -97,24 +100,38 @@ export function csrfTokenFromCookie(): string | null {
   return readCookie(CSRF_COOKIE_NAME);
 }
 
+async function protectedFetch(input: string, init: RequestInit): Promise<Response> {
+  const baseHeaders = new Headers(init.headers);
+  const send = (token: string) => {
+    const headers = new Headers(baseHeaders);
+    headers.set(CSRF_HEADER, token);
+    return fetch(input, { ...init, credentials: 'include', headers });
+  };
+
+  let response = await send(await ensureCsrfToken());
+  if (response.status !== 403) return response;
+
+  const payload = await response.clone().json().catch(() => null) as { error?: unknown } | null;
+  if (payload?.error !== 'csrf_token_invalid' && payload?.error !== 'csrf_token_missing') {
+    return response;
+  }
+
+  response = await send(await requestCsrfToken());
+  return response;
+}
+
 /**
  * fetch() wrapper for state-changing calls: ensures the CSRF token and attaches
  * it as X-CAIL-CSRF (merged with any caller-supplied headers). All mutating API
  * helpers below route through this so no mutation can forget the header.
  */
 export async function mutatingFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  const token = await ensureCsrfToken();
-  const headers = new Headers(init.headers);
-  headers.set(CSRF_HEADER, token);
-  return fetch(input, { ...init, credentials: 'include', headers });
+  return protectedFetch(input, init);
 }
 
 /** fetch() wrapper for sensitive workspace reads. */
 export async function readingFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  const token = await ensureCsrfToken();
-  const headers = new Headers(init.headers);
-  headers.set(CSRF_HEADER, token);
-  return fetch(input, { ...init, credentials: 'include', headers });
+  return protectedFetch(input, init);
 }
 
 /**

@@ -1195,8 +1195,8 @@ function WorkspaceShell({
     await onWorkspaceRefresh(workspace.workspace.id);
   }, [onWorkspaceRefresh, workspace.workspace.id]);
 
-  const handleUpload = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  const handleUpload = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
     setUploading(true);
     setError(null);
     try {

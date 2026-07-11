@@ -34,7 +34,7 @@ export function FilesShelf({
   uploading: boolean;
   fileShelfCollapsed: boolean;
   onToggleCollapsed: () => void;
-  onUpload: (files: FileList | null) => void;
+  onUpload: (files: File[]) => void;
   onOpenFilesPanel: () => void;
   filesTileActionLabel: string;
   activeFilePillPopover: string | null;
@@ -70,7 +70,7 @@ export function FilesShelf({
               aria-label="Upload files to workspace"
               accept=".pdf,.txt,.csv,.md,.json,.xlsx,.xls,.jpg,.jpeg,.png,.gif,.webp,.xml"
               onChange={(event) => {
-                onUpload(event.target.files);
+                onUpload(Array.from(event.target.files ?? []));
                 event.currentTarget.value = '';
               }}
             />

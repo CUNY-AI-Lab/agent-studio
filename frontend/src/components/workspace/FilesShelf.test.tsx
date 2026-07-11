@@ -47,6 +47,17 @@ describe('FilesShelf', () => {
     expect(screen.getByText('Uploading…')).toBeInTheDocument();
   });
 
+  it('snapshots selected files before clearing the input', async () => {
+    const user = userEvent.setup();
+    const onUpload = vi.fn();
+    render(<FilesShelf {...makeProps({ onUpload })} />);
+    const file = new File(['hello'], 'notes.md', { type: 'text/markdown' });
+
+    await user.upload(screen.getByLabelText('Upload files to workspace'), file);
+
+    expect(onUpload).toHaveBeenCalledWith([file]);
+  });
+
   it('toggles the pill popover when a file pill is clicked', async () => {
     const onSetActiveFilePillPopover = vi.fn();
     const user = userEvent.setup();
