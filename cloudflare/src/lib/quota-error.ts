@@ -1,56 +1,25 @@
+import { CailError } from '@cuny-ai-lab/cail-client';
+
 /**
- * If `error` looks like a CAIL/model-proxy quota exhaustion (HTTP 429 or a
- * quota_exceeded envelope), return a compact JSON signal string the frontend can
- * detect; otherwise null. Inspects common shapes from the AI SDK / openai-compatible
- * provider (statusCode / status / responseBody / data.error) defensively.
+ * If `error` is the CailError the shared client's chatFetch() throws on a
+ * gateway 429 quota_exceeded envelope, return a compact JSON signal string the
+ * frontend detects (see frontend/src/lib/quotaError.ts); otherwise null.
+ *
+ * cail-client (since 2d51745) throws the parsed envelope on the FIRST quota
+ * failure instead of returning the 429 Response, so the AI SDK never retries
+ * it and never buries it inside a RetryError — the old defensive
+ * RetryError/statusCode unwrapping went away with that. The envelope message
+ * is user-safe verbatim (cail-gateway docs/INTEGRATION.md §2), so it is
+ * forwarded as-is, along with `retry_after_seconds` when present.
  */
 export function quotaSignalFromError(error: unknown): string | null {
-  if (typeof error !== 'object' || error === null) return null;
-
-  const maxVisitedNodes = 20;
-  const queue: object[] = [error];
-  const visited = new Set<object>([error]);
-  const enqueue = (candidate: unknown) => {
-    if (
-      typeof candidate !== 'object' ||
-      candidate === null ||
-      visited.has(candidate) ||
-      visited.size >= maxVisitedNodes
-    ) {
-      return;
-    }
-    visited.add(candidate);
-    queue.push(candidate);
-  };
-
-  while (queue.length > 0) {
-    const candidate = queue.shift() as object;
-    const current = candidate as any;
-    const status = current.statusCode ?? current.status ?? current.data?.status;
-    const code = current.data?.error ?? current.code ?? current.responseBody?.error;
-    const retryAfter =
-      current.responseHeaders?.['retry-after'] ?? current.retryAfter ?? undefined;
-    const isQuota =
-      status === 429 ||
-      code === 'quota_exceeded' ||
-      (typeof current.message === 'string' && /quota_exceeded/i.test(current.message));
-    if (isQuota) {
-      return JSON.stringify({
-        type: 'quota_exceeded',
-        message: 'You have reached your usage quota. Try again later.',
-        ...(retryAfter ? { retryAfter: String(retryAfter) } : {}),
-      });
-    }
-
-    enqueue(current.lastError);
-    enqueue(current.cause);
-    if (Array.isArray(current.errors)) {
-      for (const nestedError of current.errors) {
-        if (visited.size >= maxVisitedNodes) break;
-        enqueue(nestedError);
-      }
-    }
+  if (!(error instanceof CailError) || error.code !== 'quota_exceeded') {
+    return null;
   }
-
-  return null;
+  const retryAfter = error.extras['retry_after_seconds'];
+  return JSON.stringify({
+    type: 'quota_exceeded',
+    message: error.message,
+    ...(retryAfter != null ? { retryAfter: String(retryAfter) } : {}),
+  });
 }

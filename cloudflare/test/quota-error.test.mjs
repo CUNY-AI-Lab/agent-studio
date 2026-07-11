@@ -1,71 +1,57 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { CailError } from '@cuny-ai-lab/cail-client';
 import { quotaSignalFromError } from '../src/lib/quota-error.ts';
 
-function assertQuotaSignal(error) {
-  const signal = quotaSignalFromError(error);
+const QUOTA_MESSAGE =
+  'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
+
+test('quotaSignalFromError forwards a thrown quota CailError verbatim', () => {
+  const signal = quotaSignalFromError(
+    new CailError('quota_exceeded', QUOTA_MESSAGE, 429, { retry_after_seconds: 1800 }),
+  );
   assert.equal(typeof signal, 'string');
-  assert.match(signal, /quota_exceeded/);
-  assert.equal(JSON.parse(signal).type, 'quota_exceeded');
-}
-
-test('quotaSignalFromError detects HTTP 429', () => {
-  assertQuotaSignal({ statusCode: 429 });
+  const parsed = JSON.parse(signal);
+  assert.equal(parsed.type, 'quota_exceeded');
+  assert.equal(parsed.message, QUOTA_MESSAGE);
+  assert.equal(parsed.retryAfter, '1800');
 });
 
-test('quotaSignalFromError detects quota envelopes', () => {
-  assertQuotaSignal({ data: { error: 'quota_exceeded' } });
+test('quotaSignalFromError omits retryAfter when the envelope has none', () => {
+  const signal = quotaSignalFromError(new CailError('quota_exceeded', QUOTA_MESSAGE, 429));
+  const parsed = JSON.parse(signal);
+  assert.equal(parsed.message, QUOTA_MESSAGE);
+  assert.equal('retryAfter' in parsed, false);
 });
 
-test('quotaSignalFromError detects quota codes in error messages', () => {
-  assertQuotaSignal(new Error('upstream returned quota_exceeded'));
+test('quotaSignalFromError ignores non-quota CailErrors', () => {
+  assert.equal(
+    quotaSignalFromError(
+      new CailError('authentication_required', 'Sign in to continue.', 401, { login_url: '/login' }),
+    ),
+    null,
+  );
+  assert.equal(quotaSignalFromError(new CailError('network_error', 'fetch failed', 0)), null);
 });
 
-test('quotaSignalFromError ignores generic and non-quota server errors', () => {
+// chatFetch (cail-client 2d51745) throws the parsed CailError on the first 429
+// quota envelope, so the AI SDK never retries it and never wraps it in a
+// RetryError. The old defensive shape-sniffing is gone on purpose: a bare 429
+// shape or RetryError here is NOT a CAIL quota signal.
+test('quotaSignalFromError no longer sniffs SDK error shapes', () => {
+  assert.equal(quotaSignalFromError({ statusCode: 429 }), null);
+  assert.equal(
+    quotaSignalFromError({
+      name: 'AI_RetryError',
+      reason: 'maxRetriesExceeded',
+      lastError: { statusCode: 429 },
+      errors: [{ statusCode: 429 }],
+    }),
+    null,
+  );
+  assert.equal(quotaSignalFromError(new Error('upstream returned quota_exceeded')), null);
   assert.equal(quotaSignalFromError(new Error('network failed')), null);
-  assert.equal(quotaSignalFromError({ statusCode: 500 }), null);
-});
-
-test('quotaSignalFromError detects a 429 nested in an AI SDK RetryError', () => {
-  const signal = quotaSignalFromError({
-    name: 'AI_RetryError',
-    reason: 'maxRetriesExceeded',
-    message: 'Failed after 3 attempts.',
-    lastError: {
-      statusCode: 429,
-      responseHeaders: { 'retry-after': '3600' },
-    },
-    errors: [{ statusCode: 429 }],
-  });
-
-  assert.equal(typeof signal, 'string');
-  assert.equal(JSON.parse(signal).retryAfter, '3600');
-});
-
-test('quotaSignalFromError detects quota errors nested only in errors', () => {
-  assertQuotaSignal({
-    name: 'AI_RetryError',
-    errors: [{ statusCode: 500 }, { data: { error: 'quota_exceeded' } }],
-  });
-});
-
-test('quotaSignalFromError detects quota errors nested via cause', () => {
-  assertQuotaSignal(new Error('wrapper', {
-    cause: { data: { error: 'quota_exceeded' } },
-  }));
-});
-
-test('quotaSignalFromError terminates on cyclic non-quota errors', () => {
-  const error = new Error('wrapper');
-  error.cause = error;
-  assert.equal(quotaSignalFromError(error), null);
-});
-
-test('quotaSignalFromError ignores RetryErrors wrapping only server errors', () => {
-  assert.equal(quotaSignalFromError({
-    name: 'AI_RetryError',
-    lastError: { statusCode: 500 },
-    errors: [{ statusCode: 500 }, { statusCode: 503 }],
-  }), null);
+  assert.equal(quotaSignalFromError(null), null);
+  assert.equal(quotaSignalFromError(undefined), null);
 });

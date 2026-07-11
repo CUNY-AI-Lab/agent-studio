@@ -12,7 +12,11 @@
  * Its `chatFetch()` adapter plugs into the Vercel AI SDK's
  * `createOpenAICompatible({ fetch })`: it strips the dummy Authorization,
  * sends the caller's verified `X-CAIL-Identity-JWT` plus `X-CAIL-App`, and
- * keeps raw fetch semantics (non-2xx returned to the SDK, no client retries).
+ * keeps raw fetch semantics (non-2xx returned to the SDK, no client retries)
+ * with ONE carve-out: a gateway 429 `quota_exceeded` envelope THROWS the
+ * parsed `CailError` so the SDK cannot retry-and-bury it — the workspace
+ * agent surfaces that error's verbatim message to the chat user (see
+ * lib/quota-error.ts).
  *
  * Credential: this is a browser tool behind the SSO gate, so we forward the
  * requesting user's verified identity JWT. No personal `sk-cail-…` key is
