@@ -113,34 +113,6 @@ const layoutSchema = z.object({
   }).optional(),
 });
 
-/**
- * Read a JSON request body, substituting `fallback` when the body is absent or
- * unparseable (empty body, wrong content-type, malformed JSON — all of which
- * make `c.req.json()` throw). Collapses the six hand-rolled
- * `await c.req.json().catch(() => …)` sites into one place.
- *
- * Rule-5 posture note (2026-07-06): this is a deliberately-kept fallback, not a
- * fail-loud read. It exists because the routes that use it hand off to zod
- * immediately, and the observable malformed-body behavior differs per route by
- * design — see server-routes.test.mjs "malformed request body" block, which
- * pins every case:
- *   - POST /api/workspaces        -> `{}` -> createWorkspaceSchema's
- *                                    name.default() -> 201 "Untitled Workspace".
- *                                    The default-name UX is the load-bearing
- *                                    reason the swallow can't become fail-loud
- *                                    here without a sanctioned 201->400 change.
- *   - PATCH /api/workspaces/:id   -> `{}` -> all-optional patch -> 200 no-op.
- *   - PATCH …/layout              -> `{}` -> all-optional patch -> 200 no-op.
- *   - POST …/runtime/execute      -> `{}` -> zod (code required) -> 400.
- *   - POST …/publish              -> `{}` -> zod (title required) -> 400.
- *   - POST …/panels               -> `null` -> `null?.panel` -> 400.
- * The three 400 cases are already fail-loud via zod; the three 2xx cases are
- * behavior we preserve. Any future edit that changes a case fails those tests.
- */
-async function safeJson<T>(c: Context, fallback: T): Promise<T> {
-  return c.req.json<T>().catch(() => fallback);
-}
-
 const app = new Hono<{
   Bindings: Env;
   Variables: AppVariables;
@@ -158,7 +130,7 @@ type AppContext = Context<{
 // Validation failures are client errors: routes validate with zod .parse and
 // rely on this mapping instead of try/catch at every call site.
 app.onError((error, c) => {
-  if (error instanceof z.ZodError) {
+  if (error instanceof z.ZodError || error instanceof SyntaxError) {
     return c.json({ error: 'Invalid request body' }, 400);
   }
   if (error instanceof GalleryError) {
@@ -467,7 +439,7 @@ app.delete('/api/gallery/:id', async (c) => {
 app.post('/api/workspaces', async (c) => {
   const sessionId = requireSession(c);
   // Empty/malformed body -> `{}` -> name.default() -> 201 "Untitled Workspace".
-  const body = createWorkspaceSchema.parse(await safeJson(c, {}));
+  const body = createWorkspaceSchema.parse(await c.req.json());
   const workspace = createDefaultWorkspace({
     id: createOpaqueId(),
     name: body.name,
@@ -622,7 +594,7 @@ app.post('/api/workspaces/:id/runtime/execute', async (c) => {
   const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> zod (code required) -> 400.
-  const body = runtimeExecuteSchema.parse(await safeJson(c, {}));
+  const body = runtimeExecuteSchema.parse(await c.req.json());
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const execution = await agent.executeCode(body.code);
 
@@ -634,7 +606,7 @@ app.patch('/api/workspaces/:id', async (c) => {
   const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> all-optional patch -> 200 no-op.
-  const parsed = patchWorkspaceSchema.safeParse(await safeJson(c, {}));
+  const parsed = patchWorkspaceSchema.safeParse(await c.req.json());
   if (!parsed.success) {
     return c.json({ error: 'Invalid workspace update' }, 400);
   }
@@ -702,7 +674,7 @@ app.post('/api/workspaces/:id/publish', async (c) => {
   const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> zod (title required) -> 400.
-  const body = publishWorkspaceSchema.parse(await safeJson(c, {}));
+  const body = publishWorkspaceSchema.parse(await c.req.json());
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const [state, files] = await Promise.all([
     agent.getSnapshot(),
@@ -871,7 +843,7 @@ app.post('/api/workspaces/:id/panels', async (c) => {
   // body. The served CSP (previewServingHeaders) is the real containment; this
   // trims the inject surface as defense-in-depth.
   // Empty/malformed body -> `null` -> `null?.panel` (undefined) -> 400.
-  const body = await safeJson<{ panel?: unknown } | null>(c, null);
+  const body = await c.req.json<{ panel?: unknown } | null>();
   const parsed = panelSchema.safeParse(body?.panel);
   if (!parsed.success) {
     return c.json({ error: 'Invalid panel payload' }, 400);
@@ -896,7 +868,7 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
   const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> all-optional patch -> 200 no-op.
-  const patch = layoutSchema.parse(await safeJson(c, {}));
+  const patch = layoutSchema.parse(await c.req.json());
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.applyLayoutPatch(patch);
 

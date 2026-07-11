@@ -1055,80 +1055,30 @@ test('runtime: info and execute routes respond via the agent', async () => {
   assert.equal((await execRes.json()).execution.stdout, 'ran:1 + 1');
 });
 
-// ---------------------------------------------------------------------------
-// Malformed request body (safeJson characterization)
-//
-// Every mutating route reads its body via `safeJson(c, fallback)`, which
-// substitutes the fallback when `c.req.json()` throws (empty body, wrong
-// content-type, unparseable JSON). Before the wave these were six hand-rolled
-// `await c.req.json().catch(() => …)` sites; the swallow's observable effect
-// differs per route and was previously UNTESTED. These tests pin the current
-// behavior so the safeJson refactor is provably behavior-preserving and any
-// future change to the fallback posture is caught (rule 5: a kept fallback gets
-// a characterization test + a comment naming its condition — see
-// server.ts safeJson()).
-//
-// "malformed" == a body that is not valid JSON, so json() rejects and the
-// fallback fires. Distinct from the "invalid body" tests above, which send
-// valid JSON that fails zod validation.
-// ---------------------------------------------------------------------------
-
 function malformedInit(method) {
-  // Content-Type says JSON but the body is not parseable -> c.req.json() throws.
   return { method, headers: { 'content-type': 'application/json' }, body: 'not json{{' };
 }
 
-test('malformed body: POST /api/workspaces -> 201 default "Untitled Workspace" (swallow is load-bearing)', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const res = await session.request(app, '/api/workspaces', malformedInit('POST'));
-  assert.equal(res.status, 201);
-  const { workspace } = await res.json();
-  // createWorkspaceSchema's name.default() fills the empty {} -> the default UX.
-  assert.equal(workspace.name, 'Untitled Workspace');
-});
-
-test('malformed body: PATCH /api/workspaces/:id -> 200 no-op patch (swallow is load-bearing)', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const workspace = await createWorkspace(session, 'Keep This Name');
-  const res = await session.request(app, `/api/workspaces/${workspace.id}`, malformedInit('PATCH'));
-  assert.equal(res.status, 200);
-  const { workspace: patched } = await res.json();
-  // All-optional patch over {} touches nothing but the updatedAt bump.
-  assert.equal(patched.name, 'Keep This Name');
-});
-
-test('malformed body: PATCH …/layout -> 200 no-op patch (swallow is load-bearing)', async () => {
+test('malformed JSON is rejected consistently without creating a workspace', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session);
-  const res = await session.request(app, `/api/workspaces/${workspace.id}/layout`, malformedInit('PATCH'));
-  assert.equal(res.status, 200);
-  assert.equal((await res.json()).success, true);
-});
 
-test('malformed body: POST …/runtime/execute -> 400 (fail-loud via zod; code required)', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const workspace = await createWorkspace(session);
-  const res = await session.request(app, `/api/workspaces/${workspace.id}/runtime/execute`, malformedInit('POST'));
-  assert.equal(res.status, 400);
-});
+  const cases = [
+    ['/api/workspaces', 'POST'],
+    [`/api/workspaces/${workspace.id}`, 'PATCH'],
+    [`/api/workspaces/${workspace.id}/layout`, 'PATCH'],
+    [`/api/workspaces/${workspace.id}/runtime/execute`, 'POST'],
+    [`/api/workspaces/${workspace.id}/publish`, 'POST'],
+    [`/api/workspaces/${workspace.id}/panels`, 'POST'],
+  ];
 
-test('malformed body: POST …/publish -> 400 (fail-loud via zod; title required)', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const workspace = await createWorkspace(session);
-  const res = await session.request(app, `/api/workspaces/${workspace.id}/publish`, malformedInit('POST'));
-  assert.equal(res.status, 400);
-});
+  for (const [path, method] of cases) {
+    const response = await session.request(app, path, malformedInit(method));
+    assert.equal(response.status, 400, `${method} ${path}`);
+    assert.deepEqual(await response.json(), { error: 'Invalid request body' });
+  }
 
-test('malformed body: POST …/panels -> 400 (fail-loud; null?.panel is undefined)', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const workspace = await createWorkspace(session);
-  const res = await session.request(app, `/api/workspaces/${workspace.id}/panels`, malformedInit('POST'));
-  assert.equal(res.status, 400);
-  assert.deepEqual(await res.json(), { error: 'Invalid panel payload' });
+  const list = await session.request(app, '/api/workspaces');
+  assert.equal((await list.json()).workspaces.length, 1);
 });
