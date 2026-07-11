@@ -192,8 +192,8 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
       onAuthRequired: () => {},
       fetchImpl,
     });
-    // The curated catalog lives at /models on the proxy root; /v1/* is the AI
-    // Gateway passthrough surface, not this endpoint.
+    // The curated catalog lives at /models on the proxy root; /v1/* is the
+    // model-invocation surface (chat/completions, run), not this endpoint.
     response = await cail.call('/models', { method: 'GET' }, { kind: 'jwt', token: identityJwt });
   } catch (error) {
     if (error instanceof CailError && (error.status === 401 || error.status === 403)) {

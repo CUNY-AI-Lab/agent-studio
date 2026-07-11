@@ -2,21 +2,27 @@
  * CAIL model-proxy client for Agent Studio.
  *
  * Agent Studio never holds a provider API key. All model calls go through the
- * CAIL model proxy at `{CAIL_API_BASE}/v1/...` using Cloudflare AI Gateway's
- * OpenAI-compatible path (`/v1/compat/chat/completions`). The proxy attaches
- * the real gateway credentials, stamps per-user spend metadata, and translates
+ * CAIL gateway's OpenAI-compatible chat endpoint
+ * (`POST {CAIL_API_BASE}/v1/chat/completions`). The gateway attaches the real
+ * upstream credentials, stamps per-user spend metadata, and translates
  * quota/auth failures into the CAIL error envelope (see
  * cail-gateway docs/INTEGRATION.md and model-proxy/README.md).
  *
+ * Transport: the shared `@cuny-ai-lab/cail-client` owns the wire discipline.
+ * Its `chatFetch()` adapter plugs into the Vercel AI SDK's
+ * `createOpenAICompatible({ fetch })`: it strips the dummy Authorization,
+ * sends the caller's verified `X-CAIL-Identity-JWT` plus `X-CAIL-App`, and
+ * keeps raw fetch semantics (non-2xx returned to the SDK, no client retries).
+ *
  * Credential: this is a browser tool behind the SSO gate, so we forward the
- * requesting user's verified `X-CAIL-Identity-JWT`. `X-CAIL-App` attributes
- * spend to Agent Studio. No `Authorization: Bearer` is set — that slot is
- * reserved for personal `sk-cail-…` keys, which this tool does not use.
+ * requesting user's verified identity JWT. No personal `sk-cail-…` key is
+ * ever used by this tool.
  */
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { createCailClient } from '@cuny-ai-lab/cail-client';
 import type { LanguageModel } from 'ai';
-import { CAIL_APP_SLUG, CAIL_IDENTITY_HEADER } from './cail-identity';
+import { CAIL_APP_SLUG } from './cail-identity';
 
 /**
  * Default model slug. CAIL policy (2026-07-04) is Workers AI catalog only —
@@ -42,16 +48,6 @@ export function resolveCailModelName(env: CailModelEnv): string {
   return env.CAIL_MODEL || DEFAULT_CAIL_MODEL;
 }
 
-/**
- * Build the OpenAI-compatible base URL for the AI Gateway compat surface
- * exposed by the proxy: `{CAIL_API_BASE}/v1/compat`. The provider appends
- * `/chat/completions`, yielding the contract path
- * `{CAIL_API_BASE}/v1/compat/chat/completions`.
- */
-export function cailCompatBaseUrl(apiBase: string): string {
-  return `${apiBase.replace(/\/+$/, '')}/v1/compat`;
-}
-
 export interface CreateCailModelOptions {
   env: CailModelEnv;
   /** The caller's verified X-CAIL-Identity-JWT, forwarded as the credential. */
@@ -61,10 +57,11 @@ export interface CreateCailModelOptions {
 }
 
 /**
- * Construct a LanguageModel that routes every request through the CAIL model
- * proxy with the caller's identity JWT and the agent-studio app header.
- * Throws if CAIL_API_BASE or the identity JWT is missing — the tool has no
- * other path to model access, so this fails loud rather than silently.
+ * Construct a LanguageModel that routes every request through the CAIL
+ * gateway's `/v1/chat/completions` with the caller's identity JWT and the
+ * agent-studio app header. Throws if CAIL_API_BASE or the identity JWT is
+ * missing — the tool has no other path to model access, so this fails loud
+ * rather than silently.
  */
 export function createCailModel(options: CreateCailModelOptions): LanguageModel {
   const { env, identityJwt } = options;
@@ -76,14 +73,23 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     throw new Error('Missing CAIL identity JWT; cannot authenticate the model call.');
   }
 
+  // The client trims trailing slashes from its baseUrl; mirror that here so
+  // the SDK-derived URL matches chatFetch()'s single served target exactly:
+  // `${base}/v1` + `/chat/completions`.
+  const base = apiBase.replace(/\/+$/, '');
+  const cail = createCailClient({
+    baseUrl: base,
+    app: CAIL_APP_SLUG,
+  });
+
   const provider = createOpenAICompatible({
     name: 'cail',
-    baseURL: cailCompatBaseUrl(apiBase),
-    // No apiKey: we forward the SSO identity JWT, not a Bearer provider key.
-    headers: {
-      [CAIL_IDENTITY_HEADER]: identityJwt,
-      'X-CAIL-App': CAIL_APP_SLUG,
-    },
+    baseURL: `${base}/v1`,
+    // Dummy key: the adapter strips Authorization and sends the identity JWT.
+    apiKey: 'cail-proxy',
+    // chatFetch accepts string | URL inputs; the AI SDK always calls with a
+    // string URL, and the adapter throws loudly on anything unexpected.
+    fetch: cail.chatFetch({ kind: 'jwt', token: identityJwt }) as typeof fetch,
   });
 
   return provider(options.model || resolveCailModelName(env));

@@ -18,7 +18,6 @@ import {
   CAIL_IDENTITY_HEADER,
 } from '../src/lib/cail-identity.ts';
 import {
-  cailCompatBaseUrl,
   createCailModel,
   resolveCailModelName,
   DEFAULT_CAIL_MODEL,
@@ -253,12 +252,6 @@ test('cailAuthRequiredResponse is a 401 with the CAIL envelope', async () => {
 
 // ---- model-proxy call construction ----
 
-test('cailCompatBaseUrl targets the AI Gateway OpenAI-compatible path', () => {
-  assert.equal(cailCompatBaseUrl('https://proxy.example'), 'https://proxy.example/v1/compat');
-  // trailing slash tolerated
-  assert.equal(cailCompatBaseUrl('https://proxy.example/'), 'https://proxy.example/v1/compat');
-});
-
 test('resolveCailModelName honors the override and default', () => {
   assert.equal(
     resolveCailModelName({ CAIL_MODEL: '@cf/openai/gpt-oss-120b' }),
@@ -296,10 +289,13 @@ test('createCailModel forwards the JWT + app header and sets NO provider key', a
 
   assert.equal(captured.length >= 1, true, 'provider should have issued a request');
   const req = captured[0];
-  assert.equal(new URL(req.url).pathname, '/v1/compat/chat/completions');
+  // New gateway contract: OpenAI-compatible chat lives at /v1/chat/completions.
+  assert.equal(new URL(req.url).pathname, '/v1/chat/completions');
   assert.equal(req.headers.get(CAIL_IDENTITY_HEADER), 'jwt-token-value');
   assert.equal(req.headers.get('X-CAIL-App'), CAIL_APP_SLUG);
-  // No provider Bearer key must be present.
+  // The SDK is handed a dummy "cail-proxy" key; the shared client's chatFetch
+  // adapter must strip it — no Authorization ever reaches the wire on the
+  // JWT credential path.
   assert.equal(req.headers.get('authorization'), null);
 });
 

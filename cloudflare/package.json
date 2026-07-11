@@ -14,7 +14,7 @@
     "@cloudflare/ai-chat": "0.2.5",
     "@cloudflare/codemode": "0.3.1",
     "@cloudflare/shell": "0.3.0",
-    "@cuny-ai-lab/cail-client": "github:CUNY-AI-Lab/cail-client#629e9a9dc933c5ca05ac5a9cccf5260439bcbdc6",
+    "@cuny-ai-lab/cail-client": "github:CUNY-AI-Lab/cail-client#82912b75fbb830bd0cd82d2f7c7975165b859969",
     "@cuny-ai-lab/cail-identity": "github:CUNY-AI-Lab/cail-identity#c864637828c8e2a5dedbfe890531964e60049537",
     "agents": "0.8.4",
     "ai": "6.0.138",
