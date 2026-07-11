@@ -7,6 +7,8 @@ import { gitTools } from '@cloudflare/shell/git';
 import { stateTools } from '@cloudflare/shell/workers';
 import {
   convertToModelMessages,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
   pruneMessages,
   stepCountIs,
   streamText,
@@ -420,14 +422,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.finalizeObservabilityRequest(requestId, 'error', 'No CAIL identity credential for model call', {
         error: 'authentication_required',
       }, 'error');
-      return new Response(
-        JSON.stringify({
-          error: 'authentication_required',
-          login_url: '/login',
-          message: 'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
+      const errorText = JSON.stringify({
+        error: 'authentication_required',
+        login_url: '/login',
+        message: 'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
+      });
+      return createUIMessageStreamResponse({
+        stream: createUIMessageStream({
+          execute: ({ writer }) => writer.write({ type: 'error', errorText }),
         }),
-        { status: 401, headers: { 'Content-Type': 'application/json' } },
-      );
+      });
     }
 
     try {
