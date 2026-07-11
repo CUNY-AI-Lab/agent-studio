@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { AgentClient } from '../cloudflare/node_modules/agents/dist/client.js';
+import { AgentClient } from 'agents/client';
 
 const CHAT_MESSAGE_TYPE = {
   REQUEST: 'cf_agent_use_chat_request',

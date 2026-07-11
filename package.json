@@ -11,6 +11,9 @@
   "overrides": {
     "partyserver": "0.3.3"
   },
+  "devDependencies": {
+    "agents": "0.8.4"
+  },
   "scripts": {
     "dev": "bun run --cwd cloudflare dev",
     "dev:worker": "bun run --cwd cloudflare dev",
