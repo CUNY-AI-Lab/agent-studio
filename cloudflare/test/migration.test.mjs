@@ -388,6 +388,57 @@ test('retry after a listed-file read failure succeeds and completes cleanup', as
   assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
 });
 
+test('retry cleans source runtime files for workspaces marked complete before failure', async () => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = makeEnv(r2);
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'first.txt': 'first' });
+  await seedWorkspace(r2, pool, ANON, 'ws2', 'Second', { 'second.txt': 'second' });
+  const secondSource = await pool.getAgent(ANON, 'ws2');
+  secondSource.unreadablePaths.add('second.txt');
+  const registry = new FakeRegistry();
+
+  await assert.rejects(
+    maybeMigrateAnonymousSession({
+      env,
+      anonSessionId: ANON,
+      subjectSessionId: SUBJECT,
+      registry,
+      getAgent: pool.getAgent,
+    }),
+    /second\.txt/,
+  );
+
+  // ws1's target record is the completion marker, but cleanup has not run yet.
+  assert.ok(await r2.get(wsKey(SUBJECT, 'ws1')));
+  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, false);
+
+  // Simulate subject-owned work after the partial migration. The retry must
+  // skip this target workspace and clean only its anonymous counterpart.
+  const firstTarget = await pool.getAgent(SUBJECT, 'ws1');
+  firstTarget.files.set('subject-only.txt', {
+    text: 'keep me',
+    contentType: 'text/plain; charset=utf-8',
+  });
+
+  secondSource.unreadablePaths.delete('second.txt');
+  const retry = await maybeMigrateAnonymousSession({
+    env,
+    anonSessionId: ANON,
+    subjectSessionId: SUBJECT,
+    registry,
+    getAgent: pool.getAgent,
+  });
+
+  assert.equal(retry, 'migrated');
+  assert.equal(registry.record.status, 'done');
+  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, true);
+  assert.equal((await pool.getAgent(ANON, 'ws2')).cleared, true);
+  assert.equal(firstTarget.files.get('subject-only.txt').text, 'keep me');
+  assert.equal((await pool.getAgent(SUBJECT, 'ws2')).files.get('second.txt').text, 'second');
+  assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
+});
+
 test('corrupt anon downloads blob fails migration loudly instead of silently dropping deliverables', async (t) => {
   const r2 = new MockR2();
   const pool = makeAgentPool();

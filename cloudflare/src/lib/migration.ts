@@ -238,11 +238,12 @@ export async function migrateAnonymousSession(
     subjectSessionId
   );
 
-  // Cleanup only after everything copied: clear each migrated workspace's old
-  // DO runtime (frees its R2 runtime prefix), then drop the anonymous session
-  // prefix so the namespace reads empty.
-  for (const workspaceId of result.migratedWorkspaceIds) {
-    const oldAgent = await getAgent(anonSessionId, workspaceId);
+  // Cleanup only after everything copied: clear every source workspace's old
+  // DO runtime (frees its separate R2 runtime prefix), including workspaces
+  // skipped because an earlier attempt already wrote their completion marker.
+  // These are anonymous-named agents, so subject-owned runtime data is untouched.
+  for (const workspace of anonWorkspaces) {
+    const oldAgent = await getAgent(anonSessionId, workspace.id);
     await oldAgent.clearWorkspaceFiles();
   }
   await deleteByPrefix(env, sessionPrefix(anonSessionId));
