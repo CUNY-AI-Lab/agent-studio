@@ -27,6 +27,7 @@ import {
   correlationFromHeaders,
   createCailLogger,
   outboundCorrelationHeaders,
+  workersStructuredSink,
   type CailCorrelation,
   type CailLogFields,
   type CailLogger,
@@ -40,14 +41,13 @@ export type { CailCorrelation, CailLogFields, CailLogger };
 export const LOG_SERVICE = 'agent-studio';
 
 /**
- * Build an agent-studio logger. The default sink is
- * `console.log(JSON.stringify(event))`, which Workers Logs indexes per key;
- * tests inject a capture sink.
+ * Build an agent-studio logger. Workers use Cloudflare's structured console
+ * sink; tests can inject a capture sink.
  */
 export function createStudioLogger(options: { sink?: CailLogSink } = {}): CailLogger {
   return createCailLogger({
     service: LOG_SERVICE,
-    ...(options.sink ? { sink: options.sink } : {}),
+    sink: options.sink ?? workersStructuredSink,
   });
 }
 

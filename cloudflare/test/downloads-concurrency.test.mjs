@@ -113,16 +113,9 @@ test('legacy downloads.json blob is still readable (backward-read)', async () =>
 
 const LEGACY_KEY = `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads.json`;
 
-// The structured logger's default sink is console.log(JSON.stringify(event)).
 function corruptEventsFrom(logMock) {
   return logMock.mock.calls
-    .map((call) => {
-      try {
-        return JSON.parse(call.arguments[0]);
-      } catch {
-        return null;
-      }
-    })
+    .map((call) => call.arguments[0])
     .filter((event) => event && event.event === 'downloads.corrupt');
 }
 
@@ -132,7 +125,7 @@ test('corrupt legacy downloads.json emits a structured event, not silently read 
   await r2.put(LEGACY_KEY, '{not valid json');
   await addWorkspaceDownload(env, SESSION, WS, { filename: 'ok.txt', format: 'txt', data: 'ok' });
 
-  const logs = t.mock.method(console, 'log', () => {});
+  const logs = t.mock.method(console, 'error', () => {});
   const downloads = await getWorkspaceDownloads(env, SESSION, WS);
 
   // Listing stays up (one bad object cannot take it down)...
@@ -159,7 +152,7 @@ test('corrupt per-object downloads emit one event each and are skipped; good ent
   await r2.put(badParseKey, '{truncated');
   await r2.put(badShapeKey, JSON.stringify({ seq: 1, createdAt: 'x' })); // no download payload
 
-  const logs = t.mock.method(console, 'log', () => {});
+  const logs = t.mock.method(console, 'error', () => {});
   const downloads = await getWorkspaceDownloads(env, SESSION, WS);
 
   assert.deepEqual(downloads.map((d) => d.filename), ['good.txt']);
