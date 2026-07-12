@@ -68,3 +68,22 @@ export interface Env {
   LIBGUIDES_CLIENT_SECRET?: string;
   LIBGUIDES_SITE_ID?: string;
 }
+
+export const MIN_REQUIRED_SESSION_SECRET_LENGTH = 32;
+
+export type AgentStudioConfigValidation =
+  | { ok: true }
+  | { ok: false; errorCode: 'session_secret_missing' | 'session_secret_too_short' };
+
+/** Validate required runtime configuration before any application traffic. */
+export function validateAgentStudioConfig(
+  env: Pick<Env, 'SESSION_SECRET'> | { SESSION_SECRET?: unknown }
+): AgentStudioConfigValidation {
+  if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
+    return { ok: false, errorCode: 'session_secret_missing' };
+  }
+  if (env.SESSION_SECRET.length < MIN_REQUIRED_SESSION_SECRET_LENGTH) {
+    return { ok: false, errorCode: 'session_secret_too_short' };
+  }
+  return { ok: true };
+}

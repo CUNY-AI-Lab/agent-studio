@@ -3,7 +3,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { WorkspaceAgent } from './agent/workspace-agent';
 import type { WorkspaceFileInfo, WorkspacePanel, WorkspaceRecord } from './domain/workspace';
-import type { Env } from './env';
+import { validateAgentStudioConfig, type AgentStudioConfigValidation, type Env } from './env';
 import {
   cloneGalleryItem,
   GalleryError,
@@ -332,7 +332,16 @@ app.use('/api/workspaces/:id/*', requireWorkspace);
 app.use('/api/gallery/:id', validateGalleryIdParam);
 app.use('/api/gallery/:id/*', validateGalleryIdParam);
 
-app.get('/health', (c) => c.json({ ok: true, service: 'agent-studio' }));
+app.get('/health', (c) => {
+  const config = validateAgentStudioConfig(c.env);
+  if (!config.ok) {
+    return c.json(
+      { ok: false, service: 'agent-studio', error: 'configuration_invalid', errorCode: config.errorCode },
+      503
+    );
+  }
+  return c.json({ ok: true, service: 'agent-studio' });
+});
 
 // The session bootstrap the frontend hits first also delivers the per-session
 // CSRF token (rule 3). Per the 2026-07-05 delivery amendment the token is
@@ -952,13 +961,16 @@ export { MigrationRegistry } from './migration-registry';
 // AS-3-10 deploy-footgun guard. Several intentionally permissive local-dev
 // defaults are unsafe on the shared production host. Warn loudly once so a
 // deploy that missed its injected model proxy, identity gate, or cookie base
-// path is obvious in logs. We warn rather than throw because those defaults are
-// expected locally.
+// path is obvious in logs. Those optional settings remain warnings; the
+// required SESSION_SECRET is validated separately and fails startup traffic.
 let cailConfigChecked = false;
-function checkCailConfigOnce(env: Env): void {
+function checkCailConfigOnce(env: Env, config: AgentStudioConfigValidation): void {
   if (cailConfigChecked) return;
   cailConfigChecked = true;
   const base = env.CAIL_API_BASE ?? '';
+  if (!config.ok) {
+    studioLogger().warn('startup.config_invalid', { error_code: config.errorCode });
+  }
   if (base.includes('REPLACE') || base.includes('.invalid')) {
     studioLogger().warn('startup.config_invalid', { error_code: 'cail_api_base_placeholder' });
   }
@@ -975,7 +987,14 @@ function checkCailConfigOnce(env: Env): void {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    checkCailConfigOnce(env);
+    const config = validateAgentStudioConfig(env);
+    checkCailConfigOnce(env, config);
+    if (!config.ok && new URL(request.url).pathname !== '/health') {
+      return Response.json(
+        { error: 'Service unavailable: invalid configuration', errorCode: config.errorCode },
+        { status: 503 }
+      );
+    }
     // Origin-check the /agents/* WebSocket upgrade BEFORE routeAgentRequest
     // accepts it (rule 4): the browser does not enforce same-origin on WS
     // handshakes, and the connection-lifetime identity JWT means an origin

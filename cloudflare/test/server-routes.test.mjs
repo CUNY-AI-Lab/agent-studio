@@ -86,6 +86,30 @@ test('health check is public and needs no session', async () => {
   assert.deepEqual(await res.json(), { ok: true, service: 'agent-studio' });
 });
 
+test('health check reports unhealthy when SESSION_SECRET is missing', async () => {
+  const { env } = makeEnv();
+  delete env.SESSION_SECRET;
+  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), {
+    ok: false,
+    service: 'agent-studio',
+    error: 'configuration_invalid',
+    errorCode: 'session_secret_missing',
+  });
+});
+
+test('startup guard refuses application traffic when SESSION_SECRET is missing', async () => {
+  const { env } = makeEnv();
+  delete env.SESSION_SECRET;
+  const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), {
+    error: 'Service unavailable: invalid configuration',
+    errorCode: 'session_secret_missing',
+  });
+});
+
 test('no cookie -> a signed session cookie is issued and reused', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
