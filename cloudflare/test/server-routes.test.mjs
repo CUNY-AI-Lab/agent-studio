@@ -28,7 +28,7 @@ import { galleryOwnerTag } from '../src/lib/gallery.ts';
 const app = await importServer();
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
-const CAIL_TEST_SECRET = 'test-shared-secret';
+const CAIL_TEST_SECRET = 'test-shared-secret-at-least-32-bytes';
 const encoder = new TextEncoder();
 
 function jsonInit(method, body) {
@@ -884,7 +884,15 @@ test('/api/models surfaces proxy auth failure as 502', async () => {
   const session = new Session(env);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ error: 'authentication_required', message: 'bad gateway auth' }), {
+    new Response(JSON.stringify({
+      error: {
+        message: 'bad gateway auth',
+        type: 'authentication_error',
+        param: null,
+        code: 'authentication_required',
+        cail: { login_url: '/login' },
+      },
+    }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -910,7 +918,15 @@ test('/api/models surfaces proxy quota exhaustion as 429', async () => {
   const session = new Session(env);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({ error: 'quota_exceeded', message: 'quota exhausted' }), {
+    new Response(JSON.stringify({
+      error: {
+        message: 'quota exhausted',
+        type: 'rate_limit_error',
+        param: null,
+        code: 'quota_exceeded',
+        cail: { retry_after_seconds: 1800 },
+      },
+    }), {
       status: 429,
       headers: { 'Content-Type': 'application/json' },
     });

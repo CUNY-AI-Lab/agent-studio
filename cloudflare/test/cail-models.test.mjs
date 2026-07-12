@@ -53,7 +53,15 @@ function dataResponse(data) {
 
 function cailErrorResponse(status, code, message) {
   return () =>
-    new Response(JSON.stringify({ error: code, message }), {
+    new Response(JSON.stringify({
+      error: {
+        message,
+        type: status === 429 ? 'rate_limit_error' : 'authentication_error',
+        param: null,
+        code,
+        cail: {},
+      },
+    }), {
       status,
       headers: { 'Content-Type': 'application/json' },
     });

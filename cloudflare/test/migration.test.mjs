@@ -528,7 +528,7 @@ test('failure marks the claim failed and a later run retries and completes', asy
 // authenticated request with a legacy cookie migrates and drops the cookie.
 // ---------------------------------------------------------------------------
 
-const JWT_SECRET = 'middleware-test-secret';
+const JWT_SECRET = 'middleware-test-secret-at-least-32-bytes';
 const encoder = new TextEncoder();
 
 function b64url(bytes) {

@@ -23,7 +23,7 @@ import {
   DEFAULT_CAIL_MODEL,
 } from '../src/lib/cail-model.ts';
 
-const SECRET = 'test-shared-secret';
+const SECRET = 'test-shared-secret-at-least-32-bytes';
 const encoder = new TextEncoder();
 
 function b64url(bytes) {
@@ -80,7 +80,7 @@ test('verifies a well-formed token and returns the subject', async () => {
 });
 
 test('rejects a token signed with the wrong secret', async () => {
-  const token = await mintJwt(validPayload(), { secret: 'other-secret' });
+  const token = await mintJwt(validPayload(), { secret: 'other-shared-secret-at-least-32-bytes' });
   assert.equal(await verifyIdentityJwt(token, SECRET, OPTS), null);
 });
 

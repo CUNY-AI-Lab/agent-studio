@@ -2,7 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { generateText } from 'ai';
-import { CailError } from '@cuny-ai-lab/cail-client';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
 
@@ -44,11 +43,10 @@ test('nested gateway authentication errors preserve metadata and are not retried
   });
   const error = await generateText({ model, prompt: 'hello' }).catch((nextError) => nextError);
 
-  assert.ok(error instanceof CailError);
-  assert.equal(error.code, 'authentication_required');
+  assert.equal(error.name, 'AI_APICallError');
   assert.equal(error.message, 'Sign in to use CAIL models.');
-  assert.equal(error.extras.login_url, '/login');
-  assert.equal(error.extras.request_id, 'req-agent-auth-1');
-  assert.equal(error.extras.should_retry, false);
+  assert.equal(error.statusCode, 401);
+  assert.equal(error.responseHeaders['x-request-id'], 'req-agent-auth-1');
+  assert.equal(error.responseHeaders['x-should-retry'], 'false');
   assert.equal(wireCalls, 1);
 });
