@@ -2,7 +2,7 @@
  * CAIL model catalog client for Agent Studio.
  *
  * The user-facing model picker is fed by the CAIL model proxy's curated
- * catalog: `GET {CAIL_API_BASE}/models` with the caller's identity JWT and the
+ * catalog: `GET {CAIL_API_BASE}/v1/models` with the caller's identity JWT and the
  * agent-studio app header. The response is an OpenAI list; the proxy returns it
  * pre-sorted by `order`, so `data[0]` is the fleet default.
  *
@@ -192,9 +192,9 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
       onAuthRequired: () => {},
       fetchImpl,
     });
-    // The curated catalog lives at /models on the proxy root; /v1/* is the
-    // model-invocation surface (chat/completions, run), not this endpoint.
-    response = await cail.call('/models', { method: 'GET' }, { kind: 'jwt', token: identityJwt });
+    // Model discovery follows the OpenAI-compatible surface. The old root
+    // `/models` route is intentionally retired by the gateway.
+    response = await cail.call('/v1/models', { method: 'GET' }, { kind: 'jwt', token: identityJwt });
   } catch (error) {
     if (error instanceof CailError && (error.status === 401 || error.status === 403)) {
       throw new ModelCatalogAuthError(error.message);

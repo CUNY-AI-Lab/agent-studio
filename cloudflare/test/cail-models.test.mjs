@@ -82,9 +82,10 @@ test('parses the proxy list and marks the first entry recommended', async () => 
     ]
   );
 
-  // Sanity: it hit /models with the identity + app headers, no Bearer key.
+  // Sanity: it hit the canonical OpenAI-compatible model route with the
+  // identity + app headers, no Bearer key.
   const req = new Request(calls[0].url, calls[0].init);
-  assert.equal(new URL(req.url).pathname, '/models');
+  assert.equal(new URL(req.url).pathname, '/v1/models');
   assert.equal(req.headers.get(CAIL_IDENTITY_HEADER), JWT);
   assert.equal(req.headers.get('X-CAIL-App'), CAIL_APP_SLUG);
   assert.equal(req.headers.get('authorization'), null);
