@@ -27,6 +27,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createCailClient } from '@cuny-ai-lab/cail-client';
 import type { LanguageModel } from 'ai';
 import { CAIL_APP_SLUG } from './cail-identity';
+import { withOutboundCorrelation, type CailCorrelation } from './logging';
 
 /**
  * Default model slug. CAIL policy (2026-07-04) is Workers AI catalog only —
@@ -58,6 +59,12 @@ export interface CreateCailModelOptions {
   identityJwt: string;
   /** Optional per-call model override (falls back to env / default). */
   model?: string;
+  /**
+   * Correlation to propagate to the model proxy (`traceparent` +
+   * `X-CAIL-Request-Id`), so gateway/proxy logs join to this Worker's wide
+   * events. Omitted → no correlation headers are attached.
+   */
+  correlation?: CailCorrelation;
 }
 
 /**
@@ -86,6 +93,14 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     app: CAIL_APP_SLUG,
   });
 
+  // The adapter preserves caller-supplied init headers (it manages only the
+  // credential/app/metadata headers), so correlation headers merged here reach
+  // the proxy intact.
+  const chatFetch = cail.chatFetch({ kind: 'jwt', token: identityJwt });
+  const fetchImpl = options.correlation
+    ? withOutboundCorrelation(chatFetch, options.correlation)
+    : chatFetch;
+
   const provider = createOpenAICompatible({
     name: 'cail',
     baseURL: `${base}/v1`,
@@ -93,7 +108,7 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     apiKey: 'cail-proxy',
     // chatFetch accepts string | URL inputs; the AI SDK always calls with a
     // string URL, and the adapter throws loudly on anything unexpected.
-    fetch: cail.chatFetch({ kind: 'jwt', token: identityJwt }) as typeof fetch,
+    fetch: fetchImpl as typeof fetch,
   });
 
   return provider(options.model || resolveCailModelName(env));

@@ -16,6 +16,7 @@
     "@cloudflare/shell": "0.3.0",
     "@cuny-ai-lab/cail-client": "github:CUNY-AI-Lab/cail-client#2d517454dd0c70b5f09e2eeb58fdad4f77debcb3",
     "@cuny-ai-lab/cail-identity": "github:CUNY-AI-Lab/cail-identity#c864637828c8e2a5dedbfe890531964e60049537",
+    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95e028a",
     "agents": "0.8.4",
     "ai": "6.0.138",
     "docx": "9.7.1",

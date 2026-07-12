@@ -49,6 +49,12 @@ import {
   wsOriginAllowed,
 } from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
+import {
+  correlationFromHeaders,
+  logBoundaryEvent,
+  studioLogger,
+  type CailCorrelation,
+} from './lib/logging';
 import { isAllowedUpload } from './lib/upload-validation';
 import { fileServingHeaders, previewServingHeaders } from './lib/file-serving';
 import {
@@ -119,6 +125,10 @@ const app = new Hono<{
 
 type AppVariables = SessionVariables & {
   workspace?: WorkspaceRecord;
+  /** Correlation adopted (or minted) at the request boundary — see the boundary-log middleware. */
+  logCorrelation?: CailCorrelation;
+  /** Epoch ms when the boundary-log middleware first saw this request. */
+  logStartedAt?: number;
 };
 
 type AppContext = Context<{
@@ -126,23 +136,60 @@ type AppContext = Context<{
   Variables: AppVariables;
 }>;
 
+/**
+ * The CLASSIFIED route label for the boundary log event: the matched route
+ * PATTERN (e.g. `/api/workspaces/:id/files/*`), never the raw path — raw
+ * paths carry workspace ids and filenames, which are content, not metadata.
+ * Middleware registrations match with method 'ALL'; the final handler's
+ * registration carries the real method, so scan from the end.
+ */
+function classifiedRoute(c: AppContext): string {
+  const matched = c.req.matchedRoutes;
+  for (let i = matched.length - 1; i >= 0; i -= 1) {
+    const route = matched[i];
+    if (route.method !== 'ALL' && route.path !== '*' && route.path !== '/*') {
+      return route.path;
+    }
+  }
+  return 'unmatched';
+}
+
+/** Emit the one wide boundary event for this request (fleet logging standard). */
+function emitBoundaryEvent(c: AppContext, status: number, errorCode?: string): void {
+  logBoundaryEvent(studioLogger(), {
+    correlation: c.get('logCorrelation') ?? correlationFromHeaders(c.req.raw),
+    method: c.req.method,
+    route: classifiedRoute(c),
+    status,
+    durationMs: Date.now() - (c.get('logStartedAt') ?? Date.now()),
+    subject: c.get('cailIdentity')?.subject,
+    ...(errorCode ? { errorCode } : {}),
+  });
+}
+
 // Validation failures are client errors: routes validate with zod .parse and
-// rely on this mapping instead of try/catch at every call site.
+// rely on this mapping instead of try/catch at every call site. Each mapped
+// response also emits the request's wide boundary event (thrown errors skip
+// the boundary middleware's post-`next()` emit, so this is the only emitter
+// on the throw path — never a double log).
 app.onError((error, c) => {
+  const respond = (response: Response, errorCode: string) => {
+    emitBoundaryEvent(c, response.status, errorCode);
+    return response;
+  };
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
-    return c.json({ error: 'Invalid request body' }, 400);
+    return respond(c.json({ error: 'Invalid request body' }, 400), 'invalid_request');
   }
   if (error instanceof GalleryError) {
-    return c.json({ error: error.message }, error.status);
+    return respond(c.json({ error: error.message }, error.status), 'gallery_error');
   }
   if (error instanceof ModelCatalogAuthError) {
-    return c.json({ error: 'Model catalog authentication failed' }, 502);
+    return respond(c.json({ error: 'Model catalog authentication failed' }, 502), 'upstream_auth_failed');
   }
   if (error instanceof ModelCatalogQuotaError) {
-    return c.json({ error: 'quota_exceeded', message: error.message }, 429);
+    return respond(c.json({ error: 'quota_exceeded', message: error.message }, 429), 'quota_exceeded');
   }
-  console.error('Unhandled route error', { path: c.req.path, error });
-  return c.json({ error: 'Internal error' }, 500);
+  return respond(c.json({ error: 'Internal error' }, 500), 'internal_error');
 });
 
 // AS-3-6 boundary checks. `import` is a literal POST sub-route of
@@ -245,6 +292,21 @@ function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFi
       return left.path.localeCompare(right.path);
     });
 }
+
+// ONE wide event per unit of work at the HTTP boundary (fleet logging
+// standard, 2026-07-11). Registered before every other middleware so the
+// timer covers the whole request and the correlation ids exist for the rest
+// of the chain. Correlation is adopted from the gateway's `traceparent` /
+// `X-CAIL-Request-Id` when present, minted otherwise ("adopt, never
+// regenerate"). Runs on '*' so /health and unmatched routes are covered too.
+// Success path emits here after `next()`; thrown errors bypass this emit and
+// are logged exactly once by app.onError above.
+app.use('*', async (c, next) => {
+  c.set('logCorrelation', correlationFromHeaders(c.req.raw));
+  c.set('logStartedAt', Date.now());
+  await next();
+  emitBoundaryEvent(c, c.res.status);
+});
 
 app.use('/api/*', sessionMiddleware);
 // CSRF enforcement runs after sessionMiddleware (it keys the fallback token by
@@ -935,15 +997,28 @@ export default {
     // is rejected here; the per-connection CSRF token gate then runs inside the
     // Durable Object on connect (see WorkspaceAgent.onConnect).
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+      // These 403s never reach the Hono boundary middleware, so they emit
+      // their own auth.denied wide event (route label, never the raw path).
+      const denyUpgrade = (errorCode: string, body: string): Response => {
+        logBoundaryEvent(studioLogger(), {
+          correlation: correlationFromHeaders(request),
+          method: request.method,
+          route: 'agents/ws-upgrade',
+          status: 403,
+          durationMs: 0,
+          errorCode,
+        });
+        return new Response(body, { status: 403 });
+      };
       if (!wsOriginAllowed(request, env.CAIL_CANONICAL_ORIGIN)) {
-        return new Response('Forbidden: cross-origin WebSocket upgrade', { status: 403 });
+        return denyUpgrade('ws_origin_mismatch', 'Forbidden: cross-origin WebSocket upgrade');
       }
       // Reject an unauthenticated /agents/* socket at the edge, before routeAgentRequest
       // instantiates the DO — the SDK sends the full persisted state on connect BEFORE the
       // DO's onConnect can close the socket, so the token must be checked here (A2).
       const wsPath = new URL(request.url).pathname;
       if (wsAgentSessionIdFromPath(wsPath) && !(await wsAgentCsrfValid(request, env.SESSION_SECRET))) {
-        return new Response('Forbidden: missing or invalid connection token', { status: 403 });
+        return denyUpgrade('ws_csrf_invalid', 'Forbidden: missing or invalid connection token');
       }
     }
     const agentResponse = await routeAgentRequest(request, env);

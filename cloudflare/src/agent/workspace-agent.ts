@@ -28,8 +28,16 @@ import {
   type WorkspaceState,
 } from '../domain/workspace';
 import type { Env } from '../env';
+import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
-import { verifyCredentialForSession } from '../lib/cail-identity';
+import { CAIL_APP_SLUG, verifyCredentialForSession } from '../lib/cail-identity';
+import {
+  CAIL_EVENTS,
+  mintCorrelation,
+  studioLogger,
+  type CailCorrelation,
+  type CailLogFields,
+} from '../lib/logging';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
 import {
   extractPdfText,
@@ -230,6 +238,41 @@ function summarizeChunkData(chunk: { type: string } & Record<string, unknown>): 
 }
 
 const CAIL_CREDENTIAL_STORAGE_KEY = 'cail:identity-jwt';
+const CAIL_SUBJECT_STORAGE_KEY = 'cail:subject';
+
+/**
+ * Stable error-code slug for a DO-op failure. A CailError carries the
+ * gateway's stable envelope code (`quota_exceeded`, `authentication_required`,
+ * …) plus an HTTP status; anything else is an opaque internal failure — the
+ * error MESSAGE is never logged (it can interpolate user content).
+ */
+function logErrorFacts(error: unknown): { error_code: string; status?: number } {
+  if (error instanceof CailError) {
+    return { error_code: error.code, ...(error.status > 0 ? { status: error.status } : {}) };
+  }
+  return { error_code: 'internal_error' };
+}
+
+/**
+ * Base fields for this DO's wide log events: correlation ids, the app slug,
+ * a stable op label as the classified `route`, and the verified subject when
+ * one is installed. Workspace/session ids are NOT on the cail-log allowlist
+ * (they would be dropped at emit); the subject + request_id are the join
+ * keys — the subject determines the session id, and the chat request_id
+ * matches the DO's own observability trace.
+ */
+function doLogFields(
+  correlation: CailCorrelation,
+  route: string,
+  subject: string | null | undefined,
+): CailLogFields {
+  return {
+    ...correlation,
+    app: CAIL_APP_SLUG,
+    route,
+    ...(subject ? { subject } : {}),
+  };
+}
 
 export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   initialState: WorkspaceState = DEFAULT_WORKSPACE_STATE;
@@ -247,6 +290,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * kept in DO storage so it survives hibernation. Never broadcast in state.
    */
   private cailIdentityJwt: string | null = null;
+  /**
+   * The pseudonymous X-CAIL-Subject of the verified credential above, stored
+   * ONLY for structured log events (the fleet keys logs by subject, never
+   * email or session cookie). Set alongside the credential and persisted so
+   * it survives hibernation with it.
+   */
+  private cailSubject: string | null = null;
 
   async onStart() {
     if (!this.state.workspace) {
@@ -256,6 +306,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
       if (typeof stored === 'string') {
         this.cailIdentityJwt = stored;
+      }
+    }
+    if (this.cailSubject === null) {
+      const storedSubject = await this.ctx.storage.get<string>(CAIL_SUBJECT_STORAGE_KEY);
+      if (typeof storedSubject === 'string') {
+        this.cailSubject = storedSubject;
       }
     }
     if (await this.ctx.storage.get(MIGRATION_FROZEN_KEY)) {
@@ -362,6 +418,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       // No session id derivable yet (DO opened before first sync and the name
       // is not in the expected `${sessionId}-${wid}` shape): refuse rather than
       // store an unbindable credential.
+      studioLogger().warn(CAIL_EVENTS.AUTH_DENIED, {
+        ...doLogFields(mintCorrelation(), 'agent/set-credential', this.cailSubject),
+        outcome: 'denied',
+        error_code: 'session_unbound',
+      });
       throw new Error('setCailCredential: session id unavailable for credential binding');
     }
     const identity = await verifyCredentialForSession(
@@ -370,11 +431,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.env.CAIL_IDENTITY_JWT_SECRET,
     );
     if (!identity) {
+      studioLogger().warn(CAIL_EVENTS.AUTH_DENIED, {
+        ...doLogFields(mintCorrelation(), 'agent/set-credential', this.cailSubject),
+        outcome: 'denied',
+        error_code: 'invalid_credential',
+      });
       throw new Error('setCailCredential: rejected unverified or non-matching identity JWT');
     }
 
     this.cailIdentityJwt = identityJwt;
+    this.cailSubject = identity.subject;
     await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
+    await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
   }
 
   async syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void> {
@@ -414,11 +482,22 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const workspace = this.requireWorkspace();
     const sessionId = this.requireSessionId();
     const requestId = options?.requestId ?? 'unknown';
+    // A chat turn arrives over the client WebSocket — there are no inbound
+    // HTTP headers to adopt — so correlation is minted per turn, adopting the
+    // AI SDK's requestId as the fleet request id when it is shaped like one.
+    // The same correlation is propagated on this turn's model-proxy calls.
+    const correlation = mintCorrelation(requestId);
+    const startedAt = Date.now();
 
     if (!this.cailIdentityJwt) {
       // No verified CAIL credential reached this workspace: the model proxy
       // has no way to authenticate or attribute spend. Surface the CAIL
       // authentication_required envelope rather than calling out anonymously.
+      studioLogger().warn(CAIL_EVENTS.AUTH_DENIED, {
+        ...doLogFields(correlation, 'agent/chat', this.cailSubject),
+        outcome: 'denied',
+        error_code: 'authentication_required',
+      });
       this.finalizeObservabilityRequest(requestId, 'error', 'No CAIL identity credential for model call', {
         error: 'authentication_required',
       }, 'error');
@@ -468,6 +547,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         env: this.env,
         identityJwt: this.cailIdentityJwt,
         model: workspace.model,
+        // Propagate this turn's correlation to the model proxy so gateway/
+        // proxy logs join to this DO's wide events.
+        correlation,
       });
       const scopedPanelTraceIds = scopedPanels.map((panel) => panel.id);
 
@@ -511,6 +593,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           );
         },
         onFinish: ({ finishReason, rawFinishReason, totalUsage, response }) => {
+          // THE wide event for a successful chat turn: metadata + token
+          // COUNTS only, per the fleet safe-to-log allowlist.
+          studioLogger().info(CAIL_EVENTS.REQUEST_COMPLETED, {
+            ...doLogFields(correlation, 'agent/chat', this.cailSubject),
+            model: modelName,
+            outcome: 'ok',
+            duration_ms: Date.now() - startedAt,
+            input_tokens: totalUsage?.inputTokens,
+            output_tokens: totalUsage?.outputTokens,
+          });
           this.finalizeObservabilityRequest(requestId, 'finished', 'Chat request finished', {
             finishReason,
             rawFinishReason,
@@ -519,6 +611,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           });
         },
         onAbort: ({ steps }) => {
+          studioLogger().warn(CAIL_EVENTS.REQUEST_COMPLETED, {
+            ...doLogFields(correlation, 'agent/chat', this.cailSubject),
+            model: modelName,
+            outcome: 'client_error',
+            error_code: 'aborted',
+            duration_ms: Date.now() - startedAt,
+          });
           this.finalizeObservabilityRequest(requestId, 'aborted', 'Chat request aborted', {
             steps: steps.length,
           }, 'warn');
@@ -527,11 +626,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           this.finalizeObservabilityRequest(requestId, 'error', 'streamText reported an error', {
             error: summarizeError(error.error),
           }, 'error');
-          console.error('WorkspaceAgent streamText error', {
-            workspaceId: workspace.id,
-            sessionId,
-            requestId,
-            error,
+          // Structured replacement for the old console.error: stable code +
+          // status only, never the error message (it can carry user content).
+          studioLogger().error(CAIL_EVENTS.UPSTREAM_ERROR, {
+            ...doLogFields(correlation, 'agent/chat', this.cailSubject),
+            model: modelName,
+            outcome: 'error',
+            duration_ms: Date.now() - startedAt,
+            ...logErrorFacts(error.error),
           });
         },
       });
@@ -541,11 +643,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           this.finalizeObservabilityRequest(requestId, 'error', 'UI message stream failed', {
             error: summarizeError(error),
           }, 'error');
-          console.error('WorkspaceAgent chat stream failed', {
-            workspaceId: workspace.id,
-            sessionId,
-            requestId,
-            error,
+          studioLogger().error(CAIL_EVENTS.UPSTREAM_ERROR, {
+            ...doLogFields(correlation, 'agent/chat', this.cailSubject),
+            model: modelName,
+            outcome: 'error',
+            duration_ms: Date.now() - startedAt,
+            ...logErrorFacts(error),
           });
           const quota = quotaSignalFromError(error);
           return quota ?? 'Agent Studio hit an internal error while streaming this response.';
@@ -555,11 +658,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.finalizeObservabilityRequest(requestId, 'error', 'Chat failed before streaming began', {
         error: summarizeError(error),
       }, 'error');
-      console.error('WorkspaceAgent chat failed before streaming began', {
-        workspaceId: workspace.id,
-        sessionId,
-        requestId,
-        error,
+      studioLogger().error(CAIL_EVENTS.REQUEST_COMPLETED, {
+        ...doLogFields(correlation, 'agent/chat', this.cailSubject),
+        status: 500,
+        outcome: 'error',
+        duration_ms: Date.now() - startedAt,
+        ...logErrorFacts(error),
       });
       return new Response('Agent Studio could not start this response.', { status: 500 });
     }
@@ -599,16 +703,38 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   @callable()
   async executeCode(code: string): Promise<ExecuteResult> {
-    this.assertNotFrozen();
-    const rateKey = this.csrfSessionId() ?? this.requireSessionId();
-    if (!(await checkHeavyRpcLimit(this.env, rateKey))) {
-      throw new Error('rate_limited: too many code executions — try again shortly.');
+    // One wide event per execution — metadata only (durations, outcome,
+    // stable error code); the code and its output are content and never
+    // logged. Control flow is unchanged: every failure still rethrows.
+    const correlation = mintCorrelation();
+    const startedAt = Date.now();
+    try {
+      this.assertNotFrozen();
+      const rateKey = this.csrfSessionId() ?? this.requireSessionId();
+      if (!(await checkHeavyRpcLimit(this.env, rateKey))) {
+        throw new Error('rate_limited: too many code executions — try again shortly.');
+      }
+      const workspace = this.requireWorkspace();
+      const sessionId = this.requireSessionId();
+      const tools = this.buildHostTools(workspace, sessionId);
+      const executor = this.createCodeExecutor();
+      const result = await executor.execute(code, this.buildCodeProviders(tools));
+      studioLogger().info(CAIL_EVENTS.REQUEST_COMPLETED, {
+        ...doLogFields(correlation, 'agent/execute-code', this.cailSubject),
+        outcome: 'ok',
+        duration_ms: Date.now() - startedAt,
+      });
+      return result;
+    } catch (error) {
+      const rateLimited = error instanceof Error && error.message.startsWith('rate_limited');
+      studioLogger().log(rateLimited ? 'warn' : 'error', CAIL_EVENTS.REQUEST_COMPLETED, {
+        ...doLogFields(correlation, 'agent/execute-code', this.cailSubject),
+        outcome: rateLimited ? 'denied' : 'error',
+        duration_ms: Date.now() - startedAt,
+        ...(rateLimited ? { error_code: 'rate_limited' } : logErrorFacts(error)),
+      });
+      throw error;
     }
-    const workspace = this.requireWorkspace();
-    const sessionId = this.requireSessionId();
-    const tools = this.buildHostTools(workspace, sessionId);
-    const executor = this.createCodeExecutor();
-    return executor.execute(code, this.buildCodeProviders(tools));
   }
 
   @callable()

@@ -18,6 +18,7 @@
         "@cloudflare/shell": "0.3.0",
         "@cuny-ai-lab/cail-client": "github:CUNY-AI-Lab/cail-client#2d517454dd0c70b5f09e2eeb58fdad4f77debcb3",
         "@cuny-ai-lab/cail-identity": "github:CUNY-AI-Lab/cail-identity#c864637828c8e2a5dedbfe890531964e60049537",
+        "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95e028a",
         "agents": "0.8.4",
         "ai": "6.0.138",
         "docx": "9.7.1",
@@ -191,6 +192,8 @@
     "@cuny-ai-lab/cail-client": ["@cuny-ai-lab/cail-client@github:CUNY-AI-Lab/cail-client#2d51745", {}, "CUNY-AI-Lab-cail-client-2d51745"],
 
     "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@github:CUNY-AI-Lab/cail-identity#c864637", {}, "CUNY-AI-Lab-cail-identity-c864637"],
+
+    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@github:CUNY-AI-Lab/cail-log#95e028a", {}, "CUNY-AI-Lab-cail-log-95e028a"],
 
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 

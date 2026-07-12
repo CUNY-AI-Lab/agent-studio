@@ -104,32 +104,52 @@ test('legacy downloads.json blob is still readable (backward-read)', async () =>
 // ---------------------------------------------------------------------------
 // Corrupt-object observability (readJson-swallow regression, fallback rule):
 // a parse failure on an object that EXISTS must never be silently read as
-// "record absent". Default reads stay resilient but log the corrupt key;
-// onCorrupt: 'throw' (the migration mode) propagates instead of returning
-// empty.
+// "record absent". Default reads stay resilient but emit a structured
+// `downloads.corrupt` wide event per corrupt object (metadata only — the R2
+// key embeds session/workspace ids and a filename, so it stays OUT of the
+// log; the 'throw' path keeps it in the thrown Error). onCorrupt: 'throw'
+// (the migration mode) propagates instead of returning empty.
 // ---------------------------------------------------------------------------
 
 const LEGACY_KEY = `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads.json`;
 
-test('corrupt legacy downloads.json is logged with its key, not silently read as empty', async (t) => {
+// The structured logger's default sink is console.log(JSON.stringify(event)).
+function corruptEventsFrom(logMock) {
+  return logMock.mock.calls
+    .map((call) => {
+      try {
+        return JSON.parse(call.arguments[0]);
+      } catch {
+        return null;
+      }
+    })
+    .filter((event) => event && event.event === 'downloads.corrupt');
+}
+
+test('corrupt legacy downloads.json emits a structured event, not silently read as empty', async (t) => {
   const r2 = new MockR2();
   const env = envWith(r2);
   await r2.put(LEGACY_KEY, '{not valid json');
   await addWorkspaceDownload(env, SESSION, WS, { filename: 'ok.txt', format: 'txt', data: 'ok' });
 
-  const errors = t.mock.method(console, 'error', () => {});
+  const logs = t.mock.method(console, 'log', () => {});
   const downloads = await getWorkspaceDownloads(env, SESSION, WS);
 
   // Listing stays up (one bad object cannot take it down)...
   assert.deepEqual(downloads.map((d) => d.filename), ['ok.txt']);
-  // ...but the corruption is visible, with the offending key.
-  assert.equal(errors.mock.callCount(), 1);
-  const [message, context] = errors.mock.calls[0].arguments;
-  assert.match(message, /corrupt/);
-  assert.equal(context.key, LEGACY_KEY);
+  // ...but the corruption is visible as a structured wide event — and the R2
+  // key (session/workspace ids + filename) never reaches the log line.
+  const events = corruptEventsFrom(logs);
+  assert.equal(events.length, 1);
+  assert.equal(events[0].error_code, 'corrupt_download_object');
+  assert.equal(events[0].outcome, 'error');
+  assert.equal(events[0].severity_number >= 17, true);
+  for (const call of logs.mock.calls) {
+    assert.ok(!String(call.arguments[0]).includes(LEGACY_KEY), 'R2 key leaked into a log line');
+  }
 });
 
-test('corrupt per-object download is logged and skipped; good entries survive', async (t) => {
+test('corrupt per-object downloads emit one event each and are skipped; good entries survive', async (t) => {
   const r2 = new MockR2();
   const env = envWith(r2);
   await addWorkspaceDownload(env, SESSION, WS, { filename: 'good.txt', format: 'txt', data: 'g' });
@@ -139,12 +159,15 @@ test('corrupt per-object download is logged and skipped; good entries survive', 
   await r2.put(badParseKey, '{truncated');
   await r2.put(badShapeKey, JSON.stringify({ seq: 1, createdAt: 'x' })); // no download payload
 
-  const errors = t.mock.method(console, 'error', () => {});
+  const logs = t.mock.method(console, 'log', () => {});
   const downloads = await getWorkspaceDownloads(env, SESSION, WS);
 
   assert.deepEqual(downloads.map((d) => d.filename), ['good.txt']);
-  const loggedKeys = errors.mock.calls.map((call) => call.arguments[1].key).sort();
-  assert.deepEqual(loggedKeys, [badParseKey, badShapeKey]);
+  assert.equal(corruptEventsFrom(logs).length, 2);
+  for (const call of logs.mock.calls) {
+    const line = String(call.arguments[0]);
+    assert.ok(!line.includes(badParseKey) && !line.includes(badShapeKey), 'R2 key leaked into a log line');
+  }
 });
 
 test("onCorrupt: 'throw' propagates a corrupt legacy blob instead of reading it as empty", async (t) => {

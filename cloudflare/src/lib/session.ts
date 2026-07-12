@@ -10,6 +10,7 @@ import {
   type CailIdentity,
 } from './cail-identity';
 import { runFirstLoginMigration } from './migration';
+import { studioLogger } from './logging';
 
 const SESSION_COOKIE_NAME = 'agent-studio-session';
 
@@ -130,13 +131,15 @@ export const sessionMiddleware: MiddlewareHandler<{
           if (outcome !== 'in-progress') {
             deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
           }
-        } catch (error) {
+        } catch {
           // Soft-fail: the user sees their subject namespace (possibly still
           // empty); the claim is marked failed and the next request retries.
-          console.error('First-login migration failed', {
-            anonSessionId,
-            subjectSessionId: sessionId,
-            error,
+          // Structured event, metadata only: the subject identifies the user
+          // (session ids derive from it); the error itself is never logged.
+          studioLogger().error('migration.failed', {
+            subject: verified.identity.subject,
+            outcome: 'error',
+            error_code: 'first_login_migration_failed',
           });
         }
       } else {

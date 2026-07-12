@@ -1,5 +1,6 @@
 import { deleteByPrefix, getWorkspacePrefix } from './files';
 import type { Env } from '../env';
+import { studioLogger } from './logging';
 
 export interface DownloadRequest {
   filename: string;
@@ -42,14 +43,20 @@ export interface ReadDownloadsOptions {
   onCorrupt?: 'skip' | 'throw';
 }
 
-// Every corrupt-object sighting is logged with its key — a parse failure on an
-// existing object is never silently equated with absence.
+// Every corrupt-object sighting is logged — a parse failure on an existing
+// object is never silently equated with absence. The structured event is
+// metadata only (the R2 key embeds session/workspace ids + a filename, which
+// are not on the safe-to-log allowlist); the 'throw' path keeps the key in
+// the thrown Error so the migration's fail-and-retry path stays actionable.
 function reportCorruptDownloadObject(
   key: string,
   error: unknown,
   onCorrupt: 'skip' | 'throw'
 ): void {
-  console.error('downloads: corrupt stored download object', { key, error });
+  studioLogger().error('downloads.corrupt', {
+    outcome: 'error',
+    error_code: 'corrupt_download_object',
+  });
   if (onCorrupt === 'throw') {
     throw new Error(`downloads: corrupt stored download object at ${key}`, { cause: error });
   }
