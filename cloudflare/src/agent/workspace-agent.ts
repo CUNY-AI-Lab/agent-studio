@@ -481,6 +481,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
       const result = streamText({
         model,
+        // The gateway does not yet deduplicate model execution. A retry after
+        // an uncertain response could run and bill the same turn twice.
+        maxRetries: 0,
         abortSignal: options?.abortSignal,
         system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),
         messages: pruneMessages({
