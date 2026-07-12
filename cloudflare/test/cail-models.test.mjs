@@ -1,5 +1,5 @@
 // Unit tests for the CAIL model-catalog client (lib/cail-models.ts): proxy
-// shape parsing + first-entry-recommended, fallback on missing base / JWT /
+// shape parsing + first-entry-recommended, fallback on missing base /
 // upstream 500 / bad shape, no-retry-on-4xx, and the 5-minute proxy cache.
 // Runs on node:test with tsx, no extra deps. A counting fetch double lets us
 // assert refetch behavior; resetCailModelsCache clears module-global state.
@@ -113,25 +113,12 @@ test('falls back to the configured default when CAIL_API_BASE is unset', async (
   assert.equal(calls.length, 0, 'no request without a base URL');
 });
 
-test('falls back to the default model when the JWT is null', async () => {
+test('fails authentication when the proxy is configured but the JWT is null', async () => {
   const { fetchImpl, calls } = makeFetch([listResponse(['@cf/x'])]);
-  const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: null, fetchImpl });
-  assert.equal(result.source, 'fallback');
-  // The single fallback entry carries the normalized default fields.
-  assert.deepEqual(result.models, [
-    {
-      id: DEFAULT_CAIL_MODEL,
-      recommended: true,
-      tier: 'recommended',
-      status: 'active',
-      sunset: null,
-      capabilities: [],
-      contextLength: null,
-      registryUrl: null,
-      name: null,
-      description: null,
-    },
-  ]);
+  await assert.rejects(
+    fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: null, fetchImpl }),
+    ModelCatalogAuthError,
+  );
   assert.equal(calls.length, 0);
 });
 
@@ -219,9 +206,9 @@ test('caches the proxy list: a second call within TTL does not refetch', async (
 });
 
 test('does not cache fallbacks: a later success still fetches', async () => {
-  // First call: base set but JWT null → fallback, no cache written.
+  // First call: proxy intentionally unconfigured -> fallback, no cache written.
   const failing = makeFetch([listResponse(['@cf/zai-org/glm-5.2'])]);
-  const fb = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: null, fetchImpl: failing.fetchImpl });
+  const fb = await fetchCailModels({ env: {}, identityJwt: null, fetchImpl: failing.fetchImpl });
   assert.equal(fb.source, 'fallback');
 
   // Second call with a JWT should still hit the proxy.

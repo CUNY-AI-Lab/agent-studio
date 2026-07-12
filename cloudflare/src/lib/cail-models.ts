@@ -12,8 +12,8 @@
  * fields are parsed as free strings so an unknown `tier`/`status` value the
  * fleet adds later never fails the whole list — then normalize downstream.
  *
- * When the proxy is unreachable (no base URL, anonymous, non-auth upstream
- * error, or a response that fails shape validation) we fall back to a
+ * When the proxy is intentionally unconfigured (no base URL), or is unreachable
+ * after an authenticated request, we fall back to a
  * single-entry list of the configured default model, so the picker always has
  * something to show and chat never breaks. A proxy 401/403 for a
  * gateway-verified identity is config/secret drift and throws
@@ -176,8 +176,11 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
   const fetchImpl = options.fetchImpl ?? fetch;
   const apiBase = env.CAIL_API_BASE;
 
-  if (!apiBase || !identityJwt) {
+  if (!apiBase) {
     return fallbackResult(env);
+  }
+  if (!identityJwt) {
+    throw new ModelCatalogAuthError('CAIL authentication is required to list models.');
   }
 
   if (proxyCache && proxyCache.expiresAt > Date.now()) {
