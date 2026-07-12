@@ -52,8 +52,24 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   globalThis.fetch = async () => {
     wireCalls += 1;
     return new Response(
-      JSON.stringify({ error: 'quota_exceeded', message: quotaMessage, retry_after_seconds: 1800 }),
-      { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '1800' } },
+      JSON.stringify({
+        error: {
+          message: quotaMessage,
+          type: 'rate_limit_error',
+          param: null,
+          code: 'quota_exceeded',
+          cail: { retry_after_seconds: 1800 },
+        },
+      }),
+      {
+        status: 429,
+        headers: {
+          'content-type': 'application/json',
+          'retry-after': '1800',
+          'x-request-id': 'req-agent-quota-1',
+          'x-should-retry': 'false',
+        },
+      },
     );
   };
   t.after(() => {

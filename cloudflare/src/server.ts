@@ -39,7 +39,6 @@ import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
 import {
-  CSRF_COOKIE_NAME,
   csrfMiddleware,
   csrfReadMiddleware,
   deriveCsrfToken,
@@ -961,29 +960,16 @@ function checkCailConfigOnce(env: Env): void {
   cailConfigChecked = true;
   const base = env.CAIL_API_BASE ?? '';
   if (base.includes('REPLACE') || base.includes('.invalid')) {
-    console.warn(
-      `[startup] CAIL_API_BASE is still a placeholder (${base}); the CAIL model ` +
-        `proxy is unreachable. Set a real CAIL_API_BASE before deploying. ` +
-        `(Expected in local dev; a deploy footgun in production.)`,
-    );
+    studioLogger().warn('startup.config_invalid', { error_code: 'cail_api_base_placeholder' });
   }
   if (env.CAIL_REQUIRE_IDENTITY !== 'true') {
-    console.warn(
-      `[startup] CAIL_REQUIRE_IDENTITY is not "true"; anonymous requests reaching this ` +
-        `Worker directly (e.g. workers.dev) are accepted. Set it to "true" when ` +
-        `CAIL_SSO_MODE=enforce lands on the gateway.`,
-    );
+    studioLogger().warn('startup.config_invalid', { error_code: 'identity_not_required' });
   }
   if (!env.CAIL_BASE_PATH || !env.CAIL_BASE_PATH.trim()) {
     const sharedHost = Boolean(env.CAIL_CANONICAL_ORIGIN);
-    console.warn(
-      `[startup] CAIL_BASE_PATH is unset; the ${CSRF_COOKIE_NAME} cookie is scoped to '/' ` +
-        `and readable by every script on this host.` +
-        (sharedHost
-          ? ` On the shared tools.ailab host (CAIL_CANONICAL_ORIGIN is set) this exposes the ` +
-            `CSRF token to sibling tools — set CAIL_BASE_PATH (e.g. "/agent-studio").`
-          : ` (Fine locally / on workers.dev with no same-origin siblings.)`),
-    );
+    studioLogger().warn('startup.config_invalid', {
+      error_code: sharedHost ? 'shared_host_base_path_missing' : 'base_path_missing',
+    });
   }
 }
 
