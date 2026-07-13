@@ -31,15 +31,13 @@ Set at least:
 SESSION_SECRET=<random-32-byte-hex>
 CAIL_API_BASE=<cail-model-proxy-base-url>   # placeholder until launch
 CAIL_MODEL=@cf/zai-org/glm-5.2              # optional; Workers AI (@cf/...) ids only
-CAIL_IDENTITY_JWKS=                          # static public JWKS JSON for V2 RS256
-CAIL_IDENTITY_JWT_SECRET=                    # V1 HS256 fallback; both blank = anonymous
+CAIL_IDENTITY_JWKS=                          # static public JWKS JSON for RS256 identity
 ```
 
 `cloudflare/wrangler.jsonc` also expects a bound R2 bucket for `WORKSPACE_FILES` and a Worker Loader binding for Dynamic Workers.
 
-For deployed environments, set `SESSION_SECRET`, `CAIL_IDENTITY_JWKS`, and the
-V1 fallback `CAIL_IDENTITY_JWT_SECRET` through Wrangler. `CAIL_API_BASE` and
-`CAIL_MODEL` are `vars`.
+For deployed environments, set `SESSION_SECRET` and `CAIL_IDENTITY_JWKS`
+through Wrangler. `CAIL_API_BASE` and `CAIL_MODEL` are `vars`.
 
 ### CAIL backbone integration
 
@@ -47,17 +45,15 @@ Agent Studio holds **no provider API key**. All model calls go through the
 [CAIL model proxy](https://tools.ailab.gc.cuny.edu) at `{CAIL_API_BASE}/v1/...`
 (Cloudflare AI Gateway's OpenAI-compatible path), forwarding the signed-in
 user's selected raw identity JWT as the credential plus
-`X-CAIL-App: agent-studio` for spend attribution. `X-CAIL-Identity-JWT-V2` is
-verified locally with RS256 against the static `CAIL_IDENTITY_JWKS`, audience
-`cail:agent-studio`, and the canonical/staging issuer allowlist. When the V2
-header is present it has strict precedence: invalid V2 input or JWKS never
-falls back to V1. When V2 is absent, `X-CAIL-Identity-JWT` retains its pinned
-HS256 verification through `CAIL_IDENTITY_JWT_SECRET`. Either setting enables
-identity; `CAIL_REQUIRE_IDENTITY=true` fails closed when verification cannot
-succeed. Bare `X-CAIL-*` identity claims are never trusted, and all per-user
-data keys to the stable pseudonymous CAIL subject, never email. Quota/auth error
-envelopes from the proxy (`quota_exceeded`, `authentication_required`, …) pass
-through to the client unmodified; browser 401s follow the `/login?rt=` redirect pattern.
+`X-CAIL-App: agent-studio` for spend attribution. The canonical
+`X-CAIL-Identity-JWT` header is verified locally as RS256 against the static
+`CAIL_IDENTITY_JWKS`, audience `cail:agent-studio`, and the canonical/staging
+issuer allowlist. `CAIL_REQUIRE_IDENTITY=true` fails closed when verification
+cannot succeed. Bare `X-CAIL-*` identity claims are never trusted, and all
+per-user data keys to the stable pseudonymous CAIL subject, never email.
+Quota/auth error envelopes from the proxy (`quota_exceeded`,
+`authentication_required`, …) pass through to the client unmodified; browser
+401s follow the `/login?rt=` redirect pattern.
 See `cail-gateway/docs/INTEGRATION.md` for the full contract. `CAIL_API_BASE` is
 a placeholder until the institutional Cloudflare contract signs
 (`cail-gateway/docs/LAUNCH_CHECKLIST.md`).

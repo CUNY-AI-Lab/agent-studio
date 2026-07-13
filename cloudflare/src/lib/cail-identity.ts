@@ -4,9 +4,8 @@
  * The OpenResty SSO gate on tools.ailab.gc.cuny.edu injects X-CAIL-* headers
  * after authentication. This worker is also directly reachable on its
  * workers.dev URL, so bare X-CAIL-* headers prove nothing — anyone can set
- * them. Identity is accepted only from a signed identity JWT. V2 uses RS256
- * with a configured static public JWKS; V1 retains the HS256 shared-secret
- * contract.
+ * them. Identity is accepted only from an RS256 identity JWT verified against
+ * the configured static public JWKS for this service's audience.
  *
  * The JWT verifiers are shared @cuny-ai-lab/cail-identity primitives — one
  * source of truth across the CAIL fleet for pinned algorithms, audience/time
@@ -16,15 +15,10 @@
  * enforcement flag + 401 envelope. The stable pseudonymous `subject`
  * ("cail-<hex>") is the only durable key for per-user data — never key
  * anything by email.
- *
- * X-CAIL-Identity-JWT-V2 has strict precedence when present. A malformed V2
- * token or missing/malformed CAIL_IDENTITY_JWKS never falls back to V1. When
- * V2 is absent, X-CAIL-Identity-JWT keeps its existing HS256 behavior.
  */
 
 import {
   verifyIdentityJwt,
-  verifyIdentityJwtV2,
   CAIL_CANONICAL_ISSUER,
   CAIL_STAGING_ISSUER,
   type CailIdentity,
@@ -34,30 +28,23 @@ export { verifyIdentityJwt };
 export type { CailIdentity };
 
 export const CAIL_IDENTITY_HEADER = 'X-CAIL-Identity-JWT';
-export const CAIL_IDENTITY_HEADER_V2 = 'X-CAIL-Identity-JWT-V2';
 export const CAIL_APP_SLUG = 'agent-studio';
 export const CAIL_IDENTITY_AUDIENCE = 'cail:agent-studio';
 
 /**
  * The issuers this worker trusts, passed to the shared verifier as an EXACT
- * allowlist (I8). Both prod and staging gateways are accepted; any other `iss`
- * — including a look-alike like `https://evil.example/cail-sso` that the old
- * suffix check would have waved through — is rejected. Fail closed: this list
- * is the ONLY way an issuer becomes trusted.
+ * allowlist. Both prod and staging gateways are accepted; any other `iss` is
+ * rejected. This list is the only way an issuer becomes trusted.
  */
 export const CAIL_ALLOWED_ISSUERS = [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER];
 
 export interface CailIdentityEnv {
-  CAIL_IDENTITY_JWT_SECRET?: string;
   CAIL_IDENTITY_JWKS?: string;
   CAIL_REQUIRE_IDENTITY?: string;
 }
 
-export type CailIdentityVersion = 'v1' | 'v2';
-
 export interface VerifiedCailIdentity {
   token: string;
-  version: CailIdentityVersion;
   identity: CailIdentity;
 }
 
@@ -70,38 +57,27 @@ const encoder = new TextEncoder();
  * connected client can invoke over the WS channel — so an unverified string
  * must never be accepted as the model-proxy credential, and even a genuinely
  * valid token belonging to a DIFFERENT subject must not be installable onto
- * this DO. We verify the matching V1 or V2 signature/claims, then
- * derive the subject's session id the same way session.ts does and require it
- * to equal this DO's session id.
+ * this DO. We verify the signature/claims, then derive the subject's session
+ * id the same way session.ts does and require it to equal this DO's session id.
  *
  * Returns the verified identity on success, or null when the token is
  * invalid/expired OR its subject maps to a different session id. Never throws.
  */
 async function verifyCailIdentityToken(
   token: string | null | undefined,
-  version: CailIdentityVersion,
   env: CailIdentityEnv,
   now?: number,
 ): Promise<CailIdentity | null> {
   if (!token) return null;
-  if (version === 'v2') {
-    if (!env.CAIL_IDENTITY_JWKS) return null;
-    let jwks: Parameters<typeof verifyIdentityJwtV2>[1];
-    try {
-      jwks = JSON.parse(env.CAIL_IDENTITY_JWKS) as Parameters<typeof verifyIdentityJwtV2>[1];
-    } catch {
-      return null;
-    }
-    return verifyIdentityJwtV2(token, jwks, {
-      expectedAudience: CAIL_IDENTITY_AUDIENCE,
-      allowedIssuers: CAIL_ALLOWED_ISSUERS,
-      now,
-    });
+  if (!env.CAIL_IDENTITY_JWKS) return null;
+  let jwks: Parameters<typeof verifyIdentityJwt>[1];
+  try {
+    jwks = JSON.parse(env.CAIL_IDENTITY_JWKS) as Parameters<typeof verifyIdentityJwt>[1];
+  } catch {
+    return null;
   }
-
-  if (version !== 'v1') return null;
-  if (!env.CAIL_IDENTITY_JWT_SECRET) return null;
-  return verifyIdentityJwt(token, env.CAIL_IDENTITY_JWT_SECRET, {
+  return verifyIdentityJwt(token, jwks, {
+    expectedAudience: CAIL_IDENTITY_AUDIENCE,
     allowedIssuers: CAIL_ALLOWED_ISSUERS,
     now,
   });
@@ -110,11 +86,10 @@ async function verifyCailIdentityToken(
 export async function verifyCredentialForSession(
   token: string | null | undefined,
   expectedSessionId: string,
-  version: CailIdentityVersion,
   env: CailIdentityEnv,
   now?: number,
 ): Promise<CailIdentity | null> {
-  const identity = await verifyCailIdentityToken(token, version, env, now);
+  const identity = await verifyCailIdentityToken(token, env, now);
   if (!identity) return null;
   const derived = await sessionIdForSubject(identity.subject);
   if (derived !== expectedSessionId) return null;
@@ -145,30 +120,17 @@ export async function getCailIdentityFromRequest(
   env: CailIdentityEnv,
   now?: number,
 ): Promise<VerifiedCailIdentity | null> {
-  let token: string | null;
-  let version: CailIdentityVersion;
-  if (request.headers.has(CAIL_IDENTITY_HEADER_V2)) {
-    token = request.headers.get(CAIL_IDENTITY_HEADER_V2);
-    version = 'v2';
-  } else {
-    token = request.headers.get(CAIL_IDENTITY_HEADER);
-    version = 'v1';
-  }
+  const token = request.headers.get(CAIL_IDENTITY_HEADER);
   if (!token) return null;
-  const identity = await verifyCailIdentityToken(token, version, env, now);
+  const identity = await verifyCailIdentityToken(token, env, now);
   if (!identity) return null;
-  return { token, version, identity };
-}
-
-/** True when at least one identity verification mechanism is configured. */
-export function cailIdentityConfigured(env: CailIdentityEnv): boolean {
-  return Boolean(env.CAIL_IDENTITY_JWKS || env.CAIL_IDENTITY_JWT_SECRET);
+  return { token, identity };
 }
 
 /**
  * True when the worker must reject anonymous requests to model/spend paths
- * (401). If the flag is on but neither mechanism can verify the request, those
- * paths close — never open — by misconfiguration.
+ * (401). If the flag is on but the configured JWKS cannot verify the request,
+ * those paths close rather than opening through misconfiguration.
  */
 export function cailIdentityRequired(env: CailIdentityEnv): boolean {
   return env.CAIL_REQUIRE_IDENTITY === 'true';

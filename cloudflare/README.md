@@ -21,10 +21,10 @@ cp .dev.vars.example .dev.vars
 
 Run installation from the repository root. Set `SESSION_SECRET` and
 `CAIL_API_BASE` in `.dev.vars` (see the CAIL backbone notes in the root README).
-`CAIL_MODEL` overrides the default model. `CAIL_IDENTITY_JWKS` verifies the V2
-RS256 header; `CAIL_IDENTITY_JWT_SECRET` preserves V1 HS256 fallback when V2 is
-absent. Leave both blank locally for anonymous mode. Then confirm the R2 bucket
-and Worker Loader bindings in [wrangler.jsonc](./wrangler.jsonc).
+`CAIL_MODEL` overrides the default model. `CAIL_IDENTITY_JWKS` verifies the
+canonical `X-CAIL-Identity-JWT` header with RS256 for audience
+`cail:agent-studio`. Leave it blank locally for anonymous mode. Then confirm
+the R2 bucket and Worker Loader bindings in [wrangler.jsonc](./wrangler.jsonc).
 
 Run local development with:
 

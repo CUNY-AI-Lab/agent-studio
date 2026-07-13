@@ -33,7 +33,6 @@ import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import {
   CAIL_APP_SLUG,
   verifyCredentialForSession,
-  type CailIdentityVersion,
 } from '../lib/cail-identity';
 import {
   CAIL_EVENTS,
@@ -400,10 +399,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    *
    * @callable methods are client-invokable over the WS RPC channel, so this
    * must NOT trust its argument: it re-verifies the token through the same CAIL
-   * verifier the HTTP middleware uses (HMAC + all claims) AND binds the verified
-   * subject to THIS DO's session id. A garbage/expired token, or a genuinely
-   * valid token belonging to a DIFFERENT subject, is rejected — a client can
-   * never install a foreign credential onto someone else's workspace DO.
+   * verifier the HTTP middleware uses (RS256/JWKS + all claims) AND binds the
+   * verified subject to THIS DO's session id. A garbage/expired token, or a
+   * genuinely valid token belonging to a DIFFERENT subject, is rejected — a
+   * client can never install a foreign credential onto someone else's
+   * workspace DO.
    *
    * The legitimate path (server.ts primeAgentCredential, after HTTP identity
    * verification) still succeeds: that token is valid and its subject maps to
@@ -413,10 +413,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * mid-session.
    */
   @callable()
-  async setCailCredential(
-    identityJwt: string | null,
-    version: CailIdentityVersion = 'v1',
-  ): Promise<void> {
+  async setCailCredential(identityJwt: string | null): Promise<void> {
     if (!identityJwt) return;
     if (identityJwt === this.cailIdentityJwt) return;
 
@@ -435,7 +432,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const identity = await verifyCredentialForSession(
       identityJwt,
       expectedSessionId,
-      version,
       this.env,
     );
     if (!identity) {

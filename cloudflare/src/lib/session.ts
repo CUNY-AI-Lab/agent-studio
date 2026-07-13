@@ -8,7 +8,6 @@ import {
   getCailIdentityFromRequest,
   sessionIdForSubject,
   type CailIdentity,
-  type CailIdentityVersion,
 } from './cail-identity';
 import { runFirstLoginMigration } from './migration';
 import { studioLogger } from './logging';
@@ -19,10 +18,8 @@ export type SessionVariables = {
   sessionId: string;
   /** Verified CAIL identity, or null when the request is anonymous. */
   cailIdentity: CailIdentity | null;
-  /** Selected raw identity JWT to forward to the model proxy, or null. */
+  /** Verified raw identity JWT to forward to the model proxy, or null. */
   cailIdentityJwt: string | null;
-  /** Verification contract used for the selected raw identity JWT. */
-  cailIdentityVersion: CailIdentityVersion | null;
 };
 
 type SessionContext = Context<{
@@ -102,7 +99,7 @@ export const sessionMiddleware: MiddlewareHandler<{
     throw new Error('SESSION_SECRET is required');
   }
 
-  // Identity comes only from a verified V2 or V1 identity JWT. Bare X-CAIL-*
+  // Identity comes only from the verified CAIL identity JWT. Bare X-CAIL-*
   // claims are never trusted (this worker is reachable on workers.dev).
   const verified = await getCailIdentityFromRequest(c.req.raw, c.env);
 
@@ -118,7 +115,6 @@ export const sessionMiddleware: MiddlewareHandler<{
     sessionId = await sessionIdForSubject(verified.identity.subject);
     c.set('cailIdentity', verified.identity);
     c.set('cailIdentityJwt', verified.token);
-    c.set('cailIdentityVersion', verified.version);
 
     // First login after working anonymously: the browser still carries a
     // valid legacy anonymous cookie. Migrate that namespace's data into the
@@ -169,7 +165,6 @@ export const sessionMiddleware: MiddlewareHandler<{
     }
     c.set('cailIdentity', null);
     c.set('cailIdentityJwt', null);
-    c.set('cailIdentityVersion', null);
   }
 
   c.set('sessionId', sessionId);
@@ -182,8 +177,4 @@ export function requireSession(c: SessionContext): string {
 
 export function cailIdentityJwt(c: SessionContext): string | null {
   return c.get('cailIdentityJwt');
-}
-
-export function cailIdentityVersion(c: SessionContext): CailIdentityVersion | null {
-  return c.get('cailIdentityVersion');
 }

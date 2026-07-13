@@ -5,6 +5,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 
 import {
   CLAIM_STALE_MS,
@@ -14,6 +15,10 @@ import {
 } from '../src/lib/migration.ts';
 import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
+import {
+  CAIL_IDENTITY_AUDIENCE,
+  CAIL_IDENTITY_HEADER,
+} from '../src/lib/cail-identity.ts';
 import { MockR2 } from './helpers/env.mjs';
 
 const NOW = 1_800_000_000_000;
@@ -579,28 +584,24 @@ test('failure marks the claim failed and a later run retries and completes', asy
 // authenticated request with a legacy cookie migrates and drops the cookie.
 // ---------------------------------------------------------------------------
 
-const JWT_SECRET = 'middleware-test-secret-at-least-32-bytes';
-const encoder = new TextEncoder();
-
-function b64url(bytes) {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
+const IDENTITY_KID = 'migration-middleware-key';
+const identityKeyPair = await generateKeyPair('RS256', { extractable: true });
+const identityPublicJwk = {
+  ...(await exportJWK(identityKeyPair.publicKey)),
+  kid: IDENTITY_KID,
+  alg: 'RS256',
+  use: 'sig',
+};
 
 async function mintJwt(sub) {
-  const headerB64 = b64url(encoder.encode(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));
-  const payloadB64 = b64url(encoder.encode(JSON.stringify({
+  return new SignJWT({
     sub,
-    aud: 'cail-internal',
+    aud: CAIL_IDENTITY_AUDIENCE,
     iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     exp: Math.floor(Date.now() / 1000) + 3600,
-  })));
-  const key = await crypto.subtle.importKey(
-    'raw', encoder.encode(JWT_SECRET), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(`${headerB64}.${payloadB64}`));
-  return `${headerB64}.${payloadB64}.${b64url(new Uint8Array(sig))}`;
+  })
+    .setProtectedHeader({ alg: 'RS256', kid: IDENTITY_KID, typ: 'JWT' })
+    .sign(identityKeyPair.privateKey);
 }
 
 async function makeMiddlewareApp() {
@@ -611,7 +612,7 @@ async function makeMiddlewareApp() {
   const registry = new FakeRegistry();
   const env = {
     SESSION_SECRET,
-    CAIL_IDENTITY_JWT_SECRET: JWT_SECRET,
+    CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [identityPublicJwk] }),
     WORKSPACE_FILES: r2,
     MIGRATION_REGISTRY: {
       idFromName: (name) => name,
@@ -659,7 +660,7 @@ test('middleware: first authenticated request with legacy cookie migrates once a
   // Authenticate with the legacy cookie still present.
   const jwt = await mintJwt('cail-middleware-test');
   const authed = await app.request('/api/session', {
-    headers: { Cookie: cookie, 'X-CAIL-Identity-JWT': jwt },
+    headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
   }, env);
   assert.equal(authed.status, 200);
   const subjectSessionId = (await authed.json()).sessionId;
@@ -678,7 +679,7 @@ test('middleware: first authenticated request with legacy cookie migrates once a
   // A repeat request with the same (stale) cookie is a no-op.
   const claimCallsBefore = registry.claimCalls;
   const again = await app.request('/api/session', {
-    headers: { Cookie: cookie, 'X-CAIL-Identity-JWT': jwt },
+    headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
   }, env);
   assert.equal((await again.json()).sessionId, subjectSessionId);
   assert.equal(registry.claimCalls, claimCallsBefore + 1); // claim checked, returns already-done

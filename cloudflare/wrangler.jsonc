@@ -103,16 +103,10 @@
   },
   // Secrets (never in this file; set via `wrangler secret put`):
   //   SESSION_SECRET             - random 32-byte hex for the signed session cookie.
-  //   CAIL_IDENTITY_JWT_SECRET   - shared HS256 secret used to VERIFY the
-  //                                V1 X-CAIL-Identity-JWT fallback.
-  //                                Ops-managed (cail-gateway push-secrets.sh);
-  //                                identical to the value the model proxy and
-  //                                key service use. Never in code.
   //   CAIL_IDENTITY_JWKS         - static public JWKS JSON used to VERIFY the
-  //                                RS256 X-CAIL-Identity-JWT-V2 for audience
+  //                                RS256 X-CAIL-Identity-JWT for audience
   //                                cail:agent-studio. Distinct kid values may
-  //                                overlap during rotation. A present V2 header
-  //                                never falls back to V1 on any failure.
+  //                                overlap during signing-key rotation.
   //   GIT_AUTH_TOKEN (optional)  - token for git tools inside the runtime.
   // Agent Studio holds NO provider API key: all model calls go through the CAIL
   // model proxy with the caller's identity JWT (see src/lib/cail-model.ts).

@@ -39,7 +39,6 @@ import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
 import {
   cailIdentityJwt,
-  cailIdentityVersion,
   requireSession,
   sessionMiddleware,
   type SessionVariables,
@@ -238,9 +237,8 @@ async function primeAgentCredential(
   agent: Awaited<ReturnType<typeof getWorkspaceAgent>>
 ): Promise<void> {
   const jwt = cailIdentityJwt(c);
-  const version = cailIdentityVersion(c);
-  if (jwt && version) {
-    await agent.setCailCredential(jwt, version);
+  if (jwt) {
+    await agent.setCailCredential(jwt);
   }
 }
 
