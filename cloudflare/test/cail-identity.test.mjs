@@ -5,10 +5,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 
 import {
   verifyIdentityJwt,
   getCailIdentityFromRequest,
+  cailIdentityConfigured,
   cailIdentityRequired,
   cailAuthRequiredResponse,
   verifyCredentialForSession,
@@ -16,6 +18,8 @@ import {
   CAIL_ALLOWED_ISSUERS,
   CAIL_APP_SLUG,
   CAIL_IDENTITY_HEADER,
+  CAIL_IDENTITY_HEADER_V2,
+  CAIL_IDENTITY_AUDIENCE,
 } from '../src/lib/cail-identity.ts';
 import {
   createCailModel,
@@ -50,6 +54,21 @@ async function mintJwt(payload, { secret = SECRET, alg = 'HS256' } = {}) {
   );
   const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(signingInput));
   return `${signingInput}.${b64url(new Uint8Array(sig))}`;
+}
+
+async function makeV2Key(kid) {
+  const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
+  return {
+    kid,
+    privateKey,
+    publicJwk: { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' },
+  };
+}
+
+async function mintV2Jwt(payload, key) {
+  return new SignJWT(payload)
+    .setProtectedHeader({ alg: 'RS256', kid: key.kid, typ: 'JWT' })
+    .sign(key.privateKey);
 }
 
 const NOW = 1_800_000_000;
@@ -167,23 +186,39 @@ test('sessionIdForSubject is a 32-hex digest of cail:<subject>', async () => {
 test('verifyCredentialForSession accepts the correct-subject token', async () => {
   const token = await mintJwt(validPayload());
   const expected = await sessionIdForSubject('cail-abc123');
-  const identity = await verifyCredentialForSession(token, expected, SECRET, NOW);
+  const identity = await verifyCredentialForSession(
+    token,
+    expected,
+    'v1',
+    { CAIL_IDENTITY_JWT_SECRET: SECRET },
+    NOW,
+  );
   assert.ok(identity);
   assert.equal(identity.subject, 'cail-abc123');
 });
 
 test('verifyCredentialForSession rejects invalid / garbage tokens', async () => {
   const expected = await sessionIdForSubject('cail-abc123');
-  assert.equal(await verifyCredentialForSession('not-a-jwt', expected, SECRET, NOW), null);
-  assert.equal(await verifyCredentialForSession('', expected, SECRET, NOW), null);
-  assert.equal(await verifyCredentialForSession(null, expected, SECRET, NOW), null);
+  const env = { CAIL_IDENTITY_JWT_SECRET: SECRET };
+  assert.equal(await verifyCredentialForSession('not-a-jwt', expected, 'v1', env, NOW), null);
+  assert.equal(await verifyCredentialForSession('', expected, 'v1', env, NOW), null);
+  assert.equal(await verifyCredentialForSession(null, expected, 'v1', env, NOW), null);
 });
 
 test('verifyCredentialForSession rejects an expired token', async () => {
   // Beyond the 60s clock tolerance the shared verifier applies.
   const token = await mintJwt(validPayload({ exp: NOW - 120 }));
   const expected = await sessionIdForSubject('cail-abc123');
-  assert.equal(await verifyCredentialForSession(token, expected, SECRET, NOW), null);
+  assert.equal(
+    await verifyCredentialForSession(
+      token,
+      expected,
+      'v1',
+      { CAIL_IDENTITY_JWT_SECRET: SECRET },
+      NOW,
+    ),
+    null,
+  );
 });
 
 test('verifyCredentialForSession rejects a valid token whose subject maps to a DIFFERENT session', async () => {
@@ -192,7 +227,16 @@ test('verifyCredentialForSession rejects a valid token whose subject maps to a D
   const token = await mintJwt(validPayload({ sub: 'cail-foreign' }));
   const thisSession = await sessionIdForSubject('cail-abc123');
   assert.notEqual(await sessionIdForSubject('cail-foreign'), thisSession);
-  assert.equal(await verifyCredentialForSession(token, thisSession, SECRET, NOW), null);
+  assert.equal(
+    await verifyCredentialForSession(
+      token,
+      thisSession,
+      'v1',
+      { CAIL_IDENTITY_JWT_SECRET: SECRET },
+      NOW,
+    ),
+    null,
+  );
 });
 
 test('returns null for a malformed token', async () => {
@@ -216,7 +260,72 @@ test('getCailIdentityFromRequest surfaces the raw token and identity', async () 
   const result = await getCailIdentityFromRequest(req, { CAIL_IDENTITY_JWT_SECRET: SECRET }, NOW);
   assert.ok(result);
   assert.equal(result.token, token);
+  assert.equal(result.version, 'v1');
   assert.equal(result.identity.subject, 'cail-abc123');
+});
+
+test('V2 accepts either key during a distinct-kid JWKS rotation overlap', async () => {
+  const [oldKey, newKey] = await Promise.all([makeV2Key('old-key'), makeV2Key('new-key')]);
+  const jwks = JSON.stringify({ keys: [oldKey.publicJwk, newKey.publicJwk] });
+  for (const key of [oldKey, newKey]) {
+    const token = await mintV2Jwt(
+      validPayload({ aud: CAIL_IDENTITY_AUDIENCE }),
+      key,
+    );
+    const req = new Request('https://agent-studio.example/api/session', {
+      headers: { [CAIL_IDENTITY_HEADER_V2]: token },
+    });
+    const result = await getCailIdentityFromRequest(req, { CAIL_IDENTITY_JWKS: jwks }, NOW);
+    assert.ok(result);
+    assert.equal(result.token, token);
+    assert.equal(result.version, 'v2');
+    assert.equal(result.identity.subject, 'cail-abc123');
+  }
+});
+
+test('V2 rejects missing or malformed static JWKS', async () => {
+  const key = await makeV2Key('active-key');
+  const token = await mintV2Jwt(validPayload({ aud: CAIL_IDENTITY_AUDIENCE }), key);
+  const req = new Request('https://agent-studio.example/api/session', {
+    headers: { [CAIL_IDENTITY_HEADER_V2]: token },
+  });
+  assert.equal(await getCailIdentityFromRequest(req, {}, NOW), null);
+  assert.equal(
+    await getCailIdentityFromRequest(req, { CAIL_IDENTITY_JWKS: '{not-json' }, NOW),
+    null,
+  );
+});
+
+test('V2 credential verification binds the subject to the target session', async () => {
+  const key = await makeV2Key('credential-key');
+  const token = await mintV2Jwt(validPayload({ aud: CAIL_IDENTITY_AUDIENCE }), key);
+  const env = { CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [key.publicJwk] }) };
+  const expected = await sessionIdForSubject('cail-abc123');
+  assert.ok(await verifyCredentialForSession(token, expected, 'v2', env, NOW));
+  const foreignSession = await sessionIdForSubject('cail-foreign');
+  assert.equal(
+    await verifyCredentialForSession(token, foreignSession, 'v2', env, NOW),
+    null,
+  );
+});
+
+test('V2 header has strict precedence and never falls back to a valid V1 token', async () => {
+  const v1 = await mintJwt(validPayload());
+  const req = new Request('https://agent-studio.example/api/session', {
+    headers: {
+      [CAIL_IDENTITY_HEADER]: v1,
+      [CAIL_IDENTITY_HEADER_V2]: 'invalid-v2',
+    },
+  });
+  const result = await getCailIdentityFromRequest(
+    req,
+    {
+      CAIL_IDENTITY_JWT_SECRET: SECRET,
+      CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [] }),
+    },
+    NOW,
+  );
+  assert.equal(result, null);
 });
 
 test('getCailIdentityFromRequest returns null with no header', async () => {
@@ -240,6 +349,12 @@ test('cailIdentityRequired only true for the literal "true"', () => {
   assert.equal(cailIdentityRequired({ CAIL_REQUIRE_IDENTITY: 'true' }), true);
   assert.equal(cailIdentityRequired({ CAIL_REQUIRE_IDENTITY: 'false' }), false);
   assert.equal(cailIdentityRequired({}), false);
+});
+
+test('identity is configured when either V1 secret or V2 JWKS is present', () => {
+  assert.equal(cailIdentityConfigured({}), false);
+  assert.equal(cailIdentityConfigured({ CAIL_IDENTITY_JWT_SECRET: SECRET }), true);
+  assert.equal(cailIdentityConfigured({ CAIL_IDENTITY_JWKS: '{"keys":[]}' }), true);
 });
 
 test('cailAuthRequiredResponse is a 401 with the CAIL envelope', async () => {

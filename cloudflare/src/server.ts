@@ -37,7 +37,13 @@ import {
 } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { patchWorkspaceSchema } from './lib/workspace-validation';
-import { cailIdentityJwt, requireSession, sessionMiddleware, type SessionVariables } from './lib/session';
+import {
+  cailIdentityJwt,
+  cailIdentityVersion,
+  requireSession,
+  sessionMiddleware,
+  type SessionVariables,
+} from './lib/session';
 import {
   csrfMiddleware,
   csrfReadMiddleware,
@@ -232,8 +238,9 @@ async function primeAgentCredential(
   agent: Awaited<ReturnType<typeof getWorkspaceAgent>>
 ): Promise<void> {
   const jwt = cailIdentityJwt(c);
-  if (jwt) {
-    await agent.setCailCredential(jwt);
+  const version = cailIdentityVersion(c);
+  if (jwt && version) {
+    await agent.setCailCredential(jwt, version);
   }
 }
 

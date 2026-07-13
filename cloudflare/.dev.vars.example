@@ -13,8 +13,14 @@ CAIL_MODEL=@cf/zai-org/glm-5.2
 # injects. Same value the model proxy and key service use (ops-managed).
 # Leave blank locally to run anonymous (identity disabled).
 CAIL_IDENTITY_JWT_SECRET=
+# Static public JWKS JSON used to VERIFY X-CAIL-Identity-JWT-V2 (RS256,
+# audience cail:agent-studio). V2 takes strict precedence when its header is
+# present; missing/malformed JWKS or an invalid V2 token never falls back to V1.
+# Multiple distinct kid values support signing-key rotation overlap.
+CAIL_IDENTITY_JWKS=
 # Fail closed: reject anonymous model calls with 401. Set "true" when
-# CAIL_SSO_MODE=enforce lands on the gateway.
+# CAIL_SSO_MODE=enforce lands on the gateway. If neither verifier is configured,
+# or configured key material cannot verify a presented token, all requests fail.
 CAIL_REQUIRE_IDENTITY=false
 
 # Base path this tool is served under (fleet contract §3¾ rule 3 delivery

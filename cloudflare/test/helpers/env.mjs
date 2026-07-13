@@ -197,6 +197,7 @@ export class FakeWorkspaceAgent {
     this.messages = [];
     this.files = new Map(); // path -> { bytes: Uint8Array, contentType }
     this.credential = null;
+    this.credentialVersion = null;
     this.syncCount = 0;
     this.frozen = false;
   }
@@ -206,8 +207,9 @@ export class FakeWorkspaceAgent {
     return new Response('ok');
   }
 
-  async setCailCredential(jwt) {
+  async setCailCredential(jwt, version) {
     this.credential = jwt;
+    this.credentialVersion = version;
   }
 
   async syncWorkspace(workspace, sessionId) {

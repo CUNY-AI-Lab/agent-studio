@@ -30,7 +30,11 @@ import {
 import type { Env } from '../env';
 import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
-import { CAIL_APP_SLUG, verifyCredentialForSession } from '../lib/cail-identity';
+import {
+  CAIL_APP_SLUG,
+  verifyCredentialForSession,
+  type CailIdentityVersion,
+} from '../lib/cail-identity';
 import {
   CAIL_EVENTS,
   mintCorrelation,
@@ -284,7 +288,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private hydrationPromise: Promise<void> | null = null;
   private migrationFrozen = false;
   /**
-   * The caller's verified X-CAIL-Identity-JWT, forwarded to the model proxy as
+   * The caller's selected verified identity JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
    * which cannot carry the gateway-injected header) via setCailCredential, and
    * kept in DO storage so it survives hibernation. Never broadcast in state.
@@ -409,7 +413,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * mid-session.
    */
   @callable()
-  async setCailCredential(identityJwt: string | null): Promise<void> {
+  async setCailCredential(
+    identityJwt: string | null,
+    version: CailIdentityVersion = 'v1',
+  ): Promise<void> {
     if (!identityJwt) return;
     if (identityJwt === this.cailIdentityJwt) return;
 
@@ -428,7 +435,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const identity = await verifyCredentialForSession(
       identityJwt,
       expectedSessionId,
-      this.env.CAIL_IDENTITY_JWT_SECRET,
+      version,
+      this.env,
     );
     if (!identity) {
       studioLogger().warn(CAIL_EVENTS.AUTH_DENIED, {

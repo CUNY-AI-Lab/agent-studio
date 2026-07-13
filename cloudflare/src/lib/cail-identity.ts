@@ -4,27 +4,27 @@
  * The OpenResty SSO gate on tools.ailab.gc.cuny.edu injects X-CAIL-* headers
  * after authentication. This worker is also directly reachable on its
  * workers.dev URL, so bare X-CAIL-* headers prove nothing — anyone can set
- * them. Identity is accepted ONLY from a X-CAIL-Identity-JWT that verifies
- * against the shared secret.
+ * them. Identity is accepted only from a signed identity JWT. V2 uses RS256
+ * with a configured static public JWKS; V1 retains the HS256 shared-secret
+ * contract.
  *
- * The JWT verifier is the shared @cuny-ai-lab/cail-identity primitive — one
- * source of truth across the CAIL fleet (HS256 pinned, aud "cail-internal",
- * exp/nbf with 60s leeway, and an EXACT issuer allowlist). This module keeps
+ * The JWT verifiers are shared @cuny-ai-lab/cail-identity primitives — one
+ * source of truth across the CAIL fleet for pinned algorithms, audience/time
+ * claims, and an EXACT issuer allowlist. This module keeps
  * only the agent-studio-specific glue around it: header/slug constants, the
  * request/credential wrappers, the subject→session derivation, and the
  * enforcement flag + 401 envelope. The stable pseudonymous `subject`
  * ("cail-<hex>") is the only durable key for per-user data — never key
  * anything by email.
  *
- * If CAIL_IDENTITY_JWT_SECRET is unset, identity is disabled and every
- * request is anonymous (pre-rollout behavior). CAIL_REQUIRE_IDENTITY="true"
- * makes model calls fail closed: requests without a verified identity JWT
- * get 401. Flip it (with the secret set) at the same time
- * CAIL_SSO_MODE=enforce lands on the gateway.
+ * X-CAIL-Identity-JWT-V2 has strict precedence when present. A malformed V2
+ * token or missing/malformed CAIL_IDENTITY_JWKS never falls back to V1. When
+ * V2 is absent, X-CAIL-Identity-JWT keeps its existing HS256 behavior.
  */
 
 import {
   verifyIdentityJwt,
+  verifyIdentityJwtV2,
   CAIL_CANONICAL_ISSUER,
   CAIL_STAGING_ISSUER,
   type CailIdentity,
@@ -34,7 +34,9 @@ export { verifyIdentityJwt };
 export type { CailIdentity };
 
 export const CAIL_IDENTITY_HEADER = 'X-CAIL-Identity-JWT';
+export const CAIL_IDENTITY_HEADER_V2 = 'X-CAIL-Identity-JWT-V2';
 export const CAIL_APP_SLUG = 'agent-studio';
+export const CAIL_IDENTITY_AUDIENCE = 'cail:agent-studio';
 
 /**
  * The issuers this worker trusts, passed to the shared verifier as an EXACT
@@ -47,7 +49,16 @@ export const CAIL_ALLOWED_ISSUERS = [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER]
 
 export interface CailIdentityEnv {
   CAIL_IDENTITY_JWT_SECRET?: string;
+  CAIL_IDENTITY_JWKS?: string;
   CAIL_REQUIRE_IDENTITY?: string;
+}
+
+export type CailIdentityVersion = 'v1' | 'v2';
+
+export interface VerifiedCailIdentity {
+  token: string;
+  version: CailIdentityVersion;
+  identity: CailIdentity;
 }
 
 const encoder = new TextEncoder();
@@ -59,27 +70,51 @@ const encoder = new TextEncoder();
  * connected client can invoke over the WS channel — so an unverified string
  * must never be accepted as the model-proxy credential, and even a genuinely
  * valid token belonging to a DIFFERENT subject must not be installable onto
- * this DO. We verify the HMAC/claims through the single verifier above, then
+ * this DO. We verify the matching V1 or V2 signature/claims, then
  * derive the subject's session id the same way session.ts does and require it
  * to equal this DO's session id.
  *
  * Returns the verified identity on success, or null when the token is
  * invalid/expired OR its subject maps to a different session id. Never throws.
  */
-export async function verifyCredentialForSession(
+async function verifyCailIdentityToken(
   token: string | null | undefined,
-  expectedSessionId: string,
-  secret: string | undefined,
+  version: CailIdentityVersion,
+  env: CailIdentityEnv,
   now?: number,
 ): Promise<CailIdentity | null> {
-  // The shared verifier requires a present token+secret and an explicit issuer
-  // allowlist; guard the "identity disabled / no token" cases here so callers
-  // keep passing `string | undefined` unchanged.
-  if (!secret || !token) return null;
-  const identity = await verifyIdentityJwt(token, secret, {
+  if (!token) return null;
+  if (version === 'v2') {
+    if (!env.CAIL_IDENTITY_JWKS) return null;
+    let jwks: Parameters<typeof verifyIdentityJwtV2>[1];
+    try {
+      jwks = JSON.parse(env.CAIL_IDENTITY_JWKS) as Parameters<typeof verifyIdentityJwtV2>[1];
+    } catch {
+      return null;
+    }
+    return verifyIdentityJwtV2(token, jwks, {
+      expectedAudience: CAIL_IDENTITY_AUDIENCE,
+      allowedIssuers: CAIL_ALLOWED_ISSUERS,
+      now,
+    });
+  }
+
+  if (version !== 'v1') return null;
+  if (!env.CAIL_IDENTITY_JWT_SECRET) return null;
+  return verifyIdentityJwt(token, env.CAIL_IDENTITY_JWT_SECRET, {
     allowedIssuers: CAIL_ALLOWED_ISSUERS,
     now,
   });
+}
+
+export async function verifyCredentialForSession(
+  token: string | null | undefined,
+  expectedSessionId: string,
+  version: CailIdentityVersion,
+  env: CailIdentityEnv,
+  now?: number,
+): Promise<CailIdentity | null> {
+  const identity = await verifyCailIdentityToken(token, version, env, now);
   if (!identity) return null;
   const derived = await sessionIdForSubject(identity.subject);
   if (derived !== expectedSessionId) return null;
@@ -109,25 +144,31 @@ export async function getCailIdentityFromRequest(
   request: Request,
   env: CailIdentityEnv,
   now?: number,
-): Promise<{ token: string; identity: CailIdentity } | null> {
-  const token = request.headers.get(CAIL_IDENTITY_HEADER);
+): Promise<VerifiedCailIdentity | null> {
+  let token: string | null;
+  let version: CailIdentityVersion;
+  if (request.headers.has(CAIL_IDENTITY_HEADER_V2)) {
+    token = request.headers.get(CAIL_IDENTITY_HEADER_V2);
+    version = 'v2';
+  } else {
+    token = request.headers.get(CAIL_IDENTITY_HEADER);
+    version = 'v1';
+  }
   if (!token) return null;
-  const secret = env.CAIL_IDENTITY_JWT_SECRET;
-  // No secret configured → identity disabled (anonymous). Guard before the
-  // shared verifier, which requires a present secret.
-  if (!secret) return null;
-  const identity = await verifyIdentityJwt(token, secret, {
-    allowedIssuers: CAIL_ALLOWED_ISSUERS,
-    now,
-  });
+  const identity = await verifyCailIdentityToken(token, version, env, now);
   if (!identity) return null;
-  return { token, identity };
+  return { token, version, identity };
+}
+
+/** True when at least one identity verification mechanism is configured. */
+export function cailIdentityConfigured(env: CailIdentityEnv): boolean {
+  return Boolean(env.CAIL_IDENTITY_JWKS || env.CAIL_IDENTITY_JWT_SECRET);
 }
 
 /**
  * True when the worker must reject anonymous requests to model/spend paths
- * (401). If the flag is on but the secret is missing, every identity check
- * fails and those paths close — never open — by misconfiguration.
+ * (401). If the flag is on but neither mechanism can verify the request, those
+ * paths close — never open — by misconfiguration.
  */
 export function cailIdentityRequired(env: CailIdentityEnv): boolean {
   return env.CAIL_REQUIRE_IDENTITY === 'true';

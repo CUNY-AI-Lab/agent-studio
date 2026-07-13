@@ -18,6 +18,7 @@ export interface Env {
   CAIL_API_BASE?: string;
   CAIL_MODEL?: string;
   CAIL_IDENTITY_JWT_SECRET?: string;
+  CAIL_IDENTITY_JWKS?: string;
   CAIL_REQUIRE_IDENTITY?: string;
   // CSRF canonical-origin override (fleet contract §3¾ rule 2). Unset in local
   // dev / on workers.dev, where the request's own origin is canonical. Set to

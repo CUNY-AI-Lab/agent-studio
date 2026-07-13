@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { SignJWT, exportJWK, generateKeyPair } from 'jose';
 
 import {
   importServer,
@@ -21,7 +22,11 @@ import {
   makeImportBundle,
   seedGalleryItem,
 } from './helpers/env.mjs';
-import { CAIL_IDENTITY_HEADER } from '../src/lib/cail-identity.ts';
+import {
+  CAIL_IDENTITY_AUDIENCE,
+  CAIL_IDENTITY_HEADER,
+  CAIL_IDENTITY_HEADER_V2,
+} from '../src/lib/cail-identity.ts';
 import { resetCailModelsCache } from '../src/lib/cail-models.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
 
@@ -73,6 +78,22 @@ async function mintIdentityJwt(overrides = {}) {
   );
   const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(signingInput));
   return `${signingInput}.${b64url(new Uint8Array(sig))}`;
+}
+
+async function makeV2RouteCredential() {
+  const kid = 'route-v2-key';
+  const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
+  const publicJwk = { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' };
+  const token = await new SignJWT({
+    sub: 'cail-route-v2-test',
+    aud: CAIL_IDENTITY_AUDIENCE,
+    iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+    exp: Math.floor(Date.now() / 1000) + 3600,
+    entitlements: ['tools', 'agent-studio'],
+  })
+    .setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' })
+    .sign(privateKey);
+  return { token, jwks: JSON.stringify({ keys: [publicJwk] }) };
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +158,46 @@ test('garbage cookie -> fresh session, never a 500', async () => {
   // A new signed cookie was minted to replace the garbage one.
   assert.ok(session.cookie);
   assert.notEqual(session.cookie, 'agent-studio-session=not.a-valid-signed-value');
+});
+
+test('V2 raw token and version are selected, stored, and forwarded to the workspace agent', async () => {
+  const { env, agents } = makeEnv();
+  const { token, jwks } = await makeV2RouteCredential();
+  env.CAIL_IDENTITY_JWKS = jwks;
+  env.CAIL_REQUIRE_IDENTITY = 'true';
+  const headers = { [CAIL_IDENTITY_HEADER_V2]: token };
+  const session = new Session(env);
+
+  const sessionRes = await session.request(app, '/api/session', { headers });
+  assert.equal(sessionRes.status, 200);
+  const createRes = await session.request(
+    app,
+    '/api/workspaces',
+    { ...jsonInit('POST', { name: 'V2 workspace' }), headers },
+  );
+  assert.equal(createRes.status, 201);
+
+  const agent = [...agents.values()][0];
+  assert.ok(agent);
+  assert.equal(agent.credential, token);
+  assert.equal(agent.credentialVersion, 'v2');
+});
+
+test('required identity rejects invalid V2 without falling back to valid V1', async () => {
+  const { env } = makeEnv();
+  env.CAIL_IDENTITY_JWT_SECRET = CAIL_TEST_SECRET;
+  env.CAIL_IDENTITY_JWKS = JSON.stringify({ keys: [] });
+  env.CAIL_REQUIRE_IDENTITY = 'true';
+  const v1 = await mintIdentityJwt();
+  const session = new Session(env);
+  const res = await session.request(app, '/api/session', {
+    headers: {
+      [CAIL_IDENTITY_HEADER]: v1,
+      [CAIL_IDENTITY_HEADER_V2]: 'invalid-v2',
+    },
+  });
+  assert.equal(res.status, 401);
+  assert.equal((await res.json()).error, 'authentication_required');
 });
 
 // ---------------------------------------------------------------------------
