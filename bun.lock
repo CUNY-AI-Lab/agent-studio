@@ -17,8 +17,8 @@
         "@cloudflare/codemode": "0.3.1",
         "@cloudflare/shell": "0.3.0",
         "@cuny-ai-lab/cail-client": "github:CUNY-AI-Lab/cail-client#1c0752edd90544574635ab1dd1faadb8d556c006",
-        "@cuny-ai-lab/cail-identity": "github:CUNY-AI-Lab/cail-identity#220e9b0d86adb049a7a29702a3ff2e8a6bfd13e0",
-        "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95b45c4",
+        "@cuny-ai-lab/cail-identity": "github:CUNY-AI-Lab/cail-identity#b8738b2372f4cde14aa1a0ab3d7fd096c6a9645a",
+        "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95b45c429c05e42557143ddfc1ff8afaf5b7b1c1",
         "agents": "0.8.4",
         "ai": "6.0.138",
         "docx": "9.7.1",
@@ -191,7 +191,7 @@
 
     "@cuny-ai-lab/cail-client": ["@cuny-ai-lab/cail-client@github:CUNY-AI-Lab/cail-client#1c0752e", { "dependencies": { "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95b45c4" } }, "CUNY-AI-Lab-cail-client-1c0752e"],
 
-    "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@github:CUNY-AI-Lab/cail-identity#220e9b0", { "dependencies": { "jose": "6.2.3" } }, "CUNY-AI-Lab-cail-identity-220e9b0"],
+    "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@github:CUNY-AI-Lab/cail-identity#b8738b2", { "dependencies": { "jose": "6.2.3" } }, "CUNY-AI-Lab-cail-identity-b8738b2"],
 
     "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@github:CUNY-AI-Lab/cail-log#95b45c4", {}, "CUNY-AI-Lab-cail-log-95b45c4"],
 
@@ -1408,6 +1408,8 @@
     "@babel/generator/@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@cloudflare/shell/@cloudflare/codemode": ["@cloudflare/codemode@0.3.8", "", { "dependencies": { "@types/json-schema": "^7.0.15", "acorn": "^8.16.0" }, "peerDependencies": { "@modelcontextprotocol/sdk": "^1.25.0", "@tanstack/ai": ">=0.8.0 <1.0.0", "ai": "^6.0.0", "zod": "^4.0.0" }, "optionalPeers": ["@modelcontextprotocol/sdk", "@tanstack/ai", "ai", "zod"] }, "sha512-PVe99dFf/dvf0JOh1SBTYL7YT0nXusmqaK0lRrrlHGIQdGAnKRSb4VtaE5atiDVgN/U9G16bSkej7Pn5lWhG1g=="],
+
+    "@cuny-ai-lab/cail-client/@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@github:CUNY-AI-Lab/cail-log#95b45c4", {}, "CUNY-AI-Lab-cail-log-95b45c4"],
 
     "@img/sharp-wasm32/@emnapi/runtime": ["@emnapi/runtime@1.11.2", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-kyOl3X0DuTiT1h2ft8r2fYO8JYtU9a9Xis/zBSiGArNaagCOWx90N1k2wxp18czFDH+OgcWGb5ZP/XMt3dcyPA=="],
 
