@@ -14,15 +14,18 @@ can determine authoritatively.
 
 Source defaults and failure semantics are now explicit:
 
-- Wrangler disables native invocation logs because they contain raw request
-  URLs and platform request/response metadata. Studio custom logs remain
-  enabled through `observability.enabled` and the explicit Workers structured
-  sink. This source change affects a deployment only when separately deployed.
+- [`contracts/observability/agent-studio.v1.json`](../contracts/observability/agent-studio.v1.json)
+  is the versioned source contract for collection, dashboard access, windows,
+  denominators, coverage, SLOs, and the initial alert recipe.
+- V1 full-samples bounded custom lifecycle logs into Workers Logs. Native
+  invocation logs, automatic traces, Logpush, Tail consumers, streaming Tail
+  consumers, and OTLP or other external exporters are off. These source
+  settings affect production only after a separately authorized deployment.
 - `service.version` comes from Cloudflare's immutable
   `CF_VERSION_METADATA.id`; no manually maintained release variable remains.
-- `CAIL_LOG_ENV` is required and must be one of the cail-log environment
-  values. Environment classification is a CAIL deployment-policy input and is
-  not inferred from a hostname, branch, or version tag.
+- `CAIL_LOG_ENV` is required deployment configuration, not an unresolved policy
+  choice. The production Wrangler source fixes it to `production`; local
+  development overrides it with `development`.
 - Health returns 503 when either telemetry resource field is unavailable. The
   logging adapter itself returns no logger for invalid resource configuration,
   so a health check and its error path cannot throw while trying to report the
@@ -107,42 +110,100 @@ improving the contract.
 
 ## Dashboard-ready rollups
 
+The dashboard is restricted to the Kale administrator role. Reliability uses a
+rolling 24-hour window. Spend uses calendar month-to-date in
+`America/New_York`, sourced from the shared gateway's accounting rather than
+from Studio logs.
+
+The v1 source contract defines both product-owned reliability indicators as
+micro rollups over distinct eligible terminal IDs:
+
+- Action success uses `cail.action.terminal` for the two fixed Studio action
+  routes. Model-call success uses `cail.model.call.terminal` with
+  `gen_ai.provider.name = cail`.
+- `ok` is success. `error`, `timeout`, and `outcome_unknown` are failures.
+  `client_error`, `denied`, and `cancelled` remain visible lifecycle outcomes
+  but are excluded from the reliability denominator.
+- Empty or undersized denominators are unavailable, never zero or green. V1
+  requires 20 eligible terminals before publishing either indicator.
+- Coverage pairs admissions and terminals by their canonical action/call ID.
+  Actions receive a 30-minute completion grace period and model calls receive
+  10 minutes. Coverage is matching single terminals divided by admissions old
+  enough to have completed. The target is 100%; below 95%, stale data, orphan
+  terminals, or duplicate IDs suppress the reliability result.
+
 Cloudflare Query Builder can filter, group, count, and aggregate numeric custom
-log fields. The canonical terminals therefore support these directly:
+log fields. It supports inspection and saved component queries; the pairing,
+distinct-ID coverage checks, and ratio evaluator belong in the authorized
+fleet dashboard or alert runner because the official Query Builder interface
+does not document scheduled joins or ratio alerts.
 
 | View | Filter | Group by | Measures |
 |---|---|---|---|
 | Studio workflow success and latency | `event.name = cail.action.terminal` and `cail.product.id = agent-studio` | `url.template`, `cail.outcome`, `service.version`, `deployment.environment.name` | count; average/min/max `cail.operation.duration_ms` |
 | Model-call success and latency | `event.name = cail.model.call.terminal` and `cail.product.id = agent-studio` | `gen_ai.provider.name`, `gen_ai.request.model`, `cail.outcome`, `service.version` | count; average/min/max `cail.operation.duration_ms` |
 | User-level diagnostic slice | either terminal filter plus a specific approved `enduser.pseudo.id` | route/model and outcome | count and latency; never spend |
-| Incomplete lifecycle quality | compare distinct action/call IDs on admitted events with matching terminal IDs over a window longer than the workflow timeout | route/model and `service.version` | admission-terminal difference |
+| Incomplete lifecycle quality | pair admitted and terminal IDs after the contract grace period | route/model and `service.version` | coverage, orphan count, duplicate count |
 
 The fixed chat route is `/agents/{agent}/{name}` and the fixed code route is
 `/api/workspaces/{id}/runtime/execute`. Neither includes a workspace, session,
 file, prompt, or user-supplied value. The gateway remains the only source for
 token, cost, quota, and spend rollups.
 
+## Initial SLO and alert recipe
+
+The v1 SLO target is 99% over the rolling 24-hour window for both action and
+model-call success. The evaluator runs every five minutes and applies coverage,
+freshness, and minimum-volume gates before evaluating either SLO. Two
+consecutive breaches are required so a low-volume single failure does not
+immediately create an alert.
+
+The source contract defines six alert conditions: failed `/health` probes,
+stale `/health` lifecycle telemetry, orphan or duplicate lifecycle IDs,
+coverage below 95%, action SLO breach, and model-call SLO breach. Contract
+violations alert on the first evaluation; the other operational/SLO conditions
+require two consecutive evaluations and two healthy evaluations to recover.
+The health recipe is an authorized HTTPS `GET /health` probe with a 10-second
+timeout. Activating that probe and evaluator remains a deployment action.
+
+Cloudflare documents Workers Logs queries and saved queries but not a native
+scheduled ratio/join alert path for this design. The contract therefore records
+portable conditions rather than pretending that a saved query sends an alert.
+Notification recipients are intentionally absent from source.
+
 ## Standards and vendor review
 
 The following sources changed or confirmed the implementation:
 
-- [Cloudflare Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) (updated 2026-06-09) recommends logging structured objects, indexes their fields, and documents a 256 KB event limit. `workersStructuredSink` is therefore the explicit sink; Studio does not stringify portable records inside Workers.
-- The same Workers Logs documentation says invocation logs include request URL and response metadata and can be disabled independently. Wrangler now sets `invocation_logs: false`, retaining only Studio's bounded custom records after a future separately authorized deployment.
+- [Cloudflare Workers Logs](https://developers.cloudflare.com/workers/observability/logs/workers-logs/) (updated 2026-06-09) recommends logging structured objects, indexes their fields, documents a 256 KB event limit, and defines a head sampling rate of `1` as 100%. `workersStructuredSink` is therefore the explicit full-sampled sink; Studio does not stringify portable records inside Workers.
+- The same Workers Logs documentation says invocation logs include request URL and response metadata and can be disabled independently. Wrangler sets `invocation_logs: false`. Cloudflare can still retain platform-generated errors and uncaught exceptions; its current source configuration does not expose a switch that keeps custom logs while suppressing only those provider records.
 - [Cloudflare Version Metadata](https://developers.cloudflare.com/workers/runtime-apis/bindings/version-metadata/) (updated 2026-07-03) explicitly supports aggregating analytics by Worker version. Its immutable version ID now supplies `service.version`.
-- [Cloudflare Query Builder](https://developers.cloudflare.com/workers/observability/query-builder/) (updated 2026-04-23) supports filters, grouping, counts, and numeric min/max/average/sum. That makes the canonical terminal records dashboard-ready without duplicate rollup events.
-- [Cloudflare OpenTelemetry export](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/) (updated 2026-07-05) can export logs and traces to OTLP destinations, but is beta and provider/pricing specific. No exporter, destination, sampling rate, or persistence setting is added here.
+- [Cloudflare Query Builder](https://developers.cloudflare.com/workers/observability/query-builder/) (updated 2026-04-23) supports filters, grouping, counts, distinct counts, and numeric aggregates. It does not document a scheduled join/ratio alert facility, so source defines the fleet evaluator contract and uses Query Builder for component inspection.
+- [Cloudflare Traces](https://developers.cloudflare.com/workers/observability/traces/) (updated 2026-05-29) describes tracing as early beta and notes future compatibility behavior. Wrangler explicitly disables it rather than relying on a version-sensitive default.
+- [Cloudflare OpenTelemetry export](https://developers.cloudflare.com/workers/observability/exporting-opentelemetry-data/) (updated 2026-07-05) can export logs and traces to OTLP destinations, but is beta and provider/pricing specific. V1 explicitly configures no destinations and keeps all external export off.
 - [OpenTelemetry Logs Data Model](https://opentelemetry.io/docs/specs/otel/logs/data-model/) is stable and keeps resource identity, event name, body, trace context, severity, and attributes distinct. The `cail-log` portable record preserves that separation; the Workers sink is only a projection.
 - [OpenTelemetry semantic conventions 1.43.0](https://opentelemetry.io/docs/specs/semconv/) remain mixed-stability; HTTP duration is stable while `url.template` and GenAI conventions continue to evolve. Studio uses bounded route templates and the reviewed cail-log field contract rather than chasing provider-specific metric names. Official AI SDK documentation defines each agentic step as one LLM call, so Studio emits a separate call lifecycle per step. `provider=cail` states the client instrumentation's best-known intermediary; Studio does not invent the underlying hosted provider or response model.
 - [W3C Trace Context](https://www.w3.org/TR/trace-context/) requires valid complete context and a new parent identifier for each outgoing operation. HTTP boundaries adopt a valid trace and mint a local span; each model-proxy fetch now mints a child span while preserving trace ID, flags, tracestate, and the fleet request UUID.
 - [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) recommends excluding access tokens, session identifiers, sensitive personal data, file paths, and higher-classification data, and testing logging failures. The catalog has no prompt, message, header, JWT, session, workspace, filename, URL, exception-text, or arbitrary-attribute channel; runtime canary tests exercise that boundary.
+- [Google SRE Workbook: Alerting on SLOs](https://sre.google/workbook/alerting-on-slos/) recommends burn-rate alerting for sufficiently busy services and warns that low request rates make individual failures disproportionately noisy. The initial recipe therefore gates on 20 eligible terminals and two consecutive evaluations; it does not claim high-traffic multi-window burn-rate precision at Studio's current volume.
 - [AI SDK `streamText`](https://ai-sdk.dev/docs/reference/ai-sdk-core/stream-text) and [event callbacks](https://ai-sdk.dev/docs/ai-sdk-core/event-listeners) define step start as immediately before one LLM call and `onStepFinish` as its completion. `experimental_onStepStart` is explicitly unstable in patch releases, so its use is isolated and covered by compile/runtime tests.
 - [Cloudflare Chat Agents](https://developers.cloudflare.com/agents/communication-channels/chat/chat-agents/) (updated 2026-06-26) confirms automatic SQLite persistence and resumable streams. [Autonomous responses](https://developers.cloudflare.com/agents/communication-channels/chat/autonomous-responses/) (updated 2026-06-03) states that messages are persisted before `onChatResponse`; the repository's pinned package source confirms the exact callback order.
 
-## Deployment items intentionally not changed
+## Remaining deployment and institutional inputs
 
-- No deploy, binding, secret, ingress, spending, sampling, retention, Logpush, OTLP destination, or persistent production-state change.
-- `CAIL_LOG_ENV` remains the sole logging policy value: the deployment owner must choose `production`, `staging`, `development`, or `test`. Missing/invalid values fail health rather than being guessed. `CF_VERSION_METADATA` is source-bound and requires no chosen value.
-- Retention, access, sampling, Workers Logpush, and any OTLP destination remain deployment policy. Source does not set or change them.
-- Cloudflare OTLP export is beta and is not treated as a required collector or durable delivery guarantee.
+Only the following remain unresolved outside source:
+
+- actual notification recipients;
+- institution-approved retention and deletion requirements within Cloudflare's
+  plan limits;
+- production secrets; and
+- authorization to deploy and activate the health probe, evaluator, dashboard,
+  and source configuration.
+
+Dashboard access, production environment classification, full sampling,
+invocation-log suppression, exporter suppression, reliability/spend windows,
+denominators, coverage, and the initial SLO/alert recipe are closed source
+decisions. This work did not deploy, alter a binding or secret, activate a
+probe or exporter, change retention, or mutate production state.
 
 There is no reviewed-commit dependency blocker: the immutable dependency pin is the merged commit above.

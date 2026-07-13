@@ -34,6 +34,10 @@ or invalid. See [legacy-account-import.md](../docs/legacy-account-import.md).
 Health also fails closed when `CAIL_LOG_ENV` is missing/invalid or the
 Wrangler-managed `CF_VERSION_METADATA` binding is unavailable, so telemetry is
 never silently assigned to a guessed environment or release.
+The checked-in production Wrangler configuration supplies
+`CAIL_LOG_ENV=production`; `.dev.vars` must override it with `development` for
+local work. Collection and dashboard rollup rules are versioned in
+[`contracts/observability/agent-studio.v1.json`](../contracts/observability/agent-studio.v1.json).
 
 Run local development with:
 

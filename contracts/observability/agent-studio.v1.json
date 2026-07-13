@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "contract_id": "agent-studio.observability",
+  "contract_version": 1,
+  "product_id": "agent-studio",
+  "runtime": {
+    "required_configuration": {
+      "CAIL_LOG_ENV": "production"
+    },
+    "service_version_binding": "CF_VERSION_METADATA"
+  },
+  "access": {
+    "dashboard_role": "kale_admin"
+  },
+  "windows": {
+    "reliability": "rolling_24h",
+    "spend": "calendar_month_to_date",
+    "timezone": "America/New_York"
+  },
+  "collection": {
+    "backend": "cloudflare_workers_logs",
+    "custom_lifecycle_sample_rate": 1,
+    "invocation_logs": false,
+    "automatic_traces": false,
+    "external_exporters": []
+  },
+  "denominators": {
+    "actions": {
+      "version": 1,
+      "terminal_event": "cail.action.terminal",
+      "id_field": "cail.action.id",
+      "routes": [
+        "/agents/{agent}/{name}",
+        "/api/workspaces/{id}/runtime/execute"
+      ],
+      "rollup": "micro",
+      "success_outcomes": ["ok"],
+      "failure_outcomes": ["error", "timeout", "outcome_unknown"],
+      "excluded_outcomes": ["client_error", "denied", "cancelled"],
+      "empty_denominator": "unavailable",
+      "denominator_population": "distinct_eligible_terminal_ids",
+      "success_numerator": "distinct_success_terminal_ids"
+    },
+    "model_calls": {
+      "version": 1,
+      "terminal_event": "cail.model.call.terminal",
+      "id_field": "cail.call.id",
+      "provider": "cail",
+      "rollup": "micro",
+      "success_outcomes": ["ok"],
+      "failure_outcomes": ["error", "timeout", "outcome_unknown"],
+      "excluded_outcomes": ["client_error", "denied", "cancelled"],
+      "empty_denominator": "unavailable",
+      "denominator_population": "distinct_eligible_terminal_ids",
+      "success_numerator": "distinct_success_terminal_ids"
+    }
+  },
+  "coverage": {
+    "version": 1,
+    "target": 1,
+    "minimum_publishable": 0.95,
+    "freshness_deadline_seconds": 300,
+    "on_failure": "suppress_reliability",
+    "orphan_terminals_allowed": 0,
+    "duplicate_ids_allowed": 0,
+    "admission_terminal_pairing": {
+      "actions": {
+        "admission_event": "cail.action.admitted",
+        "terminal_event": "cail.action.terminal",
+        "id_field": "cail.action.id",
+        "grace_seconds": 1800
+      },
+      "model_calls": {
+        "admission_event": "cail.model.call.admitted",
+        "terminal_event": "cail.model.call.terminal",
+        "id_field": "cail.call.id",
+        "grace_seconds": 600
+      }
+    },
+    "numerator_population": "distinct_admission_ids_with_exactly_one_terminal",
+    "denominator_population": "distinct_admission_ids_older_than_grace",
+    "empty_expected_population": "unavailable"
+  },
+  "slo": {
+    "version": 1,
+    "indicators": ["actions", "model_calls"],
+    "window": "rolling_24h",
+    "target": 0.99,
+    "minimum_eligible_terminals": 20,
+    "availability_gate": {
+      "minimum_lifecycle_coverage": 0.95,
+      "maximum_telemetry_age_seconds": 300
+    },
+    "insufficient_volume": "unavailable"
+  },
+  "alerts": {
+    "version": 1,
+    "evaluation_interval_seconds": 300,
+    "rules": [
+      {
+        "id": "agent-studio.health.failed",
+        "severity": "critical",
+        "consecutive_evaluations": 2,
+        "recovery_consecutive_evaluations": 2,
+        "condition": {
+          "type": "synthetic_https",
+          "method": "GET",
+          "route": "/health",
+          "expected_status": 200,
+          "timeout_seconds": 10
+        }
+      },
+      {
+        "id": "agent-studio.telemetry.stale",
+        "severity": "high",
+        "consecutive_evaluations": 2,
+        "recovery_consecutive_evaluations": 2,
+        "condition": {
+          "type": "latest_event_age",
+          "event": "cail.request.completed",
+          "route": "/health",
+          "operator": "greater_than_seconds",
+          "threshold": 300
+        }
+      },
+      {
+        "id": "agent-studio.lifecycle.contract_violation",
+        "severity": "critical",
+        "consecutive_evaluations": 1,
+        "recovery_consecutive_evaluations": 1,
+        "condition": {
+          "type": "lifecycle_integrity",
+          "window": "rolling_24h",
+          "indicators": ["actions", "model_calls"],
+          "maximum_orphan_terminals": 0,
+          "maximum_admissions_per_id": 1,
+          "maximum_terminals_per_id": 1
+        }
+      },
+      {
+        "id": "agent-studio.lifecycle.coverage_below_minimum",
+        "severity": "high",
+        "consecutive_evaluations": 2,
+        "recovery_consecutive_evaluations": 2,
+        "condition": {
+          "type": "lifecycle_coverage",
+          "window": "rolling_24h",
+          "indicators": ["actions", "model_calls"],
+          "operator": "less_than",
+          "threshold": 0.95,
+          "minimum_admissions_older_than_grace": 20
+        }
+      },
+      {
+        "id": "agent-studio.action.slo_breach",
+        "severity": "high",
+        "consecutive_evaluations": 2,
+        "recovery_consecutive_evaluations": 2,
+        "condition": {
+          "type": "success_ratio",
+          "indicator": "actions",
+          "window": "rolling_24h",
+          "operator": "less_than",
+          "threshold": 0.99,
+          "minimum_eligible_terminals": 20,
+          "require_coverage_gate": true
+        }
+      },
+      {
+        "id": "agent-studio.model_call.slo_breach",
+        "severity": "high",
+        "consecutive_evaluations": 2,
+        "recovery_consecutive_evaluations": 2,
+        "condition": {
+          "type": "success_ratio",
+          "indicator": "model_calls",
+          "window": "rolling_24h",
+          "operator": "less_than",
+          "threshold": 0.99,
+          "minimum_eligible_terminals": 20,
+          "require_coverage_gate": true
+        }
+      }
+    ]
+  }
+}

@@ -37,8 +37,13 @@ CAIL_IDENTITY_JWKS=                          # static public JWKS JSON for RS256
 
 `cloudflare/wrangler.jsonc` also expects a bound R2 bucket for `WORKSPACE_FILES` and a Worker Loader binding for Dynamic Workers.
 It binds Cloudflare version metadata for the operational `service.version` and
-disables content-bearing native invocation logs while retaining Studio's
-bounded structured custom events.
+full-samples Studio's bounded structured custom events into Workers Logs. It
+disables content-bearing native invocation logs, automatic traces, Logpush,
+Tail consumers, and external exporters. The versioned reliability and alert
+rules are in
+[`contracts/observability/agent-studio.v1.json`](./contracts/observability/agent-studio.v1.json).
+The checked-in production configuration sets `CAIL_LOG_ENV=production`; local
+development overrides it with `development`.
 
 For deployed environments, set `SESSION_SECRET` and `CAIL_IDENTITY_JWKS`
 through Wrangler. `CAIL_API_BASE` and `CAIL_MODEL` are `vars`.
