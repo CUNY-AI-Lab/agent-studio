@@ -5,6 +5,33 @@ import { registerCloudflareStub } from './helpers/env.mjs';
 
 registerCloudflareStub();
 
+test('chat action success waits for the post-persistence onChatResponse hook', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const action = { actionTerminal: false };
+  const calls = [];
+  const agent = {
+    pendingChatAction: action,
+    finishModelCall(seenAction, terminal, errorType) {
+      calls.push(['model', seenAction, terminal, errorType]);
+    },
+    finishChatAction(seenAction, terminal, errorType) {
+      calls.push(['action', seenAction, terminal, errorType]);
+    },
+  };
+
+  WorkspaceAgent.prototype.onChatResponse.call(agent, {
+    message: { id: 'assistant-1', role: 'assistant', parts: [] },
+    requestId: 'request-1',
+    continuation: false,
+    status: 'completed',
+  });
+
+  assert.deepEqual(calls, [
+    ['model', action, { outcome: 'ok', reason: 'completed' }, undefined],
+    ['action', action, { outcome: 'ok', reason: 'completed' }, undefined],
+  ]);
+});
+
 test('anonymous chat streams an authentication error instead of assistant JSON', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
@@ -109,6 +136,15 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     finalizeObservabilityRequest() {},
     recordChunkObservability() {},
     markObservabilityUpdated() {},
+    admitModelCall(action) {
+      return WorkspaceAgent.prototype.admitModelCall.call(this, action);
+    },
+    finishModelCall(action, terminal, errorType) {
+      return WorkspaceAgent.prototype.finishModelCall.call(this, action, terminal, errorType);
+    },
+    finishChatAction(action, terminal, errorType) {
+      return WorkspaceAgent.prototype.finishChatAction.call(this, action, terminal, errorType);
+    },
   };
 
   const response = await WorkspaceAgent.prototype.onChatMessage.call(

@@ -2712,7 +2712,7 @@ function WorkspaceShell({
               wheel={{ step: 0.1, excluded: ['no-zoom-scroll'] }}
               panning={{ velocityDisabled: true, allowLeftClickPan: spacePanning, allowMiddleClickPan: true }}
               doubleClick={{ disabled: true }}
-              onTransformed={(_ref, state) => {
+              onTransform={(_ref, state) => {
                 const nextViewport = {
                   x: state.positionX,
                   y: state.positionY,

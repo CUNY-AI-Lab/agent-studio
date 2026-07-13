@@ -7,7 +7,7 @@ import {
   readWorkspaceFile,
   toRuntimePath,
 } from './files';
-import { studioLogger } from './logging';
+import { LOG_PRODUCT, STUDIO_EVENTS, studioLogger } from './logging';
 
 export interface HydrationRuntime {
   lstat(path: string): Promise<{ type: string } | null>;
@@ -30,9 +30,10 @@ export async function hydrateLegacyWorkspaceFiles(
     const state = accountImportWindowState(env, now);
     const legacyFiles = await listWorkspaceFilesRecursive(env, sessionId, workspaceId);
     if (legacyFiles.some((file) => !file.isDirectory)) {
-      studioLogger().warn('migration.compatibility_ignored', {
-        outcome: 'denied',
-        error_code:
+      studioLogger(env).emit(STUDIO_EVENTS.LEGACY_HYDRATION_SKIPPED, {
+        product_id: LOG_PRODUCT,
+        terminal: { outcome: 'denied', reason: 'denied' },
+        error_type:
           state === 'expired'
             ? 'legacy_hydration_window_expired'
             : 'legacy_hydration_window_not_open',

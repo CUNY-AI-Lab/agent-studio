@@ -11,34 +11,34 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ai-sdk/react": "3.0.140",
-    "@cloudflare/ai-chat": "0.2.5",
-    "@tailwindcss/typography": "0.5.19",
-    "@tailwindcss/vite": "4.2.2",
-    "agents": "0.8.4",
-    "ai": "6.0.138",
+    "@ai-sdk/react": "3.0.227",
+    "@cloudflare/ai-chat": "0.9.3",
+    "@tailwindcss/typography": "0.5.20",
+    "@tailwindcss/vite": "4.3.2",
+    "agents": "0.17.4",
+    "ai": "6.0.225",
     "clsx": "2.1.1",
     "html-to-image": "1.11.13",
-    "lucide-react": "1.7.0",
-    "react": "19.2.4",
-    "react-dom": "19.2.4",
+    "lucide-react": "1.24.0",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
     "react-markdown": "10.1.0",
-    "react-zoom-pan-pinch": "3.7.0",
-    "recharts": "2.15.4",
+    "react-zoom-pan-pinch": "4.0.3",
+    "recharts": "3.9.2",
     "remark-gfm": "4.0.1",
-    "tailwind-merge": "3.5.0",
-    "tailwindcss": "4.2.2"
+    "tailwind-merge": "3.6.0",
+    "tailwindcss": "4.3.2"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.2",
     "@testing-library/user-event": "14.6.1",
-    "@types/react": "19.2.14",
+    "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.2.0",
-    "jsdom": "25.0.1",
-    "typescript": "5.9.3",
+    "jsdom": "29.1.1",
+    "typescript": "7.0.2",
     "vite": "7.3.1",
-    "vitest": "3.2.6"
+    "vitest": "4.1.10"
   }
 }

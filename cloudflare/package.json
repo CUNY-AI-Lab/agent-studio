@@ -10,26 +10,26 @@
     "test": "node --import tsx --test test/**/*.test.mjs"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "2.0.52",
-    "@cloudflare/ai-chat": "0.2.5",
-    "@cloudflare/codemode": "0.3.1",
-    "@cloudflare/shell": "0.3.0",
+    "@ai-sdk/openai-compatible": "2.0.59",
+    "@cloudflare/ai-chat": "0.9.3",
+    "@cloudflare/codemode": "0.4.3",
+    "@cloudflare/shell": "0.4.1",
     "@cuny-ai-lab/cail-client": "github:CUNY-AI-Lab/cail-client#c42d0fa353e06574e7021e4c12a91a74e00904a4",
     "@cuny-ai-lab/cail-identity": "github:CUNY-AI-Lab/cail-identity#3a76084a87ee3e004454c599fdd5f0565f82f32f",
-    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#95b45c429c05e42557143ddfc1ff8afaf5b7b1c1",
-    "agents": "0.8.4",
-    "ai": "6.0.138",
+    "@cuny-ai-lab/cail-log": "github:CUNY-AI-Lab/cail-log#862067d3ac83d0cde456eb38d3a6bad6df0476e5",
+    "agents": "0.17.4",
+    "ai": "6.0.225",
     "docx": "9.7.1",
-    "hono": "4.12.27",
+    "hono": "4.12.30",
     "unpdf": "1.6.2",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
-    "zod": "4.3.6"
+    "zod": "4.4.3"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "4.20260627.1",
+    "@cloudflare/workers-types": "5.20260713.1",
     "jszip": "3.10.1",
-    "tsx": "4.22.4",
-    "typescript": "5.9.3",
-    "wrangler": "4.105.0"
+    "tsx": "4.23.1",
+    "typescript": "7.0.2",
+    "wrangler": "4.110.0"
   }
 }

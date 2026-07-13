@@ -1,6 +1,6 @@
 import { deleteByPrefix, getWorkspacePrefix } from './files';
 import { legacyAccountCompatibilityAllowed, type Env } from '../env';
-import { studioLogger } from './logging';
+import { LOG_PRODUCT, STUDIO_EVENTS, studioLogger } from './logging';
 
 export interface DownloadRequest {
   filename: string;
@@ -51,13 +51,15 @@ export interface ReadDownloadsOptions {
 // are not on the safe-to-log allowlist); the 'throw' path keeps the key in
 // the thrown Error so the migration's fail-and-retry path stays actionable.
 function reportCorruptDownloadObject(
+  env: Env,
   key: string,
   error: unknown,
   onCorrupt: 'skip' | 'throw'
 ): void {
-  studioLogger().error('downloads.corrupt', {
-    outcome: 'error',
-    error_code: 'corrupt_download_object',
+  studioLogger(env).emit(STUDIO_EVENTS.DOWNLOAD_CORRUPT, {
+    product_id: LOG_PRODUCT,
+    terminal: { outcome: 'error', reason: 'application_failure' },
+    error_type: 'corrupt_download_object',
   });
   if (onCorrupt === 'throw') {
     throw new Error(`downloads: corrupt stored download object at ${key}`, { cause: error });
@@ -107,11 +109,11 @@ async function readLegacyDownloads(
   try {
     parsed = await object.json();
   } catch (error) {
-    reportCorruptDownloadObject(key, error, onCorrupt);
+    reportCorruptDownloadObject(env, key, error, onCorrupt);
     return [];
   }
   if (!Array.isArray(parsed)) {
-    reportCorruptDownloadObject(key, new Error('expected a JSON array'), onCorrupt);
+    reportCorruptDownloadObject(env, key, new Error('expected a JSON array'), onCorrupt);
     return [];
   }
   return parsed as DownloadRequest[];
@@ -140,11 +142,12 @@ export async function getWorkspaceDownloads(
         try {
           parsed = await body.json<StoredDownload>();
         } catch (error) {
-          reportCorruptDownloadObject(object.key, error, onCorrupt);
+          reportCorruptDownloadObject(env, object.key, error, onCorrupt);
           return null;
         }
         if (!(parsed && typeof parsed === 'object' && parsed.download)) {
           reportCorruptDownloadObject(
+            env,
             object.key,
             new Error('missing download payload'),
             onCorrupt

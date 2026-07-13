@@ -14,7 +14,12 @@ import {
   type CailIdentity,
 } from './cail-identity';
 import { runFirstLoginMigration } from './migration';
-import { studioLogger } from './logging';
+import {
+  LOG_PRODUCT,
+  STUDIO_EVENTS,
+  principalForSubject,
+  studioLogger,
+} from './logging';
 
 const SESSION_COOKIE_NAME = 'agent-studio-session';
 
@@ -140,34 +145,46 @@ export const sessionMiddleware: MiddlewareHandler<{
               deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
             }
             const succeeded = outcome === 'migrated' || outcome === 'already-done';
-            studioLogger().info('migration.account_import', {
-              subject: verified.identity.subject,
-              outcome: succeeded ? 'ok' : 'denied',
+            const importFields = {
+              product_id: LOG_PRODUCT,
+              principal: principalForSubject(verified.identity.subject),
               duration_ms: Date.now() - startedAt,
-              ...(succeeded
-                ? {}
-                : { error_code: `first_login_${outcome.replaceAll('-', '_')}` }),
-            });
+            };
+            if (succeeded) {
+              studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+                ...importFields,
+                terminal: { outcome: 'ok', reason: 'completed' },
+              });
+            } else {
+              studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+                ...importFields,
+                terminal: { outcome: 'denied', reason: 'denied' },
+                error_type: `first_login_${outcome.replaceAll('-', '_')}`,
+              });
+            }
           } catch {
             // Soft-fail: the user sees their subject namespace (possibly still
             // empty); the claim is marked failed and the next request retries.
             // Structured event, metadata only: the subject identifies the user
             // (session ids derive from it); the error itself is never logged.
-            studioLogger().error('migration.failed', {
-              subject: verified.identity.subject,
-              outcome: 'error',
+            studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+              product_id: LOG_PRODUCT,
+              principal: principalForSubject(verified.identity.subject),
+              terminal: { outcome: 'error', reason: 'application_failure' },
               duration_ms: Date.now() - startedAt,
-              error_code: 'first_login_migration_failed',
+              error_type: 'first_login_migration_failed',
             });
           }
         } else if (windowState === 'expired') {
           // The deadline is final: never retain a cookie that could trigger a
           // later import if compatibility code is accidentally re-enabled.
           deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
-          studioLogger().warn('migration.account_import_refused', {
-            subject: verified.identity.subject,
-            outcome: 'denied',
-            error_code: 'legacy_account_import_window_expired',
+          studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+            product_id: LOG_PRODUCT,
+            principal: principalForSubject(verified.identity.subject),
+            terminal: { outcome: 'denied', reason: 'denied' },
+            duration_ms: 0,
+            error_type: 'legacy_account_import_window_expired',
           });
         } // Before the switch, keep the cookie so the first in-window request can import it.
       } else {

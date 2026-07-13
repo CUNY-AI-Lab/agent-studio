@@ -1,156 +1,261 @@
-/**
- * Structured wide-event logging for Agent Studio, built on the fleet
- * primitive `@cuny-ai-lab/cail-log`.
- *
- * The fleet logging standard (2026-07-11): ONE structured JSON event per unit
- * of work, emitted on EVERY outcome, carrying only the typed safe-to-log
- * allowlist — subject HMAC (never email), correlation ids, classified route,
- * method, status, outcome, durations, stable error codes, byte/token COUNTS.
- * Chat messages, tool outputs, file contents, header values, and raw URLs are
- * structurally impossible to log: `CailLogFields` has no field for them and
- * the library drops/redacts anything smuggled past the types.
- *
- * This module keeps the agent-studio glue thin:
- *   - `studioLogger()` — the shared logger (`service: "agent-studio"`).
- *   - `logBoundaryEvent()` — the one wide event for a completed unit of work
- *     at a request boundary (HTTP route or DO op).
- *   - `mintCorrelation()` — correlation for work that does not arrive over
- *     HTTP (WebSocket chat turns, RPC ops), adopting a caller-supplied
- *     request id when it is shaped like one.
- *   - `withOutboundCorrelation()` — wraps a fetch-shaped function so
- *     downstream calls (the model proxy) carry `traceparent` +
- *     `X-CAIL-Request-Id` and one action can be followed across services.
- */
-
+/** Privacy-constrained operational events for Agent Studio. */
 import {
   CAIL_EVENTS,
   correlationFromHeaders,
   createCailLogger,
+  extendCailEventCatalog,
   outboundCorrelationHeaders,
   workersStructuredSink,
   type CailCorrelation,
-  type CailLogFields,
-  type CailLogger,
+  type CailHttpMethod,
+  type CailLogEnvironment,
   type CailLogSink,
+  type CailLogger,
+  type CailPrincipalFields,
+  type CailTerminalFields,
+  type CailTraceFields,
 } from '@cuny-ai-lab/cail-log';
 
 export { CAIL_EVENTS, correlationFromHeaders, outboundCorrelationHeaders };
-export type { CailCorrelation, CailLogFields, CailLogger };
+export type { CailCorrelation, CailPrincipalFields, CailTerminalFields, CailTraceFields };
 
-/** Service + X-CAIL-App slug for every event this Worker emits. */
 export const LOG_SERVICE = 'agent-studio';
+export const LOG_PRODUCT = 'agent-studio';
+export const LOG_PROVIDER = 'cail';
+const DEFAULT_RELEASE = '0.1.0';
 
-/**
- * Build an agent-studio logger. Workers use Cloudflare's structured console
- * sink; tests can inject a capture sink.
- */
-export function createStudioLogger(options: { sink?: CailLogSink } = {}): CailLogger {
+export const STUDIO_EVENTS = Object.freeze({
+  STARTUP_CONFIG_INVALID: 'agent_studio.startup.config_invalid',
+  ACCOUNT_IMPORT_TERMINAL: 'agent_studio.account_import.terminal',
+  LEGACY_HYDRATION_SKIPPED: 'agent_studio.legacy_hydration.skipped',
+  DOWNLOAD_CORRUPT: 'agent_studio.download.corrupt',
+  CREDENTIAL_REJECTED: 'agent_studio.credential.rejected',
+  CHAT_DENIED: 'agent_studio.chat.denied',
+} as const);
+
+export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
+  [STUDIO_EVENTS.STARTUP_CONFIG_INVALID]: {
+    body: 'Agent Studio configuration was rejected.',
+    source: 'platform',
+    severity: 'outcome',
+    required: ['product_id', 'terminal', 'error_type'],
+    optional: [],
+    outcomes: ['denied'],
+    terminal_reasons: ['denied'],
+  },
+  [STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL]: {
+    body: 'Legacy account import reached a terminal state.',
+    source: 'platform',
+    severity: 'outcome',
+    required: ['product_id', 'principal', 'terminal', 'duration_ms'],
+    optional: ['error_type'],
+  },
+  [STUDIO_EVENTS.LEGACY_HYDRATION_SKIPPED]: {
+    body: 'Legacy workspace hydration was skipped.',
+    source: 'platform',
+    severity: 'outcome',
+    required: ['product_id', 'terminal', 'error_type'],
+    optional: [],
+    outcomes: ['denied'],
+    terminal_reasons: ['denied'],
+  },
+  [STUDIO_EVENTS.DOWNLOAD_CORRUPT]: {
+    body: 'A corrupt queued download was detected.',
+    source: 'platform',
+    severity: 'outcome',
+    required: ['product_id', 'terminal', 'error_type'],
+    optional: [],
+    outcomes: ['error'],
+    terminal_reasons: ['application_failure'],
+  },
+  [STUDIO_EVENTS.CREDENTIAL_REJECTED]: {
+    body: 'A workspace credential was rejected.',
+    source: 'platform',
+    severity: 'outcome',
+    required: ['product_id', 'principal', 'terminal', 'error_type'],
+    optional: ['request_id', 'trace'],
+    outcomes: ['denied'],
+    terminal_reasons: ['denied'],
+  },
+  [STUDIO_EVENTS.CHAT_DENIED]: {
+    body: 'A Studio chat turn was denied before admission.',
+    source: 'platform',
+    severity: 'outcome',
+    required: ['request_id', 'product_id', 'principal', 'trace', 'terminal', 'error_type'],
+    optional: [],
+    outcomes: ['denied'],
+    terminal_reasons: ['denied'],
+  },
+} as const);
+
+export type StudioLogger = CailLogger<typeof STUDIO_EVENT_CATALOG, 'platform'>;
+
+export interface StudioLogRuntime {
+  CAIL_LOG_RELEASE?: string;
+  CAIL_LOG_ENV?: CailLogEnvironment;
+}
+
+export interface CreateStudioLoggerOptions {
+  sink?: CailLogSink;
+  release?: string;
+  env?: CailLogEnvironment;
+}
+
+export function createStudioLogger(options: CreateStudioLoggerOptions = {}): StudioLogger {
   return createCailLogger({
     service: LOG_SERVICE,
+    release: options.release ?? DEFAULT_RELEASE,
+    env: options.env ?? 'test',
+    sourceClass: 'platform',
+    catalog: STUDIO_EVENT_CATALOG,
     sink: options.sink ?? workersStructuredSink,
   });
 }
 
-let sharedLogger: CailLogger | null = null;
+const runtimeLoggers = new WeakMap<object, StudioLogger>();
+let developmentLogger: StudioLogger | undefined;
 
-/** The shared module-level logger. Construction is config-free, so one suffices. */
-export function studioLogger(): CailLogger {
-  if (!sharedLogger) {
-    sharedLogger = createStudioLogger();
+export function studioLogger(runtime?: StudioLogRuntime): StudioLogger {
+  if (!runtime) {
+    developmentLogger ??= createStudioLogger({ env: 'development' });
+    return developmentLogger;
   }
-  return sharedLogger;
+  const key = runtime as object;
+  let logger = runtimeLoggers.get(key);
+  if (!logger) {
+    logger = createStudioLogger({
+      release: runtime.CAIL_LOG_RELEASE ?? DEFAULT_RELEASE,
+      env: runtime.CAIL_LOG_ENV ?? 'development',
+    });
+    runtimeLoggers.set(key, logger);
+  }
+  return logger;
 }
 
-export type BoundaryOutcome = 'ok' | 'client_error' | 'error' | 'denied';
+export function principalForSubject(subject?: string | null): CailPrincipalFields {
+  return subject && /^cail-[0-9a-f]{32}$/.test(subject)
+    ? { type: 'user', subject }
+    : { type: 'anonymous' };
+}
 
-/** Normalize an HTTP status into the fleet outcome vocabulary. */
-export function outcomeForStatus(status: number): BoundaryOutcome {
-  if (status === 401 || status === 403) return 'denied';
-  if (status >= 500) return 'error';
-  if (status >= 400) return 'client_error';
-  return 'ok';
+export function traceFromCorrelation(correlation: CailCorrelation): CailTraceFields {
+  return {
+    trace_id: correlation.trace_id,
+    span_id: correlation.span_id,
+    trace_flags: correlation.trace_flags,
+  };
+}
+
+/** Non-HTTP work always mints a UUID request id; UI request labels are not trusted ids. */
+export function mintCorrelation(): CailCorrelation {
+  return correlationFromHeaders({ get: () => null });
+}
+
+export function normalizeRouteTemplate(route: string): string {
+  if (route === 'unmatched') return '/unmatched';
+  const normalized = route
+    .replace(/:([A-Za-z][A-Za-z0-9_]*)/g, '{$1}')
+    .replace(/\/$/, '')
+    .replace(/\/\*$/, '/{path}') || '/';
+  return normalized.startsWith('/') ? normalized : `/${normalized}`;
+}
+
+export function terminalForRequest(status: number, errorType?: string): CailTerminalFields {
+  if (status === 408 || status === 504) return { outcome: 'timeout', reason: 'timeout' };
+  if (status === 429 || errorType === 'quota_exceeded') {
+    return { outcome: 'denied', reason: 'quota_blocked' };
+  }
+  if (status === 401 || status === 403) return { outcome: 'denied', reason: 'denied' };
+  if (status >= 500) {
+    return {
+      outcome: 'error',
+      reason: errorType?.startsWith('upstream_') ? 'upstream_failure' : 'application_failure',
+    };
+  }
+  if (status >= 400) return { outcome: 'client_error', reason: 'client_error' };
+  return { outcome: 'ok', reason: 'completed' };
+}
+
+function normalizeHttpMethod(method: string): CailHttpMethod {
+  const upper = method.toUpperCase();
+  return ['CONNECT', 'DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT', 'TRACE'].includes(upper)
+    ? upper as CailHttpMethod
+    : '_OTHER';
 }
 
 export interface BoundaryEvent {
   correlation: CailCorrelation;
-  /** HTTP method (or the method of the request that opened the op). */
   method: string;
-  /**
-   * The CLASSIFIED route label — a matched route pattern like
-   * `/api/workspaces/:id` or a stable op label like `agent/chat`. Never a raw
-   * URL (ids and querystrings are content, not metadata).
-   */
   route: string;
   status: number;
   durationMs: number;
-  /** The pseudonymous X-CAIL-Subject HMAC — never an email or session cookie. */
   subject?: string;
-  /** Stable machine error code (slug), e.g. `quota_exceeded`. */
-  errorCode?: string;
-  model?: string;
-  inputTokens?: number;
-  outputTokens?: number;
+  errorType?: string;
 }
 
-/**
- * Emit the ONE wide event for a completed unit of work at a request boundary.
- * `auth.denied` for 401/403; `request.completed` otherwise. Severity follows
- * the outcome so "show me failures" is `severity_number >= 17`.
- */
-export function logBoundaryEvent(log: CailLogger, input: BoundaryEvent): void {
-  const outcome = outcomeForStatus(input.status);
-  const event = outcome === 'denied' ? CAIL_EVENTS.AUTH_DENIED : CAIL_EVENTS.REQUEST_COMPLETED;
-  const level = outcome === 'error' ? 'error' : outcome === 'ok' ? 'info' : 'warn';
-  const fields: CailLogFields = {
-    ...input.correlation,
-    app: LOG_SERVICE,
-    http_method: input.method,
-    route: input.route,
-    status: input.status,
-    outcome,
-    duration_ms: input.durationMs,
-    ...(input.subject ? { subject: input.subject } : {}),
-    ...(input.errorCode ? { error_code: input.errorCode } : {}),
-    ...(input.model ? { model: input.model } : {}),
-    ...(input.inputTokens !== undefined ? { input_tokens: input.inputTokens } : {}),
-    ...(input.outputTokens !== undefined ? { output_tokens: input.outputTokens } : {}),
-  };
-  log.log(level, event, fields);
-}
+export function logBoundaryEvent(log: StudioLogger, input: BoundaryEvent): void {
+  const principal = principalForSubject(input.subject);
+  const trace = traceFromCorrelation(input.correlation);
+  const route = normalizeRouteTemplate(input.route);
+  const terminal = terminalForRequest(input.status, input.errorType);
+  const http_method = normalizeHttpMethod(input.method);
 
-const REQUEST_ID_SHAPE = /^[A-Za-z0-9._-]{1,128}$/;
-
-/**
- * Correlation for a unit of work that does not arrive over HTTP (a chat turn
- * or RPC op on the workspace DO's WebSocket). Everything is minted fresh,
- * except that a caller-supplied request id is adopted when it is shaped like
- * a fleet request id — so DO events line up with the AI SDK's per-turn
- * requestId and the DO's own observability trace.
- */
-export function mintCorrelation(requestId?: string): CailCorrelation {
-  const minted = correlationFromHeaders({ get: () => null });
-  if (requestId && REQUEST_ID_SHAPE.test(requestId)) {
-    return { ...minted, request_id: requestId };
+  if (terminal.outcome === 'denied' && terminal.reason === 'denied') {
+    log.emit(CAIL_EVENTS.AUTH_DENIED, {
+      request_id: input.correlation.request_id,
+      product_id: LOG_PRODUCT,
+      principal,
+      http_method,
+      route,
+      status: input.status,
+      terminal,
+      trace,
+      ...(input.errorType ? { error_type: input.errorType } : {}),
+    });
+    return;
   }
-  return minted;
+
+  const fields = {
+    request_id: input.correlation.request_id,
+    product_id: LOG_PRODUCT,
+    http_method,
+    route,
+    status: input.status,
+    terminal,
+    duration_ms: input.durationMs,
+    trace,
+    principal,
+  };
+  if (terminal.outcome === 'ok') {
+    log.emit(CAIL_EVENTS.REQUEST_COMPLETED, { ...fields, terminal });
+  } else {
+    log.emit(CAIL_EVENTS.REQUEST_COMPLETED, {
+      ...fields,
+      terminal,
+      ...(input.errorType ? { error_type: input.errorType } : {}),
+    });
+  }
 }
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
-/**
- * Wrap a fetch-shaped function so every call carries the outbound correlation
- * headers (`traceparent` + `X-CAIL-Request-Id`), preserving all other init
- * headers. Used on the DO's model-proxy calls so the gateway/proxy logs join
- * to this Worker's events. Throws `TypeError` immediately on a malformed
- * correlation (never silently forks a trace).
- */
 export function withOutboundCorrelation(fetcher: FetchLike, correlation: CailCorrelation): FetchLike {
-  const correlationHeaders = outboundCorrelationHeaders(correlation);
   return (input, init) => {
+    // W3C Trace Context gives each outbound operation a new parent-id while
+    // preserving the trace, flags, tracestate, and fleet request id.
+    const parentHeaders = outboundCorrelationHeaders(correlation);
+    const child = correlationFromHeaders({
+      get(name: string) {
+        const lower = name.toLowerCase();
+        if (lower === 'traceparent') return parentHeaders.traceparent ?? null;
+        if (lower === 'tracestate') return correlation.tracestate ?? null;
+        if (lower === 'x-cail-request-id') return correlation.request_id;
+        return null;
+      },
+    });
+    const correlationHeaders = outboundCorrelationHeaders(child);
     const headers = new Headers(init?.headers);
-    for (const [name, value] of Object.entries(correlationHeaders)) {
-      headers.set(name, value);
-    }
+    for (const [name, value] of Object.entries(correlationHeaders)) headers.set(name, value);
     return fetcher(input, { ...init, headers });
   };
 }

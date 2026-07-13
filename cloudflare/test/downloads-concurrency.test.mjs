@@ -140,7 +140,7 @@ const LEGACY_KEY = `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads.
 function corruptEventsFrom(logMock) {
   return logMock.mock.calls
     .map((call) => call.arguments[0])
-    .filter((event) => event && event.event === 'downloads.corrupt');
+    .filter((event) => event && event['event.name'] === 'agent_studio.download.corrupt');
 }
 
 test('corrupt legacy downloads.json emits a structured event, not silently read as empty', async (t) => {
@@ -158,11 +158,11 @@ test('corrupt legacy downloads.json emits a structured event, not silently read 
   // key (session/workspace ids + filename) never reaches the log line.
   const events = corruptEventsFrom(logs);
   assert.equal(events.length, 1);
-  assert.equal(events[0].error_code, 'corrupt_download_object');
-  assert.equal(events[0].outcome, 'error');
+  assert.equal(events[0]['error.type'], 'corrupt_download_object');
+  assert.equal(events[0]['cail.outcome'], 'error');
   assert.equal(events[0].severity_number >= 17, true);
   for (const call of logs.mock.calls) {
-    assert.ok(!String(call.arguments[0]).includes(LEGACY_KEY), 'R2 key leaked into a log line');
+    assert.ok(!JSON.stringify(call.arguments[0]).includes(LEGACY_KEY), 'R2 key leaked into a log line');
   }
 });
 
@@ -182,7 +182,7 @@ test('corrupt per-object downloads emit one event each and are skipped; good ent
   assert.deepEqual(downloads.map((d) => d.filename), ['good.txt']);
   assert.equal(corruptEventsFrom(logs).length, 2);
   for (const call of logs.mock.calls) {
-    const line = String(call.arguments[0]);
+    const line = JSON.stringify(call.arguments[0]);
     assert.ok(!line.includes(badParseKey) && !line.includes(badShapeKey), 'R2 key leaked into a log line');
   }
 });

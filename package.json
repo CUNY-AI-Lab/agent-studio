@@ -12,7 +12,7 @@
     "partyserver": "0.3.3"
   },
   "devDependencies": {
-    "agents": "0.8.4"
+    "agents": "0.17.4"
   },
   "scripts": {
     "dev": "bun run --cwd cloudflare dev",

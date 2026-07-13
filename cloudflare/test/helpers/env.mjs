@@ -37,6 +37,7 @@ const CF_STUB_SOURCE = `
   export class EmailMessage {}
   export class WorkerEntrypoint {}
   export class WorkflowEntrypoint {}
+  export const exports = {};
   export const env = {};
   export default {};
 `;

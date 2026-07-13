@@ -1,5 +1,6 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
 import type { MigrationRegistry } from './migration-registry';
+import type { CailLogEnvironment } from '@cuny-ai-lab/cail-log';
 
 export interface Env {
   ASSETS: Fetcher;
@@ -17,6 +18,10 @@ export interface Env {
   // provider key. See src/lib/cail-model.ts and src/lib/cail-identity.ts.
   CAIL_API_BASE?: string;
   CAIL_MODEL?: string;
+  // Operational-log resource identity. Deployment wiring is intentionally
+  // separate from this source-only integration.
+  CAIL_LOG_RELEASE?: string;
+  CAIL_LOG_ENV?: CailLogEnvironment;
   CAIL_IDENTITY_JWKS?: string;
   CAIL_REQUIRE_IDENTITY?: string;
   // Temporary compatibility window for importing anonymous pre-SSO accounts.

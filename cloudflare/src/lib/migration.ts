@@ -331,7 +331,13 @@ export async function runFirstLoginMigration(
   const getAgent: AgentFactory = async (sessionId, workspaceId) => {
     const { getAgentByName } = await import('agents');
     const { createWorkspaceAgentName } = await import('./ids');
-    const agent = await getAgentByName(
+    // See server.ts: workers-types v5's facet brand has not yet propagated to
+    // the Agents SDK helper declaration. Runtime routing remains unchanged.
+    const getWorkspaceByName = getAgentByName as unknown as (
+      namespace: Env['WorkspaceAgent'],
+      name: string,
+    ) => Promise<MigratableAgent>;
+    const agent = await getWorkspaceByName(
       env.WorkspaceAgent,
       createWorkspaceAgentName(sessionId, workspaceId)
     );

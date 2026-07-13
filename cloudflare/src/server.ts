@@ -55,8 +55,11 @@ import {
 import { rateLimitMiddleware } from './lib/rate-limit';
 import {
   correlationFromHeaders,
+  LOG_PRODUCT,
   logBoundaryEvent,
+  STUDIO_EVENTS,
   studioLogger,
+  withOutboundCorrelation,
   type CailCorrelation,
 } from './lib/logging';
 import { isAllowedUpload } from './lib/upload-validation';
@@ -159,15 +162,15 @@ function classifiedRoute(c: AppContext): string {
 }
 
 /** Emit the one wide boundary event for this request (fleet logging standard). */
-function emitBoundaryEvent(c: AppContext, status: number, errorCode?: string): void {
-  logBoundaryEvent(studioLogger(), {
+function emitBoundaryEvent(c: AppContext, status: number, errorType?: string): void {
+  logBoundaryEvent(studioLogger(c.env), {
     correlation: c.get('logCorrelation') ?? correlationFromHeaders(c.req.raw),
     method: c.req.method,
     route: classifiedRoute(c),
     status,
     durationMs: Date.now() - (c.get('logStartedAt') ?? Date.now()),
     subject: c.get('cailIdentity')?.subject,
-    ...(errorCode ? { errorCode } : {}),
+    ...(errorType ? { errorType } : {}),
   });
 }
 
@@ -221,7 +224,14 @@ async function validateGalleryIdParam(
 }
 
 function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
-  return getAgentByName<Env, WorkspaceAgent>(
+  // workers-types v5 adds facet-only private members to its generic DO stub.
+  // The current Agents SDK runtime accepts this namespace, but its public
+  // helper declaration still models the pre-facet structural constraint.
+  const getWorkspaceByName = getAgentByName as unknown as (
+    namespace: DurableObjectNamespace<WorkspaceAgent>,
+    name: string,
+  ) => Promise<DurableObjectStub<WorkspaceAgent>>;
+  return getWorkspaceByName(
     env.WorkspaceAgent,
     createWorkspaceAgentName(sessionId, workspaceId)
   );
@@ -364,9 +374,13 @@ app.get('/api/session', async (c) => {
 
 app.get('/api/models', async (c) => {
   requireSession(c);
+  const correlation = c.get('logCorrelation') ?? correlationFromHeaders(c.req.raw);
   const { models, source } = await fetchCailModels({
     env: c.env,
     identityJwt: cailIdentityJwt(c),
+    // fetchCailModels only calls this adapter with a URL string; its public
+    // injection type is the wider platform fetch overload.
+    fetchImpl: withOutboundCorrelation(fetch, correlation) as typeof fetch,
   });
   const recommended = models.find((model) => model.recommended) ?? models[0];
   return c.json({
@@ -973,20 +987,26 @@ function checkCailConfigOnce(env: Env, config: AgentStudioConfigValidation): voi
   if (cailConfigChecked) return;
   cailConfigChecked = true;
   const base = env.CAIL_API_BASE ?? '';
+  const logConfigInvalid = (errorType: string) => studioLogger(env).emit(
+    STUDIO_EVENTS.STARTUP_CONFIG_INVALID,
+    {
+      product_id: LOG_PRODUCT,
+      terminal: { outcome: 'denied', reason: 'denied' },
+      error_type: errorType,
+    },
+  );
   if (!config.ok) {
-    studioLogger().warn('startup.config_invalid', { error_code: config.errorCode });
+    logConfigInvalid(config.errorCode);
   }
   if (base.includes('REPLACE') || base.includes('.invalid')) {
-    studioLogger().warn('startup.config_invalid', { error_code: 'cail_api_base_placeholder' });
+    logConfigInvalid('cail_api_base_placeholder');
   }
   if (env.CAIL_REQUIRE_IDENTITY !== 'true') {
-    studioLogger().warn('startup.config_invalid', { error_code: 'identity_not_required' });
+    logConfigInvalid('identity_not_required');
   }
   if (!env.CAIL_BASE_PATH || !env.CAIL_BASE_PATH.trim()) {
     const sharedHost = Boolean(env.CAIL_CANONICAL_ORIGIN);
-    studioLogger().warn('startup.config_invalid', {
-      error_code: sharedHost ? 'shared_host_base_path_missing' : 'base_path_missing',
-    });
+    logConfigInvalid(sharedHost ? 'shared_host_base_path_missing' : 'base_path_missing');
   }
 }
 
@@ -1010,13 +1030,13 @@ export default {
       // These 403s never reach the Hono boundary middleware, so they emit
       // their own auth.denied wide event (route label, never the raw path).
       const denyUpgrade = (errorCode: string, body: string): Response => {
-        logBoundaryEvent(studioLogger(), {
+        logBoundaryEvent(studioLogger(env), {
           correlation: correlationFromHeaders(request),
           method: request.method,
           route: 'agents/ws-upgrade',
           status: 403,
           durationMs: 0,
-          errorCode,
+          errorType: errorCode,
         });
         return new Response(body, { status: 403 });
       };
@@ -1031,7 +1051,11 @@ export default {
         return denyUpgrade('ws_csrf_invalid', 'Forbidden: missing or invalid connection token');
       }
     }
-    const agentResponse = await routeAgentRequest(request, env);
+    const routeRequest = routeAgentRequest as unknown as (
+      request: Request,
+      routeEnv: Env,
+    ) => Promise<Response | null>;
+    const agentResponse = await routeRequest(request, env);
     if (agentResponse) {
       return agentResponse;
     }
