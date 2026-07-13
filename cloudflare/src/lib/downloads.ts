@@ -56,7 +56,7 @@ function reportCorruptDownloadObject(
   error: unknown,
   onCorrupt: 'skip' | 'throw'
 ): void {
-  studioLogger(env).emit(STUDIO_EVENTS.DOWNLOAD_CORRUPT, {
+  studioLogger(env)?.emit(STUDIO_EVENTS.DOWNLOAD_CORRUPT, {
     product_id: LOG_PRODUCT,
     terminal: { outcome: 'error', reason: 'application_failure' },
     error_type: 'corrupt_download_object',

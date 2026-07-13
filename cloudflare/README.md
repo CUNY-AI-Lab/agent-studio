@@ -19,7 +19,7 @@ bun install
 cp .dev.vars.example .dev.vars
 ```
 
-Run installation from the repository root. Set `SESSION_SECRET` and
+Run installation from the repository root. Set `SESSION_SECRET`, `CAIL_LOG_ENV`, and
 `CAIL_API_BASE` in `.dev.vars` (see the CAIL backbone notes in the root README).
 `CAIL_MODEL` overrides the default model. `CAIL_IDENTITY_JWKS` verifies the
 canonical `X-CAIL-Identity-JWT` header with RS256 for audience
@@ -31,6 +31,9 @@ When setting `CAIL_REQUIRE_IDENTITY=true`, also set `CAIL_SSO_SWITCHED_AT` and
 at or after the switch and no more than 30 days later. The Worker returns 503
 for health and application traffic when this enforced configuration is missing
 or invalid. See [legacy-account-import.md](../docs/legacy-account-import.md).
+Health also fails closed when `CAIL_LOG_ENV` is missing/invalid or the
+Wrangler-managed `CF_VERSION_METADATA` binding is unavailable, so telemetry is
+never silently assigned to a guessed environment or release.
 
 Run local development with:
 

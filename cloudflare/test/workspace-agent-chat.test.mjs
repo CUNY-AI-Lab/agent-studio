@@ -32,6 +32,105 @@ test('chat action success waits for the post-persistence onChatResponse hook', a
   ]);
 });
 
+test('deferred chat failures become terminal only in the post-persistence hook', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const action = {
+    actionTerminal: false,
+    deferredTerminal: {
+      terminal: { outcome: 'denied', reason: 'quota_blocked' },
+      errorType: 'quota_exceeded',
+    },
+  };
+  const calls = [];
+  const agent = {
+    pendingChatAction: action,
+    finishModelCall(seenAction, terminal, errorType) {
+      calls.push(['model', seenAction, terminal, errorType]);
+    },
+    finishChatAction(seenAction, terminal, errorType) {
+      calls.push(['action', seenAction, terminal, errorType]);
+    },
+  };
+
+  WorkspaceAgent.prototype.onChatResponse.call(agent, {
+    message: { id: 'assistant-1', role: 'assistant', parts: [] },
+    requestId: 'request-1',
+    continuation: false,
+    status: 'failed',
+  });
+
+  assert.deepEqual(calls, [
+    ['model', action, { outcome: 'denied', reason: 'quota_blocked' }, 'quota_exceeded'],
+    ['action', action, { outcome: 'denied', reason: 'quota_blocked' }, 'quota_exceeded'],
+  ]);
+});
+
+test('chat persistence is framework-owned rather than overridden as an instrumentation seam', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  assert.equal(Object.hasOwn(WorkspaceAgent.prototype, 'persistMessages'), false);
+});
+
+test('code rate-limit denial does not emit an orphan canonical action terminal', async (t) => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const records = [];
+  t.mock.method(console, 'warn', (record) => records.push(record));
+  const agent = {
+    env: {
+      CAIL_LOG_ENV: 'test',
+      CF_VERSION_METADATA: {
+        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
+      },
+      HEAVY_RATE_LIMIT: { limit: async () => ({ success: false }) },
+    },
+    cailSubject: 'cail-0123456789abcdef0123456789abcdef',
+    assertNotFrozen() {},
+    csrfSessionId() { return 'session-1'; },
+    requireSessionId() { return 'session-1'; },
+  };
+
+  await assert.rejects(
+    WorkspaceAgent.prototype.executeCode.call(agent, 'return 1'),
+    /rate_limited/,
+  );
+  assert.deepEqual(records.map((record) => record['event.name']), ['agent_studio.code.denied']);
+  assert.equal(records[0]['url.template'], '/api/workspaces/{id}/runtime/execute');
+  assert.equal(records[0]['cail.outcome.reason'], 'rate_limited');
+});
+
+test('successful code execution emits one paired canonical action lifecycle', async (t) => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const records = [];
+  t.mock.method(console, 'log', (record) => records.push(record));
+  const agent = {
+    env: {
+      CAIL_LOG_ENV: 'test',
+      CF_VERSION_METADATA: {
+        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
+      },
+    },
+    cailSubject: 'cail-0123456789abcdef0123456789abcdef',
+    assertNotFrozen() {},
+    csrfSessionId() { return 'session-1'; },
+    requireSessionId() { return 'session-1'; },
+    requireWorkspace() { return { id: 'workspace-1' }; },
+    buildHostTools() { return {}; },
+    buildCodeProviders() { return {}; },
+    createCodeExecutor() {
+      return { execute: async () => ({ ok: true, stdout: '', stderr: '', logs: [] }) };
+    },
+  };
+
+  const result = await WorkspaceAgent.prototype.executeCode.call(agent, 'return 1');
+  assert.equal(result.ok, true);
+  assert.deepEqual(records.map((record) => record['event.name']), [
+    'cail.action.admitted',
+    'cail.action.terminal',
+  ]);
+  assert.equal(records[0]['cail.action.id'], records[1]['cail.action.id']);
+  assert.equal(records[0]['url.template'], '/api/workspaces/{id}/runtime/execute');
+  assert.equal(records[1]['cail.outcome'], 'ok');
+});
+
 test('anonymous chat streams an authentication error instead of assistant JSON', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
@@ -144,6 +243,9 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     },
     finishChatAction(action, terminal, errorType) {
       return WorkspaceAgent.prototype.finishChatAction.call(this, action, terminal, errorType);
+    },
+    deferChatTerminal(action, terminal, errorType) {
+      return WorkspaceAgent.prototype.deferChatTerminal.call(this, action, terminal, errorType);
     },
   };
 

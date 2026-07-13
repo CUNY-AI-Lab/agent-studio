@@ -84,6 +84,22 @@ test('health check reports unhealthy when SESSION_SECRET is missing', async () =
   });
 });
 
+test('health check reports unhealthy when telemetry environment is unclassified', async () => {
+  const { env } = makeEnv();
+  delete env.CAIL_LOG_ENV;
+  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).errorCode, 'cail_log_environment_missing');
+});
+
+test('health check reports unhealthy when Worker version metadata is unavailable', async () => {
+  const { env } = makeEnv();
+  delete env.CF_VERSION_METADATA;
+  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
+  assert.equal(res.status, 503);
+  assert.equal((await res.json()).errorCode, 'worker_version_metadata_missing');
+});
+
 test('startup guard refuses application traffic when SESSION_SECRET is missing', async () => {
   const { env } = makeEnv();
   delete env.SESSION_SECRET;

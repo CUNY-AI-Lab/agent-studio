@@ -30,7 +30,7 @@ export async function hydrateLegacyWorkspaceFiles(
     const state = accountImportWindowState(env, now);
     const legacyFiles = await listWorkspaceFilesRecursive(env, sessionId, workspaceId);
     if (legacyFiles.some((file) => !file.isDirectory)) {
-      studioLogger(env).emit(STUDIO_EVENTS.LEGACY_HYDRATION_SKIPPED, {
+      studioLogger(env)?.emit(STUDIO_EVENTS.LEGACY_HYDRATION_SKIPPED, {
         product_id: LOG_PRODUCT,
         terminal: { outcome: 'denied', reason: 'denied' },
         error_type:

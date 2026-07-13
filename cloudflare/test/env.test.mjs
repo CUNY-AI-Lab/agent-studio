@@ -13,22 +13,31 @@ import {
 const SECRET = 'x'.repeat(MIN_REQUIRED_SESSION_SECRET_LENGTH);
 const SWITCHED_AT = '2026-07-13T14:00:00Z';
 const IMPORT_UNTIL = '2026-08-12T14:00:00Z';
+const TELEMETRY = {
+  CAIL_LOG_ENV: 'test',
+  CF_VERSION_METADATA: {
+    id: '11111111-1111-4111-8111-111111111111',
+    tag: '',
+    timestamp: '2026-07-13T14:00:00Z',
+  },
+};
 
 test('required SESSION_SECRET configuration accepts a usable secret', () => {
   assert.deepEqual(
-    validateAgentStudioConfig({ SESSION_SECRET: SECRET }),
+    validateAgentStudioConfig({ SESSION_SECRET: SECRET, ...TELEMETRY }),
     { ok: true }
   );
 });
 
 test('identity enforcement requires a complete migration window', () => {
   assert.deepEqual(
-    validateAgentStudioConfig({ SESSION_SECRET: SECRET, CAIL_REQUIRE_IDENTITY: 'true' }),
+    validateAgentStudioConfig({ SESSION_SECRET: SECRET, ...TELEMETRY, CAIL_REQUIRE_IDENTITY: 'true' }),
     { ok: false, errorCode: 'cail_sso_switched_at_missing' }
   );
   assert.deepEqual(
     validateAgentStudioConfig({
       SESSION_SECRET: SECRET,
+      ...TELEMETRY,
       CAIL_REQUIRE_IDENTITY: 'true',
       CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
     }),
@@ -41,6 +50,7 @@ test('migration window accepts complete ISO instants and an exact 30-day duratio
   assert.deepEqual(
     validateAgentStudioConfig({
       SESSION_SECRET: SECRET,
+      ...TELEMETRY,
       CAIL_REQUIRE_IDENTITY: 'true',
       CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
       CAIL_ACCOUNT_IMPORT_UNTIL: IMPORT_UNTIL,
@@ -62,6 +72,7 @@ test('migration window rejects malformed instants, reverse order, and durations 
 
   const base = {
     SESSION_SECRET: SECRET,
+    ...TELEMETRY,
     CAIL_REQUIRE_IDENTITY: 'true',
     CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
   };
@@ -88,6 +99,29 @@ test('migration window rejects malformed instants, reverse order, and durations 
   assert.deepEqual(
     validateAgentStudioConfig({ ...base, CAIL_ACCOUNT_IMPORT_UNTIL: SWITCHED_AT }),
     { ok: true }
+  );
+});
+
+test('telemetry readiness requires a classified environment and Worker version metadata', () => {
+  assert.deepEqual(validateAgentStudioConfig({ SESSION_SECRET: SECRET }), {
+    ok: false,
+    errorCode: 'cail_log_environment_missing',
+  });
+  assert.deepEqual(
+    validateAgentStudioConfig({ SESSION_SECRET: SECRET, CAIL_LOG_ENV: 'preview' }),
+    { ok: false, errorCode: 'cail_log_environment_invalid' },
+  );
+  assert.deepEqual(
+    validateAgentStudioConfig({ SESSION_SECRET: SECRET, CAIL_LOG_ENV: 'test' }),
+    { ok: false, errorCode: 'worker_version_metadata_missing' },
+  );
+  assert.deepEqual(
+    validateAgentStudioConfig({
+      SESSION_SECRET: SECRET,
+      CAIL_LOG_ENV: 'test',
+      CF_VERSION_METADATA: { id: '', tag: '', timestamp: '' },
+    }),
+    { ok: false, errorCode: 'worker_version_metadata_invalid' },
   );
 });
 

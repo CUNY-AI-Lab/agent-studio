@@ -39,6 +39,7 @@ import {
   CAIL_EVENTS,
   LOG_PRODUCT,
   LOG_PROVIDER,
+  STUDIO_ACTION_ROUTES,
   STUDIO_EVENTS,
   mintCorrelation,
   principalForSubject,
@@ -280,6 +281,7 @@ interface PendingChatAction {
   startedAt: number;
   actionTerminal: boolean;
   modelCall?: { callId: string; startedAt: number };
+  deferredTerminal?: { terminal: CailTerminalFields; errorType?: string };
 }
 
 export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
@@ -429,7 +431,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       // is not in the expected `${sessionId}-${wid}` shape): refuse rather than
       // store an unbindable credential.
       const correlation = mintCorrelation();
-      studioLogger(this.env).emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
+      studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
         principal: principalForSubject(this.cailSubject),
@@ -446,7 +448,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     );
     if (!identity) {
       const correlation = mintCorrelation();
-      studioLogger(this.env).emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
+      studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
         principal: principalForSubject(this.cailSubject),
@@ -505,7 +507,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
     const modelCall = { callId: crypto.randomUUID(), startedAt: Date.now() };
     action.modelCall = modelCall;
-    studioLogger(this.env).emit(CAIL_EVENTS.MODEL_CALL_ADMITTED, {
+    studioLogger(this.env)?.emit(CAIL_EVENTS.MODEL_CALL_ADMITTED, {
       call_id: modelCall.callId,
       action_id: action.actionId,
       request_id: action.correlation.request_id,
@@ -538,9 +540,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       trace: traceFromCorrelation(action.correlation),
     };
     if (terminal.outcome === 'ok') {
-      studioLogger(this.env).emit(CAIL_EVENTS.MODEL_CALL_TERMINAL, { ...fields, terminal });
+      studioLogger(this.env)?.emit(CAIL_EVENTS.MODEL_CALL_TERMINAL, { ...fields, terminal });
     } else {
-      studioLogger(this.env).emit(CAIL_EVENTS.MODEL_CALL_TERMINAL, {
+      studioLogger(this.env)?.emit(CAIL_EVENTS.MODEL_CALL_TERMINAL, {
         ...fields,
         terminal,
         ...(errorType ? { error_type: errorType } : {}),
@@ -560,14 +562,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       request_id: action.correlation.request_id,
       product_id: LOG_PRODUCT,
       principal: action.principal,
+      route: STUDIO_ACTION_ROUTES.CHAT,
       terminal,
       duration_ms: Date.now() - action.startedAt,
       trace: traceFromCorrelation(action.correlation),
     };
     if (terminal.outcome === 'ok') {
-      studioLogger(this.env).emit(CAIL_EVENTS.ACTION_TERMINAL, { ...fields, terminal });
+      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, { ...fields, terminal });
     } else {
-      studioLogger(this.env).emit(CAIL_EVENTS.ACTION_TERMINAL, {
+      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
         ...fields,
         terminal,
         ...(errorType ? { error_type: errorType } : {}),
@@ -576,22 +579,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (this.pendingChatAction === action) this.pendingChatAction = null;
   }
 
-  override async persistMessages(
-    messages: UIMessage[],
-    excludeBroadcastIds: string[] = [],
-    options?: { _deleteStaleRows?: boolean },
-  ): Promise<void> {
-    try {
-      await super.persistMessages(messages, excludeBroadcastIds, options);
-    } catch (error) {
-      const action = this.pendingChatAction;
-      if (action) {
-        this.finishModelCall(action, { outcome: 'error', reason: 'application_failure' }, 'message_persistence_failed');
-        this.finishChatAction(action, { outcome: 'error', reason: 'application_failure' }, 'message_persistence_failed');
-      }
-      throw error;
-    }
-
+  private deferChatTerminal(
+    action: PendingChatAction,
+    terminal: CailTerminalFields,
+    errorType?: string,
+  ): void {
+    action.deferredTerminal ??= { terminal, ...(errorType ? { errorType } : {}) };
   }
 
   protected override onChatResponse(result: ChatResponseResult): void {
@@ -601,7 +594,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // AIChatAgent 0.9 calls this hook only after the assistant message is
     // durably persisted. This is the canonical Studio success boundary; the
     // earlier streamText.onFinish callback closes model work, not the action.
-    if (result.status === 'completed') {
+    if (action.deferredTerminal) {
+      const { terminal, errorType } = action.deferredTerminal;
+      this.finishModelCall(action, terminal, errorType);
+      this.finishChatAction(action, terminal, errorType);
+    } else if (result.status === 'completed') {
       this.finishModelCall(action, { outcome: 'ok', reason: 'completed' });
       this.finishChatAction(action, { outcome: 'ok', reason: 'completed' });
     } else if (result.status === 'aborted') {
@@ -630,13 +627,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // correlation headers. Mint fleet UUID/trace identifiers; the AI SDK's
     // short request label remains only in local observability.
     const correlation = mintCorrelation();
-    const startedAt = Date.now();
 
     if (!this.cailIdentityJwt) {
       // No verified CAIL credential reached this workspace: the model proxy
       // has no way to authenticate or attribute spend. Surface the CAIL
       // authentication_required envelope rather than calling out anonymously.
-      studioLogger(this.env).emit(STUDIO_EVENTS.CHAT_DENIED, {
+      studioLogger(this.env)?.emit(STUDIO_EVENTS.CHAT_DENIED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
         principal: principalForSubject(this.cailSubject),
@@ -695,15 +691,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         correlation,
         principal: principalForSubject(this.cailSubject),
         requestModel: modelName,
-        startedAt,
+        startedAt: Date.now(),
         actionTerminal: false,
       };
       this.pendingChatAction = action;
-      studioLogger(this.env).emit(CAIL_EVENTS.ACTION_ADMITTED, {
+      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_ADMITTED, {
         action_id: action.actionId,
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
         principal: action.principal,
+        route: STUDIO_ACTION_ROUTES.CHAT,
         trace: traceFromCorrelation(correlation),
       });
       const model = createCailModel({
@@ -780,7 +777,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         },
         onAbort: ({ steps }) => {
           this.finishModelCall(action!, { outcome: 'cancelled', reason: 'cancelled' });
-          this.finishChatAction(action!, { outcome: 'cancelled', reason: 'cancelled' });
+          this.deferChatTerminal(action!, { outcome: 'cancelled', reason: 'cancelled' });
           this.finalizeObservabilityRequest(requestId, 'aborted', 'Chat request aborted', {
             steps: steps.length,
           }, 'warn');
@@ -794,7 +791,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           const errorType = logErrorType(error.error);
           const terminal = terminalForModelError(error.error);
           this.finishModelCall(action!, terminal, errorType);
-          this.finishChatAction(action!, terminal, errorType);
+          this.deferChatTerminal(action!, terminal, errorType);
         },
       });
 
@@ -806,7 +803,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           const errorType = logErrorType(error);
           const terminal = terminalForModelError(error);
           this.finishModelCall(action!, terminal, errorType);
-          this.finishChatAction(action!, terminal, errorType);
+          this.deferChatTerminal(action!, terminal, errorType);
           const quota = quotaSignalFromError(error);
           return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
@@ -862,50 +859,63 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // stable error code); the code and its output are content and never
     // logged. Control flow is unchanged: every failure still rethrows.
     const correlation = mintCorrelation();
-    const startedAt = Date.now();
-    const actionId = crypto.randomUUID();
     const principal = principalForSubject(this.cailSubject);
-    try {
-      this.assertNotFrozen();
-      const rateKey = this.csrfSessionId() ?? this.requireSessionId();
-      if (!(await checkHeavyRpcLimit(this.env, rateKey))) {
-        throw new Error('rate_limited: too many code executions — try again shortly.');
-      }
-      const workspace = this.requireWorkspace();
-      const sessionId = this.requireSessionId();
-      studioLogger(this.env).emit(CAIL_EVENTS.ACTION_ADMITTED, {
-        action_id: actionId,
+    this.assertNotFrozen();
+    const rateKey = this.csrfSessionId() ?? this.requireSessionId();
+    if (!(await checkHeavyRpcLimit(this.env, rateKey))) {
+      studioLogger(this.env)?.emit(STUDIO_EVENTS.CODE_DENIED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
         principal,
+        http_method: 'POST',
+        route: STUDIO_ACTION_ROUTES.CODE,
+        terminal: { outcome: 'denied', reason: 'rate_limited' },
         trace: traceFromCorrelation(correlation),
+        error_type: 'rate_limited',
       });
+      throw new Error('rate_limited: too many code executions — try again shortly.');
+    }
+    const workspace = this.requireWorkspace();
+    const sessionId = this.requireSessionId();
+    const startedAt = Date.now();
+    const actionId = crypto.randomUUID();
+    studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_ADMITTED, {
+      action_id: actionId,
+      request_id: correlation.request_id,
+      product_id: LOG_PRODUCT,
+      principal,
+      http_method: 'POST',
+      route: STUDIO_ACTION_ROUTES.CODE,
+      trace: traceFromCorrelation(correlation),
+    });
+    try {
       const tools = this.buildHostTools(workspace, sessionId);
       const executor = this.createCodeExecutor();
       const result = await executor.execute(code, this.buildCodeProviders(tools));
-      studioLogger(this.env).emit(CAIL_EVENTS.ACTION_TERMINAL, {
+      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
         action_id: actionId,
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
         principal,
+        http_method: 'POST',
+        route: STUDIO_ACTION_ROUTES.CODE,
         terminal: { outcome: 'ok', reason: 'completed' },
         duration_ms: Date.now() - startedAt,
         trace: traceFromCorrelation(correlation),
       });
       return result;
     } catch (error) {
-      const rateLimited = error instanceof Error && error.message.startsWith('rate_limited');
-      studioLogger(this.env).emit(CAIL_EVENTS.ACTION_TERMINAL, {
+      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
         action_id: actionId,
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
         principal,
-        terminal: rateLimited
-          ? { outcome: 'denied', reason: 'rate_limited' }
-          : { outcome: 'error', reason: 'application_failure' },
+        http_method: 'POST',
+        route: STUDIO_ACTION_ROUTES.CODE,
+        terminal: { outcome: 'error', reason: 'application_failure' },
         duration_ms: Date.now() - startedAt,
         trace: traceFromCorrelation(correlation),
-        error_type: rateLimited ? 'rate_limited' : logErrorType(error),
+        error_type: logErrorType(error),
       });
       throw error;
     }

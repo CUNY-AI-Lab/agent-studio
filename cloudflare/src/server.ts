@@ -163,7 +163,9 @@ function classifiedRoute(c: AppContext): string {
 
 /** Emit the one wide boundary event for this request (fleet logging standard). */
 function emitBoundaryEvent(c: AppContext, status: number, errorType?: string): void {
-  logBoundaryEvent(studioLogger(c.env), {
+  const log = studioLogger(c.env);
+  if (!log) return;
+  logBoundaryEvent(log, {
     correlation: c.get('logCorrelation') ?? correlationFromHeaders(c.req.raw),
     method: c.req.method,
     route: classifiedRoute(c),
@@ -981,20 +983,21 @@ export { MigrationRegistry } from './migration-registry';
 // defaults are unsafe on the shared production host. Warn loudly once so a
 // deploy that missed its injected model proxy, identity gate, or cookie base
 // path is obvious in logs. Those optional settings remain warnings; the
-// required SESSION_SECRET is validated separately and fails startup traffic.
+// required health configuration is validated separately and fails startup traffic.
 let cailConfigChecked = false;
 function checkCailConfigOnce(env: Env, config: AgentStudioConfigValidation): void {
   if (cailConfigChecked) return;
   cailConfigChecked = true;
   const base = env.CAIL_API_BASE ?? '';
-  const logConfigInvalid = (errorType: string) => studioLogger(env).emit(
-    STUDIO_EVENTS.STARTUP_CONFIG_INVALID,
-    {
+  const logConfigInvalid = (errorType: string) => {
+    const log = studioLogger(env);
+    if (!log) return;
+    log.emit(STUDIO_EVENTS.STARTUP_CONFIG_INVALID, {
       product_id: LOG_PRODUCT,
       terminal: { outcome: 'denied', reason: 'denied' },
       error_type: errorType,
-    },
-  );
+    });
+  };
   if (!config.ok) {
     logConfigInvalid(config.errorCode);
   }
@@ -1030,7 +1033,8 @@ export default {
       // These 403s never reach the Hono boundary middleware, so they emit
       // their own auth.denied wide event (route label, never the raw path).
       const denyUpgrade = (errorCode: string, body: string): Response => {
-        logBoundaryEvent(studioLogger(env), {
+        const log = studioLogger(env);
+        if (log) logBoundaryEvent(log, {
           correlation: correlationFromHeaders(request),
           method: request.method,
           route: 'agents/ws-upgrade',

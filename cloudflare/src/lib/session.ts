@@ -151,12 +151,12 @@ export const sessionMiddleware: MiddlewareHandler<{
               duration_ms: Date.now() - startedAt,
             };
             if (succeeded) {
-              studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+              studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
                 ...importFields,
                 terminal: { outcome: 'ok', reason: 'completed' },
               });
             } else {
-              studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+              studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
                 ...importFields,
                 terminal: { outcome: 'denied', reason: 'denied' },
                 error_type: `first_login_${outcome.replaceAll('-', '_')}`,
@@ -167,7 +167,7 @@ export const sessionMiddleware: MiddlewareHandler<{
             // empty); the claim is marked failed and the next request retries.
             // Structured event, metadata only: the subject identifies the user
             // (session ids derive from it); the error itself is never logged.
-            studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+            studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
               product_id: LOG_PRODUCT,
               principal: principalForSubject(verified.identity.subject),
               terminal: { outcome: 'error', reason: 'application_failure' },
@@ -179,7 +179,7 @@ export const sessionMiddleware: MiddlewareHandler<{
           // The deadline is final: never retain a cookie that could trigger a
           // later import if compatibility code is accidentally re-enabled.
           deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
-          studioLogger(c.env).emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
+          studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
             product_id: LOG_PRODUCT,
             principal: principalForSubject(verified.identity.subject),
             terminal: { outcome: 'denied', reason: 'denied' },

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   CAIL_EVENTS,
+  STUDIO_ACTION_ROUTES,
   LOG_PRODUCT,
   STUDIO_EVENTS,
   correlationFromHeaders,
@@ -11,6 +12,7 @@ import {
   mintCorrelation,
   normalizeRouteTemplate,
   principalForSubject,
+  resolveStudioLogConfig,
   terminalForRequest,
   traceFromCorrelation,
   withOutboundCorrelation,
@@ -101,7 +103,7 @@ test('canonical action and per-step model-call mappings compile and emit at runt
   const { log, events } = captureLogger();
   log.emit(CAIL_EVENTS.ACTION_ADMITTED, {
     action_id: ACTION_ID, request_id: REQUEST_ID, product_id: LOG_PRODUCT,
-    principal: PRINCIPAL, trace: TRACE,
+    principal: PRINCIPAL, trace: TRACE, route: STUDIO_ACTION_ROUTES.CHAT,
   });
   log.emit(CAIL_EVENTS.MODEL_CALL_ADMITTED, {
     call_id: CALL_ID, action_id: ACTION_ID, request_id: REQUEST_ID,
@@ -117,6 +119,7 @@ test('canonical action and per-step model-call mappings compile and emit at runt
   log.emit(CAIL_EVENTS.ACTION_TERMINAL, {
     action_id: ACTION_ID, request_id: REQUEST_ID, product_id: LOG_PRODUCT,
     principal: PRINCIPAL, trace: TRACE,
+    route: STUDIO_ACTION_ROUTES.CHAT,
     terminal: { outcome: 'ok', reason: 'completed' }, duration_ms: 25,
   });
 
@@ -135,6 +138,24 @@ test('canonical action and per-step model-call mappings compile and emit at runt
     'cail.gen_ai.cost.micro_usd',
     'cail.quota.used',
   ]) assert.equal(spendField in modelTerminal, false, `Studio claimed gateway-owned ${spendField}`);
+  assert.equal(events[0].attributes['url.template'], '/agents/{agent}/{name}');
+  assert.equal(events[3].attributes['url.template'], '/agents/{agent}/{name}');
+});
+
+test('runtime log identity uses the immutable Worker version and rejects unclassified telemetry', () => {
+  assert.deepEqual(resolveStudioLogConfig({
+    CAIL_LOG_ENV: 'production',
+    CF_VERSION_METADATA: {
+      id: '44444444-4444-4444-8444-444444444444',
+      tag: 'release',
+      timestamp: '2026-07-13T14:00:00Z',
+    },
+  }), {
+    env: 'production',
+    release: '44444444-4444-4444-8444-444444444444',
+  });
+  assert.equal(resolveStudioLogConfig({ CAIL_LOG_ENV: 'preview' }), null);
+  assert.equal(resolveStudioLogConfig({ CAIL_LOG_ENV: 'test' }), null);
 });
 
 test('every Studio-local catalog mapping emits its static, content-free structure', () => {
@@ -165,6 +186,11 @@ test('every Studio-local catalog mapping emits its static, content-free structur
   log.emit(STUDIO_EVENTS.CHAT_DENIED, {
     request_id: REQUEST_ID, product_id: LOG_PRODUCT, principal: PRINCIPAL, trace: TRACE,
     terminal: { outcome: 'denied', reason: 'denied' }, error_type: 'authentication_required',
+  });
+  log.emit(STUDIO_EVENTS.CODE_DENIED, {
+    request_id: REQUEST_ID, product_id: LOG_PRODUCT, principal: PRINCIPAL, trace: TRACE,
+    route: STUDIO_ACTION_ROUTES.CODE, http_method: 'POST',
+    terminal: { outcome: 'denied', reason: 'rate_limited' }, error_type: 'rate_limited',
   });
 
   assert.deepEqual(events.map((event) => event.event_name), Object.values(STUDIO_EVENTS));

@@ -23,7 +23,15 @@ class FakeRuntime {
 }
 
 function makeEnv(r2) {
-  return { WORKSPACE_FILES: r2 };
+  return {
+    WORKSPACE_FILES: r2,
+    CAIL_LOG_ENV: 'test',
+    CF_VERSION_METADATA: {
+      id: '11111111-1111-4111-8111-111111111111',
+      tag: '',
+      timestamp: '2026-07-13T14:00:00Z',
+    },
+  };
 }
 
 function legacyKey(path) {
@@ -111,7 +119,7 @@ test('hydrateLegacyWorkspaceFiles ignores legacy files after the import deadline
   await r2.put(legacyKey('expired.txt'), 'do not hydrate');
   const runtime = new FakeRuntime();
   const env = {
-    WORKSPACE_FILES: r2,
+    ...makeEnv(r2),
     CAIL_REQUIRE_IDENTITY: 'true',
     CAIL_SSO_SWITCHED_AT: '2026-07-01T00:00:00Z',
     CAIL_ACCOUNT_IMPORT_UNTIL: '2026-07-02T00:00:00Z',

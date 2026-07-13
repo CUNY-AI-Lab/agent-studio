@@ -405,6 +405,12 @@ export function makeEnv() {
   };
   const env = {
     SESSION_SECRET: 'ab'.repeat(32), // 64 hex chars
+    CAIL_LOG_ENV: 'test',
+    CF_VERSION_METADATA: {
+      id: '11111111-1111-4111-8111-111111111111',
+      tag: '',
+      timestamp: '2026-07-13T14:00:00Z',
+    },
     WORKSPACE_FILES: r2,
     WorkspaceAgent: workspaceAgent.namespace,
     MIGRATION_REGISTRY: migrationRegistry,

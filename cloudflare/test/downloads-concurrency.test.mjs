@@ -21,7 +21,15 @@ const SESSION = 'sess-1';
 const WS = 'ws-1';
 
 function envWith(r2) {
-  return { WORKSPACE_FILES: r2 };
+  return {
+    WORKSPACE_FILES: r2,
+    CAIL_LOG_ENV: 'test',
+    CF_VERSION_METADATA: {
+      id: '11111111-1111-4111-8111-111111111111',
+      tag: '',
+      timestamp: '2026-07-13T14:00:00Z',
+    },
+  };
 }
 
 test('two concurrent addWorkspaceDownload calls both survive', async () => {

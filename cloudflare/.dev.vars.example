@@ -3,6 +3,10 @@
 # loud at request time instead of running with a known secret.
 SESSION_SECRET=replace-me-openssl-rand-hex-32
 
+# Required telemetry classification. The immutable release identity comes from
+# Wrangler's CF_VERSION_METADATA binding rather than a hand-maintained value.
+CAIL_LOG_ENV=development
+
 # CAIL model proxy base URL (serves /v1/... and /keys). Placeholder until
 # launch — see cail-gateway docs/LAUNCH_CHECKLIST.md. No trailing slash.
 CAIL_API_BASE=https://REPLACE-WITH-CAIL-MODEL-PROXY.invalid

@@ -24,6 +24,11 @@ export const LOG_PRODUCT = 'agent-studio';
 export const LOG_PROVIDER = 'cail';
 const DEFAULT_RELEASE = '0.1.0';
 
+export const STUDIO_ACTION_ROUTES = Object.freeze({
+  CHAT: '/agents/{agent}/{name}',
+  CODE: '/api/workspaces/{id}/runtime/execute',
+} as const);
+
 export const STUDIO_EVENTS = Object.freeze({
   STARTUP_CONFIG_INVALID: 'agent_studio.startup.config_invalid',
   ACCOUNT_IMPORT_TERMINAL: 'agent_studio.account_import.terminal',
@@ -31,6 +36,7 @@ export const STUDIO_EVENTS = Object.freeze({
   DOWNLOAD_CORRUPT: 'agent_studio.download.corrupt',
   CREDENTIAL_REJECTED: 'agent_studio.credential.rejected',
   CHAT_DENIED: 'agent_studio.chat.denied',
+  CODE_DENIED: 'agent_studio.code.denied',
 } as const);
 
 export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
@@ -86,13 +92,38 @@ export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
     outcomes: ['denied'],
     terminal_reasons: ['denied'],
   },
+  [STUDIO_EVENTS.CODE_DENIED]: {
+    body: 'A Studio code execution was denied before admission.',
+    source: 'platform',
+    severity: 'outcome',
+    required: [
+      'request_id', 'product_id', 'principal', 'trace', 'http_method', 'route',
+      'terminal', 'error_type',
+    ],
+    optional: [],
+    outcomes: ['denied'],
+    terminal_reasons: ['rate_limited'],
+  },
 } as const);
 
 export type StudioLogger = CailLogger<typeof STUDIO_EVENT_CATALOG, 'platform'>;
 
 export interface StudioLogRuntime {
-  CAIL_LOG_RELEASE?: string;
-  CAIL_LOG_ENV?: CailLogEnvironment;
+  CAIL_LOG_ENV?: unknown;
+  CF_VERSION_METADATA?: { id?: unknown };
+}
+
+export interface StudioLogConfig {
+  release: string;
+  env: CailLogEnvironment;
+}
+
+export function resolveStudioLogConfig(runtime: StudioLogRuntime): StudioLogConfig | null {
+  const env = runtime.CAIL_LOG_ENV;
+  if (!['production', 'staging', 'development', 'test'].includes(String(env))) return null;
+  const release = runtime.CF_VERSION_METADATA?.id;
+  if (typeof release !== 'string' || release.trim().length === 0) return null;
+  return { release, env: env as CailLogEnvironment };
 }
 
 export interface CreateStudioLoggerOptions {
@@ -115,17 +146,21 @@ export function createStudioLogger(options: CreateStudioLoggerOptions = {}): Stu
 const runtimeLoggers = new WeakMap<object, StudioLogger>();
 let developmentLogger: StudioLogger | undefined;
 
-export function studioLogger(runtime?: StudioLogRuntime): StudioLogger {
+export function studioLogger(): StudioLogger;
+export function studioLogger(runtime: StudioLogRuntime): StudioLogger | null;
+export function studioLogger(runtime?: StudioLogRuntime): StudioLogger | null {
   if (!runtime) {
     developmentLogger ??= createStudioLogger({ env: 'development' });
     return developmentLogger;
   }
+  const config = resolveStudioLogConfig(runtime);
+  if (!config) return null;
   const key = runtime as object;
   let logger = runtimeLoggers.get(key);
   if (!logger) {
     logger = createStudioLogger({
-      release: runtime.CAIL_LOG_RELEASE ?? DEFAULT_RELEASE,
-      env: runtime.CAIL_LOG_ENV ?? 'development',
+      release: config.release,
+      env: config.env,
     });
     runtimeLoggers.set(key, logger);
   }

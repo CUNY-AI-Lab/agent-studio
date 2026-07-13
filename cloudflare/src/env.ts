@@ -18,10 +18,11 @@ export interface Env {
   // provider key. See src/lib/cail-model.ts and src/lib/cail-identity.ts.
   CAIL_API_BASE?: string;
   CAIL_MODEL?: string;
-  // Operational-log resource identity. Deployment wiring is intentionally
-  // separate from this source-only integration.
-  CAIL_LOG_RELEASE?: string;
+  // Operational-log resource identity. The deployment environment is an
+  // explicit fleet classification; the immutable release comes from
+  // Cloudflare's version_metadata binding.
   CAIL_LOG_ENV?: CailLogEnvironment;
+  CF_VERSION_METADATA?: WorkerVersionMetadata;
   CAIL_IDENTITY_JWKS?: string;
   CAIL_REQUIRE_IDENTITY?: string;
   // Temporary compatibility window for importing anonymous pre-SSO accounts.
@@ -92,6 +93,10 @@ export type AccountImportWindowState =
 export type AgentStudioConfigErrorCode =
   | 'session_secret_missing'
   | 'session_secret_too_short'
+  | 'cail_log_environment_missing'
+  | 'cail_log_environment_invalid'
+  | 'worker_version_metadata_missing'
+  | 'worker_version_metadata_invalid'
   | 'cail_sso_switched_at_missing'
   | 'cail_sso_switched_at_invalid'
   | 'cail_account_import_until_missing'
@@ -221,17 +226,38 @@ export function validateAgentStudioConfig(
     | Pick<
         Env,
         | 'SESSION_SECRET'
+        | 'CAIL_LOG_ENV'
+        | 'CF_VERSION_METADATA'
         | 'CAIL_REQUIRE_IDENTITY'
         | 'CAIL_SSO_SWITCHED_AT'
         | 'CAIL_ACCOUNT_IMPORT_UNTIL'
       >
-    | ({ SESSION_SECRET?: unknown } & Partial<AccountImportEnv>)
+    | ({
+        SESSION_SECRET?: unknown;
+        CAIL_LOG_ENV?: unknown;
+        CF_VERSION_METADATA?: Partial<WorkerVersionMetadata>;
+      } & Partial<AccountImportEnv>)
 ): AgentStudioConfigValidation {
   if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
     return { ok: false, errorCode: 'session_secret_missing' };
   }
   if (env.SESSION_SECRET.length < MIN_REQUIRED_SESSION_SECRET_LENGTH) {
     return { ok: false, errorCode: 'session_secret_too_short' };
+  }
+  if (env.CAIL_LOG_ENV === undefined || env.CAIL_LOG_ENV === '') {
+    return { ok: false, errorCode: 'cail_log_environment_missing' };
+  }
+  if (!['production', 'staging', 'development', 'test'].includes(String(env.CAIL_LOG_ENV))) {
+    return { ok: false, errorCode: 'cail_log_environment_invalid' };
+  }
+  if (env.CF_VERSION_METADATA === undefined) {
+    return { ok: false, errorCode: 'worker_version_metadata_missing' };
+  }
+  if (
+    typeof env.CF_VERSION_METADATA.id !== 'string'
+    || env.CF_VERSION_METADATA.id.trim().length === 0
+  ) {
+    return { ok: false, errorCode: 'worker_version_metadata_invalid' };
   }
   return validateAccountImportWindow(env);
 }
