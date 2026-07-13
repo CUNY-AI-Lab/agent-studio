@@ -101,6 +101,30 @@ test('legacy downloads.json blob is still readable (backward-read)', async () =>
   assert.deepEqual(await getWorkspaceDownloads(env, SESSION, WS), []);
 });
 
+test('expired compatibility ignores legacy downloads.json but keeps current entries', async () => {
+  const r2 = new MockR2();
+  const env = {
+    ...envWith(r2),
+    CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_SSO_SWITCHED_AT: '2026-07-01T00:00:00Z',
+    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-07-02T00:00:00Z',
+  };
+  await r2.put(
+    `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads.json`,
+    JSON.stringify([{ filename: 'legacy.txt', format: 'txt', data: 'old' }])
+  );
+  await addWorkspaceDownload(env, SESSION, WS, {
+    filename: 'current.txt',
+    format: 'txt',
+    data: 'current',
+  });
+
+  const downloads = await getWorkspaceDownloads(env, SESSION, WS, {
+    now: Date.parse('2026-07-02T00:00:00.001Z'),
+  });
+  assert.deepEqual(downloads.map((download) => download.filename), ['current.txt']);
+});
+
 // ---------------------------------------------------------------------------
 // Corrupt-object observability (readJson-swallow regression, fallback rule):
 // a parse failure on an object that EXISTS must never be silently read as

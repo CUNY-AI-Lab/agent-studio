@@ -95,6 +95,17 @@ test('startup guard refuses application traffic when SESSION_SECRET is missing',
   });
 });
 
+test('startup guard refuses enforced identity without migration-window configuration', async () => {
+  const { env } = makeEnv();
+  env.CAIL_REQUIRE_IDENTITY = 'true';
+  const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
+  assert.equal(res.status, 503);
+  assert.deepEqual(await res.json(), {
+    error: 'Service unavailable: invalid configuration',
+    errorCode: 'cail_sso_switched_at_missing',
+  });
+});
+
 test('no cookie -> a signed session cookie is issued and reused', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
@@ -129,6 +140,8 @@ test('verified canonical token is stored and forwarded to the workspace agent', 
   const { token, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
   env.CAIL_REQUIRE_IDENTITY = 'true';
+  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
+  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
   const headers = { [CAIL_IDENTITY_HEADER]: token };
   const session = new Session(env);
 
@@ -150,6 +163,8 @@ test('required identity rejects an invalid canonical credential', async () => {
   const { env } = makeEnv();
   env.CAIL_IDENTITY_JWKS = JSON.stringify({ keys: [] });
   env.CAIL_REQUIRE_IDENTITY = 'true';
+  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
+  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
   const session = new Session(env);
   const res = await session.request(app, '/api/session', {
     headers: { [CAIL_IDENTITY_HEADER]: 'invalid-token' },

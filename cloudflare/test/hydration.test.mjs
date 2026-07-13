@@ -105,3 +105,29 @@ test('hydrateLegacyWorkspaceFiles resolves empty legacy prefixes without deletin
   assert.equal(deleteCalls, 0);
   assert.deepEqual([...r2.store.keys()], ['unrelated/key.txt']);
 });
+
+test('hydrateLegacyWorkspaceFiles ignores legacy files after the import deadline', async (t) => {
+  const r2 = new MockR2();
+  await r2.put(legacyKey('expired.txt'), 'do not hydrate');
+  const runtime = new FakeRuntime();
+  const env = {
+    WORKSPACE_FILES: r2,
+    CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_SSO_SWITCHED_AT: '2026-07-01T00:00:00Z',
+    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-07-02T00:00:00Z',
+  };
+
+  const warnings = t.mock.method(console, 'warn', () => {});
+  const result = await hydrateLegacyWorkspaceFiles(
+    env,
+    SESSION,
+    WORKSPACE,
+    runtime,
+    Date.parse('2026-07-02T00:00:00.001Z')
+  );
+
+  assert.deepEqual(result, { copied: 0, skipped: 0 });
+  assert.equal(runtime.files.size, 0);
+  assert.ok(await r2.get(legacyKey('expired.txt')), 'ignored legacy data must not be deleted');
+  assert.equal(warnings.mock.callCount(), 1);
+});

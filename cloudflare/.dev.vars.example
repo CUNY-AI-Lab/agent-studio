@@ -18,6 +18,12 @@ CAIL_IDENTITY_JWKS=
 # CAIL_SSO_MODE=enforce lands on the gateway. If the JWKS is not configured or
 # cannot verify a presented token, all requests fail.
 CAIL_REQUIRE_IDENTITY=false
+# Required together when CAIL_REQUIRE_IDENTITY=true. Use complete ISO instants
+# with Z or an explicit UTC offset. The deadline is exclusive and must be no
+# more than 30 days after the switch. Leave both commented out in anonymous
+# local development; blank values are invalid configuration.
+# CAIL_SSO_SWITCHED_AT=2026-07-15T14:00:00Z
+# CAIL_ACCOUNT_IMPORT_UNTIL=2026-07-29T14:00:00Z
 
 # Base path this tool is served under (fleet contract §3¾ rule 3 delivery
 # amendment). Scopes the Path of the CSRF cookie (cail_csrf_agentstudio) so

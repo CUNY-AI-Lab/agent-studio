@@ -32,7 +32,7 @@
 
 import type { UIMessage } from 'ai';
 import type { WorkspaceRecord, WorkspaceState } from '../domain/workspace';
-import type { Env } from '../env';
+import { legacyAccountCompatibilityAllowed, type Env } from '../env';
 import { deleteByPrefix, getMimeType } from './files';
 import { reassignGalleryAuthor } from './gallery';
 import { getWorkspaceDownloads, putWorkspaceDownloads } from './downloads';
@@ -103,7 +103,11 @@ export function decideClaim(
  * methods the workspace import/export flow already relies on.
  */
 export interface MigratableAgent {
-  syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void>;
+  syncWorkspace(
+    workspace: WorkspaceRecord,
+    sessionId: string,
+    legacyCompatibilityNow?: number,
+  ): Promise<void>;
   freezeForMigration(): Promise<void>;
   getSnapshot(): Promise<WorkspaceState>;
   getMessages(): Promise<UIMessage[]>;
@@ -155,7 +159,12 @@ export async function migrateAnonymousSession(
   anonSessionId: string,
   subjectSessionId: string,
   getAgent: AgentFactory,
+  now = Date.now(),
 ): Promise<MigrationResult> {
+  if (!legacyAccountCompatibilityAllowed(env, now)) {
+    throw new Error('migration: legacy account import window is not open');
+  }
+
   const result: MigrationResult = {
     migratedWorkspaceIds: [],
     skippedWorkspaceIds: [],
@@ -178,8 +187,8 @@ export async function migrateAnonymousSession(
 
     // Normalize the source: syncWorkspace hydrates any legacy R2 files into
     // the old DO's runtime, so the runtime file listing below is complete.
-    await oldAgent.syncWorkspace(workspace, anonSessionId);
-    await newAgent.syncWorkspace(workspace, subjectSessionId);
+    await oldAgent.syncWorkspace(workspace, anonSessionId, now);
+    await newAgent.syncWorkspace(workspace, subjectSessionId, now);
     await oldAgent.freezeForMigration();
 
     const [state, messages, files] = await Promise.all([
@@ -215,10 +224,12 @@ export async function migrateAnonymousSession(
     // routes into the migration's fail-and-retry path instead.
     const anonDownloads = await getWorkspaceDownloads(env, anonSessionId, workspace.id, {
       onCorrupt: 'throw',
+      now,
     });
     if (anonDownloads.length > 0) {
       const targetDownloads = await getWorkspaceDownloads(env, subjectSessionId, workspace.id, {
         onCorrupt: 'throw',
+        now,
       });
       if (targetDownloads.length === 0) {
         await putWorkspaceDownloads(env, subjectSessionId, workspace.id, anonDownloads);
@@ -262,7 +273,7 @@ export interface MigrationRegistryClient {
   markFailed(subjectSessionId: string): Promise<void>;
 }
 
-export type MigrationOutcome = 'migrated' | ClaimAction;
+export type MigrationOutcome = 'migrated' | 'window-not-open' | ClaimAction;
 
 /**
  * Claim the anonymous namespace for this subject and run the copy if the
@@ -279,8 +290,13 @@ export async function maybeMigrateAnonymousSession(args: {
   subjectSessionId: string;
   registry: MigrationRegistryClient;
   getAgent: AgentFactory;
+  now?: number;
 }): Promise<MigrationOutcome> {
-  const { env, anonSessionId, subjectSessionId, registry, getAgent } = args;
+  const { env, anonSessionId, subjectSessionId, registry, getAgent, now = Date.now() } = args;
+
+  if (!legacyAccountCompatibilityAllowed(env, now)) {
+    return 'window-not-open';
+  }
 
   const action = await registry.claim(subjectSessionId);
   if (action !== 'run') {
@@ -288,7 +304,7 @@ export async function maybeMigrateAnonymousSession(args: {
   }
 
   try {
-    await migrateAnonymousSession(env, anonSessionId, subjectSessionId, getAgent);
+    await migrateAnonymousSession(env, anonSessionId, subjectSessionId, getAgent, now);
     await registry.markDone(subjectSessionId);
     return 'migrated';
   } catch (error) {
@@ -306,6 +322,7 @@ export async function runFirstLoginMigration(
   env: Env,
   anonSessionId: string,
   subjectSessionId: string,
+  now = Date.now(),
 ): Promise<MigrationOutcome> {
   const registry = env.MIGRATION_REGISTRY.get(
     env.MIGRATION_REGISTRY.idFromName(anonSessionId)
@@ -327,5 +344,6 @@ export async function runFirstLoginMigration(
     subjectSessionId,
     registry,
     getAgent,
+    now,
   });
 }

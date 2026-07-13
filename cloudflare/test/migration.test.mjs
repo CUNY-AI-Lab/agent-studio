@@ -579,6 +579,33 @@ test('failure marks the claim failed and a later run retries and completes', asy
   assert.equal((await pool.getAgent(SUBJECT, 'ws1')).files.get('notes.md').text, 'hello');
 });
 
+test('expired import window refuses migration before claiming or reading legacy data', async () => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = {
+    ...makeEnv(r2),
+    CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_SSO_SWITCHED_AT: '2026-07-01T00:00:00Z',
+    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-07-02T00:00:00Z',
+  };
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'Legacy', { 'notes.md': 'stay put' });
+  const registry = new FakeRegistry();
+
+  const outcome = await maybeMigrateAnonymousSession({
+    env,
+    anonSessionId: ANON,
+    subjectSessionId: SUBJECT,
+    registry,
+    getAgent: pool.getAgent,
+    now: Date.parse('2026-07-02T00:00:00.001Z'),
+  });
+
+  assert.equal(outcome, 'window-not-open');
+  assert.equal(registry.claimCalls, 0);
+  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
+  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
+});
+
 // ---------------------------------------------------------------------------
 // Middleware trigger (Hono integration): anonymous flow untouched, first
 // authenticated request with a legacy cookie migrates and drops the cookie.
@@ -684,4 +711,30 @@ test('middleware: first authenticated request with legacy cookie migrates once a
   assert.equal((await again.json()).sessionId, subjectSessionId);
   assert.equal(registry.claimCalls, claimCallsBefore + 1); // claim checked, returns already-done
   assert.equal(registry.record.status, 'done');
+});
+
+test('middleware: authenticated request after expiry refuses import and clears the legacy cookie', async (t) => {
+  const { app, env, r2, registry } = await makeMiddlewareApp();
+  const anonResponse = await app.request('/api/session', {}, env);
+  const anonSessionId = (await anonResponse.json()).sessionId;
+  const cookie = cookieFrom(anonResponse);
+  await seedGalleryItem(r2, 'galExpired', anonSessionId);
+  Object.assign(env, {
+    CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_SSO_SWITCHED_AT: '2026-01-01T00:00:00Z',
+    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-01-02T00:00:00Z',
+  });
+  const jwt = await mintJwt('cail-expired-migration-test');
+
+  const warnings = t.mock.method(console, 'warn', () => {});
+  const authed = await app.request('/api/session', {
+    headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
+  }, env);
+
+  assert.equal(authed.status, 200);
+  assert.equal(registry.claimCalls, 0);
+  assert.match(authed.headers.get('set-cookie') || '', /agent-studio-session=;/);
+  const manifest = await (await r2.get('agent-studio/gallery/items/galExpired/manifest.json')).json();
+  assert.equal(manifest.authorId, await galleryOwnerTag(anonSessionId, SESSION_SECRET));
+  assert.equal(warnings.mock.callCount(), 1);
 });

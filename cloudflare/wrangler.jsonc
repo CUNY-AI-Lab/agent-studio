@@ -95,6 +95,11 @@
     // Fail closed: reject anonymous model calls with 401. Turn on ("true") at
     // the same time CAIL_SSO_MODE=enforce lands on the gateway. Left "false"
     // pre-rollout so local/dev without the gate stays usable.
+    // That enforcement change must also inject CAIL_SSO_SWITCHED_AT and
+    // CAIL_ACCOUNT_IMPORT_UNTIL as complete ISO instants. They are deliberately
+    // absent pre-rollout; once enforcement is true, missing/invalid values make
+    // health and application traffic fail with 503. The deadline is capped at
+    // 30 days after the switch by src/env.ts.
     // CAIL_BASE_PATH and CAIL_CANONICAL_ORIGIN are injected at deploy for the
     // shared host (mirroring the existing canonical-origin handling) rather
     // than checked in: local dev serves at '/'. Leaving CAIL_BASE_PATH unset on

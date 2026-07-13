@@ -1,7 +1,11 @@
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Context, MiddlewareHandler } from 'hono';
 import { createOpaqueId } from './ids';
-import type { Env } from '../env';
+import {
+  accountImportWindowState,
+  legacyAccountCompatibilityAllowed,
+  type Env,
+} from '../env';
 import {
   cailAuthRequiredResponse,
   cailIdentityRequired,
@@ -126,22 +130,46 @@ export const sessionMiddleware: MiddlewareHandler<{
     if (legacyCookie) {
       const anonSessionId = await verifySignedValue(legacyCookie, sessionSecret);
       if (anonSessionId && anonSessionId !== sessionId) {
-        try {
-          const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId);
-          if (outcome !== 'in-progress') {
-            deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
+        const now = Date.now();
+        const windowState = accountImportWindowState(c.env, now);
+        if (legacyAccountCompatibilityAllowed(c.env, now)) {
+          const startedAt = now;
+          try {
+            const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId, now);
+            if (outcome !== 'in-progress' && outcome !== 'window-not-open') {
+              deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
+            }
+            const succeeded = outcome === 'migrated' || outcome === 'already-done';
+            studioLogger().info('migration.account_import', {
+              subject: verified.identity.subject,
+              outcome: succeeded ? 'ok' : 'denied',
+              duration_ms: Date.now() - startedAt,
+              ...(succeeded
+                ? {}
+                : { error_code: `first_login_${outcome.replaceAll('-', '_')}` }),
+            });
+          } catch {
+            // Soft-fail: the user sees their subject namespace (possibly still
+            // empty); the claim is marked failed and the next request retries.
+            // Structured event, metadata only: the subject identifies the user
+            // (session ids derive from it); the error itself is never logged.
+            studioLogger().error('migration.failed', {
+              subject: verified.identity.subject,
+              outcome: 'error',
+              duration_ms: Date.now() - startedAt,
+              error_code: 'first_login_migration_failed',
+            });
           }
-        } catch {
-          // Soft-fail: the user sees their subject namespace (possibly still
-          // empty); the claim is marked failed and the next request retries.
-          // Structured event, metadata only: the subject identifies the user
-          // (session ids derive from it); the error itself is never logged.
-          studioLogger().error('migration.failed', {
+        } else if (windowState === 'expired') {
+          // The deadline is final: never retain a cookie that could trigger a
+          // later import if compatibility code is accidentally re-enabled.
+          deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
+          studioLogger().warn('migration.account_import_refused', {
             subject: verified.identity.subject,
-            outcome: 'error',
-            error_code: 'first_login_migration_failed',
+            outcome: 'denied',
+            error_code: 'legacy_account_import_window_expired',
           });
-        }
+        } // Before the switch, keep the cookie so the first in-window request can import it.
       } else {
         // Invalid signature or (vanishingly unlikely) same id: nothing to
         // migrate — drop the stale cookie.

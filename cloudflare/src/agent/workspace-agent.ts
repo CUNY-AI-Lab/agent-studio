@@ -27,7 +27,7 @@ import {
   type WorkspaceRecord,
   type WorkspaceState,
 } from '../domain/workspace';
-import type { Env } from '../env';
+import { accountImportWindowState, type Env } from '../env';
 import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import {
@@ -449,8 +449,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
   }
 
-  async syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void> {
-    await this.ensureRuntimeWorkspaceHydrated(workspace, sessionId);
+  async syncWorkspace(
+    workspace: WorkspaceRecord,
+    sessionId: string,
+    legacyCompatibilityNow?: number,
+  ): Promise<void> {
+    await this.ensureRuntimeWorkspaceHydrated(workspace, sessionId, legacyCompatibilityNow);
     const nextState: WorkspaceState = {
       ...this.state,
       sessionId,
@@ -1570,7 +1574,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.runtimeWorkspace;
   }
 
-  private async ensureRuntimeWorkspaceHydrated(workspace: WorkspaceRecord, sessionId: string): Promise<void> {
+  private async ensureRuntimeWorkspaceHydrated(
+    workspace: WorkspaceRecord,
+    sessionId: string,
+    legacyCompatibilityNow = Date.now(),
+  ): Promise<void> {
     if (this.hydrationComplete) return;
     if (await this.ctx.storage.get(HYDRATION_COMPLETE_KEY)) {
       this.hydrationComplete = true;
@@ -1580,9 +1588,19 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       await this.hydrationPromise;
       return;
     }
+    // Do not persist the hydration marker before the configured switch. That
+    // lets a workspace first touched during rollout preparation hydrate once
+    // the temporary compatibility window actually opens.
+    if (accountImportWindowState(this.env, legacyCompatibilityNow) === 'not-started') return;
     const runtime = this.getRuntimeWorkspace();
     this.hydrationPromise = (async () => {
-      await hydrateLegacyWorkspaceFiles(this.env, sessionId, workspace.id, runtime);
+      await hydrateLegacyWorkspaceFiles(
+        this.env,
+        sessionId,
+        workspace.id,
+        runtime,
+        legacyCompatibilityNow,
+      );
       await this.ctx.storage.put(HYDRATION_COMPLETE_KEY, true);
       this.hydrationComplete = true;
     })();

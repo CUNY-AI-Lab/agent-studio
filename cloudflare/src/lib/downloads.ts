@@ -1,5 +1,5 @@
 import { deleteByPrefix, getWorkspacePrefix } from './files';
-import type { Env } from '../env';
+import { legacyAccountCompatibilityAllowed, type Env } from '../env';
 import { studioLogger } from './logging';
 
 export interface DownloadRequest {
@@ -41,6 +41,8 @@ export interface ReadDownloadsOptions {
    *   Throwing routes into the migration's fail-and-retry path instead.
    */
   onCorrupt?: 'skip' | 'throw';
+  /** Testable clock for the temporary legacy-blob compatibility window. */
+  now?: number;
 }
 
 // Every corrupt-object sighting is logged — a parse failure on an existing
@@ -164,7 +166,9 @@ export async function getWorkspaceDownloads(
   // Backward-read: fold in any pre-migration downloads.json content, preserving
   // its order ahead of the per-object entries. New writes only ever go to the
   // per-object prefix, so this blob is read-only legacy.
-  const legacy = await readLegacyDownloads(env, sessionId, workspaceId, onCorrupt);
+  const legacy = legacyAccountCompatibilityAllowed(env, options.now)
+    ? await readLegacyDownloads(env, sessionId, workspaceId, onCorrupt)
+    : [];
   return legacy.length > 0 ? [...legacy, ...current] : current;
 }
 

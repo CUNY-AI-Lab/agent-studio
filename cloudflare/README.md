@@ -26,6 +26,12 @@ canonical `X-CAIL-Identity-JWT` header with RS256 for audience
 `cail:agent-studio`. Leave it blank locally for anonymous mode. Then confirm
 the R2 bucket and Worker Loader bindings in [wrangler.jsonc](./wrangler.jsonc).
 
+When setting `CAIL_REQUIRE_IDENTITY=true`, also set `CAIL_SSO_SWITCHED_AT` and
+`CAIL_ACCOUNT_IMPORT_UNTIL` to timezone-bearing ISO instants. The end must be
+at or after the switch and no more than 30 days later. The Worker returns 503
+for health and application traffic when this enforced configuration is missing
+or invalid. See [legacy-account-import.md](../docs/legacy-account-import.md).
+
 Run local development with:
 
 ```bash

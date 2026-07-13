@@ -49,7 +49,11 @@ user's selected raw identity JWT as the credential plus
 `X-CAIL-Identity-JWT` header is verified locally as RS256 against the static
 `CAIL_IDENTITY_JWKS`, audience `cail:agent-studio`, and the canonical/staging
 issuer allowlist. `CAIL_REQUIRE_IDENTITY=true` fails closed when verification
-cannot succeed. Bare `X-CAIL-*` identity claims are never trusted, and all
+cannot succeed. Identity enforcement also requires `CAIL_SSO_SWITCHED_AT` and
+`CAIL_ACCOUNT_IMPORT_UNTIL` as complete ISO instants. The import deadline must
+be at or after the switch and no more than 30 days later. Invalid or missing
+values fail health checks and application traffic with 503. Bare `X-CAIL-*`
+identity claims are never trusted, and all
 per-user data keys to the stable pseudonymous CAIL subject, never email.
 Quota/auth error envelopes from the proxy (`quota_exceeded`,
 `authentication_required`, …) pass through to the client unmodified; browser
@@ -67,7 +71,10 @@ Anything created anonymously before SSO enforcement follows the user on first
 login: when an authenticated request still carries the legacy anonymous session
 cookie, that namespace's workspaces, chat history, files, and gallery
 authorship are copied into the subject namespace exactly once (claim-once via
-the `MigrationRegistry` Durable Object; see `cloudflare/src/lib/migration.ts`).
+the `MigrationRegistry` Durable Object). This compatibility applies only during
+the configured account-import window. See
+[`docs/legacy-account-import.md`](./docs/legacy-account-import.md) for rollout,
+telemetry, and required deletion follow-up.
 
 ## Product surface
 

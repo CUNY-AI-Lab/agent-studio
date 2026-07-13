@@ -1,4 +1,4 @@
-import type { Env } from '../env';
+import { accountImportWindowState, legacyAccountCompatibilityAllowed, type Env } from '../env';
 import {
   deleteByPrefix,
   getMimeType,
@@ -7,6 +7,7 @@ import {
   readWorkspaceFile,
   toRuntimePath,
 } from './files';
+import { studioLogger } from './logging';
 
 export interface HydrationRuntime {
   lstat(path: string): Promise<{ type: string } | null>;
@@ -23,7 +24,23 @@ export async function hydrateLegacyWorkspaceFiles(
   sessionId: string,
   workspaceId: string,
   runtime: HydrationRuntime,
+  now = Date.now(),
 ): Promise<{ copied: number; skipped: number }> {
+  if (!legacyAccountCompatibilityAllowed(env, now)) {
+    const state = accountImportWindowState(env, now);
+    const legacyFiles = await listWorkspaceFilesRecursive(env, sessionId, workspaceId);
+    if (legacyFiles.some((file) => !file.isDirectory)) {
+      studioLogger().warn('migration.compatibility_ignored', {
+        outcome: 'denied',
+        error_code:
+          state === 'expired'
+            ? 'legacy_hydration_window_expired'
+            : 'legacy_hydration_window_not_open',
+      });
+    }
+    return { copied: 0, skipped: 0 };
+  }
+
   const legacyFiles = await listWorkspaceFilesRecursive(env, sessionId, workspaceId);
   const leafFiles = legacyFiles.filter((file) => !file.isDirectory);
   const failures: string[] = [];
