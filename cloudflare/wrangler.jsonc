@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "agent-studio",
+  "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
   "main": "src/server.ts",
   "compatibility_date": "2026-03-25",
   "compatibility_flags": ["nodejs_compat"],
@@ -84,10 +85,9 @@
     ]
   },
   "vars": {
-    // CAIL model proxy base URL (serves /v1/... and /keys). Placeholder until
-    // launch — set to the institutional model-proxy URL per
-    // cail-gateway docs/LAUNCH_CHECKLIST.md. No trailing slash.
-    "CAIL_API_BASE": "https://REPLACE-WITH-CAIL-MODEL-PROXY.invalid",
+    // Institutional CAIL model proxy base URL (serves /v1/... and /keys).
+    // No trailing slash.
+    "CAIL_API_BASE": "https://cail-model-proxy.ailab-452.workers.dev",
     // Optional model override; the proxy/AI Gateway resolves this slug.
     // CAIL policy: Workers AI catalog (@cf/...) ids only. Defaults to
     // @cf/zai-org/glm-5.2 when unset (see src/lib/cail-model.ts).
