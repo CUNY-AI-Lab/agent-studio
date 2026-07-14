@@ -39,6 +39,7 @@ import {
   CAIL_EVENTS,
   LOG_PRODUCT,
   LOG_PROVIDER,
+  STUDIO_MAX_MODEL_STEPS,
   STUDIO_ACTION_ROUTES,
   STUDIO_EVENTS,
   mintCorrelation,
@@ -49,6 +50,16 @@ import {
   type CailPrincipalFields,
   type CailTerminalFields,
 } from '../lib/logging';
+import {
+  STUDIO_RELIABILITY_WINDOW_MS,
+  initializeStudioReliability,
+  readStudioReliabilityAdmin,
+  recordStudioActionAdmission,
+  recordStudioActionTerminal,
+  recordStudioModelCallAdmission,
+  recordStudioModelCallTerminal,
+  type StudioReliabilityAdminRead,
+} from '../lib/reliability';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
 import {
   extractPdfText,
@@ -310,6 +321,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private pendingChatAction: PendingChatAction | null = null;
 
   async onStart() {
+    // Cloudflare Agents officially supports synchronous SQLite initialization
+    // in onStart. These tables contain bounded machine lifecycle facts only.
+    initializeStudioReliability(this.ctx.storage.sql);
     if (!this.state.workspace) {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
@@ -506,6 +520,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.finishModelCall(action, { outcome: 'outcome_unknown', reason: 'unknown' }, 'model_call_overlap');
     }
     const modelCall = { callId: crypto.randomUUID(), startedAt: Date.now() };
+    recordStudioModelCallAdmission(this.ctx.storage.sql, {
+      callId: modelCall.callId,
+      actionId: action.actionId,
+      atMs: modelCall.startedAt,
+    });
     action.modelCall = modelCall;
     studioLogger(this.env)?.emit(CAIL_EVENTS.MODEL_CALL_ADMITTED, {
       call_id: modelCall.callId,
@@ -526,6 +545,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   ): void {
     const modelCall = action.modelCall;
     if (!modelCall) return;
+    recordStudioModelCallTerminal(this.ctx.storage.sql, {
+      callId: modelCall.callId,
+      actionId: action.actionId,
+      atMs: Date.now(),
+      outcome: terminal.outcome,
+    });
     action.modelCall = undefined;
     const fields = {
       call_id: modelCall.callId,
@@ -556,6 +581,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     errorType?: string,
   ): void {
     if (action.actionTerminal) return;
+    recordStudioActionTerminal(this.ctx.storage.sql, {
+      actionId: action.actionId,
+      route: STUDIO_ACTION_ROUTES.CHAT,
+      atMs: Date.now(),
+      outcome: terminal.outcome,
+    });
     action.actionTerminal = true;
     const fields = {
       action_id: action.actionId,
@@ -694,6 +725,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         startedAt: Date.now(),
         actionTerminal: false,
       };
+      recordStudioActionAdmission(this.ctx.storage.sql, {
+        actionId: action.actionId,
+        route: STUDIO_ACTION_ROUTES.CHAT,
+        atMs: action.startedAt,
+      });
       this.pendingChatAction = action;
       studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_ADMITTED, {
         action_id: action.actionId,
@@ -736,7 +772,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           ...modelTools,
           codemode,
         },
-        stopWhen: stepCountIs(12),
+        stopWhen: stepCountIs(STUDIO_MAX_MODEL_STEPS),
         includeRawChunks: true,
         experimental_onStepStart: () => {
           this.admitModelCall(action!);
@@ -836,6 +872,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.snapshotObservability();
   }
 
+  /**
+   * Internal Durable Object RPC for an authorized admin collector. Deliberately
+   * lacks @callable(), so browser/WebSocket clients cannot invoke it.
+   */
+  async getProductReliabilityAdminRead(toMs = Date.now()): Promise<StudioReliabilityAdminRead> {
+    return readStudioReliabilityAdmin(this.ctx.storage.sql, {
+      fromMs: toMs - STUDIO_RELIABILITY_WINDOW_MS,
+      toMs,
+    });
+  }
+
   @callable()
   async getRuntimeInfo(): Promise<{
     provider: 'dynamic-workers';
@@ -879,6 +926,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const sessionId = this.requireSessionId();
     const startedAt = Date.now();
     const actionId = crypto.randomUUID();
+    recordStudioActionAdmission(this.ctx.storage.sql, {
+      actionId,
+      route: STUDIO_ACTION_ROUTES.CODE,
+      atMs: startedAt,
+    });
     studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_ADMITTED, {
       action_id: actionId,
       request_id: correlation.request_id,
@@ -888,23 +940,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       route: STUDIO_ACTION_ROUTES.CODE,
       trace: traceFromCorrelation(correlation),
     });
+    let result: ExecuteResult;
     try {
       const tools = this.buildHostTools(workspace, sessionId);
       const executor = this.createCodeExecutor();
-      const result = await executor.execute(code, this.buildCodeProviders(tools));
-      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
-        action_id: actionId,
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal,
-        http_method: 'POST',
-        route: STUDIO_ACTION_ROUTES.CODE,
-        terminal: { outcome: 'ok', reason: 'completed' },
-        duration_ms: Date.now() - startedAt,
-        trace: traceFromCorrelation(correlation),
-      });
-      return result;
+      result = await executor.execute(code, this.buildCodeProviders(tools));
     } catch (error) {
+      recordStudioActionTerminal(this.ctx.storage.sql, {
+        actionId,
+        route: STUDIO_ACTION_ROUTES.CODE,
+        atMs: Date.now(),
+        outcome: 'error',
+      });
       studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
         action_id: actionId,
         request_id: correlation.request_id,
@@ -919,6 +966,24 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
       throw error;
     }
+    recordStudioActionTerminal(this.ctx.storage.sql, {
+      actionId,
+      route: STUDIO_ACTION_ROUTES.CODE,
+      atMs: Date.now(),
+      outcome: 'ok',
+    });
+    studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
+      action_id: actionId,
+      request_id: correlation.request_id,
+      product_id: LOG_PRODUCT,
+      principal,
+      http_method: 'POST',
+      route: STUDIO_ACTION_ROUTES.CODE,
+      terminal: { outcome: 'ok', reason: 'completed' },
+      duration_ms: Date.now() - startedAt,
+      trace: traceFromCorrelation(correlation),
+    });
+    return result;
   }
 
   @callable()

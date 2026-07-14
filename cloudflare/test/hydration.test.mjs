@@ -26,6 +26,7 @@ function makeEnv(r2) {
   return {
     WORKSPACE_FILES: r2,
     CAIL_LOG_ENV: 'test',
+    CAIL_FLEET_EVENTS: { writeDataPoint() {} },
     CF_VERSION_METADATA: {
       id: '11111111-1111-4111-8111-111111111111',
       tag: '',

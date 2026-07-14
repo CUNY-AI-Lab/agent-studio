@@ -45,22 +45,33 @@ export interface ReadDownloadsOptions {
   now?: number;
 }
 
-// Every corrupt-object sighting is logged — a parse failure on an existing
-// object is never silently equated with absence. The structured event is
-// metadata only (the R2 key embeds session/workspace ids + a filename, which
-// are not on the safe-to-log allowlist); the 'throw' path keeps the key in
-// the thrown Error so the migration's fail-and-retry path stays actionable.
+export const MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ = 20;
+
+interface CorruptEventBudget {
+  remaining: number;
+}
+
+// Corrupt objects are never silently equated with absence. Skip-mode reads
+// emit a bounded sample so a damaged prefix cannot exceed the Analytics Engine
+// per-invocation ceiling. The structured event is metadata only (the R2 key
+// embeds session/workspace ids + a filename, which are not on the safe-to-log
+// allowlist); the 'throw' path emits the first event and keeps the key in the
+// thrown Error so the migration's fail-and-retry path stays actionable.
 function reportCorruptDownloadObject(
   env: Env,
   key: string,
   error: unknown,
-  onCorrupt: 'skip' | 'throw'
+  onCorrupt: 'skip' | 'throw',
+  eventBudget: CorruptEventBudget
 ): void {
-  studioLogger(env)?.emit(STUDIO_EVENTS.DOWNLOAD_CORRUPT, {
-    product_id: LOG_PRODUCT,
-    terminal: { outcome: 'error', reason: 'application_failure' },
-    error_type: 'corrupt_download_object',
-  });
+  if (eventBudget.remaining > 0) {
+    eventBudget.remaining -= 1;
+    studioLogger(env)?.emit(STUDIO_EVENTS.DOWNLOAD_CORRUPT, {
+      product_id: LOG_PRODUCT,
+      terminal: { outcome: 'error', reason: 'application_failure' },
+      error_type: 'corrupt_download_object',
+    });
+  }
   if (onCorrupt === 'throw') {
     throw new Error(`downloads: corrupt stored download object at ${key}`, { cause: error });
   }
@@ -97,7 +108,8 @@ async function readLegacyDownloads(
   env: Env,
   sessionId: string,
   workspaceId: string,
-  onCorrupt: 'skip' | 'throw'
+  onCorrupt: 'skip' | 'throw',
+  eventBudget: CorruptEventBudget
 ): Promise<DownloadRequest[]> {
   const key = getLegacyDownloadsKey(sessionId, workspaceId);
   const object = await env.WORKSPACE_FILES.get(key);
@@ -109,11 +121,17 @@ async function readLegacyDownloads(
   try {
     parsed = await object.json();
   } catch (error) {
-    reportCorruptDownloadObject(env, key, error, onCorrupt);
+    reportCorruptDownloadObject(env, key, error, onCorrupt, eventBudget);
     return [];
   }
   if (!Array.isArray(parsed)) {
-    reportCorruptDownloadObject(env, key, new Error('expected a JSON array'), onCorrupt);
+    reportCorruptDownloadObject(
+      env,
+      key,
+      new Error('expected a JSON array'),
+      onCorrupt,
+      eventBudget
+    );
     return [];
   }
   return parsed as DownloadRequest[];
@@ -126,6 +144,7 @@ export async function getWorkspaceDownloads(
   options: ReadDownloadsOptions = {}
 ): Promise<DownloadRequest[]> {
   const onCorrupt = options.onCorrupt ?? 'skip';
+  const eventBudget: CorruptEventBudget = { remaining: MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ };
   const prefix = getDownloadsPrefix(sessionId, workspaceId);
   const stored: StoredDownload[] = [];
 
@@ -142,7 +161,7 @@ export async function getWorkspaceDownloads(
         try {
           parsed = await body.json<StoredDownload>();
         } catch (error) {
-          reportCorruptDownloadObject(env, object.key, error, onCorrupt);
+          reportCorruptDownloadObject(env, object.key, error, onCorrupt, eventBudget);
           return null;
         }
         if (!(parsed && typeof parsed === 'object' && parsed.download)) {
@@ -150,7 +169,8 @@ export async function getWorkspaceDownloads(
             env,
             object.key,
             new Error('missing download payload'),
-            onCorrupt
+            onCorrupt,
+            eventBudget
           );
           return null;
         }
@@ -170,7 +190,7 @@ export async function getWorkspaceDownloads(
   // its order ahead of the per-object entries. New writes only ever go to the
   // per-object prefix, so this blob is read-only legacy.
   const legacy = legacyAccountCompatibilityAllowed(env, options.now)
-    ? await readLegacyDownloads(env, sessionId, workspaceId, onCorrupt)
+    ? await readLegacyDownloads(env, sessionId, workspaceId, onCorrupt, eventBudget)
     : [];
   return legacy.length > 0 ? [...legacy, ...current] : current;
 }

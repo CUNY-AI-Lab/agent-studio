@@ -14,6 +14,7 @@ import {
   addWorkspaceDownload,
   getWorkspaceDownloads,
   clearWorkspaceDownloads,
+  MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ,
   putWorkspaceDownloads,
 } from '../src/lib/downloads.ts';
 
@@ -24,6 +25,7 @@ function envWith(r2) {
   return {
     WORKSPACE_FILES: r2,
     CAIL_LOG_ENV: 'test',
+    CAIL_FLEET_EVENTS: { writeDataPoint() {} },
     CF_VERSION_METADATA: {
       id: '11111111-1111-4111-8111-111111111111',
       tag: '',
@@ -137,7 +139,7 @@ test('expired compatibility ignores legacy downloads.json but keeps current entr
 // Corrupt-object observability (readJson-swallow regression, fallback rule):
 // a parse failure on an object that EXISTS must never be silently read as
 // "record absent". Default reads stay resilient but emit a structured
-// `downloads.corrupt` wide event per corrupt object (metadata only — the R2
+// a bounded set of `downloads.corrupt` wide events (metadata only — the R2
 // key embeds session/workspace ids and a filename, so it stays OUT of the
 // log; the 'throw' path keeps it in the thrown Error). onCorrupt: 'throw'
 // (the migration mode) propagates instead of returning empty.
@@ -193,6 +195,29 @@ test('corrupt per-object downloads emit one event each and are skipped; good ent
     const line = JSON.stringify(call.arguments[0]);
     assert.ok(!line.includes(badParseKey) && !line.includes(badShapeKey), 'R2 key leaked into a log line');
   }
+});
+
+test('corrupt-object diagnostics are capped per read and fan out to the fleet dataset', async (t) => {
+  const r2 = new MockR2();
+  const points = [];
+  const env = {
+    ...envWith(r2),
+    CAIL_FLEET_EVENTS: { writeDataPoint: (point) => points.push(point) },
+  };
+  const prefix = `agent-studio/sessions/${SESSION}/workspaces/${WS}/downloads/`;
+  const corruptCount = MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ + 15;
+  await Promise.all(
+    Array.from({ length: corruptCount }, (_, index) =>
+      r2.put(`${prefix}${String(index).padStart(16, '0')}-corrupt.json`, '{truncated')
+    )
+  );
+
+  const logs = t.mock.method(console, 'error', () => {});
+  assert.deepEqual(await getWorkspaceDownloads(env, SESSION, WS), []);
+  assert.equal(corruptEventsFrom(logs).length, MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ);
+  assert.equal(points.length, MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ);
+  assert.ok(points.every((point) => point.indexes[0] === 'test:agent-studio'));
+  assert.ok(points.every((point) => !JSON.stringify(point).includes(prefix)));
 });
 
 test("onCorrupt: 'throw' propagates a corrupt legacy blob instead of reading it as empty", async (t) => {

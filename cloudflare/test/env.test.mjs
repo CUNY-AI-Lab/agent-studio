@@ -15,6 +15,7 @@ const SWITCHED_AT = '2026-07-13T14:00:00Z';
 const IMPORT_UNTIL = '2026-08-12T14:00:00Z';
 const TELEMETRY = {
   CAIL_LOG_ENV: 'test',
+  CAIL_FLEET_EVENTS: { writeDataPoint() {} },
   CF_VERSION_METADATA: {
     id: '11111111-1111-4111-8111-111111111111',
     tag: '',
@@ -123,6 +124,17 @@ test('telemetry readiness requires a classified environment and Worker version m
     }),
     { ok: false, errorCode: 'worker_version_metadata_invalid' },
   );
+  assert.deepEqual(validateAgentStudioConfig({
+    SESSION_SECRET: SECRET,
+    CAIL_LOG_ENV: 'test',
+    CF_VERSION_METADATA: TELEMETRY.CF_VERSION_METADATA,
+  }), { ok: false, errorCode: 'cail_fleet_events_missing' });
+  assert.deepEqual(validateAgentStudioConfig({
+    SESSION_SECRET: SECRET,
+    CAIL_LOG_ENV: 'test',
+    CF_VERSION_METADATA: TELEMETRY.CF_VERSION_METADATA,
+    CAIL_FLEET_EVENTS: {},
+  }), { ok: false, errorCode: 'cail_fleet_events_invalid' });
 });
 
 test('migration compatibility opens at the switch and closes at the deadline', () => {

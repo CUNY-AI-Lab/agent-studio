@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "contract_id": "agent-studio.observability",
-  "contract_version": 1,
+  "contract_version": 2,
   "product_id": "agent-studio",
   "runtime": {
     "required_configuration": {
@@ -22,11 +22,25 @@
     "custom_lifecycle_sample_rate": 1,
     "invocation_logs": false,
     "automatic_traces": false,
-    "external_exporters": []
+    "external_exporters": [],
+    "fleet_projection": {
+      "backend": "cloudflare_analytics_engine",
+      "dataset_contract": "cail_fleet_events_v1",
+      "binding": "CAIL_FLEET_EVENTS",
+      "binding_declared_in_source": true,
+      "projection_owner": "@cuny-ai-lab/cail-log",
+      "sampling_index": "deployment_environment_plus_product_id",
+      "query_weight": "_sample_interval",
+      "evidence": "weighted_cohort_diagnostic",
+      "exact_lifecycle_authority": false,
+      "maximum_points_per_invocation": 32,
+      "platform_ceiling": 250
+    }
   },
   "denominators": {
     "actions": {
-      "version": 1,
+      "version": 2,
+      "authority": "workspace_agent_durable_state",
       "terminal_event": "cail.action.terminal",
       "id_field": "cail.action.id",
       "routes": [
@@ -42,7 +56,8 @@
       "success_numerator": "distinct_success_terminal_ids"
     },
     "model_calls": {
-      "version": 1,
+      "version": 2,
+      "authority": "workspace_agent_durable_state",
       "terminal_event": "cail.model.call.terminal",
       "id_field": "cail.call.id",
       "provider": "cail",
@@ -56,7 +71,8 @@
     }
   },
   "coverage": {
-    "version": 1,
+    "version": 2,
+    "authority": "workspace_agent_durable_state",
     "target": 1,
     "minimum_publishable": 0.95,
     "freshness_deadline_seconds": 300,
@@ -82,7 +98,8 @@
     "empty_expected_population": "unavailable"
   },
   "slo": {
-    "version": 1,
+    "version": 2,
+    "authority": "workspace_agent_durable_state",
     "indicators": ["actions", "model_calls"],
     "window": "rolling_24h",
     "target": 0.99,
@@ -92,6 +109,17 @@
       "maximum_telemetry_age_seconds": 300
     },
     "insufficient_volume": "unavailable"
+  },
+  "accounting": {
+    "model": {
+      "authority": "gateway_key_service_accounting",
+      "native_limit_usd": 10,
+      "agent_studio_emits_cost_or_quota": false
+    },
+    "sandbox": {
+      "authority": "sandbox_accounting",
+      "agent_studio_emits_settlement_or_cost": false
+    }
   },
   "alerts": {
     "version": 1,

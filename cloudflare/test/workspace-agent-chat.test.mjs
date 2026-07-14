@@ -10,6 +10,7 @@ test('chat action success waits for the post-persistence onChatResponse hook', a
   const action = { actionTerminal: false };
   const calls = [];
   const agent = {
+    ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
     pendingChatAction: action,
     finishModelCall(seenAction, terminal, errorType) {
       calls.push(['model', seenAction, terminal, errorType]);
@@ -43,6 +44,7 @@ test('deferred chat failures become terminal only in the post-persistence hook',
   };
   const calls = [];
   const agent = {
+    ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
     pendingChatAction: action,
     finishModelCall(seenAction, terminal, errorType) {
       calls.push(['model', seenAction, terminal, errorType]);
@@ -77,6 +79,7 @@ test('code rate-limit denial does not emit an orphan canonical action terminal',
   const agent = {
     env: {
       CAIL_LOG_ENV: 'test',
+      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
       CF_VERSION_METADATA: {
         id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
       },
@@ -100,10 +103,22 @@ test('code rate-limit denial does not emit an orphan canonical action terminal',
 test('successful code execution emits one paired canonical action lifecycle', async (t) => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const records = [];
+  const sqlWrites = [];
   t.mock.method(console, 'log', (record) => records.push(record));
   const agent = {
+    ctx: {
+      storage: {
+        sql: {
+          exec: (query, ...bindings) => {
+            sqlWrites.push({ query, bindings });
+            return { toArray: () => [] };
+          },
+        },
+      },
+    },
     env: {
       CAIL_LOG_ENV: 'test',
+      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
       CF_VERSION_METADATA: {
         id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
       },
@@ -129,6 +144,10 @@ test('successful code execution emits one paired canonical action lifecycle', as
   assert.equal(records[0]['cail.action.id'], records[1]['cail.action.id']);
   assert.equal(records[0]['url.template'], '/api/workspaces/{id}/runtime/execute');
   assert.equal(records[1]['cail.outcome'], 'ok');
+  assert.equal(sqlWrites.length, 2);
+  assert.match(sqlWrites[0].query, /studio_action_lifecycle_events_v1/);
+  assert.equal(sqlWrites[0].bindings[1], '/api/workspaces/{id}/runtime/execute');
+  assert.equal(sqlWrites[1].bindings[3], 'ok');
 });
 
 test('anonymous chat streams an authentication error instead of assistant JSON', async () => {
@@ -208,6 +227,7 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     execute: async () => 'ok',
   });
   const agent = {
+    ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
     assertNotFrozen() {},
     requireWorkspace() {
       return { id: 'workspace-1' };

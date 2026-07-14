@@ -61,6 +61,15 @@
       "preview_bucket_name": "agent-studio-preview"
     }
   ],
+  // Source declaration only. Cloudflare creates the Analytics Engine dataset
+  // on the first write after an authorized deployment; this repository task
+  // does not deploy or create any live resource.
+  "analytics_engine_datasets": [
+    {
+      "binding": "CAIL_FLEET_EVENTS",
+      "dataset": "cail_fleet_events_v1"
+    }
+  ],
   // Rate Limiting bindings for the HTTP /api/* surface (see src/lib/rate-limit.ts).
   // Counting is PER-COLO (each Cloudflare data center counts independently) and
   // zero-latency — acceptable for launch scale, not a global hard cap. Keyed by

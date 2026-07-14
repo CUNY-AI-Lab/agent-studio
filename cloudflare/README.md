@@ -36,7 +36,10 @@ Wrangler-managed `CF_VERSION_METADATA` binding is unavailable, so telemetry is
 never silently assigned to a guessed environment or release.
 The checked-in production Wrangler configuration supplies
 `CAIL_LOG_ENV=production`; `.dev.vars` must override it with `development` for
-local work. Collection and dashboard rollup rules are versioned in
+local work. Runtime health also requires the checked-in `CAIL_FLEET_EVENTS`
+Analytics Engine binding declaration. Cloudflare creates its dataset on the
+first write after an authorized deployment; no live resource was created by
+this source change. Collection and dashboard rollup rules are versioned in
 [`contracts/observability/agent-studio.v1.json`](../contracts/observability/agent-studio.v1.json).
 
 Run local development with:

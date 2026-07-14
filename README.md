@@ -39,8 +39,11 @@ CAIL_IDENTITY_JWKS=                          # static public JWKS JSON for RS256
 It binds Cloudflare version metadata for the operational `service.version` and
 full-samples Studio's bounded structured custom events into Workers Logs. It
 disables content-bearing native invocation logs, automatic traces, Logpush,
-Tail consumers, and external exporters. The versioned reliability and alert
-rules are in
+Tail consumers, and external exporters. The checked-in `CAIL_FLEET_EVENTS`
+binding declaration fans accepted events into cail-log's weighted, cohort-level
+Analytics Engine projection after an authorized deployment.
+Exact action/call reliability remains in WorkspaceAgent SQLite and is exposed
+only through internal admin RPC. The versioned reliability and alert rules are in
 [`contracts/observability/agent-studio.v1.json`](./contracts/observability/agent-studio.v1.json).
 The checked-in production configuration sets `CAIL_LOG_ENV=production`; local
 development overrides it with `development`.

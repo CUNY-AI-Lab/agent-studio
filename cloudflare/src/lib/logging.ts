@@ -1,11 +1,18 @@
 /** Privacy-constrained operational events for Agent Studio. */
 import {
   CAIL_EVENTS,
+  CAIL_ANALYTICS_ENGINE_BLOBS,
+  CAIL_ANALYTICS_ENGINE_DATASET,
+  CAIL_ANALYTICS_ENGINE_DOUBLES,
+  CAIL_ANALYTICS_ENGINE_MAX_POINTS_PER_INVOCATION,
   correlationFromHeaders,
+  createAnalyticsEngineSink,
   createCailLogger,
   extendCailEventCatalog,
+  fanoutSinks,
   outboundCorrelationHeaders,
   workersStructuredSink,
+  type CailAnalyticsEngineDataset,
   type CailCorrelation,
   type CailHttpMethod,
   type CailLogEnvironment,
@@ -16,13 +23,23 @@ import {
   type CailTraceFields,
 } from '@cuny-ai-lab/cail-log';
 
-export { CAIL_EVENTS, correlationFromHeaders, outboundCorrelationHeaders };
+export {
+  CAIL_ANALYTICS_ENGINE_BLOBS,
+  CAIL_ANALYTICS_ENGINE_DATASET,
+  CAIL_ANALYTICS_ENGINE_DOUBLES,
+  CAIL_ANALYTICS_ENGINE_MAX_POINTS_PER_INVOCATION,
+  CAIL_EVENTS,
+  correlationFromHeaders,
+  outboundCorrelationHeaders,
+};
 export type { CailCorrelation, CailPrincipalFields, CailTerminalFields, CailTraceFields };
 
 export const LOG_SERVICE = 'agent-studio';
 export const LOG_PRODUCT = 'agent-studio';
 export const LOG_PROVIDER = 'cail';
 const DEFAULT_RELEASE = '0.1.0';
+export const STUDIO_MAX_MODEL_STEPS = 12;
+export const STUDIO_MAX_FLEET_POINTS_PER_INVOCATION = 32;
 
 export const STUDIO_ACTION_ROUTES = Object.freeze({
   CHAT: '/agents/{agent}/{name}',
@@ -111,11 +128,13 @@ export type StudioLogger = CailLogger<typeof STUDIO_EVENT_CATALOG, 'platform'>;
 export interface StudioLogRuntime {
   CAIL_LOG_ENV?: unknown;
   CF_VERSION_METADATA?: { id?: unknown };
+  CAIL_FLEET_EVENTS?: unknown;
 }
 
 export interface StudioLogConfig {
   release: string;
   env: CailLogEnvironment;
+  dataset: CailAnalyticsEngineDataset;
 }
 
 export function resolveStudioLogConfig(runtime: StudioLogRuntime): StudioLogConfig | null {
@@ -123,11 +142,18 @@ export function resolveStudioLogConfig(runtime: StudioLogRuntime): StudioLogConf
   if (!['production', 'staging', 'development', 'test'].includes(String(env))) return null;
   const release = runtime.CF_VERSION_METADATA?.id;
   if (typeof release !== 'string' || release.trim().length === 0) return null;
-  return { release, env: env as CailLogEnvironment };
+  const dataset = runtime.CAIL_FLEET_EVENTS;
+  if (
+    typeof dataset !== 'object'
+    || dataset === null
+    || typeof (dataset as { writeDataPoint?: unknown }).writeDataPoint !== 'function'
+  ) return null;
+  return { release, env: env as CailLogEnvironment, dataset: dataset as CailAnalyticsEngineDataset };
 }
 
 export interface CreateStudioLoggerOptions {
   sink?: CailLogSink;
+  dataset?: CailAnalyticsEngineDataset;
   release?: string;
   env?: CailLogEnvironment;
 }
@@ -139,7 +165,9 @@ export function createStudioLogger(options: CreateStudioLoggerOptions = {}): Stu
     env: options.env ?? 'test',
     sourceClass: 'platform',
     catalog: STUDIO_EVENT_CATALOG,
-    sink: options.sink ?? workersStructuredSink,
+    sink: options.sink ?? (options.dataset
+      ? fanoutSinks(workersStructuredSink, createAnalyticsEngineSink(options.dataset))
+      : workersStructuredSink),
   });
 }
 
@@ -161,6 +189,7 @@ export function studioLogger(runtime?: StudioLogRuntime): StudioLogger | null {
     logger = createStudioLogger({
       release: config.release,
       env: config.env,
+      dataset: config.dataset,
     });
     runtimeLoggers.set(key, logger);
   }

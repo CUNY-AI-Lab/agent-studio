@@ -2,10 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  CAIL_ANALYTICS_ENGINE_BLOBS,
+  CAIL_ANALYTICS_ENGINE_DOUBLES,
+  CAIL_ANALYTICS_ENGINE_MAX_POINTS_PER_INVOCATION,
   CAIL_EVENTS,
   STUDIO_ACTION_ROUTES,
   LOG_PRODUCT,
   STUDIO_EVENTS,
+  STUDIO_MAX_FLEET_POINTS_PER_INVOCATION,
   correlationFromHeaders,
   createStudioLogger,
   logBoundaryEvent,
@@ -143,8 +147,11 @@ test('canonical action and per-step model-call mappings compile and emit at runt
 });
 
 test('runtime log identity uses the immutable Worker version and rejects unclassified telemetry', () => {
+  const points = [];
+  const dataset = { writeDataPoint: (point) => points.push(point) };
   assert.deepEqual(resolveStudioLogConfig({
     CAIL_LOG_ENV: 'production',
+    CAIL_FLEET_EVENTS: dataset,
     CF_VERSION_METADATA: {
       id: '44444444-4444-4444-8444-444444444444',
       tag: 'release',
@@ -153,9 +160,43 @@ test('runtime log identity uses the immutable Worker version and rejects unclass
   }), {
     env: 'production',
     release: '44444444-4444-4444-8444-444444444444',
+    dataset,
   });
   assert.equal(resolveStudioLogConfig({ CAIL_LOG_ENV: 'preview' }), null);
   assert.equal(resolveStudioLogConfig({ CAIL_LOG_ENV: 'test' }), null);
+  assert.equal(resolveStudioLogConfig({
+    CAIL_LOG_ENV: 'test',
+    CF_VERSION_METADATA: { id: '44444444-4444-4444-8444-444444444444' },
+  }), null);
+});
+
+test('trusted runtime fans accepted events into the exported fleet projection without user authority', (t) => {
+  const points = [];
+  const workersLogs = [];
+  t.mock.method(console, 'log', (record) => workersLogs.push(record));
+  const log = createStudioLogger({
+    env: 'production',
+    release: '44444444-4444-4444-8444-444444444444',
+    dataset: { writeDataPoint: (point) => points.push(point) },
+  });
+  log.emit(CAIL_EVENTS.ACTION_TERMINAL, {
+    action_id: ACTION_ID,
+    product_id: LOG_PRODUCT,
+    principal: PRINCIPAL,
+    route: STUDIO_ACTION_ROUTES.CHAT,
+    terminal: { outcome: 'ok', reason: 'completed' },
+    duration_ms: 25,
+  });
+
+  assert.equal(workersLogs.length, 1);
+  assert.equal(points.length, 1);
+  assert.deepEqual(points[0].indexes, ['production:agent-studio']);
+  assert.equal(points[0].blobs[CAIL_ANALYTICS_ENGINE_BLOBS.route - 1], STUDIO_ACTION_ROUTES.CHAT);
+  assert.equal(points[0].blobs[CAIL_ANALYTICS_ENGINE_BLOBS.outcome - 1], 'ok');
+  assert.equal(points[0].doubles[CAIL_ANALYTICS_ENGINE_DOUBLES.duration_ms - 1], 25);
+  assert.equal(JSON.stringify(points[0]).includes(SUBJECT), false);
+  assert.equal(STUDIO_MAX_FLEET_POINTS_PER_INVOCATION, 32);
+  assert.ok(STUDIO_MAX_FLEET_POINTS_PER_INVOCATION < CAIL_ANALYTICS_ENGINE_MAX_POINTS_PER_INVOCATION);
 });
 
 test('every Studio-local catalog mapping emits its static, content-free structure', () => {

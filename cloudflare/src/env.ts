@@ -1,6 +1,6 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
 import type { MigrationRegistry } from './migration-registry';
-import type { CailLogEnvironment } from '@cuny-ai-lab/cail-log';
+import type { CailAnalyticsEngineDataset, CailLogEnvironment } from '@cuny-ai-lab/cail-log';
 
 export interface Env {
   ASSETS: Fetcher;
@@ -22,6 +22,9 @@ export interface Env {
   // explicit fleet classification; the immutable release comes from
   // Cloudflare's version_metadata binding.
   CAIL_LOG_ENV?: CailLogEnvironment;
+  // Required fleet diagnostic projection. Source intentionally does not bind
+  // or provision the Analytics Engine dataset.
+  CAIL_FLEET_EVENTS?: CailAnalyticsEngineDataset;
   CF_VERSION_METADATA?: WorkerVersionMetadata;
   CAIL_IDENTITY_JWKS?: string;
   CAIL_REQUIRE_IDENTITY?: string;
@@ -97,6 +100,8 @@ export type AgentStudioConfigErrorCode =
   | 'cail_log_environment_invalid'
   | 'worker_version_metadata_missing'
   | 'worker_version_metadata_invalid'
+  | 'cail_fleet_events_missing'
+  | 'cail_fleet_events_invalid'
   | 'cail_sso_switched_at_missing'
   | 'cail_sso_switched_at_invalid'
   | 'cail_account_import_until_missing'
@@ -228,6 +233,7 @@ export function validateAgentStudioConfig(
         | 'SESSION_SECRET'
         | 'CAIL_LOG_ENV'
         | 'CF_VERSION_METADATA'
+        | 'CAIL_FLEET_EVENTS'
         | 'CAIL_REQUIRE_IDENTITY'
         | 'CAIL_SSO_SWITCHED_AT'
         | 'CAIL_ACCOUNT_IMPORT_UNTIL'
@@ -236,6 +242,7 @@ export function validateAgentStudioConfig(
         SESSION_SECRET?: unknown;
         CAIL_LOG_ENV?: unknown;
         CF_VERSION_METADATA?: Partial<WorkerVersionMetadata>;
+        CAIL_FLEET_EVENTS?: unknown;
       } & Partial<AccountImportEnv>)
 ): AgentStudioConfigValidation {
   if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
@@ -258,6 +265,15 @@ export function validateAgentStudioConfig(
     || env.CF_VERSION_METADATA.id.trim().length === 0
   ) {
     return { ok: false, errorCode: 'worker_version_metadata_invalid' };
+  }
+  if (env.CAIL_FLEET_EVENTS === undefined || env.CAIL_FLEET_EVENTS === null) {
+    return { ok: false, errorCode: 'cail_fleet_events_missing' };
+  }
+  if (
+    typeof env.CAIL_FLEET_EVENTS !== 'object'
+    || typeof (env.CAIL_FLEET_EVENTS as { writeDataPoint?: unknown }).writeDataPoint !== 'function'
+  ) {
+    return { ok: false, errorCode: 'cail_fleet_events_invalid' };
   }
   return validateAccountImportWindow(env);
 }
