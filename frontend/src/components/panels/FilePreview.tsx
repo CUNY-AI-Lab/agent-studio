@@ -1,5 +1,6 @@
-import { getWorkspacePanelPreviewUrl, getGalleryPanelPreviewUrl } from '../../api';
-import { type FileSource, getFileUrl, withCacheKey } from '../../lib/fileUrls';
+import { useEffect, useState } from 'react';
+import { fetchWorkspacePanelPreview, getGalleryPanelPreviewUrl } from '../../api';
+import { type FileSource, useFileObjectUrl } from '../../lib/fileUrls';
 import type { WorkspacePanel } from '../../types';
 import { TextFilePreview } from './TextFilePreview';
 
@@ -12,10 +13,12 @@ export function FilePreview({
   panel: Extract<WorkspacePanel, { type: 'pdf' | 'editor' | 'file' }>;
   cacheKey?: string | null;
 }) {
-  const url = withCacheKey(getFileUrl(fileSource, panel.filePath), cacheKey);
+  const url = useFileObjectUrl(fileSource, panel.filePath, cacheKey);
   const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(panel.filePath);
   const isPdf = panel.type === 'pdf';
   const isHtml = /\.html?$/i.test(panel.filePath);
+
+  if (!url) return <div className="panel-empty">Loading file…</div>;
 
   if (isImage) {
     return <img key={url} className="panel-image" src={url} alt={panel.title || panel.filePath} />;
@@ -76,19 +79,49 @@ export function PreviewPanelView({
   }
 
   if (panel.content) {
-    const previewUrl = fileSource.kind === 'workspace'
-      ? getWorkspacePanelPreviewUrl(fileSource.id, panel.id)
-      : getGalleryPanelPreviewUrl(fileSource.id, panel.id);
-    return (
-      <iframe
-        className="panel-frame"
-        src={previewUrl}
-        title={panel.title || panel.id}
-        sandbox="allow-scripts"
-        referrerPolicy="no-referrer"
-      />
-    );
+    return <ProtectedPreviewFrame fileSource={fileSource} panel={panel} />;
   }
 
   return <div className="panel-empty">No preview content yet.</div>;
+}
+
+function ProtectedPreviewFrame({
+  fileSource,
+  panel,
+}: {
+  fileSource: FileSource;
+  panel: Extract<WorkspacePanel, { type: 'preview' }>;
+}) {
+  const publicUrl = fileSource.kind === 'gallery'
+    ? getGalleryPanelPreviewUrl(fileSource.id, panel.id)
+    : null;
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (fileSource.kind === 'gallery') return;
+    let active = true;
+    let created: string | null = null;
+    void fetchWorkspacePanelPreview(fileSource.id, panel.id).then(async (response) => {
+      if (!response.ok) throw new Error(`Preview request failed with ${response.status}`);
+      created = URL.createObjectURL(await response.blob());
+      if (active) setObjectUrl(created);
+      else URL.revokeObjectURL(created);
+    }).catch(() => {
+      if (active) setObjectUrl(null);
+    });
+    return () => {
+      active = false;
+      if (created) URL.revokeObjectURL(created);
+    };
+  }, [fileSource.kind, fileSource.id, panel.id]);
+  const previewUrl = publicUrl ?? objectUrl;
+  if (!previewUrl) return <div className="panel-empty">Loading preview…</div>;
+  return (
+    <iframe
+      className="panel-frame"
+      src={previewUrl}
+      title={panel.title || panel.id}
+      sandbox="allow-scripts"
+      referrerPolicy="no-referrer"
+    />
+  );
 }

@@ -15,11 +15,14 @@ test('parseGitAllowedHosts normalizes a comma-separated allowlist', () => {
   assert.deepEqual(parseGitAllowedHosts({}), []);
 });
 
-test('gitHostAllowed requires an allowlisted http(s) hostname', () => {
+test('gitHostAllowed requires an allowlisted HTTPS hostname', () => {
   assert.equal(gitHostAllowed('https://github.com/x/y.git', ['github.com']), true);
   assert.equal(gitHostAllowed('https://attacker.example/r.git', ['github.com']), false);
   assert.equal(gitHostAllowed('https://github.com/x/y.git', []), false);
   assert.equal(gitHostAllowed('ftp://github.com/x/y.git', ['github.com']), false);
+  assert.equal(gitHostAllowed('http://github.com/x/y.git', ['github.com']), false);
+  assert.equal(gitHostAllowed('https://github.com:8443/x/y.git', ['github.com']), false);
+  assert.equal(gitHostAllowed('https://user@github.com/x/y.git', ['github.com']), false);
   assert.equal(gitHostAllowed({ url: 'https://github.com/x/y.git' }, ['github.com']), false);
 });
 
@@ -57,11 +60,13 @@ test('guardGitToken injects only for auth commands targeting allowlisted hosts',
   });
 
   provider.tools.clone.execute({ url: 'https://github.com/x/y.git' });
+  provider.tools.clone.execute({ url: 'http://github.com/x/y.git' });
   provider.tools.clone.execute({ url: 'https://attacker.example/r.git' });
   provider.tools.status.execute({ url: 'https://github.com/x/y.git' });
 
   assert.equal(received.clone[0].token, 'secret-token');
   assert.equal('token' in received.clone[1], false);
+  assert.equal('token' in received.clone[2], false);
   assert.equal('token' in received.status[0], false);
 });
 

@@ -22,7 +22,6 @@ function galleryItem(index: number): GalleryItem {
     title: `Gallery ${index}`,
     description: `Shared workspace ${index}`,
     artifactCount: index,
-    authorId: 'author-1',
     publishedAt: now,
   };
 }

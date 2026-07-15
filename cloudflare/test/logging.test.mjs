@@ -1,13 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { toWorkersLogEvent } from '@cuny-ai-lab/cail-log';
 
 import {
   CAIL_ANALYTICS_ENGINE_BLOBS,
   CAIL_ANALYTICS_ENGINE_DOUBLES,
   CAIL_ANALYTICS_ENGINE_MAX_POINTS_PER_INVOCATION,
   CAIL_EVENTS,
+  CAIL_LOG_SCHEMA_VERSION,
   STUDIO_ACTION_ROUTES,
   LOG_PRODUCT,
+  LOG_SUBJECT_VERSION,
   STUDIO_EVENTS,
   STUDIO_MAX_FLEET_POINTS_PER_INVOCATION,
   correlationFromHeaders,
@@ -22,14 +25,15 @@ import {
   withOutboundCorrelation,
 } from '../src/lib/logging.ts';
 
-const SUBJECT = 'cail-0123456789abcdef0123456789abcdef';
+const DURABLE_SUBJECT = 'cail-0123456789abcdef0123456789abcdef';
+const LOG_SUBJECT = 'cail-v1-0123456789abcdef0123456789abcdef';
 const TRACE_ID = 'a'.repeat(32);
 const SPAN_ID = 'b'.repeat(16);
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const ACTION_ID = '22222222-2222-4222-8222-222222222222';
 const CALL_ID = '33333333-3333-4333-8333-333333333333';
 const TRACE = { trace_id: TRACE_ID, span_id: SPAN_ID, trace_flags: 1 };
-const PRINCIPAL = { type: 'user', subject: SUBJECT };
+const PRINCIPAL = { type: 'user', subject: LOG_SUBJECT };
 
 function captureLogger() {
   const events = [];
@@ -57,7 +61,7 @@ test('HTTP success maps to canonical request completion with fleet product ident
     route: '/api/workspaces/:id',
     status: 201,
     durationMs: 42,
-    subject: SUBJECT,
+    subject: DURABLE_SUBJECT,
   });
 
   assert.equal(events.length, 1);
@@ -66,7 +70,9 @@ test('HTTP success maps to canonical request completion with fleet product ident
   assert.equal(event.resource['service.name'], 'agent-studio');
   assert.equal(event.resource['service.version'], 'test-revision');
   assert.equal(event.attributes['cail.product.id'], LOG_PRODUCT);
-  assert.equal(event.attributes['enduser.pseudo.id'], SUBJECT);
+  assert.equal(event.attributes['enduser.pseudo.id'], LOG_SUBJECT);
+  assert.equal(event.schema_version, CAIL_LOG_SCHEMA_VERSION);
+  assert.equal(CAIL_LOG_SCHEMA_VERSION, 2);
   assert.equal(event.attributes['url.template'], '/api/workspaces/{id}');
   assert.equal(event.attributes['cail.outcome'], 'ok');
   assert.equal(event.trace_id, TRACE_ID);
@@ -194,7 +200,7 @@ test('trusted runtime fans accepted events into the exported fleet projection wi
   assert.equal(points[0].blobs[CAIL_ANALYTICS_ENGINE_BLOBS.route - 1], STUDIO_ACTION_ROUTES.CHAT);
   assert.equal(points[0].blobs[CAIL_ANALYTICS_ENGINE_BLOBS.outcome - 1], 'ok');
   assert.equal(points[0].doubles[CAIL_ANALYTICS_ENGINE_DOUBLES.duration_ms - 1], 25);
-  assert.equal(JSON.stringify(points[0]).includes(SUBJECT), false);
+  assert.equal(JSON.stringify(points[0]).includes(LOG_SUBJECT), false);
   assert.equal(STUDIO_MAX_FLEET_POINTS_PER_INVOCATION, 32);
   assert.ok(STUDIO_MAX_FLEET_POINTS_PER_INVOCATION < CAIL_ANALYTICS_ENGINE_MAX_POINTS_PER_INVOCATION);
 });
@@ -237,7 +243,7 @@ test('every Studio-local catalog mapping emits its static, content-free structur
   assert.deepEqual(events.map((event) => event.event_name), Object.values(STUDIO_EVENTS));
   for (const event of events) {
     assert.equal(event.attributes['cail.product.id'], LOG_PRODUCT);
-    assert.match(event.body, /^[A-Z][^\r\n]{1,158}\.$/);
+    assert.equal(event.body, 'Service event recorded.');
   }
 });
 
@@ -256,14 +262,30 @@ test('content, raw identities, and arbitrary attributes cannot enter an event', 
 
   assert.equal(events.length, 1);
   assert.equal(JSON.stringify(events[0]).includes(canary), false);
-  assert.equal(events[0].attributes['enduser.pseudo.id'], SUBJECT);
+  assert.equal(events[0].attributes['enduser.pseudo.id'], LOG_SUBJECT);
 });
 
 test('principal and trace helpers preserve only approved atomic facts', () => {
-  assert.deepEqual(principalForSubject(SUBJECT), PRINCIPAL);
+  assert.deepEqual(principalForSubject(DURABLE_SUBJECT), PRINCIPAL);
   assert.deepEqual(principalForSubject('raw-idp-subject'), { type: 'anonymous' });
+  assert.equal(LOG_SUBJECT_VERSION, 'v1');
   const correlation = { ...TRACE, request_id: REQUEST_ID };
   assert.deepEqual(traceFromCorrelation(correlation), TRACE);
+});
+
+test('schema-2 adapters accept only events produced by this logger instance', () => {
+  const { log, events } = captureLogger();
+  log.emit(CAIL_EVENTS.ACTION_ADMITTED, {
+    action_id: ACTION_ID,
+    product_id: LOG_PRODUCT,
+    principal: PRINCIPAL,
+  });
+
+  assert.equal(toWorkersLogEvent(events[0])['cail.schema.version'], 2);
+  assert.throws(
+    () => toWorkersLogEvent({ ...events[0] }),
+    /only events produced by createCailLogger/,
+  );
 });
 
 test('route normalization uses bounded templates, never raw identifiers or filenames', () => {

@@ -1,6 +1,8 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
 import type { MigrationRegistry } from './migration-registry';
 import type { CailAnalyticsEngineDataset, CailLogEnvironment } from '@cuny-ai-lab/cail-log';
+import { CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER } from '@cuny-ai-lab/cail-identity';
+import { isValidBasePath, normalizeBasePath } from './lib/base-path';
 
 export interface Env {
   ASSETS: Fetcher;
@@ -27,6 +29,7 @@ export interface Env {
   CAIL_FLEET_EVENTS?: CailAnalyticsEngineDataset;
   CF_VERSION_METADATA?: WorkerVersionMetadata;
   CAIL_IDENTITY_JWKS?: string;
+  CAIL_IDENTITY_ISSUER?: string;
   CAIL_REQUIRE_IDENTITY?: string;
   // Temporary compatibility window for importing anonymous pre-SSO accounts.
   // Both values are required when identity enforcement is enabled. The end is
@@ -39,13 +42,10 @@ export interface Env {
   // browser-visible origin differs from the worker's request URL. See
   // src/lib/csrf.ts.
   CAIL_CANONICAL_ORIGIN?: string;
-  // Base path this tool is served under, used as the Path scope of the
-  // `cail_csrf_agentstudio` CSRF cookie (fleet contract §3¾ rule 3 delivery
-  // amendment, 2026-07-05). Path-scoping is what keeps sibling tools / user
-  // content on tools.ailab from reading the token via document.cookie. Defaults
-  // to '/'; production on tools.ailab sets '/agent-studio'. '/' is acceptable
-  // locally / on workers.dev because there are no same-origin siblings there.
-  // See src/lib/csrf.ts.
+  // One normalized mount for assets, API, agent WebSocket routing, frontend
+  // URLs, and the `cail_csrf_agentstudio` cookie. Defaults to '/' locally;
+  // production requires a non-root path and the checked-in build uses
+  // '/agent-studio'. See src/lib/base-path.ts and src/lib/csrf.ts.
   CAIL_BASE_PATH?: string;
   GIT_AUTH_TOKEN?: string;
   // Comma-separated host allowlist for GIT_AUTH_TOKEN injection. The default git token
@@ -53,6 +53,11 @@ export interface Env {
   // these exact hostnames. Unset/empty = the token is never attached to user-supplied
   // git URLs (safe default). See src/lib/git-guard.ts.
   GIT_AUTH_ALLOWED_HOSTS?: string;
+  // Versioned gallery-owner HMAC keyring. JSON object keyed by stable key id;
+  // the active id signs new private owner records while retained ids verify
+  // existing records during rotation.
+  GALLERY_OWNER_KEYS?: string;
+  GALLERY_OWNER_ACTIVE_KEY_ID?: string;
   // Optional web_fetch destination allowlist (anti-DNS-rebind containment).
   // Comma-separated host patterns: an exact host ("api.openalex.org") or a
   // leading-dot suffix (".oclc.org" matches api.oclc.org and oclc.org). When
@@ -102,12 +107,28 @@ export type AgentStudioConfigErrorCode =
   | 'worker_version_metadata_invalid'
   | 'cail_fleet_events_missing'
   | 'cail_fleet_events_invalid'
+  | 'cail_identity_issuer_missing'
+  | 'cail_identity_issuer_invalid'
+  | 'cail_identity_issuer_environment_mismatch'
   | 'cail_sso_switched_at_missing'
   | 'cail_sso_switched_at_invalid'
   | 'cail_account_import_until_missing'
   | 'cail_account_import_until_invalid'
   | 'cail_account_import_until_before_switch'
-  | 'cail_account_import_window_too_long';
+  | 'cail_account_import_window_too_long'
+  | 'production_identity_required'
+  | 'production_identity_jwks_missing'
+  | 'production_identity_jwks_invalid'
+  | 'production_api_base_invalid'
+  | 'production_canonical_origin_invalid'
+  | 'production_base_path_missing'
+  | 'production_base_path_invalid'
+  | 'production_base_path_root'
+  | 'production_api_rate_limit_missing'
+  | 'production_heavy_rate_limit_missing'
+  | 'production_gallery_owner_keys_missing'
+  | 'production_gallery_owner_keys_invalid'
+  | 'production_gallery_owner_active_key_missing';
 
 export type AgentStudioConfigValidation =
   | { ok: true }
@@ -227,23 +248,24 @@ export function legacyAccountCompatibilityAllowed(
 
 /** Validate required runtime configuration before any application traffic. */
 export function validateAgentStudioConfig(
-  env:
-    | Pick<
-        Env,
-        | 'SESSION_SECRET'
-        | 'CAIL_LOG_ENV'
-        | 'CF_VERSION_METADATA'
-        | 'CAIL_FLEET_EVENTS'
-        | 'CAIL_REQUIRE_IDENTITY'
-        | 'CAIL_SSO_SWITCHED_AT'
-        | 'CAIL_ACCOUNT_IMPORT_UNTIL'
-      >
-    | ({
-        SESSION_SECRET?: unknown;
-        CAIL_LOG_ENV?: unknown;
-        CF_VERSION_METADATA?: Partial<WorkerVersionMetadata>;
-        CAIL_FLEET_EVENTS?: unknown;
-      } & Partial<AccountImportEnv>)
+  env: {
+    SESSION_SECRET?: unknown;
+    CAIL_LOG_ENV?: unknown;
+    CF_VERSION_METADATA?: Partial<WorkerVersionMetadata>;
+    CAIL_FLEET_EVENTS?: unknown;
+    CAIL_REQUIRE_IDENTITY?: string;
+    CAIL_SSO_SWITCHED_AT?: string;
+    CAIL_ACCOUNT_IMPORT_UNTIL?: string;
+    CAIL_IDENTITY_JWKS?: string;
+    CAIL_IDENTITY_ISSUER?: string;
+    CAIL_API_BASE?: string;
+    CAIL_CANONICAL_ORIGIN?: string;
+    CAIL_BASE_PATH?: string;
+    API_RATE_LIMIT?: { limit?: unknown };
+    HEAVY_RATE_LIMIT?: { limit?: unknown };
+    GALLERY_OWNER_KEYS?: string;
+    GALLERY_OWNER_ACTIVE_KEY_ID?: string;
+  }
 ): AgentStudioConfigValidation {
   if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
     return { ok: false, errorCode: 'session_secret_missing' };
@@ -274,6 +296,125 @@ export function validateAgentStudioConfig(
     || typeof (env.CAIL_FLEET_EVENTS as { writeDataPoint?: unknown }).writeDataPoint !== 'function'
   ) {
     return { ok: false, errorCode: 'cail_fleet_events_invalid' };
+  }
+
+  const identityIssuer = env.CAIL_IDENTITY_ISSUER;
+  if (env.CAIL_REQUIRE_IDENTITY === 'true' && !identityIssuer) {
+    return { ok: false, errorCode: 'cail_identity_issuer_missing' };
+  }
+  if (
+    identityIssuer !== undefined
+    && identityIssuer !== CAIL_CANONICAL_ISSUER
+    && identityIssuer !== CAIL_STAGING_ISSUER
+  ) {
+    return { ok: false, errorCode: 'cail_identity_issuer_invalid' };
+  }
+  if (
+    (env.CAIL_LOG_ENV === 'production' && identityIssuer !== CAIL_CANONICAL_ISSUER)
+    || (env.CAIL_LOG_ENV === 'staging' && identityIssuer !== CAIL_STAGING_ISSUER)
+  ) {
+    return { ok: false, errorCode: 'cail_identity_issuer_environment_mismatch' };
+  }
+
+  if (env.CAIL_LOG_ENV === 'production') {
+    if (env.CAIL_REQUIRE_IDENTITY !== 'true') {
+      return { ok: false, errorCode: 'production_identity_required' };
+    }
+    if (!env.CAIL_IDENTITY_JWKS?.trim()) {
+      return { ok: false, errorCode: 'production_identity_jwks_missing' };
+    }
+    try {
+      const jwks = JSON.parse(env.CAIL_IDENTITY_JWKS) as { keys?: unknown };
+      if (
+        !Array.isArray(jwks.keys)
+        || jwks.keys.length === 0
+        || jwks.keys.some((key) => {
+          if (!key || typeof key !== 'object' || Array.isArray(key)) return true;
+          const candidate = key as Record<string, unknown>;
+          return candidate.kty !== 'RSA'
+            || candidate.alg !== 'RS256'
+            || candidate.use !== 'sig'
+            || typeof candidate.kid !== 'string'
+            || candidate.kid.length === 0
+            || typeof candidate.n !== 'string'
+            || candidate.n.length === 0
+            || typeof candidate.e !== 'string'
+            || candidate.e.length === 0;
+        })
+      ) {
+        return { ok: false, errorCode: 'production_identity_jwks_invalid' };
+      }
+    } catch {
+      return { ok: false, errorCode: 'production_identity_jwks_invalid' };
+    }
+    try {
+      const apiBase = new URL(env.CAIL_API_BASE ?? '');
+      if (
+        apiBase.protocol !== 'https:'
+        || apiBase.username
+        || apiBase.password
+        || apiBase.search
+        || apiBase.hash
+        || apiBase.hostname.endsWith('.invalid')
+        || apiBase.href.includes('REPLACE')
+      ) {
+        return { ok: false, errorCode: 'production_api_base_invalid' };
+      }
+    } catch {
+      return { ok: false, errorCode: 'production_api_base_invalid' };
+    }
+    try {
+      const canonicalOrigin = new URL(env.CAIL_CANONICAL_ORIGIN ?? '');
+      if (
+        canonicalOrigin.protocol !== 'https:'
+        || canonicalOrigin.origin !== canonicalOrigin.href.replace(/\/$/, '')
+      ) {
+        return { ok: false, errorCode: 'production_canonical_origin_invalid' };
+      }
+    } catch {
+      return { ok: false, errorCode: 'production_canonical_origin_invalid' };
+    }
+    if (!env.CAIL_BASE_PATH?.trim()) {
+      return { ok: false, errorCode: 'production_base_path_missing' };
+    }
+    if (!isValidBasePath(env.CAIL_BASE_PATH)) {
+      return { ok: false, errorCode: 'production_base_path_invalid' };
+    }
+    if (normalizeBasePath(env.CAIL_BASE_PATH) === '/') {
+      return { ok: false, errorCode: 'production_base_path_root' };
+    }
+    if (typeof env.API_RATE_LIMIT?.limit !== 'function') {
+      return { ok: false, errorCode: 'production_api_rate_limit_missing' };
+    }
+    if (typeof env.HEAVY_RATE_LIMIT?.limit !== 'function') {
+      return { ok: false, errorCode: 'production_heavy_rate_limit_missing' };
+    }
+    if (!env.GALLERY_OWNER_KEYS?.trim()) {
+      return { ok: false, errorCode: 'production_gallery_owner_keys_missing' };
+    }
+    let ownerKeys: Record<string, unknown>;
+    try {
+      ownerKeys = JSON.parse(env.GALLERY_OWNER_KEYS) as Record<string, unknown>;
+      if (
+        !ownerKeys
+        || Array.isArray(ownerKeys)
+        || Object.keys(ownerKeys).length === 0
+        || Object.entries(ownerKeys).some(([id, secret]) =>
+          !/^[A-Za-z0-9_-]{1,32}$/.test(id)
+          || typeof secret !== 'string'
+          || secret.length < MIN_REQUIRED_SESSION_SECRET_LENGTH)
+      ) {
+        return { ok: false, errorCode: 'production_gallery_owner_keys_invalid' };
+      }
+    } catch {
+      return { ok: false, errorCode: 'production_gallery_owner_keys_invalid' };
+    }
+    if (
+      !env.GALLERY_OWNER_ACTIVE_KEY_ID
+      || typeof ownerKeys[env.GALLERY_OWNER_ACTIVE_KEY_ID] !== 'string'
+    ) {
+      return { ok: false, errorCode: 'production_gallery_owner_active_key_missing' };
+    }
   }
   return validateAccountImportWindow(env);
 }

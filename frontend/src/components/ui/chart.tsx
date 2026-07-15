@@ -42,7 +42,7 @@ function ChartContainer({
   children: React.ComponentProps<typeof RechartsPrimitive.ResponsiveContainer>['children'];
 }) {
   const uniqueId = React.useId();
-  const chartId = `chart-${id || uniqueId.replace(/:/g, '')}`;
+  const chartId = `chart-${String(id || uniqueId).replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
   return (
     <ChartContext.Provider value={{ config }}>
@@ -73,23 +73,30 @@ function ChartStyle({ id, config }: { id: string; config: ChartConfig }) {
   return (
     <style
       dangerouslySetInnerHTML={{
-        __html: Object.entries(THEMES)
-          .map(
-            ([theme, prefix]) => `
-${prefix} [data-chart=${id}] {
-${colorConfig
-  .map(([key, itemConfig]) => {
-    const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
-    return color ? `  --color-${key}: ${color};` : null;
-  })
-  .join('\n')}
-}
-`
-          )
-          .join('\n'),
+        __html: buildChartStyleText(id, Object.fromEntries(colorConfig)),
       }}
     />
   );
+}
+
+const SAFE_CSS_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
+const SAFE_CSS_COLOR = /^(?:#[0-9A-Fa-f]{3,8}|(?:rgb|hsl)a?\([0-9.% ,+-]+\)|var\(--[A-Za-z_][A-Za-z0-9_-]{0,63}\))$/;
+
+/** Build chart CSS only from bounded identifiers and inert color tokens. */
+export function buildChartStyleText(id: string, config: ChartConfig): string {
+  if (!/^chart-[A-Za-z0-9_-]+$/.test(id)) return '';
+  return Object.entries(THEMES)
+    .map(([theme, prefix]) => {
+      const declarations = Object.entries(config).flatMap(([key, itemConfig]) => {
+        const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
+        if (!SAFE_CSS_IDENTIFIER.test(key) || !color || !SAFE_CSS_COLOR.test(color)) return [];
+        return [`  --color-${key}: ${color};`];
+      });
+      return declarations.length > 0
+        ? `\n${prefix} [data-chart=${id}] {\n${declarations.join('\n')}\n}\n`
+        : '';
+    })
+    .join('\n');
 }
 
 const ChartTooltip = RechartsPrimitive.Tooltip;

@@ -8,7 +8,7 @@ import {
   cloneGalleryItem,
   GalleryError,
   getGalleryItem,
-  listGalleryItems,
+  listGalleryItemsPage,
   publishWorkspace as publishGalleryWorkspace,
   unpublishGalleryItem,
 } from './lib/gallery';
@@ -36,7 +36,11 @@ import {
   ModelCatalogQuotaError,
 } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
-import { patchWorkspaceSchema } from './lib/workspace-validation';
+import {
+  layoutPatchSchema,
+  patchWorkspaceSchema,
+  runtimeCodeSchema,
+} from './lib/workspace-validation';
 import {
   cailIdentityJwt,
   requireSession,
@@ -46,20 +50,21 @@ import {
 import {
   csrfMiddleware,
   csrfReadMiddleware,
-  deriveCsrfToken,
+  mintCsrfToken,
   setCsrfCookie,
   wsAgentCsrfValid,
   wsAgentSessionIdFromPath,
   wsOriginAllowed,
 } from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
+import { stripBasePath } from './lib/base-path';
+import { canonicalError, canonicalizeErrorResponse } from './lib/error-envelope';
 import {
   correlationFromHeaders,
   LOG_PRODUCT,
   logBoundaryEvent,
   STUDIO_EVENTS,
   studioLogger,
-  withOutboundCorrelation,
   type CailCorrelation,
 } from './lib/logging';
 import { isAllowedUpload } from './lib/upload-validation';
@@ -82,48 +87,16 @@ const createWorkspaceSchema = z.object({
 const publishWorkspaceSchema = z.object({
   title: z.string().trim().min(1).max(200),
   description: z.string().trim().min(1).max(2000),
+  operationId: z.uuid().optional(),
 });
 
-const runtimeExecuteSchema = z.object({
-  code: z.string().trim().min(1).max(100_000),
-});
+const runtimeExecuteSchema = z.object({ code: runtimeCodeSchema });
 
 const MAX_IMPORT_BUNDLE_BYTES = 50 * 1024 * 1024;
 const MAX_IMPORT_FILE_COUNT = 500;
 const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_UPLOAD_FILE_COUNT = 50;
-
-const layoutSchema = z.object({
-  panels: z.record(
-    z.string(),
-    z.object({
-      x: z.number().optional(),
-      y: z.number().optional(),
-      width: z.number().optional(),
-      height: z.number().optional(),
-    })
-  ).optional(),
-  groups: z.array(
-    z.object({
-      id: z.string(),
-      name: z.string().optional(),
-      panelIds: z.array(z.string()),
-      color: z.string().optional(),
-    })
-  ).optional(),
-  connections: z.array(
-    z.object({
-      id: z.string(),
-      sourceId: z.string(),
-      targetId: z.string(),
-    })
-  ).optional(),
-  viewport: z.object({
-    x: z.number(),
-    y: z.number(),
-    zoom: z.number(),
-  }).optional(),
-});
+const MAX_UPLOAD_TOTAL_BYTES = 50 * 1024 * 1024;
 
 const app = new Hono<{
   Bindings: Env;
@@ -177,28 +150,25 @@ function emitBoundaryEvent(c: AppContext, status: number, errorType?: string): v
 }
 
 // Validation failures are client errors: routes validate with zod .parse and
-// rely on this mapping instead of try/catch at every call site. Each mapped
-// response also emits the request's wide boundary event (thrown errors skip
-// the boundary middleware's post-`next()` emit, so this is the only emitter
-// on the throw path — never a double log).
+// rely on this mapping instead of try/catch at every call site. The outer
+// boundary middleware resumes after Hono maps the throw and remains the single
+// request-event emitter.
 app.onError((error, c) => {
-  const respond = (response: Response, errorCode: string) => {
-    emitBoundaryEvent(c, response.status, errorCode);
-    return response;
-  };
+  const respond = (response: Response) =>
+    canonicalizeErrorResponse(response, c.get('logCorrelation')?.request_id);
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
-    return respond(c.json({ error: 'Invalid request body' }, 400), 'invalid_request');
+    return respond(c.json({ error: 'Invalid request body' }, 400));
   }
   if (error instanceof GalleryError) {
-    return respond(c.json({ error: error.message }, error.status), 'gallery_error');
+    return respond(c.json({ error: error.message }, error.status));
   }
   if (error instanceof ModelCatalogAuthError) {
-    return respond(c.json({ error: 'Model catalog authentication failed' }, 502), 'upstream_auth_failed');
+    return respond(c.json({ error: 'Model catalog authentication failed' }, 502));
   }
   if (error instanceof ModelCatalogQuotaError) {
-    return respond(c.json({ error: 'quota_exceeded', message: error.message }, 429), 'quota_exceeded');
+    return respond(c.json({ error: 'quota_exceeded', message: error.message }, 429));
   }
-  return respond(c.json({ error: 'Internal error' }, 500), 'internal_error');
+  return respond(c.json({ error: 'Internal error' }, 500));
 });
 
 // AS-3-6 boundary checks. `import` is a literal POST sub-route of
@@ -282,7 +252,10 @@ async function syncedWorkspaceAgent(
   const workspaceId = workspace.id;
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.syncWorkspace(workspace, sessionId);
-  if (options.primeCredential) {
+  // Every HTTP route is already behind verified session middleware. Prime by
+  // default so an authenticated first request can use a mutation RPC without
+  // relying on an earlier workspace GET to have initialized the DO identity.
+  if (options.primeCredential !== false) {
     await primeAgentCredential(c, agent);
   }
   return { sessionId, workspaceId, agent };
@@ -315,13 +288,24 @@ function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFi
 // of the chain. Correlation is adopted from the gateway's `traceparent` /
 // `X-CAIL-Request-Id` when present, minted otherwise ("adopt, never
 // regenerate"). Runs on '*' so /health and unmatched routes are covered too.
-// Success path emits here after `next()`; thrown errors bypass this emit and
-// are logged exactly once by app.onError above.
+// Hono maps thrown errors before `next()` resolves, so success and error paths
+// both emit exactly once here.
 app.use('*', async (c, next) => {
   c.set('logCorrelation', correlationFromHeaders(c.req.raw));
   c.set('logStartedAt', Date.now());
   await next();
-  emitBoundaryEvent(c, c.res.status);
+  c.header('Referrer-Policy', 'no-referrer');
+  if (c.res.status >= 400) {
+    c.res = await canonicalizeErrorResponse(c.res, c.get('logCorrelation')?.request_id);
+  }
+  let errorType: string | undefined;
+  if (c.res.status >= 400 && c.res.headers.get('Content-Type')?.includes('application/json')) {
+    const payload = await c.res.clone().json().catch(() => null) as {
+      error?: { code?: unknown };
+    } | null;
+    if (typeof payload?.error?.code === 'string') errorType = payload.error.code;
+  }
+  emitBoundaryEvent(c, c.res.status, errorType);
 });
 
 app.use('/api/*', sessionMiddleware);
@@ -369,7 +353,11 @@ app.get('/health', (c) => {
 // and as the WebSocket connect token. The body carries only the session id.
 app.get('/api/session', async (c) => {
   const sessionId = requireSession(c);
-  const csrfToken = await deriveCsrfToken(sessionId, c.env.SESSION_SECRET);
+  const csrfToken = await mintCsrfToken(
+    sessionId,
+    c.env.SESSION_SECRET,
+    c.get('cailIdentity') ? 'subject' : 'anonymous',
+  );
   setCsrfCookie(c, csrfToken);
   return c.json({ sessionId });
 });
@@ -380,9 +368,7 @@ app.get('/api/models', async (c) => {
   const { models, source } = await fetchCailModels({
     env: c.env,
     identityJwt: cailIdentityJwt(c),
-    // fetchCailModels only calls this adapter with a URL string; its public
-    // injection type is the wider platform fetch overload.
-    fetchImpl: withOutboundCorrelation(fetch, correlation) as typeof fetch,
+    correlation,
   });
   const recommended = models.find((model) => model.recommended) ?? models[0];
   return c.json({
@@ -399,8 +385,15 @@ app.get('/api/workspaces', async (c) => {
 });
 
 app.get('/api/gallery', async (c) => {
-  const items = await listGalleryItems(c.env);
-  return c.json({ items });
+  const cursor = c.req.query('cursor') || undefined;
+  if (cursor && cursor.length > 2048) {
+    return c.json({ error: 'Invalid gallery cursor' }, 400);
+  }
+  const requestedLimit = Number(c.req.query('limit') || 50);
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
+    return c.json({ error: 'Gallery page limit must be between 1 and 100' }, 400);
+  }
+  return c.json(await listGalleryItemsPage(c.env, { cursor, limit: requestedLimit }));
 });
 
 app.get('/api/gallery/:id', async (c) => {
@@ -782,6 +775,9 @@ app.post('/api/workspaces/:id/publish', async (c) => {
     state,
     title: body.title,
     description: body.description,
+    // Older clients get a stable content-derived key; current clients send a
+    // UUID that remains fixed across retries of one publish intent.
+    operationId: body.operationId ?? `legacy:${body.title}:${body.description}`,
     files,
     readFile: (filePath) => agent.readWorkspaceFileContent(filePath),
   });
@@ -789,13 +785,24 @@ app.post('/api/workspaces/:id/publish', async (c) => {
   // CAS stamp (V2): the record was captured at request start, so a blind put
   // here would revert a PATCH (e.g. a model override) that landed while the
   // gallery item was being published.
-  const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => ({
-    ...current,
-    galleryId: item.id,
-    updatedAt: new Date().toISOString(),
-  }));
-  if (!result.ok) {
-    return result.reason === 'not-found'
+  const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => {
+    // One live publication per workspace. Concurrent distinct publish intents
+    // race on this CAS; the loser observes the winner's id, makes no metadata
+    // change, and compensates its deterministic gallery object below.
+    if (current.galleryId && current.galleryId !== item.id) return null;
+    return {
+      ...current,
+      galleryId: item.id,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+  if (!result.ok || result.workspace.galleryId !== item.id) {
+    try {
+      await unpublishGalleryItem(c.env, item.id, sessionId);
+    } catch {
+      throw new Error('publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed');
+    }
+    return !result.ok && result.reason === 'not-found'
       ? c.json({ error: 'Workspace not found' }, 404)
       : c.json({ error: 'Conflicting concurrent update; retry' }, 409);
   }
@@ -811,9 +818,10 @@ app.delete('/api/workspaces/:id', async (c) => {
 
   // Delete must not depend on hydration: syncWorkspace would run legacy
   // hydration, so a workspace with an unreadable legacy file could never be
-  // deleted. Clear the runtime best-effort, then drop the R2 records.
+  // deleted. The destructive RPC fences writers and fails loud before the R2
+  // records are removed.
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
-  await agent.clearWorkspaceFiles().catch(() => undefined);
+  await agent.destroyWorkspaceState();
   await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
   // Runtime files live under a separate prefix the sessions-prefix delete
   // misses. This authoritative cleanup fails loud so deletion stays retryable.
@@ -896,8 +904,12 @@ app.post('/api/workspaces/:id/upload', async (c) => {
   if (files.length > MAX_UPLOAD_FILE_COUNT) {
     return c.json({ error: `Upload limit is ${MAX_UPLOAD_FILE_COUNT} files per request` }, 400);
   }
+  if (files.reduce((total, file) => total + file.size, 0) > MAX_UPLOAD_TOTAL_BYTES) {
+    return c.json({ error: 'Upload request exceeds the 50 MB total limit' }, 400);
+  }
 
   // Phase 1: validate all files before writing any of them.
+  const paths: string[] = [];
   for (const file of files) {
     if (file.size > MAX_UPLOAD_FILE_BYTES) {
       return c.json({ error: `${file.name} exceeds the 25 MB upload limit` }, 400);
@@ -906,16 +918,23 @@ app.post('/api/workspaces/:id/upload', async (c) => {
     if (!verdict.allowed) {
       return c.json({ error: `${file.name}: ${verdict.reason}` }, 400);
     }
+    try {
+      paths.push(sanitizeRelativePath(file.name.trim()));
+    } catch {
+      return c.json({ error: `${file.name}: Invalid file path` }, 400);
+    }
   }
 
   const { agent } = await syncedWorkspaceAgent(c, workspace);
-  const written: string[] = [];
+  const originals = new Map<string, Awaited<ReturnType<typeof agent.readWorkspaceFileContent>>>();
+  for (const filePath of new Set(paths)) {
+    originals.set(filePath, await agent.readWorkspaceFileContent(filePath));
+  }
   try {
     const uploaded = [];
-    for (const file of files) {
-      const filePath = sanitizeRelativePath(file.name.trim());
+    for (const [index, file] of files.entries()) {
+      const filePath = paths[index];
       await agent.writeWorkspaceFileContent(filePath, await file.arrayBuffer(), file.type || undefined);
-      written.push(filePath);
       uploaded.push({
         name: filePath.split('/').pop() || filePath,
         path: filePath,
@@ -924,12 +943,22 @@ app.post('/api/workspaces/:id/upload', async (c) => {
     }
     return c.json({ success: true, files: uploaded }, 201);
   } catch (error) {
-    await Promise.all(
-      written.map((filePath) => agent.deleteWorkspaceFileContent(filePath).catch(() => undefined))
-    );
-    return c.json({
-      error: error instanceof Error ? error.message : 'Upload failed',
-    }, 400);
+    const rollbackFailures: string[] = [];
+    for (const [filePath, original] of originals) {
+      try {
+        if (original) {
+          await agent.writeWorkspaceFileContent(filePath, original.data, original.contentType);
+        } else {
+          await agent.deleteWorkspaceFileContent(filePath);
+        }
+      } catch {
+        rollbackFailures.push(filePath);
+      }
+    }
+    if (rollbackFailures.length > 0) {
+      throw new Error('upload_outcome_unknown: rollback did not complete');
+    }
+    throw error;
   }
 });
 
@@ -969,7 +998,7 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
   const workspace = loadedWorkspace(c);
 
   // Empty/malformed body -> `{}` -> all-optional patch -> 200 no-op.
-  const patch = layoutSchema.parse(await c.req.json());
+  const patch = layoutPatchSchema.parse(await c.req.json());
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.applyLayoutPatch(patch);
 
@@ -1015,13 +1044,35 @@ function checkCailConfigOnce(env: Env, config: AgentStudioConfigValidation): voi
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    const mountedRequest = stripBasePath(request, env.CAIL_BASE_PATH);
+    if (!mountedRequest) {
+      return new Response('Not Found', { status: 404 });
+    }
+    request = mountedRequest;
+    const pathname = new URL(request.url).pathname;
     const config = validateAgentStudioConfig(env);
     checkCailConfigOnce(env, config);
-    if (!config.ok && new URL(request.url).pathname !== '/health') {
+    if (!config.ok && pathname !== '/health') {
       return Response.json(
-        { error: 'Service unavailable: invalid configuration', errorCode: config.errorCode },
+        canonicalError(config.errorCode, 'Service unavailable: invalid configuration', {
+          type: 'api_error',
+          retryable: false,
+        }),
         { status: 503 }
       );
+    }
+
+    // All external paths enter the Worker first. Static and SPA requests are
+    // explicitly delegated only after the configured mount has been stripped;
+    // root-absolute sibling paths can never fall through to the asset binding.
+    if (
+      pathname !== '/health'
+      && !pathname.startsWith('/api/')
+      && pathname !== '/api'
+      && !pathname.startsWith('/agents/')
+      && pathname !== '/agents'
+    ) {
+      return env.ASSETS.fetch(request);
     }
     // Origin-check the /agents/* WebSocket upgrade BEFORE routeAgentRequest
     // accepts it (rule 4): the browser does not enforce same-origin on WS
@@ -1050,8 +1101,11 @@ export default {
       // Reject an unauthenticated /agents/* socket at the edge, before routeAgentRequest
       // instantiates the DO — the SDK sends the full persisted state on connect BEFORE the
       // DO's onConnect can close the socket, so the token must be checked here (A2).
-      const wsPath = new URL(request.url).pathname;
-      if (wsAgentSessionIdFromPath(wsPath) && !(await wsAgentCsrfValid(request, env.SESSION_SECRET))) {
+      const wsPath = pathname;
+      if (
+        wsAgentSessionIdFromPath(wsPath)
+        && !(await wsAgentCsrfValid(request, env.SESSION_SECRET, env.CAIL_REQUIRE_IDENTITY === 'true'))
+      ) {
         return denyUpgrade('ws_csrf_invalid', 'Forbidden: missing or invalid connection token');
       }
     }

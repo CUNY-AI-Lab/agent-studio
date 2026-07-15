@@ -13,16 +13,16 @@ test('quotaSignalFromError forwards a thrown quota CailError verbatim', () => {
   );
   assert.equal(typeof signal, 'string');
   const parsed = JSON.parse(signal);
-  assert.equal(parsed.type, 'quota_exceeded');
-  assert.equal(parsed.message, QUOTA_MESSAGE);
-  assert.equal(parsed.retryAfter, '1800');
+  assert.equal(parsed.error.code, 'quota_exceeded');
+  assert.equal(parsed.error.message, QUOTA_MESSAGE);
+  assert.equal(parsed.error.cail.retry_after_seconds, 1800);
 });
 
 test('quotaSignalFromError omits retryAfter when the envelope has none', () => {
   const signal = quotaSignalFromError(new CailError('quota_exceeded', QUOTA_MESSAGE, 429));
   const parsed = JSON.parse(signal);
-  assert.equal(parsed.message, QUOTA_MESSAGE);
-  assert.equal('retryAfter' in parsed, false);
+  assert.equal(parsed.error.message, QUOTA_MESSAGE);
+  assert.equal('retry_after_seconds' in parsed.error.cail, false);
 });
 
 test('quotaSignalFromError ignores non-quota CailErrors', () => {
@@ -35,7 +35,7 @@ test('quotaSignalFromError ignores non-quota CailErrors', () => {
   assert.equal(quotaSignalFromError(new CailError('network_error', 'fetch failed', 0)), null);
 });
 
-// chatFetch (cail-client 2d51745) throws the parsed CailError on the first 429
+// chatFetch throws the parsed CailError on the first 429
 // quota envelope, so the AI SDK never retries it and never wraps it in a
 // RetryError. The old defensive shape-sniffing is gone on purpose: a bare 429
 // shape or RetryError here is NOT a CAIL quota signal.

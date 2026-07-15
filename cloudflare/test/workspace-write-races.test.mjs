@@ -146,6 +146,8 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
   const fakeAgent = {
     env,
     synced: null,
+    assertNotFrozen() {},
+    async withMutationFence(operation) { return operation(); },
     async syncWorkspace(nextWorkspace, syncSessionId) {
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
     },
@@ -178,6 +180,7 @@ async function makeLayoutAgent(state) {
   const fake = {
     state,
     assertNotFrozen() {},
+    assertAuthorizedRpc() {},
     setState(next) {
       this.state = next;
     },

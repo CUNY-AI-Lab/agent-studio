@@ -16,7 +16,6 @@ export interface GalleryItem {
   title: string;
   description: string;
   prompt?: string;
-  authorId: string;
   publishedAt: string;
   artifactCount: number;
 }
@@ -236,10 +235,6 @@ export interface WorkspaceResponse {
 
 export interface WorkspaceAgentClient {
   readonly state: WorkspaceState;
-  getSnapshot(): Promise<WorkspaceState>;
-  getMessages(): Promise<UIMessage[]>;
-  getObservability(): Promise<WorkspaceObservabilitySnapshot>;
-  getRuntimeInfo(): Promise<WorkspaceRuntimeInfo>;
   executeCode(code: string): Promise<WorkspaceRuntimeExecution>;
   addPanel(panel: WorkspacePanel): Promise<WorkspaceState>;
   removePanel(panelId: string): Promise<WorkspaceState>;

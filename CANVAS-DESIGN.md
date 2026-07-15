@@ -1,5 +1,8 @@
 # Agent Studio Canvas Model
 
+Status: current product vocabulary and design model. The open questions are
+unresolved product decisions, not implementation commitments.
+
 This document describes the current product model for the canvas. Earlier drafts described a transition from a panel system to a canvas. That transition has effectively happened; the current product language is `tile`.
 
 ## Core Model
@@ -105,7 +108,7 @@ The main composer can inherit selected-tile scope. Contextual tile chat is still
 | Shift-click | Multi-select |
 | Drag tile | Move tile |
 | Drag edge | Resize tile |
-| Double-click tile/header | Open contextual tile chat or focus behavior, depending on tile/action |
+| Tile menu or selection toolbar | Open contextual chat for a tile or selection |
 | Minimize | Send tile to dock |
 | Maximize | Expand tile |
 

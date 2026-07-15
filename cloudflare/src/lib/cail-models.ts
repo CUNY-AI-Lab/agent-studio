@@ -28,6 +28,7 @@ import { CailError, createCailClient } from '@cuny-ai-lab/cail-client';
 import { z } from 'zod';
 import { CAIL_APP_SLUG } from './cail-identity';
 import { resolveCailModelName, type CailModelEnv } from './cail-model';
+import type { CailCorrelation } from './logging';
 
 export type CailModelTier = 'recommended' | 'advanced';
 export type CailModelStatus = 'active' | 'deprecated' | 'retiring';
@@ -68,6 +69,8 @@ export interface FetchCailModelsOptions {
   identityJwt: string | null;
   /** Injectable fetch for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /** Canonical request correlation forwarded by the shared client. */
+  correlation?: CailCorrelation;
 }
 
 // Tolerant entry schema: only `id` is required. Enum-ish fields are free
@@ -197,7 +200,12 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
     });
     // Model discovery follows the OpenAI-compatible surface. The old root
     // `/models` route is intentionally retired by the gateway.
-    response = await cail.call('/v1/models', { method: 'GET' }, { kind: 'jwt', token: identityJwt });
+    response = await cail.call(
+      '/v1/models',
+      { method: 'GET' },
+      { kind: 'jwt', token: identityJwt },
+      options.correlation ? { correlation: options.correlation } : undefined,
+    );
   } catch (error) {
     if (error instanceof CailError && (error.status === 401 || error.status === 403)) {
       throw new ModelCatalogAuthError(error.message);

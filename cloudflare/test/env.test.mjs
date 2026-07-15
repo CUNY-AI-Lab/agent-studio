@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER } from '@cuny-ai-lab/cail-identity';
 
 import {
   accountImportWindowState,
@@ -23,6 +24,25 @@ const TELEMETRY = {
   },
 };
 
+const PRODUCTION = {
+  ...TELEMETRY,
+  CAIL_LOG_ENV: 'production',
+  CAIL_REQUIRE_IDENTITY: 'true',
+  CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+  CAIL_IDENTITY_JWKS: JSON.stringify({
+    keys: [{ kty: 'RSA', alg: 'RS256', use: 'sig', kid: 'active', n: 'modulus', e: 'AQAB' }],
+  }),
+  CAIL_API_BASE: 'https://model-proxy.example',
+  CAIL_CANONICAL_ORIGIN: 'https://tools.example',
+  CAIL_BASE_PATH: '/agent-studio',
+  API_RATE_LIMIT: { limit() {} },
+  HEAVY_RATE_LIMIT: { limit() {} },
+  GALLERY_OWNER_KEYS: JSON.stringify({ active: 'g'.repeat(32) }),
+  GALLERY_OWNER_ACTIVE_KEY_ID: 'active',
+  CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
+  CAIL_ACCOUNT_IMPORT_UNTIL: IMPORT_UNTIL,
+};
+
 test('required SESSION_SECRET configuration accepts a usable secret', () => {
   assert.deepEqual(
     validateAgentStudioConfig({ SESSION_SECRET: SECRET, ...TELEMETRY }),
@@ -32,7 +52,12 @@ test('required SESSION_SECRET configuration accepts a usable secret', () => {
 
 test('identity enforcement requires a complete migration window', () => {
   assert.deepEqual(
-    validateAgentStudioConfig({ SESSION_SECRET: SECRET, ...TELEMETRY, CAIL_REQUIRE_IDENTITY: 'true' }),
+    validateAgentStudioConfig({
+      SESSION_SECRET: SECRET,
+      ...TELEMETRY,
+      CAIL_REQUIRE_IDENTITY: 'true',
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+    }),
     { ok: false, errorCode: 'cail_sso_switched_at_missing' }
   );
   assert.deepEqual(
@@ -40,6 +65,7 @@ test('identity enforcement requires a complete migration window', () => {
       SESSION_SECRET: SECRET,
       ...TELEMETRY,
       CAIL_REQUIRE_IDENTITY: 'true',
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
       CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
     }),
     { ok: false, errorCode: 'cail_account_import_until_missing' }
@@ -53,6 +79,7 @@ test('migration window accepts complete ISO instants and an exact 30-day duratio
       SESSION_SECRET: SECRET,
       ...TELEMETRY,
       CAIL_REQUIRE_IDENTITY: 'true',
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
       CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
       CAIL_ACCOUNT_IMPORT_UNTIL: IMPORT_UNTIL,
     }),
@@ -75,6 +102,7 @@ test('migration window rejects malformed instants, reverse order, and durations 
     SESSION_SECRET: SECRET,
     ...TELEMETRY,
     CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
     CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
   };
   assert.deepEqual(
@@ -161,4 +189,35 @@ test('required SESSION_SECRET configuration rejects missing and short values', (
     ok: false,
     errorCode: 'session_secret_too_short',
   });
+});
+
+test('production fails closed unless identity, route, proxy, and rate boundaries are explicit', () => {
+  assert.deepEqual(validateAgentStudioConfig({ SESSION_SECRET: SECRET, ...PRODUCTION }), { ok: true });
+
+  const cases = [
+    ['CAIL_REQUIRE_IDENTITY', 'false', 'production_identity_required'],
+    ['CAIL_IDENTITY_ISSUER', undefined, 'cail_identity_issuer_missing'],
+    ['CAIL_IDENTITY_ISSUER', CAIL_STAGING_ISSUER, 'cail_identity_issuer_environment_mismatch'],
+    ['CAIL_IDENTITY_ISSUER', 'https://evil.example/cail-sso', 'cail_identity_issuer_invalid'],
+    ['CAIL_IDENTITY_JWKS', '', 'production_identity_jwks_missing'],
+    ['CAIL_IDENTITY_JWKS', '{}', 'production_identity_jwks_invalid'],
+    ['CAIL_IDENTITY_JWKS', JSON.stringify({ keys: [{ kty: 'RSA', kid: 'active' }] }), 'production_identity_jwks_invalid'],
+    ['CAIL_API_BASE', 'http://model-proxy.example', 'production_api_base_invalid'],
+    ['CAIL_CANONICAL_ORIGIN', 'https://tools.example/path', 'production_canonical_origin_invalid'],
+    ['CAIL_BASE_PATH', '', 'production_base_path_missing'],
+    ['CAIL_BASE_PATH', '/agent%2fother', 'production_base_path_invalid'],
+    ['CAIL_BASE_PATH', '/', 'production_base_path_root'],
+    ['API_RATE_LIMIT', undefined, 'production_api_rate_limit_missing'],
+    ['HEAVY_RATE_LIMIT', undefined, 'production_heavy_rate_limit_missing'],
+    ['GALLERY_OWNER_KEYS', undefined, 'production_gallery_owner_keys_missing'],
+    ['GALLERY_OWNER_KEYS', '{}', 'production_gallery_owner_keys_invalid'],
+    ['GALLERY_OWNER_ACTIVE_KEY_ID', 'missing', 'production_gallery_owner_active_key_missing'],
+  ];
+  for (const [key, value, errorCode] of cases) {
+    assert.deepEqual(
+      validateAgentStudioConfig({ SESSION_SECRET: SECRET, ...PRODUCTION, [key]: value }),
+      { ok: false, errorCode },
+      key,
+    );
+  }
 });

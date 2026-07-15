@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
+import { agentBasePath } from './base-path';
 import { toPng } from 'html-to-image';
 import { HomePage } from './components/HomePage';
 import { ConnectionLines } from './components/canvas/ConnectionLines';
@@ -41,7 +42,6 @@ import {
   fetchWorkspaces,
   fetchModels,
   ModelsQuotaError,
-  getWorkspaceFileUrl,
   importWorkspaceBundle,
   publishWorkspace,
   unpublishGalleryItem,
@@ -49,6 +49,7 @@ import {
   uploadWorkspaceFiles,
   handleAuthRequired,
 } from './api';
+import { downloadFileSource } from './lib/fileUrls';
 import type { ModelCatalog } from './api';
 import {
   PANEL_GAP,
@@ -193,6 +194,7 @@ function WorkspaceShell({
   const previousConnectionIdsRef = useRef<Set<string>>(new Set());
   const contextualAutoPanKeyRef = useRef<string | null>(null);
   const initialPromptSentRef = useRef(false);
+  const publishOperationIdRef = useRef<string | null>(null);
   const contextualPendingRef = useRef<{
     scopeKey: string;
     previousAssistantId: string | null;
@@ -208,12 +210,14 @@ function WorkspaceShell({
   const agent = useAgent<WorkspaceAgentClient, WorkspaceState>({
     agent: workspace.agent.className,
     name: workspace.agent.name,
+    basePath: agentBasePath(workspace.agent.className, workspace.agent.name),
     // Per-connection CSRF token on the WebSocket upgrade (fleet contract §3¾
     // rule 4). ensureCsrfToken() sources it from the path-scoped
     // cail_csrf_agentstudio cookie (delivery amendment); the browser can't set a
     // custom header on a WS upgrade, so it rides the query string. The DO
-    // verifies it once at accept and closes the socket if it is missing/invalid;
-    // a sibling tool is same-origin but cannot read this token.
+    // verifies it once at accept and closes the socket if it is missing/invalid.
+    // The explicit basePath keeps the socket under the same deployment mount
+    // as the page, API, and path-scoped token cookie.
     query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
       setWorkspaceState(state);
@@ -1220,12 +1224,11 @@ function WorkspaceShell({
     highlightWorkspaceFiles([file.path], { scroll: false });
 
     if (!canOpenFileInPanel(file.path)) {
-      const anchor = document.createElement('a');
-      anchor.href = getWorkspaceFileUrl(workspace.workspace.id, file.path);
-      anchor.download = file.name;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
+      await downloadFileSource(
+        { kind: 'workspace', id: workspace.workspace.id },
+        file.path,
+        file.name,
+      );
       return;
     }
 
@@ -1969,12 +1972,11 @@ function WorkspaceShell({
       .replace(/^-+|-+$/g, '') || 'panel';
 
     if (format === 'file' && 'filePath' in panel && panel.filePath) {
-      const anchor = document.createElement('a');
-      anchor.href = getWorkspaceFileUrl(workspace.workspace.id, panel.filePath);
-      anchor.download = getFileName(panel.filePath);
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
+      void downloadFileSource(
+        { kind: 'workspace', id: workspace.workspace.id },
+        panel.filePath,
+        getFileName(panel.filePath),
+      );
       return;
     }
 
@@ -2082,6 +2084,7 @@ function WorkspaceShell({
   const handleOpenPublishModal = useCallback(() => {
     setPublishTitle(workspaceName);
     setPublishDescription(workspaceDescription);
+    publishOperationIdRef.current = crypto.randomUUID();
     setPublishModalOpen(true);
   }, [workspaceDescription, workspaceName]);
 
@@ -2095,7 +2098,9 @@ function WorkspaceShell({
       await publishWorkspace(workspace.workspace.id, {
         title: nextTitle,
         description: nextDescription,
+        operationId: publishOperationIdRef.current ?? crypto.randomUUID(),
       });
+      publishOperationIdRef.current = null;
       setPublishModalOpen(false);
       await refreshWorkspace();
       showToast('Published to gallery');

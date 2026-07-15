@@ -1,6 +1,6 @@
 import { downloadBlob } from '../../lib/download';
 import { canExportPanelSnapshot, getPanelTitle, type ToolbarDownloadFormat } from '../../lib/panelFiles';
-import { getWorkspaceFileUrl } from '../../api';
+import { openFileSource } from '../../lib/fileUrls';
 import type { ContextualChatTarget } from '../../lib/messages';
 import type { WorkspacePanel } from '../../types';
 
@@ -83,7 +83,7 @@ export function PanelMenu({
               // every file, and `Content-Disposition: attachment` for active types
               // (html/svg/xml). So an active-type open downloads instead of
               // executing on our origin; safe types (png/pdf/...) still render inline.
-              window.open(getWorkspaceFileUrl(workspaceId, filePath), '_blank', 'noopener,noreferrer');
+              void openFileSource({ kind: 'workspace', id: workspaceId }, filePath);
               onCloseMenu();
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"

@@ -6,17 +6,15 @@
  * (`POST {CAIL_API_BASE}/v1/chat/completions`). The gateway attaches the real
  * upstream credentials, stamps per-user spend metadata, and translates
  * quota/auth failures into the CAIL error envelope (see
- * cail-gateway docs/INTEGRATION.md and model-proxy/README.md).
+ * the institutional CAIL tool integration contract).
  *
  * Transport: the shared `@cuny-ai-lab/cail-client` owns the wire discipline.
  * Its `chatFetch()` adapter plugs into the Vercel AI SDK's
  * `createOpenAICompatible({ fetch })`: it strips the dummy Authorization,
  * sends the caller's verified `X-CAIL-Identity-JWT` plus `X-CAIL-App`, and
- * keeps raw fetch semantics (non-2xx returned to the SDK, no client retries)
- * with ONE carve-out: a gateway 429 `quota_exceeded` envelope THROWS the
- * parsed `CailError` so the SDK cannot retry-and-bury it — the workspace
- * agent surfaces that error's verbatim message to the chat user (see
- * lib/quota-error.ts).
+ * never retries and throws gateway-declared non-retryable failures before an
+ * SDK can replay them. The workspace agent surfaces typed quota failures with
+ * the gateway's safe message (see lib/quota-error.ts).
  *
  * Credential: this is a browser tool behind the SSO gate, so we forward the
  * requesting user's verified identity JWT. No personal `sk-cail-…` key is
@@ -27,7 +25,7 @@ import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { createCailClient } from '@cuny-ai-lab/cail-client';
 import type { LanguageModel } from 'ai';
 import { CAIL_APP_SLUG } from './cail-identity';
-import { withOutboundCorrelation, type CailCorrelation } from './logging';
+import type { CailCorrelation } from './logging';
 
 /**
  * Default model slug. CAIL policy (2026-07-04) is Workers AI catalog only —
@@ -42,7 +40,7 @@ export interface CailModelEnv {
   /**
    * Public base URL of the CAIL model proxy (serves /v1/… and /keys). Set at
    * launch against the institutional Cloudflare account — see
-   * cail-gateway docs/LAUNCH_CHECKLIST.md. No trailing slash.
+   * the authorized deployment configuration. No trailing slash.
    */
   CAIL_API_BASE?: string;
   /** Optional model override; defaults to DEFAULT_CAIL_MODEL. */
@@ -93,13 +91,10 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     app: CAIL_APP_SLUG,
   });
 
-  // The adapter preserves caller-supplied init headers (it manages only the
-  // credential/app/metadata headers), so correlation headers merged here reach
-  // the proxy intact.
-  const chatFetch = cail.chatFetch({ kind: 'jwt', token: identityJwt });
-  const fetchImpl = options.correlation
-    ? withOutboundCorrelation(chatFetch, options.correlation)
-    : chatFetch;
+  const chatFetch = cail.chatFetch(
+    { kind: 'jwt', token: identityJwt },
+    options.correlation ? { correlation: options.correlation } : undefined,
+  );
 
   const provider = createOpenAICompatible({
     name: 'cail',
@@ -108,7 +103,7 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     apiKey: 'cail-proxy',
     // chatFetch accepts string | URL inputs; the AI SDK always calls with a
     // string URL, and the adapter throws loudly on anything unexpected.
-    fetch: fetchImpl as typeof fetch,
+    fetch: chatFetch as typeof fetch,
   });
 
   return provider(options.model || resolveCailModelName(env));

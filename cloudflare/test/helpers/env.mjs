@@ -200,6 +200,7 @@ export class FakeWorkspaceAgent {
     this.credential = null;
     this.syncCount = 0;
     this.frozen = false;
+    this.destroyed = false;
   }
 
   async fetch() {
@@ -223,6 +224,18 @@ export class FakeWorkspaceAgent {
 
   async freezeForMigration() {
     this.frozen = true;
+  }
+
+  async unfreezeAfterMigration() {
+    this.frozen = false;
+  }
+
+  async destroyWorkspaceState() {
+    this.files.clear();
+    this.messages = [];
+    this.credential = null;
+    this.state = DEFAULT_STATE();
+    this.destroyed = true;
   }
 
   async replaceWorkspaceState(state, workspace, sessionId) {
@@ -404,7 +417,11 @@ export function makeEnv() {
     }),
   };
   const env = {
+    ASSETS: {
+      fetch: async (request) => new Response(`asset:${new URL(request.url).pathname}`),
+    },
     SESSION_SECRET: 'ab'.repeat(32), // 64 hex chars
+    CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     CAIL_LOG_ENV: 'test',
     CAIL_FLEET_EVENTS: { writeDataPoint() {} },
     CF_VERSION_METADATA: {

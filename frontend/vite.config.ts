@@ -5,6 +5,8 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const workerOrigin = env.VITE_WORKER_ORIGIN || 'http://127.0.0.1:8787';
+  const basePath = env.VITE_BASE_PATH?.trim() || '/';
+  const normalizedBase = basePath === '/' ? '/' : `${basePath.replace(/^\/*/, '/').replace(/\/+$/, '')}/`;
 
   const manualChunks = (id: string) => {
     if (!id.includes('node_modules')) return undefined;
@@ -60,6 +62,7 @@ export default defineConfig(({ mode }) => {
   };
 
   return {
+    base: normalizedBase,
     plugins: [tailwindcss(), react()],
     build: {
       modulePreload: {

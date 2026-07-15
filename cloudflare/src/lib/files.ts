@@ -1,5 +1,6 @@
 import type { WorkspaceFileInfo } from '../domain/workspace';
 import type { Env } from '../env';
+import { nextR2Cursor } from './r2-pagination';
 
 const APP_PREFIX = 'agent-studio';
 
@@ -91,7 +92,7 @@ async function listFilesUnderPrefix(env: Env, basePrefix: string, dir = ''): Pro
     const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/', cursor });
     objects.push(...listing.objects);
     delimitedPrefixes.push(...listing.delimitedPrefixes);
-    cursor = listing.truncated ? listing.cursor : undefined;
+    cursor = nextR2Cursor(listing, 'file listing');
   } while (cursor);
 
   const directories = delimitedPrefixes.map((nextPrefix) => {
@@ -188,7 +189,7 @@ export async function deleteByPrefix(env: Env, prefix: string): Promise<void> {
     if (listing.objects.length > 0) {
       await env.WORKSPACE_FILES.delete(listing.objects.map((object) => object.key));
     }
-    cursor = listing.truncated ? listing.cursor : undefined;
+    cursor = nextR2Cursor(listing, 'prefix deletion');
   } while (cursor);
 }
 

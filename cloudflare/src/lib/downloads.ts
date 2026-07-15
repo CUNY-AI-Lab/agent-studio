@@ -1,4 +1,5 @@
 import { deleteByPrefix, getWorkspacePrefix } from './files';
+import { nextR2Cursor } from './r2-pagination';
 import { legacyAccountCompatibilityAllowed, type Env } from '../env';
 import { LOG_PRODUCT, STUDIO_EVENTS, studioLogger } from './logging';
 
@@ -180,7 +181,7 @@ export async function getWorkspaceDownloads(
     for (const entry of objects) {
       if (entry) stored.push(entry.value);
     }
-    cursor = listing.truncated ? listing.cursor : undefined;
+    cursor = nextR2Cursor(listing, 'download listing');
   } while (cursor);
 
   stored.sort((left, right) => left.seq - right.seq);

@@ -7,6 +7,8 @@ import {
   getGalleryPrefix,
   getMimeType,
 } from './files';
+import { timingSafeEqual } from './csrf';
+import { nextR2Cursor } from './r2-pagination';
 
 export class GalleryError extends Error {
   constructor(message: string, readonly status: 403 | 404) {
@@ -22,12 +24,93 @@ function galleryStateKey(id: string): string {
   return `${getGalleryPrefix(id)}state.json`;
 }
 
+function galleryOwnerKey(id: string): string {
+  return `${getGalleryPrefix(id)}owner.json`;
+}
+
+interface GalleryOwnerRecord {
+  version: 1;
+  keyId: string;
+  tag: string;
+}
+
+function ownerKeyring(env: Env): { activeKeyId: string; keys: Record<string, string> } {
+  if (env.GALLERY_OWNER_KEYS && env.GALLERY_OWNER_ACTIVE_KEY_ID) {
+    const keys = JSON.parse(env.GALLERY_OWNER_KEYS) as Record<string, string>;
+    const active = keys[env.GALLERY_OWNER_ACTIVE_KEY_ID];
+    if (typeof active !== 'string') throw new Error('gallery owner active key is unavailable');
+    return { activeKeyId: env.GALLERY_OWNER_ACTIVE_KEY_ID, keys };
+  }
+  // Development/test compatibility only. Production preflight requires the
+  // dedicated versioned keyring, so SESSION_SECRET rotation cannot strand ACLs.
+  return { activeKeyId: 'development', keys: { development: env.SESSION_SECRET } };
+}
+
+async function galleryOwnerRecord(env: Env, sessionId: string): Promise<GalleryOwnerRecord> {
+  const { activeKeyId, keys } = ownerKeyring(env);
+  return {
+    version: 1,
+    keyId: activeKeyId,
+    tag: await galleryOwnerTag(sessionId, keys[activeKeyId]),
+  };
+}
+
+async function ownerRecordMatches(env: Env, record: GalleryOwnerRecord, sessionId: string): Promise<boolean> {
+  const secret = ownerKeyring(env).keys[record.keyId];
+  if (!secret) return false;
+  return timingSafeEqual(record.tag, await galleryOwnerTag(sessionId, secret));
+}
+
+function publicGalleryItem(item: GalleryItem): GalleryItem {
+  const { authorId: _legacyOwner, ...publicItem } = item;
+  return publicItem;
+}
+
+async function listGalleryIds(env: Env): Promise<string[]> {
+  const ids = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const listing = await env.WORKSPACE_FILES.list({
+      prefix: getGalleryPrefix(),
+      delimiter: '/',
+      ...(cursor ? { cursor } : {}),
+    });
+    for (const prefix of listing.delimitedPrefixes) {
+      const id = prefix.slice(getGalleryPrefix().length).replace(/\/$/, '');
+      if (id) ids.add(id);
+    }
+    cursor = nextR2Cursor(listing, 'gallery listing');
+  } while (cursor);
+  return [...ids];
+}
+
+export async function listGalleryItemsPage(
+  env: Env,
+  options: { cursor?: string; limit?: number } = {},
+): Promise<{ items: GalleryItem[]; nextCursor?: string }> {
+  const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
+  const listing = await env.WORKSPACE_FILES.list({
+    prefix: getGalleryPrefix(),
+    delimiter: '/',
+    limit,
+    ...(options.cursor ? { cursor: options.cursor } : {}),
+  });
+  const nextCursor = nextR2Cursor(listing, 'gallery page');
+  const items = await Promise.all(listing.delimitedPrefixes.map(async (prefix) => {
+    const id = prefix.slice(getGalleryPrefix().length).replace(/\/$/, '');
+    if (!id) return null;
+    const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
+    return object ? publicGalleryItem(await object.json<GalleryItem>()) : null;
+  }));
+  return {
+    items: items.filter((item): item is GalleryItem => Boolean(item)),
+    ...(nextCursor ? { nextCursor } : {}),
+  };
+}
+
 /**
- * Opaque, keyed owner tag for a gallery manifest. HMAC-SHA-256(SESSION_SECRET) over
- * `gallery-owner:<sessionId>`, hex. Lets unpublish/reassign authorize the owner by
- * comparing hashes, WITHOUT publishing the subject-derived session id to the
- * world-readable manifest (which, paired with workspace.id, would reconstruct the DO
- * name). Deterministic + stateless, mirroring lib/csrf.ts deriveCsrfToken.
+ * Opaque keyed owner tag. Current tags live in a private, versioned owner
+ * record; the public manifest contains no stable author identifier.
  */
 export async function galleryOwnerTag(sessionId: string, secret: string): Promise<string> {
   const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
@@ -47,14 +130,12 @@ export async function galleryOwnerTag(sessionId: string, secret: string): Promis
 }
 
 export async function listGalleryItems(env: Env): Promise<GalleryItem[]> {
-  const listing = await env.WORKSPACE_FILES.list({ prefix: getGalleryPrefix(), delimiter: '/' });
+  const ids = await listGalleryIds(env);
   const items = await Promise.all(
-    listing.delimitedPrefixes.map(async (prefix) => {
-      const id = prefix.slice(getGalleryPrefix().length).replace(/\/$/, '');
-      if (!id) return null;
+    ids.map(async (id) => {
       const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
       if (!object) return null;
-      return object.json<GalleryItem>();
+      return publicGalleryItem(await object.json<GalleryItem>());
     })
   );
 
@@ -72,7 +153,7 @@ export async function getGalleryItem(env: Env, id: string): Promise<GalleryItemF
   if (!manifest || !state) return null;
 
   return {
-    ...(await manifest.json<GalleryItem>()),
+    ...publicGalleryItem(await manifest.json<GalleryItem>()),
     state: await state.json<WorkspaceState>(),
   };
 }
@@ -84,13 +165,34 @@ export async function publishWorkspace(args: {
   state: WorkspaceState;
   title: string;
   description: string;
+  operationId: string;
   files: Array<{ path: string; isDirectory: boolean }>;
   readFile: (filePath: string) => Promise<{
     contentType: string;
     data: ArrayBuffer;
   } | null>;
 }): Promise<GalleryItem> {
-  const id = crypto.randomUUID().slice(0, 10);
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${args.sessionId}:${args.workspace.id}:${args.operationId}`),
+  );
+  const id = Array.from(new Uint8Array(digest).slice(0, 12), (byte) =>
+    byte.toString(16).padStart(2, '0')).join('');
+  const existingManifest = await args.env.WORKSPACE_FILES.get(galleryManifestKey(id));
+  if (existingManifest) {
+    const existingOwner = await args.env.WORKSPACE_FILES.get(galleryOwnerKey(id));
+    if (!existingOwner || !(await ownerRecordMatches(
+      args.env,
+      await existingOwner.json<GalleryOwnerRecord>(),
+      args.sessionId,
+    ))) {
+      throw new GalleryError('Not authorized to replace this gallery item', 403);
+    }
+    // The manifest is written last, so its presence marks a complete publish.
+    // A retry with the same idempotency key returns that committed result
+    // without touching files or risking rollback of the existing item.
+    return publicGalleryItem(await existingManifest.json<GalleryItem>());
+  }
   const shareablePanelCount = args.state.panels.filter(
     (panel) => panel.type !== 'chat' && panel.type !== 'fileTree' && !('filePath' in panel)
   ).length;
@@ -101,7 +203,6 @@ export async function publishWorkspace(args: {
     title: args.title,
     description: args.description,
     prompt: args.workspace.description,
-    authorId: await galleryOwnerTag(args.sessionId, args.env.SESSION_SECRET),
     publishedAt: new Date().toISOString(),
     artifactCount: shareablePanelCount + fileCount,
   };
@@ -148,6 +249,11 @@ export async function publishWorkspace(args: {
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
     );
     await args.env.WORKSPACE_FILES.put(
+      galleryOwnerKey(id),
+      JSON.stringify(await galleryOwnerRecord(args.env, args.sessionId)),
+      { httpMetadata: { contentType: 'application/json; charset=utf-8' } },
+    );
+    await args.env.WORKSPACE_FILES.put(
       galleryManifestKey(id),
       JSON.stringify(item, null, 2),
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
@@ -175,11 +281,22 @@ export async function cloneGalleryItem(args: {
 }
 
 export async function unpublishGalleryItem(env: Env, galleryId: string, sessionId: string): Promise<void> {
-  const item = await getGalleryItem(env, galleryId);
-  if (!item) {
+  const [manifestObject, ownerObject] = await Promise.all([
+    env.WORKSPACE_FILES.get(galleryManifestKey(galleryId)),
+    env.WORKSPACE_FILES.get(galleryOwnerKey(galleryId)),
+  ]);
+  if (!manifestObject) {
     throw new GalleryError('Gallery item not found', 404);
   }
-  if (item.authorId !== await galleryOwnerTag(sessionId, env.SESSION_SECRET)) {
+  const manifest = await manifestObject.json<GalleryItem>();
+  const authorized = ownerObject
+    ? await ownerRecordMatches(env, await ownerObject.json<GalleryOwnerRecord>(), sessionId)
+    : Boolean(manifest.authorId)
+      && timingSafeEqual(
+        manifest.authorId as string,
+        await galleryOwnerTag(sessionId, env.SESSION_SECRET),
+      );
+  if (!authorized) {
     throw new GalleryError('Not authorized to unpublish this item', 403);
   }
 
@@ -188,10 +305,10 @@ export async function unpublishGalleryItem(env: Env, galleryId: string, sessionI
 
 /**
  * Move gallery-item ownership from one session id to another (first-login
- * migration): every manifest whose opaque owner tag matches `fromSessionId`
- * is rewritten with the tag for `toSessionId` so unpublish rights follow the
- * user into their subject namespace. Items authored by anyone else are
- * untouched. Idempotent.
+ * migration): every private owner record matching `fromSessionId` is rewritten
+ * for `toSessionId` so unpublish rights follow the user into their subject
+ * namespace. Legacy public owner tags are converted on contact. Items authored
+ * by anyone else are untouched. Idempotent.
  * Returns the number of manifests rewritten.
  */
 export async function reassignGalleryAuthor(
@@ -199,15 +316,28 @@ export async function reassignGalleryAuthor(
   fromSessionId: string,
   toSessionId: string
 ): Promise<number> {
-  const items = await listGalleryItems(env);
-  const fromTag = await galleryOwnerTag(fromSessionId, env.SESSION_SECRET);
-  const toTag = await galleryOwnerTag(toSessionId, env.SESSION_SECRET);
+  const ids = await listGalleryIds(env);
+  const legacyFromTag = await galleryOwnerTag(fromSessionId, env.SESSION_SECRET);
   let reassigned = 0;
-  for (const item of items) {
-    if (item.authorId !== fromTag) continue;
-    const next: GalleryItem = { ...item, authorId: toTag };
+  for (const id of ids) {
+    const [manifestObject, ownerObject] = await Promise.all([
+      env.WORKSPACE_FILES.get(galleryManifestKey(id)),
+      env.WORKSPACE_FILES.get(galleryOwnerKey(id)),
+    ]);
+    if (!manifestObject) continue;
+    const item = await manifestObject.json<GalleryItem>();
+    const matches = ownerObject
+      ? await ownerRecordMatches(env, await ownerObject.json<GalleryOwnerRecord>(), fromSessionId)
+      : Boolean(item.authorId) && timingSafeEqual(item.authorId as string, legacyFromTag);
+    if (!matches) continue;
+    const next = publicGalleryItem(item);
     await env.WORKSPACE_FILES.put(
-      galleryManifestKey(item.id),
+      galleryOwnerKey(id),
+      JSON.stringify(await galleryOwnerRecord(env, toSessionId)),
+      { httpMetadata: { contentType: 'application/json; charset=utf-8' } },
+    );
+    await env.WORKSPACE_FILES.put(
+      galleryManifestKey(id),
       JSON.stringify(next, null, 2),
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
     );

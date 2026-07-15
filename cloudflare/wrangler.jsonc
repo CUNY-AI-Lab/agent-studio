@@ -6,7 +6,7 @@
   "compatibility_date": "2026-03-25",
   "compatibility_flags": ["nodejs_compat"],
   "build": {
-    "command": "bun run --cwd ../frontend build",
+    "command": "VITE_BASE_PATH=/agent-studio bun run --cwd ../frontend build",
     "cwd": ".",
     "watch_dir": ["src", "../frontend/src", "../frontend/index.html"]
   },
@@ -18,7 +18,7 @@
   "assets": {
     "directory": "../frontend/dist",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/agents/*", "/health"],
+    "run_worker_first": ["/*"],
     "not_found_handling": "single-page-application",
     "html_handling": "auto-trailing-slash"
   },
@@ -101,21 +101,17 @@
     // CAIL policy: Workers AI catalog (@cf/...) ids only. Defaults to
     // @cf/zai-org/glm-5.2 when unset (see src/lib/cail-model.ts).
     "CAIL_MODEL": "@cf/zai-org/glm-5.2",
+    // Identity 3.0 trusts exactly one issuer per environment. Staging must
+    // override this with https://tools.cuny.qzz.io/cail-sso.
+    "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
     // Required production telemetry classification. Local development overrides
     // this with `development` in .dev.vars.
     "CAIL_LOG_ENV": "production",
-    // Fail closed: reject anonymous model calls with 401. Turn on ("true") at
-    // the same time CAIL_SSO_MODE=enforce lands on the gateway. Left "false"
-    // pre-rollout so local/dev without the gate stays usable.
-    // That enforcement change must also inject CAIL_SSO_SWITCHED_AT and
-    // CAIL_ACCOUNT_IMPORT_UNTIL as complete ISO instants. They are deliberately
-    // absent pre-rollout; once enforcement is true, missing/invalid values make
-    // health and application traffic fail with 503. The deadline is capped at
-    // 30 days after the switch by src/env.ts.
-    // CAIL_BASE_PATH and CAIL_CANONICAL_ORIGIN are injected at deploy for the
-    // shared host (mirroring the existing canonical-origin handling) rather
-    // than checked in: local dev serves at '/'. Leaving CAIL_BASE_PATH unset on
-    // that shared host makes the script-readable CSRF cookie host-wide.
+    // Shared-host routing is source-controlled. This value is deliberately
+    // false so the checked-in file cannot serve production traffic: production
+    // preflight requires true plus valid JWKS, canonical origin, migration
+    // instants, rate bindings, gallery-owner keyring, and secrets.
+    "CAIL_BASE_PATH": "/agent-studio",
     "CAIL_REQUIRE_IDENTITY": "false"
   },
   // Secrets (never in this file; set via `wrangler secret put`):
@@ -124,7 +120,13 @@
   //                                RS256 X-CAIL-Identity-JWT for audience
   //                                cail:agent-studio. Distinct kid values may
   //                                overlap during signing-key rotation.
+  //   CAIL_CANONICAL_ORIGIN      - exact public HTTPS origin, no path/query.
+  //   CAIL_SSO_SWITCHED_AT       - complete identity switch instant.
+  //   CAIL_ACCOUNT_IMPORT_UNTIL  - exclusive compatibility deadline (<=30d).
+  //   GALLERY_OWNER_KEYS         - JSON versioned HMAC keyring; retain old ids.
+  //   GALLERY_OWNER_ACTIVE_KEY_ID - key id used for new private owner records.
   //   GIT_AUTH_TOKEN (optional)  - token for git tools inside the runtime.
+  //   GIT_AUTH_ALLOWED_HOSTS     - exact comma-separated credential hosts.
   // Agent Studio holds NO provider API key: all model calls go through the CAIL
   // model proxy with the caller's identity JWT (see src/lib/cail-model.ts).
   "observability": {

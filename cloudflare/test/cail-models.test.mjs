@@ -76,7 +76,18 @@ test('parses the proxy list and marks the first entry recommended', async () => 
     listResponse(['@cf/zai-org/glm-5.2', '@cf/openai/gpt-oss-120b', '@cf/meta/llama-3']),
   ]);
 
-  const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
+  const result = await fetchCailModels({
+    env: { CAIL_API_BASE: BASE },
+    identityJwt: JWT,
+    fetchImpl,
+    correlation: {
+      trace_id: 'a'.repeat(32),
+      span_id: 'b'.repeat(16),
+      trace_flags: 0,
+      request_id: '11111111-1111-4111-8111-111111111111',
+      tracestate: 'cail=catalog',
+    },
+  });
 
   assert.equal(result.source, 'proxy');
   // data[0] is the fleet default: recommended + tier 'recommended'; the rest,
@@ -97,6 +108,10 @@ test('parses the proxy list and marks the first entry recommended', async () => 
   assert.equal(req.headers.get(CAIL_IDENTITY_HEADER), JWT);
   assert.equal(req.headers.get('X-CAIL-App'), CAIL_APP_SLUG);
   assert.equal(req.headers.get('authorization'), null);
+  assert.equal(req.headers.get('traceparent'), `00-${'a'.repeat(32)}-${'b'.repeat(16)}-00`);
+  assert.equal(req.headers.get('tracestate'), 'cail=catalog');
+  assert.equal(req.headers.get('x-cail-request-id'), '11111111-1111-4111-8111-111111111111');
+  assert.equal(calls[0].init.credentials, 'omit');
 });
 
 test('falls back to the configured default when CAIL_API_BASE is unset', async () => {

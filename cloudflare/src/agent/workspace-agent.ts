@@ -35,6 +35,9 @@ import { accountImportWindowState, type Env } from '../env';
 import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import { verifyCredentialForSession } from '../lib/cail-identity';
+import { panelSchema } from '../lib/import';
+import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
+import { canonicalError } from '../lib/error-envelope';
 import {
   CAIL_EVENTS,
   LOG_PRODUCT,
@@ -81,7 +84,7 @@ import {
 import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { updateWorkspaceWithRetry } from '../lib/workspaces';
-import { deriveCsrfToken, timingSafeEqual, wsOriginAllowed } from '../lib/csrf';
+import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
 import { quotaSignalFromError } from '../lib/quota-error';
@@ -304,6 +307,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private hydrationComplete = false;
   private hydrationPromise: Promise<void> | null = null;
   private migrationFrozen = false;
+  private activeMutations = 0;
   /**
    * The caller's selected verified identity JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
@@ -356,17 +360,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return match ? match[1] : null;
   }
 
-  /** Expected per-connection CSRF token for this DO's session (rule 3). */
-  private async expectedCsrfToken(): Promise<string | null> {
-    const sessionId = this.csrfSessionId();
-    if (!sessionId) return null;
-    return deriveCsrfToken(sessionId, this.env.SESSION_SECRET);
-  }
-
   private async csrfTokenMatches(candidate: string | null): Promise<boolean> {
-    if (!candidate) return false;
-    const expected = await this.expectedCsrfToken();
-    return expected !== null && timingSafeEqual(candidate, expected);
+    const sessionId = this.csrfSessionId();
+    if (!sessionId) return false;
+    const principalKind = this.env.CAIL_REQUIRE_IDENTITY === 'true'
+      ? 'subject'
+      : candidate?.split('.')[1] === 'subject' ? 'subject' : 'anonymous';
+    return Boolean(await verifyCsrfToken(
+      candidate,
+      sessionId,
+      this.env.SESSION_SECRET,
+      principalKind,
+    ));
   }
 
   /**
@@ -413,19 +418,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   validateStateChange(nextState: WorkspaceState, source: 'server' | unknown): void {
     if (source === 'server') return;
+    this.assertAuthorizedRpc();
     assertClientStateIdentity(this.name, nextState);
   }
 
   /**
    * Store the caller's identity JWT for use as the model-proxy credential.
    *
-   * @callable methods are client-invokable over the WS RPC channel, so this
-   * must NOT trust its argument: it re-verifies the token through the same CAIL
-   * verifier the HTTP middleware uses (RS256/JWKS + all claims) AND binds the
-   * verified subject to THIS DO's session id. A garbage/expired token, or a
-   * genuinely valid token belonging to a DIFFERENT subject, is rejected — a
-   * client can never install a foreign credential onto someone else's
-   * workspace DO.
+   * This internal server-to-DO RPC is deliberately not @callable. It still
+   * treats its argument as untrusted: it re-verifies the token through the
+   * same CAIL verifier the HTTP middleware uses (RS256/JWKS + all claims) and
+   * binds the verified subject to this DO's session id. A garbage/expired
+   * token, or a valid token belonging to a different subject, is rejected.
    *
    * The legitimate path (server.ts primeAgentCredential, after HTTP identity
    * verification) still succeeds: that token is valid and its subject maps to
@@ -434,7 +438,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * A null token is ignored so an anonymous read never clears a live credential
    * mid-session.
    */
-  @callable()
   async setCailCredential(identityJwt: string | null): Promise<void> {
     if (!identityJwt) return;
     if (identityJwt === this.cailIdentityJwt) return;
@@ -497,10 +500,42 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.setState(nextState);
   }
 
-  @callable()
   async freezeForMigration(): Promise<void> {
+    if (this.activeMutations > 0) {
+      throw new Error('workspace has an active mutation; retry migration');
+    }
     this.migrationFrozen = true;
     await this.ctx.storage.put(MIGRATION_FROZEN_KEY, true);
+  }
+
+  async unfreezeAfterMigration(): Promise<void> {
+    this.migrationFrozen = false;
+    await this.ctx.storage.delete(MIGRATION_FROZEN_KEY);
+  }
+
+  /** Internal destructive RPC used only after an authorized delete/migration. */
+  async destroyWorkspaceState(): Promise<void> {
+    if (this.activeMutations > 0) {
+      throw new Error('workspace has an active mutation; retry destructive cleanup');
+    }
+    if (!this.migrationFrozen) {
+      await this.freezeForMigration();
+    }
+    await this.clearRuntimeFilesUnchecked();
+    this.cailIdentityJwt = null;
+    this.cailSubject = null;
+    this.messages = [];
+    for (const table of [
+      'cf_ai_chat_agent_messages',
+      'cf_ai_chat_request_context',
+      'cf_ai_chat_agent_tool_runs',
+      'cf_ai_chat_agent_tool_milestones',
+      'studio_action_lifecycle_events_v1',
+      'studio_model_call_lifecycle_events_v1',
+    ]) {
+      this.ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+    }
+    await this.destroy();
   }
 
   async replaceWorkspaceState(state: WorkspaceState, workspace: WorkspaceRecord, sessionId: string): Promise<void> {
@@ -674,10 +709,27 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.finalizeObservabilityRequest(requestId, 'error', 'No CAIL identity credential for model call', {
         error: 'authentication_required',
       }, 'error');
+      const errorText = JSON.stringify(canonicalError(
+        'authentication_required',
+        'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
+        { type: 'authentication_error', loginUrl: '/login', retryable: false },
+      ));
+      return createUIMessageStreamResponse({
+        stream: createUIMessageStream({
+          execute: ({ writer }) => writer.write({ type: 'error', errorText }),
+        }),
+      });
+    }
+
+    if (!(await checkHeavyRpcLimit(this.env, sessionId))) {
       const errorText = JSON.stringify({
-        error: 'authentication_required',
-        login_url: '/login',
-        message: 'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
+        error: {
+          message: 'Too many agent turns — try again shortly.',
+          type: 'rate_limit_error',
+          param: null,
+          code: 'rate_limited',
+          cail: { retryable: true },
+        },
       });
       return createUIMessageStreamResponse({
         stream: createUIMessageStream({
@@ -857,17 +909,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
-  @callable()
   async getSnapshot(): Promise<WorkspaceState> {
     return this.state;
   }
 
-  @callable()
   async getMessages(): Promise<UIMessage[]> {
     return this.messages;
   }
 
-  @callable()
   async getObservability(): Promise<WorkspaceObservabilitySnapshot> {
     return this.snapshotObservability();
   }
@@ -883,7 +932,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     });
   }
 
-  @callable()
   async getRuntimeInfo(): Promise<{
     provider: 'dynamic-workers';
     codemode: true;
@@ -908,6 +956,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const correlation = mintCorrelation();
     const principal = principalForSubject(this.cailSubject);
     this.assertNotFrozen();
+    this.assertAuthorizedRpc();
+    code = runtimeCodeSchema.parse(code);
     const rateKey = this.csrfSessionId() ?? this.requireSessionId();
     if (!(await checkHeavyRpcLimit(this.env, rateKey))) {
       studioLogger(this.env)?.emit(STUDIO_EVENTS.CODE_DENIED, {
@@ -944,7 +994,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     try {
       const tools = this.buildHostTools(workspace, sessionId);
       const executor = this.createCodeExecutor();
-      result = await executor.execute(code, this.buildCodeProviders(tools));
+      result = await this.withMutationFence(
+        () => executor.execute(code, this.buildCodeProviders(tools)),
+      );
     } catch (error) {
       recordStudioActionTerminal(this.ctx.storage.sql, {
         actionId,
@@ -986,7 +1038,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return result;
   }
 
-  @callable()
   async getWorkspaceFiles(): Promise<Array<{
     name: string;
     path: string;
@@ -998,7 +1049,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.listRuntimeFiles();
   }
 
-  @callable()
   async readWorkspaceFileContent(filePath: string): Promise<{
     filePath: string;
     contentType: string;
@@ -1007,34 +1057,37 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.readRuntimeFileContent(filePath);
   }
 
-  @callable()
   async writeWorkspaceFileContent(
     filePath: string,
     data: string | ArrayBuffer | Uint8Array,
     contentType?: string
   ): Promise<{ ok: true; filePath: string }> {
-    this.assertNotFrozen();
-    const runtime = this.getRuntimeWorkspace();
-    const relativePath = sanitizeRelativePath(filePath);
-    if (typeof data === 'string') {
-      await runtime.writeFile(toRuntimePath(relativePath), data, contentType || getMimeType(relativePath));
-    } else {
-      await runtime.writeFileBytes(toRuntimePath(relativePath), data, contentType || getMimeType(relativePath));
-    }
-    return { ok: true, filePath: relativePath };
+    return this.withMutationFence(async () => {
+      const runtime = this.getRuntimeWorkspace();
+      const relativePath = sanitizeRelativePath(filePath);
+      if (typeof data === 'string') {
+        await runtime.writeFile(toRuntimePath(relativePath), data, contentType || getMimeType(relativePath));
+      } else {
+        await runtime.writeFileBytes(toRuntimePath(relativePath), data, contentType || getMimeType(relativePath));
+      }
+      return { ok: true, filePath: relativePath };
+    });
   }
 
-  @callable()
   async deleteWorkspaceFileContent(filePath: string): Promise<{ ok: true; filePath: string }> {
-    this.assertNotFrozen();
-    const runtime = this.getRuntimeWorkspace();
-    const relativePath = sanitizeRelativePath(filePath);
-    await runtime.rm(toRuntimePath(relativePath), { force: true });
-    return { ok: true, filePath: relativePath };
+    return this.withMutationFence(async () => {
+      const runtime = this.getRuntimeWorkspace();
+      const relativePath = sanitizeRelativePath(filePath);
+      await runtime.rm(toRuntimePath(relativePath), { force: true });
+      return { ok: true, filePath: relativePath };
+    });
   }
 
-  @callable()
   async clearWorkspaceFiles(): Promise<void> {
+    await this.withMutationFence(() => this.clearRuntimeFilesUnchecked());
+  }
+
+  private async clearRuntimeFilesUnchecked(): Promise<void> {
     const runtime = this.getRuntimeWorkspace();
     const paths = (await runtime._getAllPaths()).filter((path) => path !== '/' && path !== '');
     for (const path of [...paths].sort((left, right) => right.length - left.length)) {
@@ -1045,13 +1098,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   @callable()
   async addPanel(panel: WorkspacePanel): Promise<WorkspaceState> {
     this.assertNotFrozen();
-    this.upsertPanel(panel);
+    this.assertAuthorizedRpc();
+    this.upsertPanel(panelSchema.parse(panel));
     return this.state;
   }
 
   @callable()
   async removePanel(panelId: string): Promise<WorkspaceState> {
     this.assertNotFrozen();
+    this.assertAuthorizedRpc();
+    panelId = panelIdSchema.parse(panelId);
     this.setState({
       ...this.state,
       panels: this.state.panels.filter((panel) => panel.id !== panelId),
@@ -1068,6 +1124,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   @callable()
   async applyLayoutPatch(patch: LayoutPatch): Promise<WorkspaceState> {
     this.assertNotFrozen();
+    this.assertAuthorizedRpc();
+    patch = layoutPatchSchema.parse(patch) as LayoutPatch;
     const panels = this.state.panels.map((panel) => {
       const nextLayout = patch.panels?.[panel.id];
       if (!nextLayout) return panel;
@@ -1763,6 +1821,32 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       }),
     };
 
+    // A migration freeze may interleave at any await boundary. Track every
+    // host-side mutation as one fenced unit: freeze refuses while a unit is
+    // active, and once frozen no later tool can begin.
+    const mutationToolNames = [
+      'write_file',
+      'write_xlsx',
+      'write_docx',
+      'ui_markdown',
+      'ui_detail',
+      'ui_table',
+      'ui_chart',
+      'ui_cards',
+      'ui_show_file',
+      'ui_download',
+      'ui_workspace',
+    ];
+    const mutableTools = tools as unknown as Record<string, {
+      execute?: (...args: unknown[]) => unknown;
+    }>;
+    for (const name of mutationToolNames) {
+      const original = mutableTools[name]?.execute;
+      if (!original) continue;
+      mutableTools[name].execute = (...args: unknown[]) =>
+        this.withMutationFence(() => original(...args));
+    }
+
     if (scopedPanels.length > 0) {
       return {
         ...tools,
@@ -1947,6 +2031,22 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private assertNotFrozen(): void {
     if (this.migrationFrozen) {
       throw new Error('workspace is frozen for migration');
+    }
+  }
+
+  private async withMutationFence<T>(operation: () => Promise<T> | T): Promise<T> {
+    this.assertNotFrozen();
+    this.activeMutations += 1;
+    try {
+      return await operation();
+    } finally {
+      this.activeMutations -= 1;
+    }
+  }
+
+  private assertAuthorizedRpc(): void {
+    if (this.env.CAIL_REQUIRE_IDENTITY === 'true' && !this.cailSubject) {
+      throw new Error('authentication_required: reconnect through the authenticated HTTP session');
     }
   }
 

@@ -7,23 +7,28 @@ import type {
   WorkspaceRecord,
   WorkspaceResponse,
 } from './types';
+import { appPath } from './base-path';
 
 /**
- * CAIL 401 handling (see cail-gateway docs/INTEGRATION.md §2). When the SSO
+ * CAIL 401 handling (see docs/security-and-operations.md). When the SSO
  * gate / model proxy returns `authentication_required`, redirect the browser
  * to /login?rt=<current-path> so the user re-authenticates and returns here.
  * Same-origin paths only. Returns true when it handled (and is redirecting).
  */
 export function handleAuthRequired(status: number, payload: unknown): boolean {
   if (status !== 401) return false;
-  const error = typeof payload === 'object' && payload !== null
+  const envelope = typeof payload === 'object' && payload !== null
     ? (payload as { error?: unknown }).error
     : undefined;
-  if (error !== 'authentication_required') return false;
+  const nested = typeof envelope === 'object' && envelope !== null
+    ? envelope as { code?: unknown; cail?: { login_url?: unknown } }
+    : null;
+  const code = nested?.code ?? envelope;
+  if (code !== 'authentication_required') return false;
 
-  const loginUrl = typeof payload === 'object' && payload !== null
+  const loginUrl = nested?.cail?.login_url ?? (typeof payload === 'object' && payload !== null
     ? (payload as { login_url?: unknown }).login_url
-    : undefined;
+    : undefined);
   const base = typeof loginUrl === 'string' && loginUrl.startsWith('/') ? loginUrl : '/login';
   const rt = `${window.location.pathname}${window.location.search}`;
   window.location.assign(`${base}?rt=${encodeURIComponent(rt)}`);
@@ -31,13 +36,14 @@ export function handleAuthRequired(status: number, payload: unknown): boolean {
 }
 
 /**
- * Per-session CSRF token (fleet contract §3¾ rule 3). The worker HMAC-derives it
- * from the session and delivers it via a path-scoped Set-Cookie on the
+ * Per-session CSRF capability (fleet contract §3¾ rule 3). The worker signs a
+ * short-lived, nonce-bearing token and delivers it via a path-scoped cookie on the
  * /api/session bootstrap GET (the 2026-07-05 delivery amendment: the token must
  * NOT appear in any response body, so a same-origin sibling / user-content
- * script that `fetch()`es our endpoints can't read it). Set-Cookie is
- * script-unreadable; the cookie's Path scopes document.cookie visibility to our
- * own pages. We read it here and echo it in X-CAIL-CSRF on every mutation,
+ * script that `fetch()`es our endpoints can't read it). Browser JavaScript
+ * cannot read the Set-Cookie response header. The cookie itself is deliberately
+ * non-HttpOnly; its Path scopes document.cookie visibility to our own pages.
+ * We read it here and echo it in X-CAIL-CSRF on every mutation,
  * sensitive workspace read, and as the WebSocket connect token. A sibling tool
  * is same-origin but, being outside our path prefix, never sees the cookie —
  * which is what isolates siblings (the origin check alone cannot).
@@ -65,7 +71,7 @@ async function requestCsrfToken(): Promise<string> {
   // Hit the bootstrap GET so the worker sets the cookie, then read it. The JSON
   // body no longer carries the token (the amendment forbids it); the path-scoped
   // cookie is the only delivery channel.
-  const response = await fetch('/api/session', { credentials: 'include' });
+  const response = await fetch(appPath('/api/session'), { credentials: 'include' });
   if (!response.ok) {
     throw new Error(`Session bootstrap failed with ${response.status}`);
   }
@@ -105,14 +111,17 @@ async function protectedFetch(input: string, init: RequestInit): Promise<Respons
   const send = (token: string) => {
     const headers = new Headers(baseHeaders);
     headers.set(CSRF_HEADER, token);
-    return fetch(input, { ...init, credentials: 'include', headers });
+    return fetch(appPath(input), { ...init, credentials: 'include', headers });
   };
 
   let response = await send(await ensureCsrfToken());
   if (response.status !== 403) return response;
 
-  const payload = await response.clone().json().catch(() => null) as { error?: unknown } | null;
-  if (payload?.error !== 'csrf_token_invalid' && payload?.error !== 'csrf_token_missing') {
+  const payload = await response.clone().json().catch(() => null) as {
+    error?: string | { code?: string };
+  } | null;
+  const code = typeof payload?.error === 'object' ? payload.error.code : payload?.error;
+  if (code !== 'csrf_token_invalid' && code !== 'csrf_token_missing') {
     return response;
   }
 
@@ -146,10 +155,14 @@ async function readResponseError(
   response: Response,
 ): Promise<{ payload: unknown; message: string }> {
   const payload = await response.json().catch(() => ({ error: `Request failed with ${response.status}` }));
-  const message = typeof payload === 'object' && payload !== null
-    ? ((payload as { message?: string; error?: string }).message
-      ?? (payload as { error?: string }).error)
+  const error = typeof payload === 'object' && payload !== null
+    ? (payload as { error?: unknown }).error
     : undefined;
+  const message = typeof error === 'object' && error !== null
+    ? (error as { message?: string }).message
+    : typeof payload === 'object' && payload !== null
+      ? ((payload as { message?: string }).message ?? (typeof error === 'string' ? error : undefined))
+      : undefined;
   return { payload, message: message || `Request failed with ${response.status}` };
 }
 
@@ -233,7 +246,7 @@ export interface ModelCatalog {
 export class ModelsQuotaError extends Error {}
 
 export async function fetchModels(): Promise<ModelCatalog> {
-  const response = await fetch('/api/models', { credentials: 'include' });
+  const response = await fetch(appPath('/api/models'), { credentials: 'include' });
   if (response.status === 429) {
     const { message } = await readResponseError(response);
     throw new ModelsQuotaError(message);
@@ -350,9 +363,22 @@ export async function deleteWorkspace(workspaceId: string): Promise<void> {
 }
 
 export async function fetchGalleryItems(): Promise<GalleryItem[]> {
-  const response = await fetch('/api/gallery', { credentials: 'include' });
-  const payload = await parseJson<{ items: GalleryItem[] }>(response);
-  return payload.items;
+  const items: GalleryItem[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const query = new URLSearchParams({ limit: '100' });
+    if (cursor) query.set('cursor', cursor);
+    const response = await fetch(appPath(`/api/gallery?${query}`), { credentials: 'include' });
+    const payload = await parseJson<{ items: GalleryItem[]; nextCursor?: string }>(response);
+    items.push(...payload.items);
+    cursor = payload.nextCursor;
+    if (cursor) {
+      if (seenCursors.has(cursor)) throw new Error('Gallery pagination cursor repeated');
+      seenCursors.add(cursor);
+    }
+  } while (cursor);
+  return items.sort((left, right) => right.publishedAt.localeCompare(left.publishedAt));
 }
 
 export async function cloneGalleryItem(galleryId: string): Promise<{ workspaceId: string; workspace: WorkspaceRecord }> {
@@ -363,7 +389,7 @@ export async function cloneGalleryItem(galleryId: string): Promise<{ workspaceId
 }
 
 export async function fetchGalleryItem(galleryId: string): Promise<GalleryItemFull> {
-  const response = await fetch(`/api/gallery/${galleryId}`, {
+  const response = await fetch(appPath(`/api/gallery/${galleryId}`), {
     credentials: 'include',
   });
   const payload = await parseJson<{ item: GalleryItemFull }>(response);
@@ -372,7 +398,7 @@ export async function fetchGalleryItem(galleryId: string): Promise<GalleryItemFu
 
 export async function publishWorkspace(
   workspaceId: string,
-  input: { title: string; description: string }
+  input: { title: string; description: string; operationId: string }
 ): Promise<{ item: GalleryItem; workspace: WorkspaceRecord }> {
   const response = await mutatingFetch(`/api/workspaces/${workspaceId}/publish`, {
     method: 'POST',
@@ -437,23 +463,27 @@ export async function clearWorkspaceDownloads(workspaceId: string): Promise<void
 }
 
 export function getWorkspaceFileUrl(workspaceId: string, filePath: string): string {
-  const path = `/api/workspaces/${workspaceId}/files/${encodePath(filePath)}`;
-  const token = csrfTokenFromCookie();
-  return token !== null ? `${path}?csrfToken=${encodeURIComponent(token)}` : path;
+  return appPath(`/api/workspaces/${workspaceId}/files/${encodePath(filePath)}`);
 }
 
 export function getGalleryFileUrl(galleryId: string, filePath: string): string {
-  return `/api/gallery/${galleryId}/files/${encodePath(filePath)}`;
+  return appPath(`/api/gallery/${galleryId}/files/${encodePath(filePath)}`);
 }
 
 export function getWorkspacePanelPreviewUrl(workspaceId: string, panelId: string): string {
-  const path = `/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`;
-  const token = csrfTokenFromCookie();
-  return token !== null ? `${path}?csrfToken=${encodeURIComponent(token)}` : path;
+  return appPath(`/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`);
 }
 
 export function getGalleryPanelPreviewUrl(galleryId: string, panelId: string): string {
-  return `/api/gallery/${galleryId}/panels/${encodeURIComponent(panelId)}/preview`;
+  return appPath(`/api/gallery/${galleryId}/panels/${encodeURIComponent(panelId)}/preview`);
+}
+
+export function fetchWorkspaceFile(workspaceId: string, filePath: string): Promise<Response> {
+  return readingFetch(`/api/workspaces/${workspaceId}/files/${encodePath(filePath)}`);
+}
+
+export function fetchWorkspacePanelPreview(workspaceId: string, panelId: string): Promise<Response> {
+  return readingFetch(`/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`);
 }
 
 export async function uploadWorkspaceFiles(workspaceId: string, files: FileList | File[]): Promise<void> {

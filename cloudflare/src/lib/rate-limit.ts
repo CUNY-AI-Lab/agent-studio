@@ -19,9 +19,8 @@ import type { SessionVariables } from './session';
  * tests, or miniflare quirks) limiting is skipped entirely. Availability of a
  * research tool beats strictness, and CI smoke must keep passing.
  *
- * NOT covered here: the WebSocket chat path (/agents/*) does not pass through
- * /api middleware. Per-message limiting belongs inside the DO and needs product
- * thinking about long agent turns.
+ * WebSocket chat does not pass through this middleware; WorkspaceAgent applies
+ * the same HEAVY binding at chat admission.
  */
 
 // POST paths that hit expensive operations and get the tighter HEAVY namespace.

@@ -1,54 +1,102 @@
 # Temporary legacy-account import
 
-Agent Studio temporarily copies an authenticated user's anonymous pre-SSO
-namespace into the stable CAIL subject namespace. The same deadline controls
-the related old R2-file hydration and `downloads.json` backward-read paths.
-Current subject-keyed workspaces, runtime files, and per-object downloads do not
-depend on this compatibility code.
+This runbook covers the bounded compatibility path that moves an anonymous
+pre-SSO namespace into the verified CAIL subject namespace. The same deadline
+controls legacy R2 file hydration and the old `downloads.json` reader.
 
-## Configuration contract
+## Configuration
 
-Set these values in the same release that changes `CAIL_REQUIRE_IDENTITY` to
-`true`:
+Set these in the same authorized release that changes
+`CAIL_REQUIRE_IDENTITY` to `true`:
 
 ```text
-CAIL_SSO_SWITCHED_AT=2026-07-15T14:00:00Z
-CAIL_ACCOUNT_IMPORT_UNTIL=2026-07-29T14:00:00Z
+CAIL_SSO_SWITCHED_AT=<complete ISO instant>
+CAIL_ACCOUNT_IMPORT_UNTIL=<exclusive complete ISO instant>
 ```
 
-Both values must be complete ISO instants with `Z` or an explicit UTC offset.
-`CAIL_ACCOUNT_IMPORT_UNTIL` is exclusive, cannot precede the switch, and cannot
-be more than 30 days after it. Enforced identity with missing or invalid values
-returns `503 configuration_invalid` from health and application traffic.
+Both require `Z` or an explicit UTC offset. The deadline cannot precede the
+switch or exceed it by more than 30 days. Missing, blank, date-only, or invalid
+values fail configuration. Before enforcement, leaving both absent preserves
+anonymous local behavior; configuring only one is invalid.
 
-Before enforcement, leaving both values unset preserves anonymous local and
-pre-rollout behavior. Supplying only one value, blank values, date-only values,
-or an invalid pair fails configuration validation even before enforcement.
+## State machine and invariants
+
+One `MigrationRegistry` object is keyed by the anonymous session id. The first
+verified subject to claim it wins permanently. The same subject may retry a
+failed claim or an in-progress claim older than ten minutes; a different
+subject can never take it over.
+
+For each workspace:
+
+1. An existing subject-side workspace id is never overwritten.
+2. The anonymous agent hydrates compatibility files, then refuses the freeze
+   if any fenced mutation is active.
+3. Freeze becomes durable before the snapshot. Runtime file writes, code
+   execution, and host tools are fenced; synchronous canvas mutations cannot
+   interleave across an await.
+4. State, messages, files, and eligible downloads copy into a clean target.
+5. The subject workspace record is written last as that workspace's completion
+   marker.
+6. A failed copy destroys the partial target agent and target R2 prefix, then
+   unfreezes every source so the same subject can retry.
+
+After every workspace is committed, private gallery ownership is reassigned
+across all R2 pages. Source agents and anonymous R2 prefixes are then destroyed.
+The registry is marked done only after the copy-and-cleanup workflow returns.
+
+The process is idempotent, not a cross-store transaction. A failure during
+source cleanup can occur after target completion markers exist. On retry,
+those targets are skipped and cleanup resumes. Do not delete or edit the claim
+record manually.
 
 ## Deadline behavior
 
-During the window, a valid legacy cookie may claim and copy its anonymous
-namespace once. Old workspace-file prefixes may hydrate into the runtime, and
-old `downloads.json` blobs are included with current per-object downloads.
+During the open window, a request carrying both a verified identity and a valid
+legacy cookie can run the claim. While another request owns a fresh in-progress
+claim, the request continues in the subject namespace and retains the legacy
+cookie for a later retry.
 
-After the deadline:
+At and after the exclusive deadline:
 
-- authenticated requests do not claim or copy anonymous namespaces;
-- the legacy browser session cookie is deleted;
-- old workspace-file prefixes are ignored and left intact for controlled cleanup;
-- old `downloads.json` blobs are ignored while current per-object downloads remain available;
-- refusal and ignored-hydration events are emitted without session ids, workspace ids, filenames, or content.
+- no new anonymous namespace is claimed;
+- the legacy browser cookie is removed;
+- legacy workspace-file prefixes and `downloads.json` are ignored;
+- current subject workspaces, runtime files, and per-object downloads continue;
+- compatibility refusal events contain no session id, workspace id, filename,
+  or user content.
 
-## Required deletion follow-up
+Expiry does not itself delete unclaimed server-side data. That cleanup depends
+on the approved retention and deletion procedure.
 
-Create the removal ticket before the SSO switch. Its due date must be
-`CAIL_ACCOUNT_IMPORT_UNTIL`, which validation guarantees is no later than 30
-days after `CAIL_SSO_SWITCHED_AT`.
+## Recovery
 
-The ticket must remove the temporary cookie-triggered import path,
-`MigrationRegistry` binding/class and its Cloudflare migration entry, legacy R2
-hydration, the `downloads.json` backward read, the two window variables, and
-their tests and documentation. Review migration telemetry first, then delete or
-archive remaining anonymous-session and old-format R2 data under the approved
-retention procedure; expiry deliberately does not destroy server-side user data
-inside a normal request.
+For a failed or stale claim:
+
+1. Confirm the claimant subject matches the durable claim. Never reassign it.
+2. Inspect fixed-code migration telemetry; do not log user ids, paths, or
+   content.
+3. For each workspace, use the subject workspace record as the commit marker.
+   If absent, the partial target should have been destroyed and the source is
+   retryable. If present, preserve the target and let the retry skip the copy.
+4. Confirm source agents are unfrozen after a copy failure. A source that was
+   already committed may be partially cleaned; recover from the committed
+   target, not by rolling it back into the anonymous namespace.
+5. Retry through the normal authenticated request path. Do not invoke internal
+   migration RPCs from a browser or edit R2 prefixes by hand.
+
+There is no automatic rollback from a committed subject workspace to its
+anonymous source. Backup/restore and operator access remain external
+activation requirements.
+
+## Removal at cutoff
+
+Create the removal ticket before the switch, due at
+`CAIL_ACCOUNT_IMPORT_UNTIL`. After telemetry and claims are reconciled, remove
+the cookie-triggered import path, `MigrationRegistry` binding/class and class
+migration only when no rollback needs it, legacy R2 hydration, the
+`downloads.json` reader, both window variables, and their tests and docs.
+
+Preserve the class and compatibility readers through any rollback window.
+Cloudflare class migrations register Durable Object classes; they do not
+delete data or migrate application records. Deleting anonymous data requires
+the retention-approved purge and backup procedure.

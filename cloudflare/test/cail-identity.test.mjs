@@ -12,7 +12,8 @@ import {
   cailAuthRequiredResponse,
   verifyCredentialForSession,
   sessionIdForSubject,
-  CAIL_ALLOWED_ISSUERS,
+  CAIL_CANONICAL_ISSUER,
+  CAIL_STAGING_ISSUER,
   CAIL_APP_SLUG,
   CAIL_IDENTITY_HEADER,
   CAIL_IDENTITY_AUDIENCE,
@@ -54,7 +55,10 @@ async function mintIdentityJwt(payload, key) {
 }
 
 function identityEnv(...keys) {
-  return { CAIL_IDENTITY_JWKS: JSON.stringify({ keys: keys.map((key) => key.publicJwk) }) };
+  return {
+    CAIL_IDENTITY_JWKS: JSON.stringify({ keys: keys.map((key) => key.publicJwk) }),
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+  };
 }
 
 test('verifies the canonical RS256 identity contract', async () => {
@@ -62,7 +66,7 @@ test('verifies the canonical RS256 identity contract', async () => {
   const token = await mintIdentityJwt(validPayload(), key);
   const identity = await verifyIdentityJwt(token, { keys: [key.publicJwk] }, {
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
-    allowedIssuers: CAIL_ALLOWED_ISSUERS,
+    allowedIssuers: [CAIL_CANONICAL_ISSUER],
     now: NOW,
   });
 
@@ -98,9 +102,44 @@ test('canonical header rejects missing or malformed JWKS', async () => {
 
   assert.equal(await getCailIdentityFromRequest(request, {}, NOW), null);
   assert.equal(
-    await getCailIdentityFromRequest(request, { CAIL_IDENTITY_JWKS: '{not-json' }, NOW),
+    await getCailIdentityFromRequest(request, {
+      CAIL_IDENTITY_JWKS: '{not-json',
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+    }, NOW),
     null,
   );
+});
+
+test('identity trust is one exact configured issuer and fails closed when ambiguous', async () => {
+  const key = await makeKey('issuer-key');
+  const productionToken = await mintIdentityJwt(validPayload(), key);
+  const stagingToken = await mintIdentityJwt(
+    validPayload({ iss: CAIL_STAGING_ISSUER }),
+    key,
+  );
+  const requestFor = (token) => new Request('https://agent-studio.example/api/session', {
+    headers: { [CAIL_IDENTITY_HEADER]: token },
+  });
+  const jwks = JSON.stringify({ keys: [key.publicJwk] });
+
+  assert.ok(await getCailIdentityFromRequest(requestFor(productionToken), {
+    CAIL_IDENTITY_JWKS: jwks,
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+  }, NOW));
+  assert.equal(await getCailIdentityFromRequest(requestFor(stagingToken), {
+    CAIL_IDENTITY_JWKS: jwks,
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+  }, NOW), null);
+  assert.ok(await getCailIdentityFromRequest(requestFor(stagingToken), {
+    CAIL_IDENTITY_JWKS: jwks,
+    CAIL_IDENTITY_ISSUER: CAIL_STAGING_ISSUER,
+  }, NOW));
+  for (const issuer of [undefined, '', `${CAIL_CANONICAL_ISSUER},${CAIL_STAGING_ISSUER}`]) {
+    assert.equal(await getCailIdentityFromRequest(requestFor(productionToken), {
+      CAIL_IDENTITY_JWKS: jwks,
+      ...(issuer === undefined ? {} : { CAIL_IDENTITY_ISSUER: issuer }),
+    }, NOW), null);
+  }
 });
 
 test('canonical header rejects unsupported algorithms', async () => {
@@ -125,6 +164,7 @@ test('canonical header rejects wrong audience, issuer, and expired tokens', asyn
 
   for (const overrides of [
     { aud: 'cail:other-service' },
+    { aud: [CAIL_IDENTITY_AUDIENCE] },
     { iss: 'https://evil.example/cail-sso' },
     { exp: NOW - 120 },
   ]) {
@@ -185,12 +225,12 @@ test('cailIdentityRequired only true for the literal "true"', () => {
   assert.equal(cailIdentityRequired({}), false);
 });
 
-test('cailAuthRequiredResponse is a 401 with the CAIL envelope', async () => {
+test('cailAuthRequiredResponse is a 401 with the canonical nested envelope', async () => {
   const response = cailAuthRequiredResponse();
   assert.equal(response.status, 401);
   const body = await response.json();
-  assert.equal(body.error, 'authentication_required');
-  assert.equal(body.login_url, '/login');
+  assert.equal(body.error.code, 'authentication_required');
+  assert.equal(body.error.cail.login_url, '/login');
 });
 
 test('resolveCailModelName honors the override and default', () => {
@@ -203,10 +243,12 @@ test('resolveCailModelName honors the override and default', () => {
 
 test('createCailModel forwards the JWT + app header and sets no provider key', async () => {
   const captured = [];
+  const capturedCredentials = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init) => {
     const request = new Request(input, init);
     captured.push(request);
+    capturedCredentials.push(init?.credentials);
     return new Response(JSON.stringify({ error: { message: 'stop' } }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' },
@@ -217,6 +259,13 @@ test('createCailModel forwards the JWT + app header and sets no provider key', a
     const model = createCailModel({
       env: { CAIL_API_BASE: 'https://proxy.example', CAIL_MODEL: '@cf/zai-org/glm-5.2' },
       identityJwt: 'jwt-token-value',
+      correlation: {
+        trace_id: 'a'.repeat(32),
+        span_id: 'b'.repeat(16),
+        trace_flags: 0,
+        request_id: '11111111-1111-4111-8111-111111111111',
+        tracestate: 'cail=studio',
+      },
     });
     await model.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
@@ -231,6 +280,10 @@ test('createCailModel forwards the JWT + app header and sets no provider key', a
   assert.equal(request.headers.get(CAIL_IDENTITY_HEADER), 'jwt-token-value');
   assert.equal(request.headers.get('X-CAIL-App'), CAIL_APP_SLUG);
   assert.equal(request.headers.get('authorization'), null);
+  assert.equal(request.headers.get('traceparent'), `00-${'a'.repeat(32)}-${'b'.repeat(16)}-00`);
+  assert.equal(request.headers.get('tracestate'), 'cail=studio');
+  assert.equal(request.headers.get('x-cail-request-id'), '11111111-1111-4111-8111-111111111111');
+  assert.equal(capturedCredentials[0], 'omit');
 });
 
 test('createCailModel throws without CAIL_API_BASE', () => {

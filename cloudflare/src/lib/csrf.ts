@@ -1,4 +1,4 @@
-// CSRF defense for the fleet contract (cail-gateway docs/INTEGRATION.md §3¾).
+// CSRF defense for the institutional CAIL tool-delivery contract.
 //
 // The SSO gate authenticates browsers with an ambient session cookie, so a
 // state-changing request forged by another site can arrive already carrying a
@@ -18,13 +18,14 @@
 //     we never approve. This — not the origin check — is what isolates sibling
 //     tools on the same host.
 //
-// The token is HMAC-derived from SESSION_SECRET over `csrf:<sessionId>`
-// (deterministic, stateless, sibling tools can't mint it without the secret),
-// mirroring the key-derivation approach in lib/session.ts.
+// Tokens are short-lived signed capabilities bound to both the current session
+// and its principal class. They are stateless, but neither deterministic nor
+// valid across the anonymous-to-subject cutover.
 
 import type { Context, MiddlewareHandler } from 'hono';
 import { setCookie } from 'hono/cookie';
 import type { Env } from '../env';
+import { normalizeBasePath } from './base-path';
 import type { SessionVariables } from './session';
 
 /** Custom header the frontend echoes the per-session token in (fleet convention). */
@@ -39,17 +40,19 @@ export const CSRF_HEADER = 'X-CAIL-CSRF';
  * and read a JSON/HTML body, but cannot read our Set-Cookie. `document.cookie`
  * exposes the value only to documents under the cookie's Path prefix, which is
  * what isolates siblings. NOT HttpOnly: our own page JS must read it to echo it
- * in X-CAIL-CSRF. Token value stays the stateless HMAC (delivery is the pinned
- * part; the value scheme is ours).
+ * in X-CAIL-CSRF. The value is a stateless, short-lived signed capability.
  */
 export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
 
 /**
- * Query-param name carrying the per-session token on WebSocket upgrades and
- * sensitive element-src GETs (which cannot set X-CAIL-CSRF). The DO verifies
- * it once at accept (see WorkspaceAgent.onConnect) for WebSockets.
+ * Query-param name carrying the per-session token on WebSocket upgrades. The
+ * browser WebSocket API cannot set X-CAIL-CSRF, so the edge and DO verify this
+ * value at accept. Sensitive HTTP reads use the header and blob URLs instead.
  */
 export const CSRF_WS_QUERY_PARAM = 'csrfToken';
+export const CSRF_TOKEN_TTL_SECONDS = 10 * 60;
+const CSRF_CLOCK_SKEW_SECONDS = 30;
+export type CsrfPrincipalKind = 'anonymous' | 'subject';
 
 /** Methods that never change state: no origin/token check, per rule 1. */
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
@@ -68,14 +71,9 @@ export function canonicalOrigin(c: Context<{ Bindings: Env; Variables: SessionVa
 }
 
 /**
- * Derive the per-session CSRF token: HMAC-SHA-256(SESSION_SECRET) over
- * `csrf:<sessionId>`, hex-encoded. Deterministic so it needs no storage and
- * survives hibernation; stateless so both the issuing GET and the verifying
- * mutation compute the same value. `sessionId` is the subject-derived id when
- * authenticated, or the anonymous session id — both are already the tool's
- * per-user key (see lib/session.ts), satisfying rule 3's keying requirement.
+ * Sign one CSRF capability value with a key derived from SESSION_SECRET.
  */
-export async function deriveCsrfToken(sessionId: string, secret: string): Promise<string> {
+async function signCsrfValue(value: string, secret: string): Promise<string> {
   const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
   const key = await crypto.subtle.importKey(
     'raw',
@@ -84,34 +82,79 @@ export async function deriveCsrfToken(sessionId: string, secret: string): Promis
     false,
     ['sign'],
   );
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`csrf:${sessionId}`));
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(value));
   return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+export interface CsrfTokenClaims {
+  principalKind: CsrfPrincipalKind;
+  expiresAt: number;
+}
+
+/** Mint a non-deterministic, expiring capability bound to one session. */
+export async function mintCsrfToken(
+  sessionId: string,
+  secret: string,
+  principalKind: CsrfPrincipalKind,
+  options: { now?: number; nonce?: string } = {},
+): Promise<string> {
+  const expiresAt = Math.floor((options.now ?? Date.now()) / 1000) + CSRF_TOKEN_TTL_SECONDS;
+  const nonce = options.nonce ?? crypto.randomUUID().replaceAll('-', '');
+  const unsigned = `v1.${principalKind}.${expiresAt}.${nonce}`;
+  const signature = await signCsrfValue(`csrf:${sessionId}:${unsigned}`, secret);
+  return `${unsigned}.${signature}`;
+}
+
+/** Verify signature, lifetime, and principal class without exposing session ids. */
+export async function verifyCsrfToken(
+  token: string | null,
+  sessionId: string,
+  secret: string,
+  expectedPrincipalKind: CsrfPrincipalKind,
+  now = Date.now(),
+): Promise<CsrfTokenClaims | null> {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 5) return null;
+  const [version, principalKind, expiresText, nonce, signature] = parts;
+  if (
+    version !== 'v1'
+    || (principalKind !== 'anonymous' && principalKind !== 'subject')
+    || principalKind !== expectedPrincipalKind
+    || !/^\d{10}$/.test(expiresText)
+    || !/^[A-Za-z0-9_-]{16,64}$/.test(nonce)
+    || !/^[a-f0-9]{64}$/.test(signature)
+  ) return null;
+  const expiresAt = Number(expiresText);
+  const nowSeconds = Math.floor(now / 1000);
+  if (
+    expiresAt < nowSeconds - CSRF_CLOCK_SKEW_SECONDS
+    || expiresAt > nowSeconds + CSRF_TOKEN_TTL_SECONDS + CSRF_CLOCK_SKEW_SECONDS
+  ) return null;
+  const unsigned = `${version}.${principalKind}.${expiresText}.${nonce}`;
+  const expected = await signCsrfValue(`csrf:${sessionId}:${unsigned}`, secret);
+  if (!timingSafeEqual(signature, expected)) return null;
+  return { principalKind, expiresAt };
 }
 
 /**
  * Resolve the Path the CSRF cookie is scoped to (fleet contract §3¾ rule 3
- * delivery amendment). CAIL_BASE_PATH is the tool's serving prefix; production
- * on tools.ailab sets '/agent-studio' so siblings can't read the cookie via
- * document.cookie. Defaults to '/' (acceptable locally / on workers.dev, which
- * have no same-origin siblings). A trailing slash is trimmed (except the bare
- * root), and a missing leading slash is added, so any reasonable env value maps
- * to a valid cookie Path.
+ * delivery amendment). The same normalized base path mounts the app, API,
+ * WebSocket client, static assets, and this cookie. Local development defaults
+ * to '/'; production preflight requires a non-root path.
  */
 export function csrfCookiePath(env: { CAIL_BASE_PATH?: string }): string {
-  const raw = (env.CAIL_BASE_PATH ?? '').trim();
-  if (!raw || raw === '/') return '/';
-  const withLeading = raw.startsWith('/') ? raw : `/${raw}`;
-  const trimmed = withLeading.replace(/\/+$/, '');
-  return trimmed || '/';
+  return normalizeBasePath(env.CAIL_BASE_PATH);
 }
 
 /**
  * Deliver the CSRF token to a first-party page via Set-Cookie (the pinned
  * same-origin-proof channel — see CSRF_COOKIE_NAME). Called on the /api/session
- * bootstrap GET. Attributes: Path = the tool's base path (scopes visibility to
- * our documents), Secure on https, SameSite=Lax, NOT HttpOnly (our page JS
- * reads it). The value is the stateless HMAC token; the server never stores it
- * (verification re-derives), keeping this a true double-submit.
+ * bootstrap GET. Attributes: Path = CAIL_BASE_PATH, Secure on https,
+ * SameSite=Lax, NOT HttpOnly (our page JS reads it). Path isolates sibling
+ * documents only after the app is served under the same prefix. The value is
+ * a short-lived signed capability; verification checks it without server-side
+ * token storage.
  */
 export function setCsrfCookie(
   c: Context<{ Bindings: Env; Variables: SessionVariables }>,
@@ -122,6 +165,7 @@ export function setCsrfCookie(
     sameSite: 'Lax',
     secure: new URL(c.req.url).protocol === 'https:',
     httpOnly: false,
+    maxAge: CSRF_TOKEN_TTL_SECONDS,
   });
 }
 
@@ -195,8 +239,8 @@ export async function enforceCsrf(
     return c.json({ error: 'csrf_token_missing' }, 403);
   }
   const sessionId = c.get('sessionId');
-  const expected = await deriveCsrfToken(sessionId, c.env.SESSION_SECRET);
-  if (!timingSafeEqual(provided, expected)) {
+  const principalKind = c.get('cailIdentity') ? 'subject' : 'anonymous';
+  if (!(await verifyCsrfToken(provided, sessionId, c.env.SESSION_SECRET, principalKind))) {
     return c.json({ error: 'csrf_token_invalid' }, 403);
   }
   return null;
@@ -205,7 +249,8 @@ export async function enforceCsrf(
 /**
  * Require the per-session CSRF token on a sensitive READ (rule 3 extended to GET). The
  * token proves first-party origin: a same-origin sibling cannot read the path-scoped
- * cookie, so it cannot supply the token. Accepts header or ?csrfToken= (for element-src).
+ * cookie, so it cannot supply the custom header. Capabilities are never accepted in
+ * URLs, where browser history, referrers, and platform request logs could retain them.
  * Only enforces GET/HEAD; other methods are covered by enforceCsrf. Returns 403 or null.
  */
 export async function enforceCsrfRead(
@@ -213,17 +258,11 @@ export async function enforceCsrfRead(
 ): Promise<Response | null> {
   const method = c.req.method.toUpperCase();
   if (method !== 'GET' && method !== 'HEAD') return null;
-  let queryToken: string | null = null;
-  try {
-    queryToken = new URL(c.req.url).searchParams.get(CSRF_WS_QUERY_PARAM);
-  } catch {
-    queryToken = null;
-  }
-  const provided = c.req.header(CSRF_HEADER) ?? queryToken;
+  const provided = c.req.header(CSRF_HEADER);
   if (!provided) return c.json({ error: 'csrf_token_missing' }, 403);
   const sessionId = c.get('sessionId');
-  const expected = await deriveCsrfToken(sessionId, c.env.SESSION_SECRET);
-  if (!timingSafeEqual(provided, expected)) {
+  const principalKind = c.get('cailIdentity') ? 'subject' : 'anonymous';
+  if (!(await verifyCsrfToken(provided, sessionId, c.env.SESSION_SECRET, principalKind))) {
     return c.json({ error: 'csrf_token_invalid' }, 403);
   }
   return null;
@@ -299,7 +338,11 @@ export function wsAgentSessionIdFromPath(pathname: string): string | null {
  * unauthorized socket never reaches the DO (no state frame is queued). Returns false
  * for a non-agent path, a missing/oddly-shaped name, a missing token, or a mismatch.
  */
-export async function wsAgentCsrfValid(request: Request, secret: string): Promise<boolean> {
+export async function wsAgentCsrfValid(
+  request: Request,
+  secret: string,
+  requireIdentity = false,
+): Promise<boolean> {
   let url: URL;
   try {
     url = new URL(request.url);
@@ -310,6 +353,6 @@ export async function wsAgentCsrfValid(request: Request, secret: string): Promis
   if (!sessionId) return false;
   const token = url.searchParams.get(CSRF_WS_QUERY_PARAM);
   if (!token) return false;
-  const expected = await deriveCsrfToken(sessionId, secret);
-  return timingSafeEqual(token, expected);
+  const principalKind = requireIdentity ? 'subject' : token.split('.')[1] === 'subject' ? 'subject' : 'anonymous';
+  return Boolean(await verifyCsrfToken(token, sessionId, secret, principalKind));
 }

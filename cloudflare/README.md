@@ -1,51 +1,47 @@
 # Agent Studio Worker
 
-This package is the canonical backend/runtime for Agent Studio.
+This package contains the Hono API, `WorkspaceAgent` and
+`MigrationRegistry` Durable Objects, Dynamic Worker execution boundary, R2
+storage adapters, and frontend asset binding.
 
-It provides:
-
-- Hono API routes
-- `WorkspaceAgent` Durable Object state
-- Chat routed through the CAIL model proxy (no provider key held here)
-- Dynamic Worker execution through the Worker Loader binding
-- `@cloudflare/shell` workspace state inside the sandbox runtime
-- R2-backed workspace and gallery files
-- static asset hosting for the built frontend
-
-## Local setup
+Install from the repository root, then copy the local variable template:
 
 ```bash
 bun install
-cp .dev.vars.example .dev.vars
-```
-
-Run installation from the repository root. Set `SESSION_SECRET`, `CAIL_LOG_ENV`, and
-`CAIL_API_BASE` in `.dev.vars` (see the CAIL backbone notes in the root README).
-`CAIL_MODEL` overrides the default model. `CAIL_IDENTITY_JWKS` verifies the
-canonical `X-CAIL-Identity-JWT` header with RS256 for audience
-`cail:agent-studio`. Leave it blank locally for anonymous mode. Then confirm
-the R2 bucket and Worker Loader bindings in [wrangler.jsonc](./wrangler.jsonc).
-
-When setting `CAIL_REQUIRE_IDENTITY=true`, also set `CAIL_SSO_SWITCHED_AT` and
-`CAIL_ACCOUNT_IMPORT_UNTIL` to timezone-bearing ISO instants. The end must be
-at or after the switch and no more than 30 days later. The Worker returns 503
-for health and application traffic when this enforced configuration is missing
-or invalid. See [legacy-account-import.md](../docs/legacy-account-import.md).
-Health also fails closed when `CAIL_LOG_ENV` is missing/invalid or the
-Wrangler-managed `CF_VERSION_METADATA` binding is unavailable, so telemetry is
-never silently assigned to a guessed environment or release.
-The checked-in production Wrangler configuration supplies
-`CAIL_LOG_ENV=production`; `.dev.vars` must override it with `development` for
-local work. Runtime health also requires the checked-in `CAIL_FLEET_EVENTS`
-Analytics Engine binding declaration. Cloudflare creates its dataset on the
-first write after an authorized deployment; no live resource was created by
-this source change. Collection and dashboard rollup rules are versioned in
-[`contracts/observability/agent-studio.v1.json`](../contracts/observability/agent-studio.v1.json).
-
-Run local development with:
-
-```bash
+cp cloudflare/.dev.vars.example cloudflare/.dev.vars
 bun run dev
 ```
 
-Wrangler may prompt for Cloudflare login because the AI binding is remote.
+Local development requires a unique `SESSION_SECRET` and
+`CAIL_LOG_ENV=development`. Model calls also require an approved
+`CAIL_API_BASE`. Anonymous local mode may omit the identity JWKS and dedicated
+gallery-owner keyring; production may not. `CAIL_IDENTITY_ISSUER` selects one
+exact issuer for the environment; staging must use the staging issuer.
+
+The production build uses `/agent-studio` for Vite assets, API calls, the
+Agents WebSocket path, Worker routing, and CSRF-cookie scope. Wrangler routes
+all paths through the Worker before explicit asset delegation.
+
+`wrangler.jsonc` declares the production and preview R2 bindings, Worker
+Loader, Durable Objects, rate-limit bindings, version metadata, Analytics
+Engine projection, and frontend build. The preview bucket must remain distinct
+from production. The file deliberately does not contain production secrets or
+the final identity/cutover inputs.
+
+Production preflight rejects traffic when identity, JWKS, model-proxy URL,
+canonical origin, non-root base path, rate-limit bindings, versioned gallery
+owner keys, telemetry metadata, or the temporary migration window is missing
+or invalid. `/health` reports the same validation result.
+
+Operational and security requirements are canonical in
+[Security and operations](../docs/security-and-operations.md). The temporary
+identity migration is documented in
+[Legacy account import](../docs/legacy-account-import.md), and logging
+authority is documented in [Observability](../docs/observability.md).
+
+Package checks:
+
+```bash
+bun run --cwd cloudflare typecheck
+bun run --cwd cloudflare test
+```

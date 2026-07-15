@@ -19,6 +19,11 @@
   },
   "collection": {
     "backend": "cloudflare_workers_logs",
+    "portable_log": {
+      "schema_version": 2,
+      "subject_version": "v1",
+      "event_provenance": "same_package_logger_instance"
+    },
     "custom_lifecycle_sample_rate": 1,
     "invocation_logs": false,
     "automatic_traces": false,

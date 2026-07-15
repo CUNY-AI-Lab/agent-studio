@@ -1,4 +1,4 @@
-// CSRF contract coverage (cail-gateway docs/INTEGRATION.md §3¾).
+// CSRF coverage for the institutional CAIL tool-delivery contract.
 //
 // Two layers: the pure helpers in src/lib/csrf.ts (origin classification, token
 // derivation, WS origin gate), and the enforced behavior through the real Hono
@@ -10,7 +10,8 @@ import assert from 'node:assert/strict';
 import {
   classifyOrigin,
   canonicalOrigin,
-  deriveCsrfToken,
+  mintCsrfToken,
+  verifyCsrfToken,
   timingSafeEqual,
   wsAgentCsrfValid,
   wsAgentSessionIdFromPath,
@@ -88,23 +89,20 @@ test('canonicalOrigin: honors CAIL_CANONICAL_ORIGIN override (trailing slash tri
 // Rule 3 — token derivation
 // ---------------------------------------------------------------------------
 
-test('deriveCsrfToken: deterministic for the same session + secret', async () => {
-  const a = await deriveCsrfToken('session-one', SECRET);
-  const b = await deriveCsrfToken('session-one', SECRET);
-  assert.equal(a, b);
-  assert.match(a, /^[a-f0-9]{64}$/); // HMAC-SHA-256 hex
+test('CSRF capabilities are non-deterministic, signed, and short-lived', async () => {
+  const now = Date.parse('2026-07-14T12:00:00Z');
+  const a = await mintCsrfToken('session-one', SECRET, 'anonymous', { now, nonce: 'a'.repeat(32) });
+  const b = await mintCsrfToken('session-one', SECRET, 'anonymous', { now, nonce: 'b'.repeat(32) });
+  assert.notEqual(a, b);
+  assert.ok(await verifyCsrfToken(a, 'session-one', SECRET, 'anonymous', now));
+  assert.equal(await verifyCsrfToken(a, 'session-one', SECRET, 'anonymous', now + 11 * 60_000), null);
 });
 
-test('deriveCsrfToken: distinct across sessions', async () => {
-  const a = await deriveCsrfToken('session-one', SECRET);
-  const b = await deriveCsrfToken('session-two', SECRET);
-  assert.notEqual(a, b);
-});
-
-test('deriveCsrfToken: distinct across secrets (secret binds the token)', async () => {
-  const a = await deriveCsrfToken('session-one', SECRET);
-  const b = await deriveCsrfToken('session-one', 'cd'.repeat(32));
-  assert.notEqual(a, b);
+test('CSRF capabilities reject a different session, secret, or principal class', async () => {
+  const token = await mintCsrfToken('session-one', SECRET, 'anonymous');
+  assert.equal(await verifyCsrfToken(token, 'session-two', SECRET, 'anonymous'), null);
+  assert.equal(await verifyCsrfToken(token, 'session-one', 'cd'.repeat(32), 'anonymous'), null);
+  assert.equal(await verifyCsrfToken(token, 'session-one', SECRET, 'subject'), null);
 });
 
 test('timingSafeEqual: matches equal strings, rejects different/length-mismatched', () => {
@@ -159,11 +157,21 @@ test('wsAgentSessionIdFromPath: extracts canonical agent session ids only', () =
 test('wsAgentCsrfValid: accepts a correctly signed agent connection token', async () => {
   const sessionId = 'a'.repeat(32);
   const workspaceId = 'b'.repeat(32);
-  const token = await deriveCsrfToken(sessionId, SECRET);
+  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
   const request = new Request(
     `https://studio.test/agents/workspace-agent/${sessionId}-${workspaceId}?csrfToken=${token}`,
   );
   assert.equal(await wsAgentCsrfValid(request, SECRET), true);
+});
+
+test('identity enforcement rejects an otherwise valid anonymous socket capability', async () => {
+  const sessionId = 'a'.repeat(32);
+  const workspaceId = 'b'.repeat(32);
+  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
+  const request = new Request(
+    `https://studio.test/agents/workspace-agent/${sessionId}-${workspaceId}?csrfToken=${token}`,
+  );
+  assert.equal(await wsAgentCsrfValid(request, SECRET, true), false);
 });
 
 test('wsAgentCsrfValid: rejects wrong, missing, and non-agent tokens', async () => {
@@ -223,22 +231,17 @@ test('enforceCsrf: GET passes untouched', async () => {
   assert.equal(rejection, null);
 });
 
-test('enforceCsrfRead: GET/HEAD require a valid token from the header or query', async () => {
+test('enforceCsrfRead: GET/HEAD require a valid token in the header', async () => {
   const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await deriveCsrfToken(sessionId, SECRET);
+  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
 
   assert.equal(
     await enforceCsrfRead(fakeContext({ method: 'GET', sessionId, headers: { [CSRF_HEADER]: token } })),
     null,
   );
-  assert.equal(
-    await enforceCsrfRead(fakeContext({
-      method: 'HEAD',
-      sessionId,
-      url: `https://studio.test/api/workspaces?csrfToken=${token}`,
-    })),
-    null,
-  );
+  assert.equal(await enforceCsrfRead(fakeContext({
+    method: 'HEAD', sessionId, headers: { [CSRF_HEADER]: token },
+  })), null);
 
   const missing = await enforceCsrfRead(fakeContext({ method: 'GET', sessionId }));
   assert.equal(missing.status, 403);
@@ -264,7 +267,7 @@ test('enforceCsrf: POST with Sec-Fetch-Site same-origin and no token is rejected
 
 test('enforceCsrf: POST with Sec-Fetch-Site same-origin requires a valid token', async () => {
   const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await deriveCsrfToken(sessionId, SECRET);
+  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
 
   const good = await enforceCsrf(
     fakeContext({ method: 'POST', sessionId, headers: { 'Sec-Fetch-Site': 'same-origin', [CSRF_HEADER]: token } }),
@@ -287,7 +290,7 @@ test('enforceCsrf: POST with Sec-Fetch-Site same-site is rejected 403', async ()
 
 test('enforceCsrf: POST with exact Origin still requires a valid token; wrong Origin 403', async () => {
   const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await deriveCsrfToken(sessionId, SECRET);
+  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
   const ok = await enforceCsrf(
     fakeContext({ method: 'POST', sessionId, headers: { Origin: 'https://studio.test', [CSRF_HEADER]: token } }),
   );
@@ -300,7 +303,7 @@ test('enforceCsrf: POST with exact Origin still requires a valid token; wrong Or
 
 test('enforceCsrf: no origin headers + valid token passes; wrong token 403; missing token 403', async () => {
   const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await deriveCsrfToken(sessionId, SECRET);
+  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
 
   const good = await enforceCsrf(
     fakeContext({ method: 'POST', sessionId, headers: { [CSRF_HEADER]: token } }),
@@ -320,14 +323,13 @@ test('enforceCsrf: no origin headers + valid token passes; wrong token 403; miss
 // Route-level enforcement through the real app
 // ---------------------------------------------------------------------------
 
-test('route: /api/session delivers the CSRF token in a Set-Cookie matching the derivation', async () => {
+test('route: /api/session delivers a valid expiring CSRF capability in Set-Cookie', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
   const res = await session.request(app, '/api/session');
   const body = await res.json();
   const cookieToken = csrfCookieFrom(res);
-  assert.match(cookieToken, /^[a-f0-9]{64}$/);
-  assert.equal(cookieToken, await deriveCsrfToken(body.sessionId, SECRET));
+  assert.ok(await verifyCsrfToken(cookieToken, body.sessionId, SECRET, 'anonymous'));
 });
 
 // Regression-pin the 2026-07-05 delivery amendment: the token must NEVER appear
@@ -357,10 +359,11 @@ test('route: /api/session CSRF cookie has the pinned attributes (name/path/sames
       : [res.headers.get('set-cookie') || ''];
   const line = lines.find((l) => l.includes(`${CSRF_COOKIE_NAME}=`)) || '';
   assert.ok(line, 'CSRF Set-Cookie header is present');
-  assert.match(line, new RegExp(`(^|,\\s*)${CSRF_COOKIE_NAME}=[a-f0-9]{64}`));
+  assert.match(line, new RegExp(`(^|,\\s*)${CSRF_COOKIE_NAME}=v1\\.anonymous\\.`));
   // Path defaults to '/' (no CAIL_BASE_PATH in the test env).
   assert.match(line, /;\s*Path=\/(?:;|$|,)/i);
   assert.match(line, /;\s*SameSite=Lax/i);
+  assert.match(line, /;\s*Max-Age=600/i);
   // Secure because the harness serves over https://studio.test.
   assert.match(line, /;\s*Secure/i);
   // NOT HttpOnly — the page JS must read it via document.cookie.
@@ -380,7 +383,7 @@ test('csrfCookiePath: defaults to / and honors CAIL_BASE_PATH (normalized)', () 
 test('route: CSRF cookie Path follows CAIL_BASE_PATH when set', async () => {
   const { env } = makeEnv();
   env.CAIL_BASE_PATH = '/agent-studio';
-  const res = await new Session(env).request(app, '/api/session');
+  const res = await new Session(env).request(app, '/agent-studio/api/session');
   const lines =
     typeof res.headers.getSetCookie === 'function'
       ? res.headers.getSetCookie()
@@ -398,7 +401,7 @@ test('route: mutation with neither origin nor token -> 403', async () => {
     csrfToken: '',
   });
   assert.equal(res.status, 403);
-  assert.equal((await res.json()).error, 'csrf_token_missing');
+  assert.equal((await res.json()).error.code, 'csrf_token_missing');
 });
 
 test('route: mutation with Sec-Fetch-Site same-origin and no token -> 403', async () => {
@@ -410,7 +413,7 @@ test('route: mutation with Sec-Fetch-Site same-origin and no token -> 403', asyn
     secFetchSite: 'same-origin',
   });
   assert.equal(res.status, 403);
-  assert.equal((await res.json()).error, 'csrf_token_missing');
+  assert.equal((await res.json()).error.code, 'csrf_token_missing');
 });
 
 test('route: mutation with Sec-Fetch-Site same-origin requires the session token', async () => {
@@ -428,7 +431,7 @@ test('route: mutation with Sec-Fetch-Site same-origin requires the session token
     secFetchSite: 'same-origin',
   });
   assert.equal(wrong.status, 403);
-  assert.equal((await wrong.json()).error, 'csrf_token_invalid');
+  assert.equal((await wrong.json()).error.code, 'csrf_token_invalid');
 });
 
 test('route: mutation with Sec-Fetch-Site same-site -> 403', async () => {
@@ -440,7 +443,7 @@ test('route: mutation with Sec-Fetch-Site same-site -> 403', async () => {
     secFetchSite: 'same-site',
   });
   assert.equal(res.status, 403);
-  assert.equal((await res.json()).error, 'csrf_origin_mismatch');
+  assert.equal((await res.json()).error.code, 'csrf_origin_mismatch');
 });
 
 test('route: mutation with exact Origin and valid token passes; foreign Origin 403', async () => {
@@ -459,7 +462,7 @@ test('route: mutation with exact Origin and valid token passes; foreign Origin 4
     origin: 'https://evil.example',
   });
   assert.equal(evil.status, 403);
-  assert.equal((await evil.json()).error, 'csrf_origin_mismatch');
+  assert.equal((await evil.json()).error.code, 'csrf_origin_mismatch');
 });
 
 test('route: mutation with no origin + valid token passes; wrong token 403', async () => {
@@ -475,7 +478,7 @@ test('route: mutation with no origin + valid token passes; wrong token 403', asy
     csrfToken: 'deadbeef'.repeat(8),
   });
   assert.equal(bad.status, 403);
-  assert.equal((await bad.json()).error, 'csrf_token_invalid');
+  assert.equal((await bad.json()).error.code, 'csrf_token_invalid');
 });
 
 test('route: workspace list GET requires the valid first-party token', async () => {
@@ -483,13 +486,13 @@ test('route: workspace list GET requires the valid first-party token', async () 
   const { session } = await openSession(app, env);
   const missing = await session.request(app, '/api/workspaces', { csrfToken: '' });
   assert.equal(missing.status, 403);
-  assert.deepEqual(await missing.json(), { error: 'csrf_token_missing' });
+  assert.equal((await missing.json()).error.code, 'csrf_token_missing');
 
   const valid = await session.request(app, '/api/workspaces');
   assert.equal(valid.status, 200);
 });
 
-test('route: workspace file GET accepts query token and rejects a missing token', async () => {
+test('route: workspace file GET rejects URL tokens and accepts the protected header', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await session.request(
@@ -507,15 +510,18 @@ test('route: workspace file GET accepts query token and rejects a missing token'
 
   const missing = await session.request(app, filePath, { csrfToken: '' });
   assert.equal(missing.status, 403);
-  assert.deepEqual(await missing.json(), { error: 'csrf_token_missing' });
+  assert.equal((await missing.json()).error.code, 'csrf_token_missing');
 
   const query = await session.request(
     app,
     `${filePath}?csrfToken=${encodeURIComponent(session.csrfToken)}`,
     { csrfToken: '' },
   );
-  assert.equal(query.status, 200);
-  assert.equal(await query.text(), '# protected');
+  assert.equal(query.status, 403);
+
+  const header = await session.request(app, filePath);
+  assert.equal(header.status, 200);
+  assert.equal(await header.text(), '# protected');
 });
 
 test('route: public gallery GET remains ungated', async () => {

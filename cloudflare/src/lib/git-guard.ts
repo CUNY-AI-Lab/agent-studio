@@ -5,7 +5,7 @@ export function parseGitAllowedHosts(env: { GIT_AUTH_ALLOWED_HOSTS?: string }): 
     .split(',').map((host) => host.trim().toLowerCase()).filter(Boolean);
 }
 
-/** True only for an http(s) URL whose host is on the allowlist. */
+/** True only for an HTTPS URL whose host is on the allowlist. */
 export function gitHostAllowed(url: unknown, allowedHosts: string[]): boolean {
   if (typeof url !== 'string' || allowedHosts.length === 0) return false;
   let parsed: URL;
@@ -14,7 +14,14 @@ export function gitHostAllowed(url: unknown, allowedHosts: string[]): boolean {
   } catch {
     return false;
   }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  // Never attach a bearer-equivalent token to cleartext transport, even for an
+  // allowlisted host: DNS/host policy does not provide transport integrity.
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.port !== ''
+    || parsed.username !== ''
+    || parsed.password !== ''
+  ) return false;
   return allowedHosts.includes(parsed.hostname.toLowerCase());
 }
 

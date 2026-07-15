@@ -38,6 +38,7 @@ class FakeAgent {
     this.cleared = false;
     this.syncCount = 0;
     this.frozen = false;
+    this.destroyed = false;
   }
 
   async syncWorkspace(workspace, sessionId) {
@@ -48,6 +49,18 @@ class FakeAgent {
 
   async freezeForMigration() {
     this.frozen = true;
+  }
+
+  async unfreezeAfterMigration() {
+    this.frozen = false;
+  }
+
+  async destroyWorkspaceState() {
+    this.files.clear();
+    this.messages = [];
+    this.state = { panels: [], viewport: { x: 0, y: 0, zoom: 1 }, groups: [], connections: [] };
+    this.cleared = true;
+    this.destroyed = true;
   }
 
   async getSnapshot() {
@@ -87,10 +100,7 @@ class FakeAgent {
     this.messages = [...messages];
   }
 
-  async clearWorkspaceFiles() {
-    this.files.clear();
-    this.cleared = true;
-  }
+  async clearWorkspaceFiles() { this.files.clear(); this.cleared = true; }
 }
 
 /** Agent factory backed by a map, mirroring `${sessionId}-${workspaceId}` DO names. */
@@ -268,7 +278,10 @@ test('happy path: workspaces, files, messages, state, downloads, gallery all mov
 
   // Gallery authorship follows the user; other authors untouched.
   const gal1 = await (await r2.get('agent-studio/gallery/items/gal1/manifest.json')).json();
-  assert.equal(gal1.authorId, await galleryOwnerTag(SUBJECT, SESSION_SECRET));
+  const gal1Owner = await (await r2.get('agent-studio/gallery/items/gal1/owner.json')).json();
+  assert.equal(gal1.authorId, undefined);
+  assert.equal(gal1Owner.keyId, 'development');
+  assert.equal(gal1Owner.tag, await galleryOwnerTag(SUBJECT, SESSION_SECRET));
   const gal2 = await (await r2.get('agent-studio/gallery/items/gal2/manifest.json')).json();
   assert.equal(gal2.authorId, await galleryOwnerTag('someone-else', SESSION_SECRET));
 
@@ -278,6 +291,7 @@ test('happy path: workspaces, files, messages, state, downloads, gallery all mov
   assert.equal((await pool.getAgent(ANON, 'ws2')).cleared, true);
   assert.equal((await pool.getAgent(ANON, 'ws1')).frozen, true);
   assert.equal((await pool.getAgent(ANON, 'ws2')).frozen, true);
+  assert.equal((await pool.getAgent(ANON, 'ws1')).destroyed, true);
 });
 
 test('merge without overwrite: subject-owned workspace ids are never touched', async () => {
@@ -351,6 +365,8 @@ test('listed-but-unreadable files fail migration without deleting anonymous data
   assert.ok(await r2.get(wsKey(ANON, 'ws1')));
   assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
   assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, false);
+  assert.equal((await pool.getAgent(ANON, 'ws1')).frozen, false);
+  assert.equal((await pool.getAgent(SUBJECT, 'ws1')).destroyed, true);
 });
 
 test('retry after a listed-file read failure succeeds and completes cleanup', async () => {
@@ -647,6 +663,7 @@ async function makeMiddlewareApp() {
       timestamp: '2026-07-13T14:00:00Z',
     },
     CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [identityPublicJwk] }),
+    CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     WORKSPACE_FILES: r2,
     MIGRATION_REGISTRY: {
       idFromName: (name) => name,
@@ -702,7 +719,9 @@ test('middleware: first authenticated request with legacy cookie migrates once a
 
   // Migration ran: gallery ownership moved, claim recorded done.
   const manifest = await (await r2.get('agent-studio/gallery/items/galM/manifest.json')).json();
-  assert.equal(manifest.authorId, await galleryOwnerTag(subjectSessionId, SESSION_SECRET));
+  const owner = await (await r2.get('agent-studio/gallery/items/galM/owner.json')).json();
+  assert.equal(manifest.authorId, undefined);
+  assert.equal(owner.tag, await galleryOwnerTag(subjectSessionId, SESSION_SECRET));
   assert.equal(registry.record.status, 'done');
   assert.equal(registry.record.subjectSessionId, subjectSessionId);
 

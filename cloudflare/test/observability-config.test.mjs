@@ -43,6 +43,10 @@ test('Wrangler source defaults suppress content-bearing invocation logs and bind
   assert.deepEqual(wrangler.streaming_tail_consumers, []);
   assert.deepEqual(wrangler.version_metadata, { binding: 'CF_VERSION_METADATA' });
   assert.equal(wrangler.vars.CAIL_LOG_ENV, 'production');
+  assert.equal(
+    wrangler.vars.CAIL_IDENTITY_ISSUER,
+    'https://tools.ailab.gc.cuny.edu/cail-sso',
+  );
   assert.deepEqual(wrangler.analytics_engine_datasets, [{
     binding: 'CAIL_FLEET_EVENTS',
     dataset: CAIL_ANALYTICS_ENGINE_DATASET,
@@ -60,6 +64,11 @@ test('the versioned product reliability contract fixes access, windows, and coll
   assert.equal(contract.windows.spend, 'calendar_month_to_date');
   assert.equal(contract.windows.timezone, 'America/New_York');
   assert.equal(contract.collection.backend, 'cloudflare_workers_logs');
+  assert.deepEqual(contract.collection.portable_log, {
+    schema_version: 2,
+    subject_version: 'v1',
+    event_provenance: 'same_package_logger_instance',
+  });
   assert.equal(contract.collection.custom_lifecycle_sample_rate, 1);
   assert.equal(contract.collection.invocation_logs, false);
   assert.equal(contract.collection.automatic_traces, false);
@@ -81,8 +90,17 @@ test('the versioned product reliability contract fixes access, windows, and coll
   const pkg = await readPackage();
   assert.equal(
     pkg.dependencies['@cuny-ai-lab/cail-log'],
-    'github:CUNY-AI-Lab/cail-log#4d747988966e657ef44081e68bc95bc758713604',
+    'github:CUNY-AI-Lab/cail-log#75e0dda3068794ae1543e1e2bb98c9c920bb848f',
   );
+  assert.equal(
+    pkg.dependencies['@cuny-ai-lab/cail-identity'],
+    'github:CUNY-AI-Lab/cail-identity#00419a9409680716a04e514068ba2b128ce7afa7',
+  );
+  assert.equal(
+    pkg.dependencies['@cuny-ai-lab/cail-client'],
+    'github:CUNY-AI-Lab/cail-client#16da40171381b8bf38543730b45dba484ba01940',
+  );
+  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-sandbox-client'], undefined);
 });
 
 test('action and call denominators are versioned, bounded, and suppress incomplete evidence', async () => {

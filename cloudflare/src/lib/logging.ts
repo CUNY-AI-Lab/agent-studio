@@ -1,6 +1,7 @@
 /** Privacy-constrained operational events for Agent Studio. */
 import {
   CAIL_EVENTS,
+  CAIL_LOG_SCHEMA_VERSION,
   CAIL_ANALYTICS_ENGINE_BLOBS,
   CAIL_ANALYTICS_ENGINE_DATASET,
   CAIL_ANALYTICS_ENGINE_DOUBLES,
@@ -29,6 +30,7 @@ export {
   CAIL_ANALYTICS_ENGINE_DOUBLES,
   CAIL_ANALYTICS_ENGINE_MAX_POINTS_PER_INVOCATION,
   CAIL_EVENTS,
+  CAIL_LOG_SCHEMA_VERSION,
   correlationFromHeaders,
   outboundCorrelationHeaders,
 };
@@ -37,6 +39,7 @@ export type { CailCorrelation, CailPrincipalFields, CailTerminalFields, CailTrac
 export const LOG_SERVICE = 'agent-studio';
 export const LOG_PRODUCT = 'agent-studio';
 export const LOG_PROVIDER = 'cail';
+export const LOG_SUBJECT_VERSION = 'v1';
 const DEFAULT_RELEASE = '0.1.0';
 export const STUDIO_MAX_MODEL_STEPS = 12;
 export const STUDIO_MAX_FLEET_POINTS_PER_INVOCATION = 32;
@@ -58,7 +61,6 @@ export const STUDIO_EVENTS = Object.freeze({
 
 export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
   [STUDIO_EVENTS.STARTUP_CONFIG_INVALID]: {
-    body: 'Agent Studio configuration was rejected.',
     source: 'platform',
     severity: 'outcome',
     required: ['product_id', 'terminal', 'error_type'],
@@ -67,14 +69,12 @@ export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
     terminal_reasons: ['denied'],
   },
   [STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL]: {
-    body: 'Legacy account import reached a terminal state.',
     source: 'platform',
     severity: 'outcome',
     required: ['product_id', 'principal', 'terminal', 'duration_ms'],
     optional: ['error_type'],
   },
   [STUDIO_EVENTS.LEGACY_HYDRATION_SKIPPED]: {
-    body: 'Legacy workspace hydration was skipped.',
     source: 'platform',
     severity: 'outcome',
     required: ['product_id', 'terminal', 'error_type'],
@@ -83,7 +83,6 @@ export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
     terminal_reasons: ['denied'],
   },
   [STUDIO_EVENTS.DOWNLOAD_CORRUPT]: {
-    body: 'A corrupt queued download was detected.',
     source: 'platform',
     severity: 'outcome',
     required: ['product_id', 'terminal', 'error_type'],
@@ -92,7 +91,6 @@ export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
     terminal_reasons: ['application_failure'],
   },
   [STUDIO_EVENTS.CREDENTIAL_REJECTED]: {
-    body: 'A workspace credential was rejected.',
     source: 'platform',
     severity: 'outcome',
     required: ['product_id', 'principal', 'terminal', 'error_type'],
@@ -101,7 +99,6 @@ export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
     terminal_reasons: ['denied'],
   },
   [STUDIO_EVENTS.CHAT_DENIED]: {
-    body: 'A Studio chat turn was denied before admission.',
     source: 'platform',
     severity: 'outcome',
     required: ['request_id', 'product_id', 'principal', 'trace', 'terminal', 'error_type'],
@@ -110,7 +107,6 @@ export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
     terminal_reasons: ['denied'],
   },
   [STUDIO_EVENTS.CODE_DENIED]: {
-    body: 'A Studio code execution was denied before admission.',
     source: 'platform',
     severity: 'outcome',
     required: [
@@ -164,6 +160,7 @@ export function createStudioLogger(options: CreateStudioLoggerOptions = {}): Stu
     release: options.release ?? DEFAULT_RELEASE,
     env: options.env ?? 'test',
     sourceClass: 'platform',
+    subjectVersion: LOG_SUBJECT_VERSION,
     catalog: STUDIO_EVENT_CATALOG,
     sink: options.sink ?? (options.dataset
       ? fanoutSinks(workersStructuredSink, createAnalyticsEngineSink(options.dataset))
@@ -198,7 +195,7 @@ export function studioLogger(runtime?: StudioLogRuntime): StudioLogger | null {
 
 export function principalForSubject(subject?: string | null): CailPrincipalFields {
   return subject && /^cail-[0-9a-f]{32}$/.test(subject)
-    ? { type: 'user', subject }
+    ? { type: 'user', subject: `cail-${LOG_SUBJECT_VERSION}-${subject.slice(5)}` }
     : { type: 'anonymous' };
 }
 

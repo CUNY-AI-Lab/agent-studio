@@ -1,9 +1,10 @@
 # Accessibility
 
+Status: current behavior, testing, and limitations
+
 This document covers the accessibility of the Agent Studio **canvas workspace**
-frontend (`frontend/`). The focus of this pass was making the canvas genuinely
-usable **keyboard-first**, with correct ARIA roles and live regions — not just
-labels sprinkled on top.
+frontend (`frontend/`), including keyboard operation, ARIA roles, live regions,
+focus management, and current limitations.
 
 ## Canvas keyboard map
 
@@ -60,6 +61,10 @@ resize with arrows, groups move with arrows, selection toggles with Enter/Space,
 and the tile menu opens with `M`. All keyboard geometry changes go through the
 **same** `onLayoutChange` / `onDragEnd` callbacks the mouse path uses, so layout
 persists identically.
+
+The shared keyboard-map label for Tab is broader than the current roving-focus
+implementation. Tab reaches the canvas region and its one active tile, then
+moves to the next page control; it does not rove among every tile.
 
 ## ARIA role decisions
 
@@ -148,18 +153,19 @@ top — you should reach the skip link, header controls, files, then the canvas
 and a tile. Arrow-move the tile, press `M` for its menu, `?` for the shortcut
 sheet, and confirm dialogs trap focus and restore it on Escape.
 
-## Known gaps (future pass)
+## Current limitations
 
-- **No arrow-key focus roving between tiles.** Arrows move the *focused* tile's
-  geometry; to focus a different tile you Tab or click. A future pass could add
+- **No keyboard focus roving between tiles.** Arrows move the *focused* tile's
+  geometry; a different tile currently becomes the roving target through
+  pointer/selection flows. A future pass could add
   a 2-D spatial roving scheme (arrows change focus when a modifier is held, or a
   dedicated "navigate mode"), but that risks colliding with the move bindings.
-- **Keyboard marquee selection is intentionally out of scope** (per the brief);
+- **Keyboard marquee selection is not implemented;**
   multi-select is Enter/Space per tile plus `Cmd/Ctrl` grouping.
 - **Connection lines** (`ConnectionLines`) are decorative SVG and are not
   individually focusable/announced.
-- **HomePage / ReadOnlyCanvas gallery view** were not part of this canvas pass
-  and have only their pre-existing semantics.
+- **HomePage / ReadOnlyCanvas gallery view** has less complete semantic and
+  keyboard coverage than the workspace canvas.
 - The **selection toolbar** is not reachable by Tab from a tile in all cases
   because it is positioned/hover-driven; its actions are also available from the
   tile menu (`M`) and header, which are keyboard-reachable.

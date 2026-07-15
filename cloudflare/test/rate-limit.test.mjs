@@ -97,10 +97,9 @@ test('over limit: binding returns success:false -> 429 + envelope + Retry-After'
 
   assert.equal(res.status, 429);
   assert.equal(res.headers.get('retry-after'), '30');
-  assert.deepEqual(await res.json(), {
-    error: 'rate_limited',
-    message: 'Too many requests — try again shortly.',
-  });
+  const body = await res.json();
+  assert.equal(body.error.code, 'rate_limited');
+  assert.equal(body.error.message, 'Too many requests — try again shortly.');
   // The general namespace was the one consulted for a GET.
   assert.equal(general.keys.length, 1);
 });

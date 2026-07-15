@@ -72,6 +72,48 @@ test('chat persistence is framework-owned rather than overridden as an instrumen
   assert.equal(Object.hasOwn(WorkspaceAgent.prototype, 'persistMessages'), false);
 });
 
+test('migration freeze refuses to race an active mutation', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const writes = [];
+  const agent = {
+    activeMutations: 1,
+    migrationFrozen: false,
+    ctx: { storage: { put: async (...args) => writes.push(args) } },
+  };
+  await assert.rejects(
+    WorkspaceAgent.prototype.freezeForMigration.call(agent),
+    /active mutation/,
+  );
+  assert.equal(agent.migrationFrozen, false);
+  assert.deepEqual(writes, []);
+});
+
+test('destructive cleanup refuses to race an active mutation', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = { activeMutations: 1, migrationFrozen: false };
+  await assert.rejects(
+    WorkspaceAgent.prototype.destroyWorkspaceState.call(agent),
+    /active mutation/,
+  );
+  assert.equal(agent.migrationFrozen, false);
+});
+
+test('identity enforcement rejects mutation RPCs on an anonymous pre-cutover socket', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = {
+    env: { CAIL_REQUIRE_IDENTITY: 'true' },
+    cailSubject: null,
+    migrationFrozen: false,
+    assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
+    assertAuthorizedRpc: WorkspaceAgent.prototype.assertAuthorizedRpc,
+  };
+
+  await assert.rejects(
+    WorkspaceAgent.prototype.applyLayoutPatch.call(agent, {}),
+    /authentication_required/,
+  );
+});
+
 test('code rate-limit denial does not emit an orphan canonical action terminal', async (t) => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const records = [];
@@ -87,6 +129,8 @@ test('code rate-limit denial does not emit an orphan canonical action terminal',
     },
     cailSubject: 'cail-0123456789abcdef0123456789abcdef',
     assertNotFrozen() {},
+    assertAuthorizedRpc() {},
+    withMutationFence(operation) { return operation(); },
     csrfSessionId() { return 'session-1'; },
     requireSessionId() { return 'session-1'; },
   };
@@ -125,6 +169,8 @@ test('successful code execution emits one paired canonical action lifecycle', as
     },
     cailSubject: 'cail-0123456789abcdef0123456789abcdef',
     assertNotFrozen() {},
+    assertAuthorizedRpc() {},
+    withMutationFence(operation) { return operation(); },
     csrfSessionId() { return 'session-1'; },
     requireSessionId() { return 'session-1'; },
     requireWorkspace() { return { id: 'workspace-1' }; },
@@ -175,8 +221,27 @@ test('anonymous chat streams an authentication error instead of assistant JSON',
 
   assert.match(response.headers.get('content-type'), /text\/event-stream/);
   assert.equal(event.type, 'error');
-  assert.equal(payload.error, 'authentication_required');
-  assert.equal(payload.login_url, '/login');
+  assert.equal(payload.error.code, 'authentication_required');
+  assert.equal(payload.error.cail.login_url, '/login');
+});
+
+test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = {
+    assertNotFrozen() {},
+    requireWorkspace() { return { id: 'workspace-1' }; },
+    requireSessionId() { return 'session-1'; },
+    cailIdentityJwt: 'verified-jwt',
+    env: { HEAVY_RATE_LIMIT: { limit: async () => ({ success: false }) } },
+  };
+  const response = await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, {
+    requestId: 'request-1',
+  });
+  const body = await response.text();
+  const event = JSON.parse(body.split('\n')[0].slice('data: '.length));
+  const payload = JSON.parse(event.errorText);
+  assert.equal(payload.error.code, 'rate_limited');
+  assert.equal(payload.error.cail.retryable, true);
 });
 
 // Behavioral pin for the fleet's quota-surfacing bug (S5/A7): a gateway 429
@@ -289,9 +354,9 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
 
   assert.ok(errorEvent, `expected an error event in the stream, got:\n${body}`);
   const payload = JSON.parse(errorEvent.errorText);
-  assert.equal(payload.type, 'quota_exceeded');
-  assert.equal(payload.message, quotaMessage);
-  assert.equal(payload.retryAfter, '1800');
+  assert.equal(payload.error.code, 'quota_exceeded');
+  assert.equal(payload.error.message, quotaMessage);
+  assert.equal(payload.error.cail.retry_after_seconds, 1800);
   // The thrown CailError must not be SDK-retried: one wire call, no retry storm.
   assert.equal(wireCalls, 1);
 });

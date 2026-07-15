@@ -7,8 +7,8 @@ SESSION_SECRET=replace-me-openssl-rand-hex-32
 # Wrangler's CF_VERSION_METADATA binding rather than a hand-maintained value.
 CAIL_LOG_ENV=development
 
-# CAIL model proxy base URL (serves /v1/... and /keys). Placeholder until
-# launch — see cail-gateway docs/LAUNCH_CHECKLIST.md. No trailing slash.
+# CAIL model proxy base URL (serves /v1/... and /keys). The local placeholder
+# must never be deployed. See docs/security-and-operations.md. No trailing slash.
 CAIL_API_BASE=https://REPLACE-WITH-CAIL-MODEL-PROXY.invalid
 # Optional model override; the proxy/AI Gateway resolves this slug.
 # CAIL policy: Workers AI catalog (@cf/...) ids only.
@@ -18,6 +18,10 @@ CAIL_MODEL=@cf/zai-org/glm-5.2
 # values support signing-key rotation overlap. Leave blank locally to run
 # anonymous (identity disabled).
 CAIL_IDENTITY_JWKS=
+# Exact issuer for this environment. Identity 3.0 accepts one value, never a
+# combined production/staging allowlist. Use the staging issuer only with a
+# staging JWKS and staging deployment classification.
+CAIL_IDENTITY_ISSUER=https://tools.ailab.gc.cuny.edu/cail-sso
 # Fail closed: reject anonymous model calls with 401. Set "true" when
 # CAIL_SSO_MODE=enforce lands on the gateway. If the JWKS is not configured or
 # cannot verify a presented token, all requests fail.
@@ -29,15 +33,30 @@ CAIL_REQUIRE_IDENTITY=false
 # CAIL_SSO_SWITCHED_AT=2026-07-15T14:00:00Z
 # CAIL_ACCOUNT_IMPORT_UNTIL=2026-07-29T14:00:00Z
 
-# Base path this tool is served under (fleet contract §3¾ rule 3 delivery
-# amendment). Scopes the Path of the CSRF cookie (cail_csrf_agentstudio) so
-# sibling tools / user content on tools.ailab can't read the token via
-# document.cookie. Production on tools.ailab sets /agent-studio; leave unset
-# ('/' default) locally / on workers.dev, where there are no same-origin
-# siblings. See src/lib/csrf.ts.
+# One mount for assets, API, WebSocket, and CSRF-cookie scope. Leave empty for
+# root-mounted local development. Production builds use /agent-studio and
+# production preflight rejects a missing or root base path.
 CAIL_BASE_PATH=
 
+# Exact public HTTPS origin used by CSRF origin checks. Leave empty locally so
+# the request origin is canonical. Production requires an origin with no path.
+CAIL_CANONICAL_ORIGIN=
+
 GIT_AUTH_TOKEN=
+# Exact comma-separated HTTPS hostnames eligible for token injection. Empty is
+# the safe default. Only default-port HTTPS URLs without embedded credentials
+# can receive the token.
+GIT_AUTH_ALLOWED_HOSTS=
+
+# Optional exact/suffix host policy for general research web fetch. Production
+# should set this when approved destinations are known.
+CAIL_WEBFETCH_ALLOWLIST=
+
+# Dedicated versioned gallery-owner keyring. Anonymous local development may
+# leave these blank and uses SESSION_SECRET only as a compatibility fallback.
+# Production requires JSON secrets of at least 32 characters and an active id.
+GALLERY_OWNER_KEYS=
+GALLERY_OWNER_ACTIVE_KEY_ID=
 
 # CUNY Primo (Ex Libris) search API — optional. When set, web_fetch attaches
 # apikey/vid/scope server-side for this host; the agent never sees the key.
@@ -50,7 +69,7 @@ PRIMO_SCOPE=
 # OCLC WorldCat Search/Metadata API — optional. When set, web_fetch exchanges
 # the client id/secret for a bearer token server-side and attaches it to the
 # WorldCat API host; the agent never sees the credentials. Values come from the
-# ops LAUNCH_CHECKLIST at deploy (canonical source ~/Apps/library-tools/.env).
+# authorized secret store at deploy and must never enter source control.
 OCLC_CLIENT_ID=
 OCLC_CLIENT_SECRET=
 OCLC_INSTITUTION_ID=

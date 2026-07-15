@@ -2,7 +2,7 @@ import type { RefObject } from 'react';
 import { cn } from '../../lib/utils';
 import { formatFileSize } from '../../lib/format';
 import { canOpenFileInPanel, getFileName, getFileTypeBadge } from '../../lib/panelFiles';
-import { getWorkspaceFileUrl } from '../../api';
+import { downloadFileSource } from '../../lib/fileUrls';
 import type { WorkspaceFileInfo } from '../../types';
 
 /**
@@ -146,12 +146,7 @@ export function FilesShelf({
                       <button
                         role="menuitem"
                         onClick={() => {
-                          const anchor = document.createElement('a');
-                          anchor.href = getWorkspaceFileUrl(workspaceId, file.path);
-                          anchor.download = file.name;
-                          document.body.append(anchor);
-                          anchor.click();
-                          anchor.remove();
+                          void downloadFileSource({ kind: 'workspace', id: workspaceId }, file.path, file.name);
                           onSetActiveFilePillPopover(() => null);
                         }}
                         className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

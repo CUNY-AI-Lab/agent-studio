@@ -1,5 +1,6 @@
 import type { WorkspaceRecord } from '../domain/workspace';
 import type { Env } from '../env';
+import { nextR2Cursor } from './r2-pagination';
 import { getWorkspacePrefix } from './files';
 
 function workspaceMetadataKey(sessionId: string, workspaceId: string): string {
@@ -14,7 +15,7 @@ export async function listWorkspaces(env: Env, sessionId: string): Promise<Works
   do {
     const listing = await env.WORKSPACE_FILES.list({ prefix, delimiter: '/', cursor });
     prefixes.push(...listing.delimitedPrefixes);
-    cursor = listing.truncated ? listing.cursor : undefined;
+    cursor = nextR2Cursor(listing, 'workspace listing');
   } while (cursor);
 
   const items = await Promise.all(

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { cn } from '../../lib/utils';
-import { type FileSource, getFileUrl } from '../../lib/fileUrls';
+import { downloadFileSource, type FileSource } from '../../lib/fileUrls';
 import { formatFileSize, formatRelativeTime } from '../../lib/format';
 import { canOpenFileInPanel } from '../../lib/panelFiles';
 import type { WorkspaceFileInfo } from '../../types';
@@ -65,14 +65,7 @@ export function FileTreePanelView({
                     </button>
                   ) : null}
                   <button
-                    onClick={() => {
-                      const anchor = document.createElement('a');
-                      anchor.href = getFileUrl(fileSource, file.path);
-                      anchor.download = file.name;
-                      document.body.append(anchor);
-                      anchor.click();
-                      anchor.remove();
-                    }}
+                    onClick={() => void downloadFileSource(fileSource, file.path, file.name)}
                     className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
                   >
                     Download File

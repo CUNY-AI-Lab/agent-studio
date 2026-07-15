@@ -109,6 +109,8 @@ export interface MigratableAgent {
     legacyCompatibilityNow?: number,
   ): Promise<void>;
   freezeForMigration(): Promise<void>;
+  unfreezeAfterMigration(): Promise<void>;
+  destroyWorkspaceState(): Promise<void>;
   getSnapshot(): Promise<WorkspaceState>;
   getMessages(): Promise<UIMessage[]>;
   getWorkspaceFiles(): Promise<Array<{ path: string; isDirectory: boolean }>>;
@@ -128,7 +130,6 @@ export interface MigratableAgent {
     sessionId: string
   ): Promise<void>;
   persistMessages(messages: UIMessage[]): Promise<void>;
-  clearWorkspaceFiles(): Promise<void>;
 }
 
 export type AgentFactory = (
@@ -149,10 +150,11 @@ function sessionPrefix(sessionId: string): string {
 /**
  * Copy every workspace (records, DO state, chat history, runtime files,
  * queued downloads) plus gallery authorship from the anonymous namespace into
- * the subject namespace, then delete the anonymous namespace. Idempotent:
- * workspaces already present in the target are skipped untouched, so partial
- * runs can safely re-run. The subject workspace record is written LAST so its
- * presence marks that workspace's copy as complete.
+ * the subject namespace, then remove source runtime and R2 data. Source Durable
+ * Object state is destroyed after commit. Existing target workspace records are
+ * skipped, and the subject record is written last as the per-workspace completion
+ * marker. A failed copy destroys its partial target and unfreezes every source;
+ * a retry therefore starts from a readable source and a clean target.
  */
 export async function migrateAnonymousSession(
   env: Env,
@@ -172,8 +174,10 @@ export async function migrateAnonymousSession(
   };
 
   const anonWorkspaces = await listWorkspaces(env, anonSessionId);
+  const frozenSources = new Set<MigratableAgent>();
 
-  for (const workspace of anonWorkspaces) {
+  try {
+    for (const workspace of anonWorkspaces) {
     // Never overwrite subject-owned data: a workspace id already in the
     // target namespace stays exactly as the subject has it.
     const existing = await getWorkspace(env, subjectSessionId, workspace.id);
@@ -190,14 +194,16 @@ export async function migrateAnonymousSession(
     await oldAgent.syncWorkspace(workspace, anonSessionId, now);
     await newAgent.syncWorkspace(workspace, subjectSessionId, now);
     await oldAgent.freezeForMigration();
+    frozenSources.add(oldAgent);
 
-    const [state, messages, files] = await Promise.all([
+    try {
+      const [state, messages, files] = await Promise.all([
       oldAgent.getSnapshot(),
       oldAgent.getMessages(),
       oldAgent.getWorkspaceFiles(),
     ]);
 
-    for (const file of files) {
+      for (const file of files) {
       if (file.isDirectory) continue;
       const content = await oldAgent.readWorkspaceFileContent(file.path);
       if (!content) {
@@ -210,10 +216,10 @@ export async function migrateAnonymousSession(
         content.data,
         content.contentType || getMimeType(file.path)
       );
-    }
+      }
 
-    await newAgent.replaceWorkspaceState(state, workspace, subjectSessionId);
-    await newAgent.persistMessages(messages);
+      await newAgent.replaceWorkspaceState(state, workspace, subjectSessionId);
+      await newAgent.persistMessages(messages);
 
     // Queued downloads are transient; carry them over only when the target
     // has none, so nothing subject-owned is clobbered. Both reads use
@@ -222,11 +228,11 @@ export async function migrateAnonymousSession(
     // "empty" would either silently drop the user's queued deliverables
     // (anon side) or clobber subject-owned ones (target side). Failing here
     // routes into the migration's fail-and-retry path instead.
-    const anonDownloads = await getWorkspaceDownloads(env, anonSessionId, workspace.id, {
+      const anonDownloads = await getWorkspaceDownloads(env, anonSessionId, workspace.id, {
       onCorrupt: 'throw',
       now,
     });
-    if (anonDownloads.length > 0) {
+      if (anonDownloads.length > 0) {
       const targetDownloads = await getWorkspaceDownloads(env, subjectSessionId, workspace.id, {
         onCorrupt: 'throw',
         now,
@@ -234,16 +240,26 @@ export async function migrateAnonymousSession(
       if (targetDownloads.length === 0) {
         await putWorkspaceDownloads(env, subjectSessionId, workspace.id, anonDownloads);
       }
-    }
+      }
 
     // Written last: presence of the record marks this workspace migrated.
-    await putWorkspace(env, subjectSessionId, workspace);
-    result.migratedWorkspaceIds.push(workspace.id);
-  }
+      await putWorkspace(env, subjectSessionId, workspace);
+      result.migratedWorkspaceIds.push(workspace.id);
+    } catch (error) {
+      await Promise.allSettled([
+        newAgent.destroyWorkspaceState(),
+        deleteByPrefix(
+          env,
+          `${sessionPrefix(subjectSessionId)}workspaces/${workspace.id}/`,
+        ),
+      ]);
+      throw error;
+    }
+    }
 
-  // Gallery items are global; ownership (authorId) moves to the subject so
-  // unpublish rights survive the migration.
-  result.galleryItemsReassigned = await reassignGalleryAuthor(
+  // Gallery items are global; their private owner records move to the subject
+  // so unpublish rights survive the migration.
+    result.galleryItemsReassigned = await reassignGalleryAuthor(
     env,
     anonSessionId,
     subjectSessionId
@@ -253,11 +269,18 @@ export async function migrateAnonymousSession(
   // DO runtime (frees its separate R2 runtime prefix), including workspaces
   // skipped because an earlier attempt already wrote their completion marker.
   // These are anonymous-named agents, so subject-owned runtime data is untouched.
-  for (const workspace of anonWorkspaces) {
-    const oldAgent = await getAgent(anonSessionId, workspace.id);
-    await oldAgent.clearWorkspaceFiles();
+    for (const workspace of anonWorkspaces) {
+      const oldAgent = await getAgent(anonSessionId, workspace.id);
+      await oldAgent.destroyWorkspaceState();
+      frozenSources.delete(oldAgent);
+    }
+    await deleteByPrefix(env, sessionPrefix(anonSessionId));
+  } catch (error) {
+    await Promise.allSettled(
+      [...frozenSources].map((agent) => agent.unfreezeAfterMigration()),
+    );
+    throw error;
   }
-  await deleteByPrefix(env, sessionPrefix(anonSessionId));
 
   return result;
 }

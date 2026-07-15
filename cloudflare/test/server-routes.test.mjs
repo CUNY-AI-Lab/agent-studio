@@ -43,6 +43,14 @@ async function createWorkspace(session, name = 'Workspace') {
   return (await res.json()).workspace;
 }
 
+async function readError(response) {
+  const body = await response.json();
+  assert.equal(typeof body.error, 'object');
+  assert.equal(typeof body.error.code, 'string');
+  assert.equal(typeof body.error.message, 'string');
+  return body.error;
+}
+
 async function makeRouteCredential(overrides = {}) {
   const kid = 'route-key';
   const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
@@ -71,17 +79,31 @@ test('health check is public and needs no session', async () => {
   assert.deepEqual(await res.json(), { ok: true, service: 'agent-studio' });
 });
 
+test('configured base path mounts assets, API, health, and sockets under one prefix', async () => {
+  const { env } = makeEnv();
+  env.CAIL_BASE_PATH = '/agent-studio';
+
+  const outside = await app.fetch(new Request('https://studio.test/api/session'), env, {});
+  assert.equal(outside.status, 404);
+
+  const mountedSession = await app.fetch(
+    new Request('https://studio.test/agent-studio/api/session'), env, {},
+  );
+  assert.equal(mountedSession.status, 200);
+  assert.match(mountedSession.headers.get('set-cookie') || '', /Path=\/agent-studio/);
+
+  const asset = await app.fetch(
+    new Request('https://studio.test/agent-studio/assets/app.js'), env, {},
+  );
+  assert.equal(await asset.text(), 'asset:/assets/app.js');
+});
+
 test('health check reports unhealthy when SESSION_SECRET is missing', async () => {
   const { env } = makeEnv();
   delete env.SESSION_SECRET;
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
   assert.equal(res.status, 503);
-  assert.deepEqual(await res.json(), {
-    ok: false,
-    service: 'agent-studio',
-    error: 'configuration_invalid',
-    errorCode: 'session_secret_missing',
-  });
+  assert.equal((await readError(res)).code, 'session_secret_missing');
 });
 
 test('health check reports unhealthy when telemetry environment is unclassified', async () => {
@@ -89,7 +111,7 @@ test('health check reports unhealthy when telemetry environment is unclassified'
   delete env.CAIL_LOG_ENV;
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
   assert.equal(res.status, 503);
-  assert.equal((await res.json()).errorCode, 'cail_log_environment_missing');
+  assert.equal((await readError(res)).code, 'cail_log_environment_missing');
 });
 
 test('health check reports unhealthy when Worker version metadata is unavailable', async () => {
@@ -97,7 +119,7 @@ test('health check reports unhealthy when Worker version metadata is unavailable
   delete env.CF_VERSION_METADATA;
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
   assert.equal(res.status, 503);
-  assert.equal((await res.json()).errorCode, 'worker_version_metadata_missing');
+  assert.equal((await readError(res)).code, 'worker_version_metadata_missing');
 });
 
 test('health check reports unhealthy when fleet projection dataset is unavailable', async () => {
@@ -105,7 +127,7 @@ test('health check reports unhealthy when fleet projection dataset is unavailabl
   delete env.CAIL_FLEET_EVENTS;
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
   assert.equal(res.status, 503);
-  assert.equal((await res.json()).errorCode, 'cail_fleet_events_missing');
+  assert.equal((await readError(res)).code, 'cail_fleet_events_missing');
 });
 
 test('startup guard refuses application traffic when SESSION_SECRET is missing', async () => {
@@ -113,10 +135,7 @@ test('startup guard refuses application traffic when SESSION_SECRET is missing',
   delete env.SESSION_SECRET;
   const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
   assert.equal(res.status, 503);
-  assert.deepEqual(await res.json(), {
-    error: 'Service unavailable: invalid configuration',
-    errorCode: 'session_secret_missing',
-  });
+  assert.equal((await readError(res)).code, 'session_secret_missing');
 });
 
 test('startup guard refuses enforced identity without migration-window configuration', async () => {
@@ -124,10 +143,7 @@ test('startup guard refuses enforced identity without migration-window configura
   env.CAIL_REQUIRE_IDENTITY = 'true';
   const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
   assert.equal(res.status, 503);
-  assert.deepEqual(await res.json(), {
-    error: 'Service unavailable: invalid configuration',
-    errorCode: 'cail_sso_switched_at_missing',
-  });
+  assert.equal((await readError(res)).code, 'cail_sso_switched_at_missing');
 });
 
 test('no cookie -> a signed session cookie is issued and reused', async () => {
@@ -194,7 +210,7 @@ test('required identity rejects an invalid canonical credential', async () => {
     headers: { [CAIL_IDENTITY_HEADER]: 'invalid-token' },
   });
   assert.equal(res.status, 401);
-  assert.equal((await res.json()).error, 'authentication_required');
+  assert.equal((await readError(res)).code, 'authentication_required');
 });
 
 // ---------------------------------------------------------------------------
@@ -271,9 +287,39 @@ test('DELETE workspace succeeds even if workspace sync would fail', async () => 
   assert.equal(delRes.status, 200);
   assert.deepEqual(await delRes.json(), { success: true });
   assert.equal(agent.syncCount, syncCountBeforeDelete);
+  assert.equal(agent.destroyed, true);
+  assert.equal(agent.credential, null);
+  assert.deepEqual(agent.messages, []);
 
   const list = await (await session.request(app, '/api/workspaces')).json();
   assert.deepEqual(list.workspaces, []);
+});
+
+test('upload rollback restores overwritten files and removes newly created files', async () => {
+  const { env, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Rollback');
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+  await agent.writeWorkspaceFileContent('existing.txt', 'original', 'text/plain');
+  const realWrite = agent.writeWorkspaceFileContent.bind(agent);
+  let uploadWrites = 0;
+  agent.writeWorkspaceFileContent = async (...args) => {
+    uploadWrites += 1;
+    if (uploadWrites === 2) throw new Error('injected upload failure');
+    return realWrite(...args);
+  };
+
+  const form = new FormData();
+  form.append('files', new File(['replacement'], 'existing.txt', { type: 'text/plain' }));
+  form.append('files', new File(['new'], 'new.txt', { type: 'text/plain' }));
+  const response = await session.request(app, `/api/workspaces/${workspace.id}/upload`, {
+    method: 'POST',
+    body: form,
+  });
+
+  assert.equal(response.status, 500);
+  assert.equal(new TextDecoder().decode((await agent.readWorkspaceFileContent('existing.txt')).data), 'original');
+  assert.equal(await agent.readWorkspaceFileContent('new.txt'), null);
 });
 
 test('DELETE workspace removes its separate runtime R2 prefix', async () => {
@@ -295,7 +341,7 @@ test('GET missing workspace id -> 404', async () => {
   const { session } = await openSession(app, env);
   const res = await session.request(app, '/api/workspaces/deadbeefdeadbeefdeadbeefdeadbeef');
   assert.equal(res.status, 404);
-  assert.deepEqual(await res.json(), { error: 'Workspace not found' });
+  assert.equal((await readError(res)).code, 'not_found');
 });
 
 test('GET malformed workspace id -> 400 (AS-3-6 boundary check)', async () => {
@@ -305,7 +351,7 @@ test('GET malformed workspace id -> 400 (AS-3-6 boundary check)', async () => {
   for (const bad of ['nope', '../secret', 'DEADBEEFDEADBEEFDEADBEEFDEADBEEF', 'deadbeef']) {
     const res = await session.request(app, `/api/workspaces/${encodeURIComponent(bad)}`);
     assert.equal(res.status, 400, `expected 400 for id "${bad}"`);
-    assert.deepEqual(await res.json(), { error: 'Invalid workspace id' });
+    assert.equal((await readError(res)).code, 'invalid_request');
   }
 });
 
@@ -316,7 +362,7 @@ test('non-POST /api/workspaces/import is treated as a missing workspace', async 
 
   const getRes = await session.request(app, '/api/workspaces/import');
   assert.equal(getRes.status, 404);
-  assert.deepEqual(await getRes.json(), { error: 'Workspace not found' });
+  assert.equal((await readError(getRes)).code, 'not_found');
 
   const patchRes = await session.request(
     app,
@@ -324,11 +370,11 @@ test('non-POST /api/workspaces/import is treated as a missing workspace', async 
     jsonInit('PATCH', { name: 'x' }),
   );
   assert.equal(patchRes.status, 404);
-  assert.deepEqual(await patchRes.json(), { error: 'Workspace not found' });
+  assert.equal((await readError(patchRes)).code, 'not_found');
 
   const deleteRes = await session.request(app, '/api/workspaces/import', { method: 'DELETE' });
   assert.equal(deleteRes.status, 404);
-  assert.deepEqual(await deleteRes.json(), { error: 'Workspace not found' });
+  assert.equal((await readError(deleteRes)).code, 'not_found');
 
   const list = await (await session.request(app, '/api/workspaces')).json();
   assert.deepEqual(list.workspaces.map((entry) => entry.id), [workspace.id]);
@@ -365,6 +411,19 @@ test('create with invalid body returns 400 (ZodError mapped by onError)', async 
   // name must be a non-empty trimmed string; empty string fails min(1).
   const res = await session.request(app, '/api/workspaces', jsonInit('POST', { name: '' }));
   assert.equal(res.status, 400);
+});
+
+test('a thrown route error emits one request boundary event', async (t) => {
+  const records = [];
+  t.mock.method(console, 'warn', (record) => records.push(record));
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const res = await session.request(app, '/api/workspaces', jsonInit('POST', { name: '' }));
+  assert.equal(res.status, 400);
+  assert.equal(
+    records.filter((record) => record?.['event.name'] === 'cail.request.completed').length,
+    1,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -440,7 +499,7 @@ test('observability: missing workspace 404s and created workspace returns snapsh
 
   const missing = await session.request(app, '/api/workspaces/deadbeefdeadbeefdeadbeefdeadbeef/observability');
   assert.equal(missing.status, 404);
-  assert.deepEqual(await missing.json(), { error: 'Workspace not found' });
+  assert.equal((await readError(missing)).code, 'not_found');
 
   const workspace = await createWorkspace(session);
   const res = await session.request(app, `/api/workspaces/${workspace.id}/observability`);
@@ -489,7 +548,7 @@ test('upload: disallowed extension (.exe) is rejected with 400', async () => {
     body: form,
   });
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /\.exe.*not allowed/);
+  assert.match((await readError(res)).message, /\.exe.*not allowed/);
   assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
 });
 
@@ -528,7 +587,7 @@ test('upload: a file over the 25 MB limit is rejected with 400', async () => {
     body: form,
   });
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /25 MB/);
+  assert.match((await readError(res)).message, /25 MB/);
 });
 
 test('upload: more than 50 files is rejected with 400', async () => {
@@ -545,7 +604,7 @@ test('upload: more than 50 files is rejected with 400', async () => {
     body: form,
   });
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /50 files/);
+  assert.match((await readError(res)).message, /50 files/);
 });
 
 test('upload: no files provided -> 400', async () => {
@@ -558,7 +617,7 @@ test('upload: no files provided -> 400', async () => {
     body: new FormData(),
   });
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /No files/);
+  assert.match((await readError(res)).message, /No files/);
 });
 
 test('upload: a path-traversal filename is rejected (sanitizeRelativePath throws) with 400', async () => {
@@ -573,7 +632,7 @@ test('upload: a path-traversal filename is rejected (sanitizeRelativePath throws
     body: form,
   });
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /Invalid file path/);
+  assert.match((await readError(res)).message, /Invalid file path/);
   // Nothing escaped into the agent's file map.
   assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
 });
@@ -640,7 +699,7 @@ test('panels: invalid panel payload -> 400 (hand-validated route)', async () => 
     jsonInit('POST', { panel: { missing: 'type-and-id' } }),
   );
   assert.equal(res.status, 400);
-  assert.deepEqual(await res.json(), { error: 'Invalid panel payload' });
+  assert.equal((await readError(res)).code, 'invalid_request');
 });
 
 test('layout: invalid body returns 400 (ZodError mapped by onError)', async () => {
@@ -736,15 +795,16 @@ test('gallery: publish redacts DO naming fields and keeps ownership via an opaqu
 
   const prefix = `agent-studio/gallery/items/${item.id}/`;
   const manifest = await (await r2.get(`${prefix}manifest.json`)).json();
+  const owner = await (await r2.get(`${prefix}owner.json`)).json();
   const publishedState = await (await r2.get(`${prefix}state.json`)).json();
-  assert.notEqual(manifest.authorId, sessionId);
-  assert.equal(manifest.authorId, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
+  assert.equal(manifest.authorId, undefined);
+  assert.equal(owner.tag, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
   assert.equal(publishedState.sessionId, null);
   assert.equal(publishedState.workspace.id, '');
 
   const forbidden = await other.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
   assert.equal(forbidden.status, 403);
-  assert.deepEqual(await forbidden.json(), { error: 'Not authorized to unpublish this item' });
+  assert.equal((await readError(forbidden)).code, 'forbidden');
 
   const removed = await author.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
   assert.equal(removed.status, 200);
@@ -786,6 +846,46 @@ test('gallery: publish cleans up when a listed file cannot be read', async () =>
   assert.deepEqual((await listRes.json()).items, []);
 });
 
+test('gallery: failed workspace CAS compensates the idempotent publication', async () => {
+  const { env, r2 } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'CAS rollback');
+  const realPut = r2.put.bind(r2);
+  r2.put = async (key, value, options = {}) => {
+    if (
+      key === `agent-studio/sessions/${sessionId}/workspaces/${workspace.id}/workspace.json`
+      && options.onlyIf?.etagMatches
+    ) return null;
+    return realPut(key, value, options);
+  };
+
+  const response = await session.request(app, `/api/workspaces/${workspace.id}/publish`,
+    jsonInit('POST', {
+      title: 'Will roll back',
+      description: 'No orphan',
+      operationId: crypto.randomUUID(),
+    }));
+  assert.equal(response.status, 409);
+  assert.deepEqual(
+    r2.keysWithPrefix('agent-studio/gallery/items/').filter((key) => key.endsWith('manifest.json')),
+    [],
+  );
+});
+
+test('gallery: concurrent distinct publish intents leave exactly one live item', async () => {
+  const { env, r2 } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Concurrent publish');
+  const publish = (operationId) => session.request(app, `/api/workspaces/${workspace.id}/publish`,
+    jsonInit('POST', { title: 'Concurrent', description: 'One winner', operationId }));
+
+  const responses = await Promise.all([publish(crypto.randomUUID()), publish(crypto.randomUUID())]);
+  assert.deepEqual(responses.map((response) => response.status).sort(), [201, 409]);
+  const manifests = r2.keysWithPrefix('agent-studio/gallery/items/')
+    .filter((key) => key.endsWith('manifest.json'));
+  assert.equal(manifests.length, 1);
+});
+
 test('gallery: clone (POST /api/gallery/:id) creates a workspace from a published item', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -824,7 +924,7 @@ test('gallery: clone missing item returns 404', async () => {
 
   const res = await session.request(app, '/api/gallery/abcdef12-3', { method: 'POST' });
   assert.equal(res.status, 404);
-  assert.deepEqual(await res.json(), { error: 'Gallery item not found' });
+  assert.equal((await readError(res)).code, 'not_found');
 });
 
 test('gallery: clone succeeds when a panel references a file that was never published', async () => {
@@ -923,7 +1023,7 @@ test('gallery: unpublish by a different session returns 403 and keeps the item',
 
   const delRes = await other.request(app, `/api/gallery/${pub.item.id}`, { method: 'DELETE' });
   assert.equal(delRes.status, 403);
-  assert.deepEqual(await delRes.json(), { error: 'Not authorized to unpublish this item' });
+  assert.equal((await readError(delRes)).code, 'forbidden');
 
   const getRes = await author.request(app, `/api/gallery/${pub.item.id}`);
   assert.equal(getRes.status, 200);
@@ -984,7 +1084,7 @@ test('/api/models surfaces proxy auth failure as 502', async () => {
       headers: { [CAIL_IDENTITY_HEADER]: token },
     });
     assert.equal(res.status, 502);
-    assert.deepEqual(await res.json(), { error: 'Model catalog authentication failed' });
+    assert.equal((await readError(res)).code, 'upstream_error');
   } finally {
     globalThis.fetch = originalFetch;
     resetCailModelsCache();
@@ -1018,10 +1118,9 @@ test('/api/models surfaces proxy quota exhaustion as 429', async () => {
       headers: { [CAIL_IDENTITY_HEADER]: token },
     });
     assert.equal(res.status, 429);
-    assert.deepEqual(await res.json(), {
-      error: 'quota_exceeded',
-      message: 'quota exhausted',
-    });
+    const error = await readError(res);
+    assert.equal(error.code, 'quota_exceeded');
+    assert.equal(error.message, 'quota exhausted');
   } finally {
     globalThis.fetch = originalFetch;
     resetCailModelsCache();
@@ -1098,7 +1197,7 @@ test('import: no bundle part -> 400', async () => {
     body: new FormData(),
   });
   assert.equal(res.status, 400);
-  assert.match((await res.json()).error, /No workspace bundle/);
+  assert.match((await readError(res)).message, /No workspace bundle/);
 });
 
 test('import: a malformed bundle -> 400 and no orphan workspace', async () => {
@@ -1174,7 +1273,7 @@ test('malformed JSON is rejected consistently without creating a workspace', asy
   for (const [path, method] of cases) {
     const response = await session.request(app, path, malformedInit(method));
     assert.equal(response.status, 400, `${method} ${path}`);
-    assert.deepEqual(await response.json(), { error: 'Invalid request body' });
+    assert.equal((await readError(response)).code, 'invalid_request');
   }
 
   const list = await session.request(app, '/api/workspaces');

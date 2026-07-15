@@ -5,14 +5,13 @@ import { quotaMessageFromChatError } from './quotaError';
 describe('quotaMessageFromChatError', () => {
   it('extracts the worker quota message from a stream error', () => {
     const signal = JSON.stringify({
-      type: 'quota_exceeded',
-      message: 'Quota exhausted for this account.',
+      error: { code: 'quota_exceeded', message: 'Quota exhausted for this account.' },
     });
     expect(quotaMessageFromChatError(new Error(signal))).toBe('Quota exhausted for this account.');
   });
 
   it('finds a quota signal after an error prefix and supplies the default message', () => {
-    const signal = JSON.stringify({ type: 'quota_exceeded' });
+    const signal = JSON.stringify({ error: { code: 'quota_exceeded' } });
     expect(quotaMessageFromChatError(new Error(`stream failed: ${signal}`))).toBe(
       'You have reached your usage quota. Try again later.',
     );
