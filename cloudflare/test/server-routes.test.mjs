@@ -56,7 +56,7 @@ async function makeRouteCredential(overrides = {}) {
   const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
   const publicJwk = { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' };
   const token = await new SignJWT({
-    sub: 'cail-route-test',
+    sub: 'cail-40e7e57040e7e57040e7e57040e7e570',
     aud: CAIL_IDENTITY_AUDIENCE,
     iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     exp: Math.floor(Date.now() / 1000) + 3600,

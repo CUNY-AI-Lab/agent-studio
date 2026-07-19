@@ -28,7 +28,7 @@ const NOW = 1_800_000_000;
 
 function validPayload(overrides = {}) {
   return {
-    sub: 'cail-abc123',
+    sub: 'cail-abc12300abc12300abc12300abc12300',
     aud: CAIL_IDENTITY_AUDIENCE,
     iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     exp: NOW + 3600,
@@ -71,7 +71,7 @@ test('verifies the canonical RS256 identity contract', async () => {
   });
 
   assert.ok(identity);
-  assert.equal(identity.subject, 'cail-abc123');
+  assert.equal(identity.subject, 'cail-abc12300abc12300abc12300abc12300');
   assert.equal(identity.email, 'someone@gc.cuny.edu');
   assert.deepEqual(identity.entitlements, ['tools', 'agent-studio']);
 });
@@ -88,7 +88,7 @@ test('canonical header accepts either key during rotation overlap', async () => 
     const result = await getCailIdentityFromRequest(request, env, NOW);
     assert.ok(result);
     assert.equal(result.token, token);
-    assert.equal(result.identity.subject, 'cail-abc123');
+    assert.equal(result.identity.subject, 'cail-abc12300abc12300abc12300abc12300');
     assert.deepEqual(Object.keys(result).sort(), ['identity', 'token']);
   }
 });
@@ -183,25 +183,25 @@ test('getCailIdentityFromRequest returns null with no canonical header', async (
 });
 
 test('sessionIdForSubject is stable and subject-specific', async () => {
-  const id = await sessionIdForSubject('cail-abc123');
+  const id = await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300');
   assert.match(id, /^[a-f0-9]{32}$/);
-  assert.equal(id, await sessionIdForSubject('cail-abc123'));
-  assert.notEqual(id, await sessionIdForSubject('cail-other'));
+  assert.equal(id, await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300'));
+  assert.notEqual(id, await sessionIdForSubject('cail-07e7000007e7000007e7000007e70000'));
 });
 
 test('verifyCredentialForSession accepts only a matching subject session', async () => {
   const key = await makeKey('credential-key');
   const token = await mintIdentityJwt(validPayload(), key);
   const env = identityEnv(key);
-  const expected = await sessionIdForSubject('cail-abc123');
+  const expected = await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300');
   const identity = await verifyCredentialForSession(token, expected, env, NOW);
 
   assert.ok(identity);
-  assert.equal(identity.subject, 'cail-abc123');
+  assert.equal(identity.subject, 'cail-abc12300abc12300abc12300abc12300');
   assert.equal(
     await verifyCredentialForSession(
       token,
-      await sessionIdForSubject('cail-foreign'),
+      await sessionIdForSubject('cail-f0e19000f0e19000f0e19000f0e19000'),
       env,
       NOW,
     ),
@@ -212,7 +212,7 @@ test('verifyCredentialForSession accepts only a matching subject session', async
 test('verifyCredentialForSession rejects empty and malformed credentials', async () => {
   const key = await makeKey('credential-key');
   const env = identityEnv(key);
-  const expected = await sessionIdForSubject('cail-abc123');
+  const expected = await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300');
 
   assert.equal(await verifyCredentialForSession('not-a-jwt', expected, env, NOW), null);
   assert.equal(await verifyCredentialForSession('', expected, env, NOW), null);

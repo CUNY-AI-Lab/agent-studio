@@ -94,7 +94,7 @@ test('the versioned product reliability contract fixes access, windows, and coll
   );
   assert.equal(
     pkg.dependencies['@cuny-ai-lab/cail-identity'],
-    'github:CUNY-AI-Lab/cail-identity#00419a9409680716a04e514068ba2b128ce7afa7',
+    'github:CUNY-AI-Lab/cail-identity#d13e1eb',
   );
   assert.equal(
     pkg.dependencies['@cuny-ai-lab/cail-client'],
