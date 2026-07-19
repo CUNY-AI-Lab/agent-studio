@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import { SignJWT } from 'jose';
 import {
   TEST_SUBJECTS,
   createTestIdentityIssuer,
@@ -196,27 +196,16 @@ test('canonical header rejects wrong audience, issuer, and expired tokens', asyn
 });
 
 test('canonical header rejects an array audience claim', async () => {
-  // mintIdentityJwt requires a string audience by contract, so an aud ARRAY
-  // (a shape the verifier must still reject) stays hand-minted with jose.
-  const kid = 'active-key';
-  const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
-  const publicJwk = { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' };
-  const token = await new SignJWT({
-    sub: TEST_SUBJECTS.alice,
-    aud: [CAIL_IDENTITY_AUDIENCE],
-    iss: CAIL_CANONICAL_ISSUER,
-    exp: NOW + 3600,
-  })
-    .setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' })
-    .sign(privateKey);
+  // Since cail-identity 4.4.0 the kit mints the array-`aud` shape directly
+  // (even one-element), signed by the same key its JWKS advertises — the
+  // verifier must still reject it.
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
+  const token = await mintValid(issuer, { audience: [CAIL_IDENTITY_AUDIENCE] });
   const request = new Request('https://agent-studio.example/api/session', {
     headers: { [CAIL_IDENTITY_HEADER]: token },
   });
 
-  assert.equal(await getCailIdentityFromRequest(request, {
-    CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [publicJwk] }),
-    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
-  }, NOW), null);
+  assert.equal(await getCailIdentityFromRequest(request, identityEnv(issuer), NOW), null);
 });
 
 test('getCailIdentityFromRequest returns null with no canonical header', async () => {

@@ -89,7 +89,7 @@ test('the versioned product reliability contract fixes access, windows, and coll
   assert.equal(contract.collection.fleet_projection.dataset_contract, CAIL_ANALYTICS_ENGINE_DATASET);
   const pkg = await readPackage();
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-log'], '^0.4.0');
-  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-identity'], '^4.2.0');
+  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-identity'], '^4.4.0');
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-client'], '^1.3.0');
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-sandbox-client'], undefined);
 });
