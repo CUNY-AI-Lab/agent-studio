@@ -18,15 +18,17 @@
  */
 
 import {
+  parseIdentityConfig,
   verifyIdentityJwt,
   CAIL_CANONICAL_ISSUER,
   CAIL_STAGING_ISSUER,
   type CailIdentity,
+  type IdentityConfigErrorReason,
 } from '@cuny-ai-lab/cail-identity';
 import { canonicalError } from './error-envelope';
 
 export { verifyIdentityJwt, CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER };
-export type { CailIdentity };
+export type { CailIdentity, IdentityConfigErrorReason };
 
 export const CAIL_IDENTITY_HEADER = 'X-CAIL-Identity-JWT';
 export const CAIL_APP_SLUG = 'agent-studio';
@@ -50,6 +52,22 @@ export interface VerifiedCailIdentity {
   identity: CailIdentity;
 }
 
+/**
+ * The worker could not LOAD its own identity verification config (malformed
+ * `CAIL_IDENTITY_JWKS`, missing/unsupported issuer, or identity required but
+ * unconfigured). Operator error, not a token error: HTTP surfaces map it to a
+ * typed 503 + structured log, never to the token-invalid 401/anonymous path.
+ * (`validateAgentStudioConfig` catches this at startup for production; this
+ * covers runtime drift and non-production environments.)
+ */
+export interface CailIdentityConfigError {
+  configError: IdentityConfigErrorReason;
+}
+
+export function isCailIdentityConfigError(value: unknown): value is CailIdentityConfigError {
+  return typeof value === 'object' && value !== null && 'configError' in value;
+}
+
 const encoder = new TextEncoder();
 
 export function resolveCailIdentityIssuer(env: CailIdentityEnv): string | null {
@@ -58,6 +76,29 @@ export function resolveCailIdentityIssuer(env: CailIdentityEnv): string | null {
     && CAIL_SUPPORTED_ISSUERS.some((supported) => supported === issuer)
     ? issuer
     : null;
+}
+
+/**
+ * Load the verification config via the shared parseIdentityConfig primitive.
+ *
+ * Returns `null` — identity feature OFF — only when NOTHING is configured and
+ * enforcement is off (anonymous dev/preview environments). Any partial or
+ * malformed configuration, or enforcement without configuration, is a config
+ * error: the operator intended identity to work and it cannot.
+ */
+function loadIdentityConfig(
+  env: CailIdentityEnv,
+): { ok: true; jwks: Parameters<typeof verifyIdentityJwt>[1]; issuer: string } | CailIdentityConfigError | null {
+  const jwksConfigured = typeof env.CAIL_IDENTITY_JWKS === 'string' && env.CAIL_IDENTITY_JWKS.trim() !== '';
+  const issuerConfigured = typeof env.CAIL_IDENTITY_ISSUER === 'string' && env.CAIL_IDENTITY_ISSUER !== '';
+  if (!jwksConfigured && !issuerConfigured && !cailIdentityRequired(env)) return null;
+  const config = parseIdentityConfig({
+    jwks: env.CAIL_IDENTITY_JWKS,
+    issuer: env.CAIL_IDENTITY_ISSUER,
+    supportedIssuers: CAIL_SUPPORTED_ISSUERS,
+  });
+  if (!config.ok) return { configError: config.reason };
+  return config;
 }
 
 /**
@@ -77,20 +118,14 @@ async function verifyCailIdentityToken(
   token: string | null | undefined,
   env: CailIdentityEnv,
   now?: number,
-): Promise<CailIdentity | null> {
+): Promise<CailIdentity | CailIdentityConfigError | null> {
   if (!token) return null;
-  if (!env.CAIL_IDENTITY_JWKS) return null;
-  const issuer = resolveCailIdentityIssuer(env);
-  if (!issuer) return null;
-  let jwks: Parameters<typeof verifyIdentityJwt>[1];
-  try {
-    jwks = JSON.parse(env.CAIL_IDENTITY_JWKS) as Parameters<typeof verifyIdentityJwt>[1];
-  } catch {
-    return null;
-  }
-  return verifyIdentityJwt(token, jwks, {
+  const config = loadIdentityConfig(env);
+  if (config === null) return null;
+  if (isCailIdentityConfigError(config)) return config;
+  return verifyIdentityJwt(token, config.jwks, {
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
-    allowedIssuers: [issuer],
+    allowedIssuers: [config.issuer],
     now,
   });
 }
@@ -100,8 +135,9 @@ export async function verifyCredentialForSession(
   expectedSessionId: string,
   env: CailIdentityEnv,
   now?: number,
-): Promise<CailIdentity | null> {
+): Promise<CailIdentity | CailIdentityConfigError | null> {
   const identity = await verifyCailIdentityToken(token, env, now);
+  if (isCailIdentityConfigError(identity)) return identity;
   if (!identity) return null;
   const derived = await sessionIdForSubject(identity.subject);
   if (derived !== expectedSessionId) return null;
@@ -131,10 +167,11 @@ export async function getCailIdentityFromRequest(
   request: Request,
   env: CailIdentityEnv,
   now?: number,
-): Promise<VerifiedCailIdentity | null> {
+): Promise<VerifiedCailIdentity | CailIdentityConfigError | null> {
   const token = request.headers.get(CAIL_IDENTITY_HEADER);
   if (!token) return null;
   const identity = await verifyCailIdentityToken(token, env, now);
+  if (isCailIdentityConfigError(identity)) return identity;
   if (!identity) return null;
   return { token, identity };
 }
@@ -151,6 +188,22 @@ export function cailIdentityRequired(env: CailIdentityEnv): boolean {
 /**
  * Canonical CAIL 401 envelope consumed by every Studio client surface.
  */
+/**
+ * Typed 503 for an identity verification config the worker could not load.
+ * Deliberately distinct from cailAuthRequiredResponse's 401: a bad token is
+ * the caller's problem, an unloadable config is ours.
+ */
+export function cailIdentityMisconfiguredResponse(): Response {
+  return new Response(
+    JSON.stringify(canonicalError(
+      'identity_verification_misconfigured',
+      'CAIL identity verification is not configured on this service, which is a CAIL configuration problem. Please report this to ailab@gc.cuny.edu.',
+      { type: 'api_error', retryable: true },
+    )),
+    { status: 503, headers: { 'Content-Type': 'application/json' } },
+  );
+}
+
 export function cailAuthRequiredResponse(loginPath = '/login'): Response {
   return new Response(
     JSON.stringify(canonicalError(

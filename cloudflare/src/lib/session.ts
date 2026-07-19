@@ -8,8 +8,10 @@ import {
 } from '../env';
 import {
   cailAuthRequiredResponse,
+  cailIdentityMisconfiguredResponse,
   cailIdentityRequired,
   getCailIdentityFromRequest,
+  isCailIdentityConfigError,
   sessionIdForSubject,
   type CailIdentity,
 } from './cail-identity';
@@ -111,6 +113,18 @@ export const sessionMiddleware: MiddlewareHandler<{
   // Identity comes only from the verified CAIL identity JWT. Bare X-CAIL-*
   // claims are never trusted (this worker is reachable on workers.dev).
   const verified = await getCailIdentityFromRequest(c.req.raw, c.env);
+
+  // Our verification config failed to LOAD — an operator error, never the
+  // caller's. Typed 503, distinct from the token-invalid/anonymous 401 below;
+  // otherwise a CAIL misconfiguration presents as every user's auth failing.
+  if (isCailIdentityConfigError(verified)) {
+    studioLogger(c.env)?.emit(STUDIO_EVENTS.STARTUP_CONFIG_INVALID, {
+      product_id: LOG_PRODUCT,
+      terminal: { outcome: 'denied', reason: 'denied' },
+      error_type: `cail_identity_${verified.configError}`,
+    });
+    return cailIdentityMisconfiguredResponse();
+  }
 
   // Fail closed on protected surfaces when enforcement is on and the request
   // is anonymous. Health checks are public and are not under /api/*.

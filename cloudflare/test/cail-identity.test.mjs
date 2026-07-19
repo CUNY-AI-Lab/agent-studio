@@ -93,20 +93,35 @@ test('canonical header accepts either key during rotation overlap', async () => 
   }
 });
 
-test('canonical header rejects missing or malformed JWKS', async () => {
+test('unconfigured identity is anonymous; an unloadable config is a CONFIG error, not a token error', async () => {
   const key = await makeKey('active-key');
   const token = await mintIdentityJwt(validPayload(), key);
   const request = new Request('https://agent-studio.example/api/session', {
     headers: { [CAIL_IDENTITY_HEADER]: token },
   });
 
+  // Identity feature entirely off (nothing configured, enforcement off):
+  // anonymous, as before.
   assert.equal(await getCailIdentityFromRequest(request, {}, NOW), null);
-  assert.equal(
+  // Configured but unloadable: a discriminated config error the HTTP surface
+  // maps to 503 — never the token-invalid null/401.
+  assert.deepEqual(
     await getCailIdentityFromRequest(request, {
       CAIL_IDENTITY_JWKS: '{not-json',
       CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
     }, NOW),
-    null,
+    { configError: 'jwks_malformed' },
+  );
+  // Enforcement on but nothing configured: auth can never succeed → config
+  // error, not a "sign in" 401 loop.
+  assert.deepEqual(
+    await getCailIdentityFromRequest(request, { CAIL_REQUIRE_IDENTITY: 'true' }, NOW),
+    { configError: 'jwks_missing' },
+  );
+  // Partial config (issuer without JWKS) is operator error too.
+  assert.deepEqual(
+    await getCailIdentityFromRequest(request, { CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER }, NOW),
+    { configError: 'jwks_missing' },
   );
 });
 
@@ -134,11 +149,16 @@ test('identity trust is one exact configured issuer and fails closed when ambigu
     CAIL_IDENTITY_JWKS: jwks,
     CAIL_IDENTITY_ISSUER: CAIL_STAGING_ISSUER,
   }, NOW));
-  for (const issuer of [undefined, '', `${CAIL_CANONICAL_ISSUER},${CAIL_STAGING_ISSUER}`]) {
-    assert.equal(await getCailIdentityFromRequest(requestFor(productionToken), {
+  // A JWKS with no usable issuer is an unloadable CONFIG, not a bad token.
+  for (const [issuer, reason] of [
+    [undefined, 'issuer_missing'],
+    ['', 'issuer_missing'],
+    [`${CAIL_CANONICAL_ISSUER},${CAIL_STAGING_ISSUER}`, 'issuer_unsupported'],
+  ]) {
+    assert.deepEqual(await getCailIdentityFromRequest(requestFor(productionToken), {
       CAIL_IDENTITY_JWKS: jwks,
       ...(issuer === undefined ? {} : { CAIL_IDENTITY_ISSUER: issuer }),
-    }, NOW), null);
+    }, NOW), { configError: reason });
   }
 });
 

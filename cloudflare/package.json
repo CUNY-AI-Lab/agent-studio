@@ -15,7 +15,7 @@
     "@cloudflare/codemode": "0.4.3",
     "@cloudflare/shell": "0.4.1",
     "@cuny-ai-lab/cail-client": "^1.2.0",
-    "@cuny-ai-lab/cail-identity": "^4.0.0",
+    "@cuny-ai-lab/cail-identity": "^4.1.0",
     "@cuny-ai-lab/cail-log": "^0.4.0",
     "agents": "0.17.4",
     "ai": "6.0.225",

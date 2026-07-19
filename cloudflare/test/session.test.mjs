@@ -47,6 +47,45 @@ test('tampered signatures and wrong secrets are rejected', async () => {
   assert.equal(await verifySignedValue('garbage', secret), null);
 });
 
+test('middleware maps an unloadable identity config to a typed 503, distinct from the token-invalid 401', async () => {
+  const { Hono } = await import('hono');
+  const { CAIL_IDENTITY_HEADER } = await import('../src/lib/cail-identity.ts');
+  const baseEnv = {
+    SESSION_SECRET: 'ci-style-secret-that-is-not-hex-at-all',
+    CAIL_REQUIRE_IDENTITY: 'true',
+  };
+
+  const app = new Hono();
+  app.use('/api/*', sessionMiddleware);
+  app.get('/api/session', (c) => c.json({ sessionId: c.get('sessionId') }));
+
+  // Token invalid against a LOADED config → the caller's 401.
+  const unauthorized = await app.request(
+    '/api/session',
+    { headers: { [CAIL_IDENTITY_HEADER]: 'bad.jwt.token' } },
+    {
+      ...baseEnv,
+      CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [] }),
+      CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+    }
+  );
+  assert.equal(unauthorized.status, 401);
+  assert.equal((await unauthorized.json()).error.code, 'authentication_required');
+
+  // Config the worker cannot LOAD → our 503, never a sign-in loop.
+  const misconfigured = await app.request(
+    '/api/session',
+    { headers: { [CAIL_IDENTITY_HEADER]: 'bad.jwt.token' } },
+    {
+      ...baseEnv,
+      CAIL_IDENTITY_JWKS: '{not-json',
+      CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+    }
+  );
+  assert.equal(misconfigured.status, 503);
+  assert.equal((await misconfigured.json()).error.code, 'identity_verification_misconfigured');
+});
+
 test('middleware issues and honors a cookie under a non-hex secret', async () => {
   const { Hono } = await import('hono');
   const env = { SESSION_SECRET: 'ci-style-secret-that-is-not-hex-at-all' };

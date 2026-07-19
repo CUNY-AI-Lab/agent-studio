@@ -34,7 +34,7 @@ import {
 import { accountImportWindowState, type Env } from '../env';
 import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
-import { verifyCredentialForSession } from '../lib/cail-identity';
+import { isCailIdentityConfigError, verifyCredentialForSession } from '../lib/cail-identity';
 import { panelSchema } from '../lib/import';
 import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
@@ -463,6 +463,21 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       expectedSessionId,
       this.env,
     );
+    if (isCailIdentityConfigError(identity)) {
+      // The worker's own verification config failed to load — operator error,
+      // logged distinctly from a rejected credential. There is no HTTP status
+      // to carry a 503 on this internal RPC, so throw a distinct error.
+      const correlation = mintCorrelation();
+      studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
+        request_id: correlation.request_id,
+        product_id: LOG_PRODUCT,
+        principal: principalForSubject(this.cailSubject),
+        trace: traceFromCorrelation(correlation),
+        terminal: { outcome: 'denied', reason: 'denied' },
+        error_type: `identity_config_${identity.configError}`,
+      });
+      throw new Error('setCailCredential: identity verification config could not be loaded');
+    }
     if (!identity) {
       const correlation = mintCorrelation();
       studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
