@@ -1,9 +1,8 @@
 import { z } from 'zod';
 
-// Only accept Workers AI catalog ids (`@cf/...`). Anything else is rejected 400
-// by the PATCH route. Kept in its own module so it is testable without pulling
-// in the full Worker (server.ts uses `cloudflare:` imports node can't load).
-export const CAIL_MODEL_ID_PATTERN = /^@cf\/[\w.\/-]+$/;
+// Public model ids are provider-neutral LiteLLM aliases in the `cail/`
+// namespace. The gateway still performs the authoritative allowlist check.
+export const CAIL_MODEL_ID_PATTERN = /^cail\/[A-Za-z0-9][A-Za-z0-9._/-]{0,194}$/;
 
 export const patchWorkspaceSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),

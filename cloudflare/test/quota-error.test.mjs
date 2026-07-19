@@ -1,57 +1,59 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { APICallError } from 'ai';
 
-import { CailError } from '@cuny-ai-lab/cail-client';
-import { quotaSignalFromError } from '../src/lib/quota-error.ts';
+import {
+  quotaSignalFromError,
+  standardModelError,
+} from '../src/lib/quota-error.ts';
 
-const QUOTA_MESSAGE =
-  'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
+const MESSAGE = 'LiteLLM End User exceeded budget.';
 
-test('quotaSignalFromError forwards a thrown quota CailError verbatim', () => {
-  const signal = quotaSignalFromError(
-    new CailError('quota_exceeded', QUOTA_MESSAGE, 429, { retry_after_seconds: 1800 }),
-  );
+function apiError({
+  status = 429,
+  type = 'budget_exceeded',
+  code = '429',
+  retryAfter,
+} = {}) {
+  return new APICallError({
+    message: MESSAGE,
+    url: 'https://models.example/v1/chat/completions',
+    requestBodyValues: {},
+    statusCode: status,
+    responseHeaders: retryAfter ? { 'retry-after': String(retryAfter) } : {},
+    data: {
+      error: { message: MESSAGE, type, param: null, code },
+    },
+  });
+}
+
+test('reads the standard OpenAI error retained by the AI SDK', () => {
+  assert.deepEqual(standardModelError(apiError({ retryAfter: 1800 })), {
+    status: 429,
+    type: 'budget_exceeded',
+    code: '429',
+    message: MESSAGE,
+    retryAfterSeconds: 1800,
+  });
+});
+
+test('translates a standard budget response into the existing chat UI signal', () => {
+  const signal = quotaSignalFromError(apiError({ retryAfter: 1800 }));
   assert.equal(typeof signal, 'string');
   const parsed = JSON.parse(signal);
   assert.equal(parsed.error.code, 'quota_exceeded');
-  assert.equal(parsed.error.message, QUOTA_MESSAGE);
+  assert.equal(parsed.error.message, MESSAGE);
   assert.equal(parsed.error.cail.retry_after_seconds, 1800);
 });
 
-test('quotaSignalFromError omits retryAfter when the envelope has none', () => {
-  const signal = quotaSignalFromError(new CailError('quota_exceeded', QUOTA_MESSAGE, 429));
-  const parsed = JSON.parse(signal);
-  assert.equal(parsed.error.message, QUOTA_MESSAGE);
-  assert.equal('retry_after_seconds' in parsed.error.cail, false);
-});
-
-test('quotaSignalFromError ignores non-quota CailErrors', () => {
+test('does not treat unrelated API errors as budget exhaustion', () => {
   assert.equal(
-    quotaSignalFromError(
-      new CailError('authentication_required', 'Sign in to continue.', 401, { login_url: '/login' }),
-    ),
+    quotaSignalFromError(apiError({ status: 401, type: 'authentication_error' })),
     null,
   );
-  assert.equal(quotaSignalFromError(new CailError('network_error', 'fetch failed', 0)), null);
-});
-
-// chatFetch throws the parsed CailError on the first 429
-// quota envelope, so the AI SDK never retries it and never wraps it in a
-// RetryError. The old defensive shape-sniffing is gone on purpose: a bare 429
-// shape or RetryError here is NOT a CAIL quota signal.
-test('quotaSignalFromError no longer sniffs SDK error shapes', () => {
-  assert.equal(quotaSignalFromError({ statusCode: 429 }), null);
   assert.equal(
-    quotaSignalFromError({
-      name: 'AI_RetryError',
-      reason: 'maxRetriesExceeded',
-      lastError: { statusCode: 429 },
-      errors: [{ statusCode: 429 }],
-    }),
+    quotaSignalFromError(apiError({ type: 'rate_limit_error', code: '429' })),
     null,
   );
-  assert.equal(quotaSignalFromError(new Error('upstream returned quota_exceeded')), null);
   assert.equal(quotaSignalFromError(new Error('network failed')), null);
-  assert.equal(quotaSignalFromError(null), null);
-  assert.equal(quotaSignalFromError(undefined), null);
 });

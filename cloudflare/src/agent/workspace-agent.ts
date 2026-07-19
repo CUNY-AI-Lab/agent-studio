@@ -32,7 +32,6 @@ import {
   type WorkspaceState,
 } from '../domain/workspace';
 import { accountImportWindowState, type Env } from '../env';
-import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import { verifyCredentialForSession } from '../lib/cail-identity';
 import { panelSchema } from '../lib/import';
@@ -87,7 +86,7 @@ import { updateWorkspaceWithRetry } from '../lib/workspaces';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
-import { quotaSignalFromError } from '../lib/quota-error';
+import { quotaSignalFromError, standardModelError } from '../lib/quota-error';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
 
 const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
@@ -266,24 +265,29 @@ const CAIL_CREDENTIAL_STORAGE_KEY = 'cail:identity-jwt';
 const CAIL_SUBJECT_STORAGE_KEY = 'cail:subject';
 
 /**
- * Stable error-code slug for a DO-op failure. A CailError carries the
- * gateway's stable envelope code (`quota_exceeded`, `authentication_required`,
- * …) plus an HTTP status; anything else is an opaque internal failure — the
- * error MESSAGE is never logged (it can interpolate user content).
+ * Stable low-cardinality error slug. Model API errors come from the standard
+ * OpenAI error parsed by the AI SDK; messages are never logged.
  */
 function logErrorType(error: unknown): string {
-  if (error instanceof CailError) {
-    return error.code;
+  const modelError = standardModelError(error);
+  if (modelError?.type && /^[a-z][a-z0-9_]*$/.test(modelError.type)) {
+    return modelError.type;
+  }
+  if (modelError?.code && /^[a-z][a-z0-9_]*$/.test(modelError.code)) {
+    return modelError.code;
   }
   return 'internal_error';
 }
 
 function terminalForModelError(error: unknown): CailTerminalFields {
-  if (error instanceof CailError) {
-    if (error.code === 'quota_exceeded') return { outcome: 'denied', reason: 'quota_blocked' };
-    if (error.status === 401 || error.status === 403) return { outcome: 'denied', reason: 'denied' };
-    if (error.status === 429) return { outcome: 'denied', reason: 'rate_limited' };
+  const modelError = standardModelError(error);
+  if (modelError?.type === 'budget_exceeded' || modelError?.code === 'budget_exceeded') {
+    return { outcome: 'denied', reason: 'quota_blocked' };
   }
+  if (modelError?.status === 401 || modelError?.status === 403) {
+    return { outcome: 'denied', reason: 'denied' };
+  }
+  if (modelError?.status === 429) return { outcome: 'denied', reason: 'rate_limited' };
   return { outcome: 'error', reason: 'upstream_failure' };
 }
 
@@ -309,7 +313,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private migrationFrozen = false;
   private activeMutations = 0;
   /**
-   * The caller's selected verified identity JWT, forwarded to the model proxy as
+   * The caller's selected verified identity JWT, forwarded to LiteLLM as
    * the model-call credential. Set server-side (never over the client WebSocket,
    * which cannot carry the gateway-injected header) via setCailCredential, and
    * kept in DO storage so it survives hibernation. Never broadcast in state.
@@ -695,7 +699,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const correlation = mintCorrelation();
 
     if (!this.cailIdentityJwt) {
-      // No verified CAIL credential reached this workspace: the model proxy
+      // No verified CAIL credential reached this workspace: LiteLLM
       // has no way to authenticate or attribute spend. Surface the CAIL
       // authentication_required envelope rather than calling out anonymously.
       studioLogger(this.env)?.emit(STUDIO_EVENTS.CHAT_DENIED, {
@@ -795,8 +799,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         env: this.env,
         identityJwt: this.cailIdentityJwt,
         model: workspace.model,
-        // Propagate this turn's correlation to the model proxy so gateway/
-        // proxy logs join to this DO's wide events.
+        // Propagate this turn's correlation so LiteLLM logs join to this DO's
+        // wide events.
         correlation,
       });
       const scopedPanelTraceIds = scopedPanels.map((panel) => panel.id);
@@ -811,8 +815,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
       const result = streamText({
         model,
-        // The gateway does not yet deduplicate model execution. A retry after
-        // an uncertain response could run and bill the same turn twice.
+        // Retrying an uncertain generation can run and bill the turn twice.
         maxRetries: 0,
         abortSignal: options?.abortSignal,
         system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),

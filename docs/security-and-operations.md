@@ -25,7 +25,7 @@ The table records why each shared primitive is or is not part of this consumer.
 | --- | --- |
 | Session | `SESSION_SECRET` is at least 32 characters and comes from the authorized secret store. |
 | Identity | `CAIL_REQUIRE_IDENTITY=true`; `CAIL_IDENTITY_ISSUER` is the one exact issuer for the deployment environment; `CAIL_IDENTITY_JWKS` is a non-empty RS256 RSA signing-key set with `kid`, `n`, and `e`. |
-| Model proxy | `CAIL_API_BASE` is an HTTPS, non-placeholder URL without credentials, query, or fragment. |
+| Model gateway | `CAIL_OPENAI_BASE_URL` is an HTTPS, non-placeholder URL ending in `/v1`, without credentials, query, or fragment. |
 | Browser origin | `CAIL_CANONICAL_ORIGIN` is one exact HTTPS origin with no path, query, or fragment. |
 | Shared mount | `CAIL_BASE_PATH` is a valid non-root path. The checked-in build uses `/agent-studio`. |
 | Rate limiting | Both `API_RATE_LIMIT` and `HEAVY_RATE_LIMIT` bindings expose `limit()`. |
@@ -79,8 +79,8 @@ the platform's connection-drain/restart behavior as an activation check.
 ## Agent, model, and tool permissions
 
 Agent Studio stores no provider API key. Model calls go to
-`{CAIL_API_BASE}/v1/...` with the verified caller JWT and
-`X-CAIL-App: agent-studio`. The shared proxy is authoritative for catalog
+`{CAIL_OPENAI_BASE_URL}/...` with the verified caller JWT as a bearer token and
+`X-CAIL-App: agent-studio`. LiteLLM is authoritative for catalog
 policy, token and cost accounting, and user quota. Studio does not emit
 `cail.quota.charged` or maintain a remaining-budget ledger.
 

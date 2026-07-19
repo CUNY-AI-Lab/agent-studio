@@ -709,7 +709,7 @@ test('middleware: first authenticated request with legacy cookie migrates once a
   await seedGalleryItem(r2, 'galM', anonSessionId);
 
   // Authenticate with the legacy cookie still present.
-  const jwt = await mintJwt('cail-middleware-test');
+  const jwt = await mintJwt('cail-22222222222222222222222222222222');
   const authed = await app.request('/api/session', {
     headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
   }, env);
@@ -750,7 +750,7 @@ test('middleware: authenticated request after expiry refuses import and clears t
     CAIL_SSO_SWITCHED_AT: '2026-01-01T00:00:00Z',
     CAIL_ACCOUNT_IMPORT_UNTIL: '2026-01-02T00:00:00Z',
   });
-  const jwt = await mintJwt('cail-expired-migration-test');
+  const jwt = await mintJwt('cail-33333333333333333333333333333333');
 
   const warnings = t.mock.method(console, 'warn', () => {});
   const authed = await app.request('/api/session', {

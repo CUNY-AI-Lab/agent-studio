@@ -213,9 +213,8 @@ export function classifyOrigin(
  * Origin headers can only reject; every unsafe cookie-authenticated request
  * must carry the per-session token.
  *
- * Bearer sk-cail-* API clients (no ambient cookie in play) would be accepted on
- * the key alone; Agent Studio has no Bearer path today, so this is a documented
- * no-op — if one is added, short-circuit here before the origin check.
+ * This is Agent Studio's browser API boundary, not the model endpoint; it has
+ * no direct bearer-client path.
  */
 export async function enforceCsrf(
   c: Context<{ Bindings: Env; Variables: SessionVariables }>,

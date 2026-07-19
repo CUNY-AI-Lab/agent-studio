@@ -1,16 +1,16 @@
 // Tests for the workspace PATCH validation schema — specifically the per-
-// workspace model override, which must accept only `@cf/...` catalog ids and
-// reject anything else (the route turns a parse failure into a 400).
+// workspace model override, which accepts only provider-neutral `cail/...`
+// aliases and rejects anything else (the route maps a parse failure to 400).
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { patchWorkspaceSchema } from '../src/lib/workspace-validation.ts';
 
-test('accepts a well-formed @cf model id', () => {
-  const result = patchWorkspaceSchema.safeParse({ model: '@cf/zai-org/glm-5.2' });
+test('accepts a well-formed cail model alias', () => {
+  const result = patchWorkspaceSchema.safeParse({ model: 'cail/workers-llama-3.1-8b' });
   assert.equal(result.success, true);
-  assert.equal(result.data.model, '@cf/zai-org/glm-5.2');
+  assert.equal(result.data.model, 'cail/workers-llama-3.1-8b');
 });
 
 test('accepts a name/description patch with no model', () => {
@@ -19,8 +19,8 @@ test('accepts a name/description patch with no model', () => {
   assert.equal(result.data.model, undefined);
 });
 
-test('rejects a non-@cf model id', () => {
-  for (const bad of ['gpt-4o', 'openai/gpt-4', '@openai/gpt-4', 'https://evil/x', '', '@cf/']) {
+test('rejects a model id outside the cail namespace', () => {
+  for (const bad of ['gpt-4o', 'openai/gpt-4', '@cf/model', 'https://evil/x', '', 'cail/']) {
     assert.equal(
       patchWorkspaceSchema.safeParse({ model: bad }).success,
       false,
@@ -30,6 +30,6 @@ test('rejects a non-@cf model id', () => {
 });
 
 test('rejects an over-long model id', () => {
-  const result = patchWorkspaceSchema.safeParse({ model: `@cf/${'x'.repeat(300)}` });
+  const result = patchWorkspaceSchema.safeParse({ model: `cail/${'x'.repeat(300)}` });
   assert.equal(result.success, false);
 });

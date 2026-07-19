@@ -29,7 +29,7 @@ test('round-trip: a workspace WITH a model override exports and re-imports', asy
     description: 'has a model override',
     createdAt: now,
     updatedAt: now,
-    model: '@cf/zai-org/glm-5.2',
+    model: 'cail/default',
   };
 
   const bundle = await createWorkspaceExportBundle({
@@ -43,13 +43,13 @@ test('round-trip: a workspace WITH a model override exports and re-imports', asy
   });
 
   // The exported bundle must carry the override verbatim at both positions.
-  assert.equal(bundle.workspace.model, '@cf/zai-org/glm-5.2');
-  assert.equal(bundle.state.workspace.model, '@cf/zai-org/glm-5.2');
+  assert.equal(bundle.workspace.model, 'cail/default');
+  assert.equal(bundle.state.workspace.model, 'cail/default');
 
   // Re-import: this threw before the fix (strict schema rejected `model`).
   const reparsed = parseWorkspaceImportBundle(JSON.parse(JSON.stringify(bundle)));
-  assert.equal(reparsed.workspace.model, '@cf/zai-org/glm-5.2');
-  assert.equal(reparsed.state.workspace.model, '@cf/zai-org/glm-5.2');
+  assert.equal(reparsed.workspace.model, 'cail/default');
+  assert.equal(reparsed.state.workspace.model, 'cail/default');
 });
 
 test('round-trip: a workspace WITHOUT a model override still imports', async () => {

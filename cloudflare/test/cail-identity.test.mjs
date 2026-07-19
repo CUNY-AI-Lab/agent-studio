@@ -25,10 +25,11 @@ import {
 } from '../src/lib/cail-model.ts';
 
 const NOW = 1_800_000_000;
+const SUBJECT = 'cail-0123456789abcdef0123456789abcdef';
 
 function validPayload(overrides = {}) {
   return {
-    sub: 'cail-abc123',
+    sub: SUBJECT,
     aud: CAIL_IDENTITY_AUDIENCE,
     iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     exp: NOW + 3600,
@@ -71,7 +72,7 @@ test('verifies the canonical RS256 identity contract', async () => {
   });
 
   assert.ok(identity);
-  assert.equal(identity.subject, 'cail-abc123');
+  assert.equal(identity.subject, SUBJECT);
   assert.equal(identity.email, 'someone@gc.cuny.edu');
   assert.deepEqual(identity.entitlements, ['tools', 'agent-studio']);
 });
@@ -88,7 +89,7 @@ test('canonical header accepts either key during rotation overlap', async () => 
     const result = await getCailIdentityFromRequest(request, env, NOW);
     assert.ok(result);
     assert.equal(result.token, token);
-    assert.equal(result.identity.subject, 'cail-abc123');
+    assert.equal(result.identity.subject, SUBJECT);
     assert.deepEqual(Object.keys(result).sort(), ['identity', 'token']);
   }
 });
@@ -183,9 +184,9 @@ test('getCailIdentityFromRequest returns null with no canonical header', async (
 });
 
 test('sessionIdForSubject is stable and subject-specific', async () => {
-  const id = await sessionIdForSubject('cail-abc123');
+  const id = await sessionIdForSubject(SUBJECT);
   assert.match(id, /^[a-f0-9]{32}$/);
-  assert.equal(id, await sessionIdForSubject('cail-abc123'));
+  assert.equal(id, await sessionIdForSubject(SUBJECT));
   assert.notEqual(id, await sessionIdForSubject('cail-other'));
 });
 
@@ -193,11 +194,11 @@ test('verifyCredentialForSession accepts only a matching subject session', async
   const key = await makeKey('credential-key');
   const token = await mintIdentityJwt(validPayload(), key);
   const env = identityEnv(key);
-  const expected = await sessionIdForSubject('cail-abc123');
+  const expected = await sessionIdForSubject(SUBJECT);
   const identity = await verifyCredentialForSession(token, expected, env, NOW);
 
   assert.ok(identity);
-  assert.equal(identity.subject, 'cail-abc123');
+  assert.equal(identity.subject, SUBJECT);
   assert.equal(
     await verifyCredentialForSession(
       token,
@@ -212,7 +213,7 @@ test('verifyCredentialForSession accepts only a matching subject session', async
 test('verifyCredentialForSession rejects empty and malformed credentials', async () => {
   const key = await makeKey('credential-key');
   const env = identityEnv(key);
-  const expected = await sessionIdForSubject('cail-abc123');
+  const expected = await sessionIdForSubject(SUBJECT);
 
   assert.equal(await verifyCredentialForSession('not-a-jwt', expected, env, NOW), null);
   assert.equal(await verifyCredentialForSession('', expected, env, NOW), null);
@@ -235,8 +236,8 @@ test('cailAuthRequiredResponse is a 401 with the canonical nested envelope', asy
 
 test('resolveCailModelName honors the override and default', () => {
   assert.equal(
-    resolveCailModelName({ CAIL_MODEL: '@cf/openai/gpt-oss-120b' }),
-    '@cf/openai/gpt-oss-120b',
+    resolveCailModelName({ CAIL_MODEL: 'cail/nova-lite' }),
+    'cail/nova-lite',
   );
   assert.equal(resolveCailModelName({}), DEFAULT_CAIL_MODEL);
 });
@@ -257,7 +258,7 @@ test('createCailModel forwards the JWT + app header and sets no provider key', a
 
   try {
     const model = createCailModel({
-      env: { CAIL_API_BASE: 'https://proxy.example', CAIL_MODEL: '@cf/zai-org/glm-5.2' },
+      env: { CAIL_OPENAI_BASE_URL: 'https://models.example/v1', CAIL_MODEL: 'cail/default' },
       identityJwt: 'jwt-token-value',
       correlation: {
         trace_id: 'a'.repeat(32),
@@ -277,22 +278,25 @@ test('createCailModel forwards the JWT + app header and sets no provider key', a
   assert.equal(captured.length >= 1, true, 'provider should have issued a request');
   const request = captured[0];
   assert.equal(new URL(request.url).pathname, '/v1/chat/completions');
-  assert.equal(request.headers.get(CAIL_IDENTITY_HEADER), 'jwt-token-value');
+  assert.equal(request.headers.get(CAIL_IDENTITY_HEADER), null);
   assert.equal(request.headers.get('X-CAIL-App'), CAIL_APP_SLUG);
-  assert.equal(request.headers.get('authorization'), null);
+  assert.equal(request.headers.get('authorization'), 'Bearer jwt-token-value');
   assert.equal(request.headers.get('traceparent'), `00-${'a'.repeat(32)}-${'b'.repeat(16)}-00`);
   assert.equal(request.headers.get('tracestate'), 'cail=studio');
   assert.equal(request.headers.get('x-cail-request-id'), '11111111-1111-4111-8111-111111111111');
   assert.equal(capturedCredentials[0], 'omit');
 });
 
-test('createCailModel throws without CAIL_API_BASE', () => {
-  assert.throws(() => createCailModel({ env: {}, identityJwt: 'x' }), /CAIL_API_BASE/);
+test('createCailModel throws without CAIL_OPENAI_BASE_URL', () => {
+  assert.throws(() => createCailModel({ env: {}, identityJwt: 'x' }), /CAIL_OPENAI_BASE_URL/);
 });
 
 test('createCailModel throws without an identity JWT', () => {
   assert.throws(
-    () => createCailModel({ env: { CAIL_API_BASE: 'https://proxy.example' }, identityJwt: '' }),
+    () => createCailModel({
+      env: { CAIL_OPENAI_BASE_URL: 'https://models.example/v1' },
+      identityJwt: '',
+    }),
     /identity JWT/,
   );
 });

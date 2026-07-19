@@ -27,7 +27,7 @@ export type SessionVariables = {
   sessionId: string;
   /** Verified CAIL identity, or null when the request is anonymous. */
   cailIdentity: CailIdentity | null;
-  /** Verified raw identity JWT to forward to the model proxy, or null. */
+  /** Verified raw identity JWT to forward to LiteLLM, or null. */
   cailIdentityJwt: string | null;
 };
 

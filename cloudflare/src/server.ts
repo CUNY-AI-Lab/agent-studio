@@ -34,6 +34,7 @@ import {
   fetchCailModels,
   ModelCatalogAuthError,
   ModelCatalogQuotaError,
+  ModelCatalogUnavailableError,
 } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import {
@@ -168,6 +169,9 @@ app.onError((error, c) => {
   if (error instanceof ModelCatalogQuotaError) {
     return respond(c.json({ error: 'quota_exceeded', message: error.message }, 429));
   }
+  if (error instanceof ModelCatalogUnavailableError) {
+    return respond(c.json({ error: 'Model catalog unavailable' }, 502));
+  }
   return respond(c.json({ error: 'Internal error' }, 500));
 });
 
@@ -212,7 +216,7 @@ function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
 /**
  * Push the caller's verified CAIL identity JWT into the workspace DO so its
  * model calls (which run over the client WebSocket, where the gateway header
- * is unavailable) can authenticate to the model proxy. No-op when anonymous.
+ * is unavailable) can authenticate to the model gateway. No-op when anonymous.
  */
 async function primeAgentCredential(
   c: AppContext,
@@ -1010,14 +1014,14 @@ export { MigrationRegistry } from './migration-registry';
 
 // AS-3-10 deploy-footgun guard. Several intentionally permissive local-dev
 // defaults are unsafe on the shared production host. Warn loudly once so a
-// deploy that missed its injected model proxy, identity gate, or cookie base
+// deploy that missed its model gateway, identity gate, or cookie base
 // path is obvious in logs. Those optional settings remain warnings; the
 // required health configuration is validated separately and fails startup traffic.
 let cailConfigChecked = false;
 function checkCailConfigOnce(env: Env, config: AgentStudioConfigValidation): void {
   if (cailConfigChecked) return;
   cailConfigChecked = true;
-  const base = env.CAIL_API_BASE ?? '';
+  const base = env.CAIL_OPENAI_BASE_URL ?? '';
   const logConfigInvalid = (errorType: string) => {
     const log = studioLogger(env);
     if (!log) return;

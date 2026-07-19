@@ -11,7 +11,7 @@ import { appPath } from './base-path';
 
 /**
  * CAIL 401 handling (see docs/security-and-operations.md). When the SSO
- * gate / model proxy returns `authentication_required`, redirect the browser
+ * gate or model gateway returns `authentication_required`, redirect the browser
  * to /login?rt=<current-path> so the user re-authenticates and returns here.
  * Same-origin paths only. Returns true when it handled (and is redirecting).
  */
@@ -239,7 +239,7 @@ export interface ModelCatalogEntry {
 
 export interface ModelCatalog {
   models: ModelCatalogEntry[];
-  source: 'proxy' | 'fallback';
+  source: 'gateway';
   default: string;
 }
 
@@ -254,7 +254,7 @@ export async function fetchModels(): Promise<ModelCatalog> {
   return parseJson<ModelCatalog>(response);
 }
 
-/** Strip the `@cf/vendor/` prefix so the picker shows a short model name. */
+/** Show the final segment of a curated public model alias. */
 export function modelDisplayName(id: string): string {
   return id.split('/').pop() || id;
 }

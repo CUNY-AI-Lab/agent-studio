@@ -32,7 +32,7 @@ const PRODUCTION = {
   CAIL_IDENTITY_JWKS: JSON.stringify({
     keys: [{ kty: 'RSA', alg: 'RS256', use: 'sig', kid: 'active', n: 'modulus', e: 'AQAB' }],
   }),
-  CAIL_API_BASE: 'https://model-proxy.example',
+  CAIL_OPENAI_BASE_URL: 'https://models.example/v1',
   CAIL_CANONICAL_ORIGIN: 'https://tools.example',
   CAIL_BASE_PATH: '/agent-studio',
   API_RATE_LIMIT: { limit() {} },
@@ -202,7 +202,8 @@ test('production fails closed unless identity, route, proxy, and rate boundaries
     ['CAIL_IDENTITY_JWKS', '', 'production_identity_jwks_missing'],
     ['CAIL_IDENTITY_JWKS', '{}', 'production_identity_jwks_invalid'],
     ['CAIL_IDENTITY_JWKS', JSON.stringify({ keys: [{ kty: 'RSA', kid: 'active' }] }), 'production_identity_jwks_invalid'],
-    ['CAIL_API_BASE', 'http://model-proxy.example', 'production_api_base_invalid'],
+    ['CAIL_OPENAI_BASE_URL', 'http://models.example/v1', 'production_api_base_invalid'],
+    ['CAIL_OPENAI_BASE_URL', 'https://models.example', 'production_api_base_invalid'],
     ['CAIL_CANONICAL_ORIGIN', 'https://tools.example/path', 'production_canonical_origin_invalid'],
     ['CAIL_BASE_PATH', '', 'production_base_path_missing'],
     ['CAIL_BASE_PATH', '/agent%2fother', 'production_base_path_invalid'],

@@ -118,12 +118,12 @@ test('canonical action and per-step model-call mappings compile and emit at runt
   log.emit(CAIL_EVENTS.MODEL_CALL_ADMITTED, {
     call_id: CALL_ID, action_id: ACTION_ID, request_id: REQUEST_ID,
     product_id: LOG_PRODUCT, principal: PRINCIPAL, provider: 'cail',
-    request_model: '@cf/zai-org/glm-5.2', trace: TRACE,
+    request_model: 'cail/default', trace: TRACE,
   });
   log.emit(CAIL_EVENTS.MODEL_CALL_TERMINAL, {
     call_id: CALL_ID, action_id: ACTION_ID, request_id: REQUEST_ID,
     product_id: LOG_PRODUCT, principal: PRINCIPAL, provider: 'cail',
-    request_model: '@cf/zai-org/glm-5.2', trace: TRACE,
+    request_model: 'cail/default', trace: TRACE,
     terminal: { outcome: 'ok', reason: 'completed' }, duration_ms: 18,
   });
   log.emit(CAIL_EVENTS.ACTION_TERMINAL, {
@@ -141,7 +141,7 @@ test('canonical action and per-step model-call mappings compile and emit at runt
   ]);
   const modelTerminal = events[2].attributes;
   assert.equal(modelTerminal['gen_ai.provider.name'], 'cail');
-  assert.equal(modelTerminal['gen_ai.request.model'], '@cf/zai-org/glm-5.2');
+  assert.equal(modelTerminal['gen_ai.request.model'], 'cail/default');
   for (const spendField of [
     'gen_ai.usage.input_tokens',
     'gen_ai.usage.output_tokens',

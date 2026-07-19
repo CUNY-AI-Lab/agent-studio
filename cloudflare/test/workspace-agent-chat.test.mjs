@@ -244,11 +244,9 @@ test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
   assert.equal(payload.error.cail.retryable, true);
 });
 
-// Behavioral pin for the fleet's quota-surfacing bug (S5/A7): a gateway 429
-// quota_exceeded envelope must reach the chat user as the VERBATIM envelope
-// message, not a generic failure — and on the FIRST wire call (the shared
-// client's chatFetch throws the parsed CailError, which no AI SDK retries).
-test('gateway 429 quota_exceeded streams the verbatim quota message to the user', async (t) => {
+// A standard LiteLLM budget response must reach the chat user with its message
+// on the first wire call.
+test('LiteLLM 429 budget_exceeded streams the budget message to the user', async (t) => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const { tool } = await import('ai');
   const { z } = await import('zod');
@@ -257,18 +255,16 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
   let wireCalls = 0;
   const originalFetch = globalThis.fetch;
-  // createCailModel builds the shared client per request, which captures
-  // globalThis.fetch — so this stub IS the gateway for the model call.
+  // createCailModel builds the shared client per request and captures fetch.
   globalThis.fetch = async () => {
     wireCalls += 1;
     return new Response(
       JSON.stringify({
         error: {
           message: quotaMessage,
-          type: 'rate_limit_error',
+          type: 'budget_exceeded',
           param: null,
-          code: 'quota_exceeded',
-          cail: { retry_after_seconds: 1800 },
+          code: '429',
         },
       }),
       {
@@ -301,7 +297,7 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
       return 'session-1';
     },
     cailIdentityJwt: 'header.payload.signature',
-    env: { CAIL_API_BASE: 'https://cail.test' },
+    env: { CAIL_OPENAI_BASE_URL: 'https://cail.test/v1' },
     state: { panels: [] },
     messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
     buildHostTools() {
@@ -357,6 +353,6 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   assert.equal(payload.error.code, 'quota_exceeded');
   assert.equal(payload.error.message, quotaMessage);
   assert.equal(payload.error.cail.retry_after_seconds, 1800);
-  // The thrown CailError must not be SDK-retried: one wire call, no retry storm.
+  // The app configures maxRetries: 0: one wire call, no retry storm.
   assert.equal(wireCalls, 1);
 });

@@ -14,7 +14,7 @@ bun run dev
 
 Local development requires a unique `SESSION_SECRET` and
 `CAIL_LOG_ENV=development`. Model calls also require an approved
-`CAIL_API_BASE`. Anonymous local mode may omit the identity JWKS and dedicated
+`CAIL_OPENAI_BASE_URL` ending in `/v1`. Anonymous local mode may omit the identity JWKS and dedicated
 gallery-owner keyring; production may not. `CAIL_IDENTITY_ISSUER` selects one
 exact issuer for the environment; staging must use the staging issuer.
 

@@ -51,7 +51,7 @@ test('publish stamps galleryId without reverting a PATCH that landed mid-publish
     if (!fired && key.includes('/gallery/')) {
       fired = true;
       const current = await getWorkspace(env, sessionId, workspace.id);
-      await putWorkspace(env, sessionId, { ...current, model: '@cf/concurrent-override' });
+      await putWorkspace(env, sessionId, { ...current, model: 'cail/concurrent-override' });
     }
     return originalPut(key, value, opts);
   };
@@ -69,7 +69,7 @@ test('publish stamps galleryId without reverting a PATCH that landed mid-publish
   assert.equal(stored.galleryId, item.id, 'publish must stamp the galleryId');
   assert.equal(
     stored.model,
-    '@cf/concurrent-override',
+    'cail/concurrent-override',
     'the concurrent model PATCH must survive the publish stamp'
   );
 });
@@ -141,7 +141,7 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
 
   // Concurrent PATCH lands while the turn is streaming, after the tool
   // closures captured `turnStartRecord`.
-  await putWorkspace(env, sessionId, { ...turnStartRecord, model: '@cf/concurrent-override' });
+  await putWorkspace(env, sessionId, { ...turnStartRecord, model: 'cail/concurrent-override' });
 
   const fakeAgent = {
     env,
@@ -162,11 +162,11 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
   assert.equal(stored.name, 'Renamed', 'the rename must be applied');
   assert.equal(
     stored.model,
-    '@cf/concurrent-override',
+    'cail/concurrent-override',
     'the concurrent model PATCH must survive the ui_workspace write'
   );
   assert.equal(result.name, 'Renamed');
-  assert.equal(fakeAgent.synced?.workspace.model, '@cf/concurrent-override');
+  assert.equal(fakeAgent.synced?.workspace.model, 'cail/concurrent-override');
   assert.equal(fakeAgent.synced?.sessionId, sessionId);
 });
 

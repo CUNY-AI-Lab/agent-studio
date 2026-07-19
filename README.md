@@ -32,15 +32,16 @@ cp cloudflare/.dev.vars.example cloudflare/.dev.vars
 ```
 
 At minimum, replace `SESSION_SECRET` and keep
-`CAIL_LOG_ENV=development`. `CAIL_API_BASE` is required for model calls; the
+`CAIL_LOG_ENV=development`. `CAIL_OPENAI_BASE_URL` is required for model calls; the
 example value is deliberately invalid. Local anonymous mode may leave the JWKS
 and gallery-owner keyring values unset. `CAIL_IDENTITY_ISSUER` still names one
 exact environment issuer; it is never a combined production/staging allowlist.
 
-Agent Studio holds no model-provider key. It forwards a locally verified
-`X-CAIL-Identity-JWT` to the CAIL model proxy with
-`X-CAIL-App: agent-studio`. The proxy owns the model catalog, accounting, and
-authoritative quota. Local model validation accepts only `@cf/...` identifiers.
+Agent Studio holds no model-provider key. It forwards the locally verified
+identity JWT to LiteLLM as `Authorization: Bearer …`, with
+`X-CAIL-App: agent-studio` as non-authoritative app attribution. LiteLLM owns
+the curated model catalog, provider routing, spend, and budgets. Public model
+aliases use the provider-neutral `cail/...` namespace.
 
 The root `.env.example` is only a pointer. Worker variables belong in
 `cloudflare/.dev.vars`; split frontend development uses

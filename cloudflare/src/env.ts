@@ -16,9 +16,9 @@ export interface Env {
   // see src/lib/rate-limit.ts. RateLimit comes from @cloudflare/workers-types.
   API_RATE_LIMIT?: RateLimit;
   HEAVY_RATE_LIMIT?: RateLimit;
-  // CAIL backbone: model calls go through the CAIL model proxy, never a
+  // CAIL backbone: model calls go through LiteLLM, never a
   // provider key. See src/lib/cail-model.ts and src/lib/cail-identity.ts.
-  CAIL_API_BASE?: string;
+  CAIL_OPENAI_BASE_URL?: string;
   CAIL_MODEL?: string;
   // Operational-log resource identity. The deployment environment is an
   // explicit fleet classification; the immutable release comes from
@@ -258,7 +258,7 @@ export function validateAgentStudioConfig(
     CAIL_ACCOUNT_IMPORT_UNTIL?: string;
     CAIL_IDENTITY_JWKS?: string;
     CAIL_IDENTITY_ISSUER?: string;
-    CAIL_API_BASE?: string;
+    CAIL_OPENAI_BASE_URL?: string;
     CAIL_CANONICAL_ORIGIN?: string;
     CAIL_BASE_PATH?: string;
     API_RATE_LIMIT?: { limit?: unknown };
@@ -348,13 +348,14 @@ export function validateAgentStudioConfig(
       return { ok: false, errorCode: 'production_identity_jwks_invalid' };
     }
     try {
-      const apiBase = new URL(env.CAIL_API_BASE ?? '');
+      const apiBase = new URL(env.CAIL_OPENAI_BASE_URL ?? '');
       if (
         apiBase.protocol !== 'https:'
         || apiBase.username
         || apiBase.password
         || apiBase.search
         || apiBase.hash
+        || !apiBase.pathname.replace(/\/+$/, '').endsWith('/v1')
         || apiBase.hostname.endsWith('.invalid')
         || apiBase.href.includes('REPLACE')
       ) {

@@ -26,7 +26,6 @@ import {
   CAIL_IDENTITY_AUDIENCE,
   CAIL_IDENTITY_HEADER,
 } from '../src/lib/cail-identity.ts';
-import { resetCailModelsCache } from '../src/lib/cail-models.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
 
 const app = await importServer();
@@ -56,7 +55,7 @@ async function makeRouteCredential(overrides = {}) {
   const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
   const publicJwk = { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' };
   const token = await new SignJWT({
-    sub: 'cail-route-test',
+    sub: 'cail-11111111111111111111111111111111',
     aud: CAIL_IDENTITY_AUDIENCE,
     iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     exp: Math.floor(Date.now() / 1000) + 3600,
@@ -1041,26 +1040,18 @@ test('gallery: publish with invalid body returns 400 (ZodError mapped by onError
   assert.equal(res.status, 400);
 });
 
-test('/api/models returns fallback catalog in anonymous no-proxy env', async () => {
-  resetCailModelsCache();
+test('/api/models fails clearly without a configured gateway', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
 
   const res = await session.request(app, '/api/models');
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), ['default', 'models', 'source']);
-  assert.equal(body.source, 'fallback');
-  assert.equal(body.models.length, 1);
-  assert.equal(body.default, body.models[0].id);
-  assert.equal(body.models[0].recommended, true);
-  resetCailModelsCache();
+  assert.equal(res.status, 502);
+  assert.equal((await readError(res)).code, 'upstream_error');
 });
 
-test('/api/models surfaces proxy auth failure as 502', async () => {
-  resetCailModelsCache();
+test('/api/models surfaces gateway auth failure as 502', async () => {
   const { env } = makeEnv();
-  env.CAIL_API_BASE = 'https://proxy.example';
+  env.CAIL_OPENAI_BASE_URL = 'https://models.example/v1';
   const { token, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
   const session = new Session(env);
@@ -1087,14 +1078,12 @@ test('/api/models surfaces proxy auth failure as 502', async () => {
     assert.equal((await readError(res)).code, 'upstream_error');
   } finally {
     globalThis.fetch = originalFetch;
-    resetCailModelsCache();
   }
 });
 
-test('/api/models surfaces proxy quota exhaustion as 429', async () => {
-  resetCailModelsCache();
+test('/api/models surfaces gateway budget exhaustion as 429', async () => {
   const { env } = makeEnv();
-  env.CAIL_API_BASE = 'https://proxy.example';
+  env.CAIL_OPENAI_BASE_URL = 'https://models.example/v1';
   const { token, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
   const session = new Session(env);
@@ -1123,7 +1112,6 @@ test('/api/models surfaces proxy quota exhaustion as 429', async () => {
     assert.equal(error.message, 'quota exhausted');
   } finally {
     globalThis.fetch = originalFetch;
-    resetCailModelsCache();
   }
 });
 

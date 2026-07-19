@@ -7,12 +7,10 @@ SESSION_SECRET=replace-me-openssl-rand-hex-32
 # Wrangler's CF_VERSION_METADATA binding rather than a hand-maintained value.
 CAIL_LOG_ENV=development
 
-# CAIL model proxy base URL (serves /v1/... and /keys). The local placeholder
-# must never be deployed. See docs/security-and-operations.md. No trailing slash.
-CAIL_API_BASE=https://REPLACE-WITH-CAIL-MODEL-PROXY.invalid
-# Optional model override; the proxy/AI Gateway resolves this slug.
-# CAIL policy: Workers AI catalog (@cf/...) ids only.
-CAIL_MODEL=@cf/zai-org/glm-5.2
+# Exact LiteLLM OpenAI-compatible base. The placeholder must never be deployed.
+CAIL_OPENAI_BASE_URL=https://models.invalid/v1
+# Provider-neutral public alias in the curated LiteLLM catalog.
+CAIL_MODEL=cail/default
 # Static public JWKS JSON used to verify the canonical X-CAIL-Identity-JWT
 # header with RS256 for audience cail:agent-studio. Multiple distinct kid
 # values support signing-key rotation overlap. Leave blank locally to run
