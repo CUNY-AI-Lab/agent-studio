@@ -90,7 +90,7 @@ test('the versioned product reliability contract fixes access, windows, and coll
   const pkg = await readPackage();
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-log'], '^0.4.0');
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-identity'], '^4.0.0');
-  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-client'], '^1.1.0');
+  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-client'], '^1.2.0');
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-sandbox-client'], undefined);
 });
 
