@@ -12,6 +12,7 @@
     "partyserver": "0.3.3"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.4",
     "agents": "0.17.4"
   },
   "scripts": {
@@ -20,6 +21,7 @@
     "dev:frontend": "bun run --cwd frontend dev",
     "build": "bun run --cwd frontend build && bun run --cwd cloudflare typecheck",
     "typecheck": "bun run --cwd cloudflare typecheck && bun run --cwd frontend typecheck",
+    "lint": "biome lint .",
     "test": "bun run test:backend && bun run test:frontend && bun run test:tools",
     "test:backend": "bun run --cwd cloudflare test",
     "test:frontend": "bun run --cwd frontend test",
