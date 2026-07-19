@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toWorkersLogEvent } from '@cuny-ai-lab/cail-log';
+import { TEST_QUOTA_SUBJECT } from '@cuny-ai-lab/cail-client/testing';
 
 import {
   CAIL_ANALYTICS_ENGINE_BLOBS,
@@ -25,7 +26,9 @@ import {
   withOutboundCorrelation,
 } from '../src/lib/logging.ts';
 
-const DURABLE_SUBJECT = 'cail-0123456789abcdef0123456789abcdef';
+// The canonical fixture subject; LOG_SUBJECT states the expected production
+// derivation (LOG_SUBJECT_VERSION-prefixed) for it independently.
+const DURABLE_SUBJECT = TEST_QUOTA_SUBJECT;
 const LOG_SUBJECT = 'cail-v1-0123456789abcdef0123456789abcdef';
 const TRACE_ID = 'a'.repeat(32);
 const SPAN_ID = 'b'.repeat(16);

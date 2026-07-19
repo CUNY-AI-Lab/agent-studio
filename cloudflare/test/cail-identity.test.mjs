@@ -4,6 +4,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import {
+  TEST_SUBJECTS,
+  createTestIdentityIssuer,
+} from '@cuny-ai-lab/cail-identity/testing';
 
 import {
   verifyIdentityJwt,
@@ -26,76 +30,67 @@ import {
 
 const NOW = 1_800_000_000;
 
-function validPayload(overrides = {}) {
-  return {
-    sub: 'cail-abc12300abc12300abc12300abc12300',
-    aud: CAIL_IDENTITY_AUDIENCE,
-    iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
-    exp: NOW + 3600,
+// Minting goes through the canonical test issuer from
+// @cuny-ai-lab/cail-identity/testing; this wrapper only fills in the
+// repo-standard audience/claims and test clock.
+function mintValid(issuer, overrides = {}) {
+  return issuer.mintIdentityJwt({
+    audience: CAIL_IDENTITY_AUDIENCE,
     email: 'someone@gc.cuny.edu',
     name: 'Some One',
     entitlements: ['tools', 'agent-studio'],
+    now: NOW,
     ...overrides,
-  };
+  });
 }
 
-async function makeKey(kid) {
-  const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
+function identityEnv(...issuers) {
   return {
-    kid,
-    privateKey,
-    publicJwk: { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' },
-  };
-}
-
-async function mintIdentityJwt(payload, key) {
-  return new SignJWT(payload)
-    .setProtectedHeader({ alg: 'RS256', kid: key.kid, typ: 'JWT' })
-    .sign(key.privateKey);
-}
-
-function identityEnv(...keys) {
-  return {
-    CAIL_IDENTITY_JWKS: JSON.stringify({ keys: keys.map((key) => key.publicJwk) }),
+    CAIL_IDENTITY_JWKS: JSON.stringify({
+      keys: issuers.flatMap((issuer) => issuer.jwks.keys),
+    }),
     CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
   };
 }
 
 test('verifies the canonical RS256 identity contract', async () => {
-  const key = await makeKey('active-key');
-  const token = await mintIdentityJwt(validPayload(), key);
-  const identity = await verifyIdentityJwt(token, { keys: [key.publicJwk] }, {
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
+  const token = await mintValid(issuer);
+  const identity = await verifyIdentityJwt(token, issuer.jwks, {
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
     allowedIssuers: [CAIL_CANONICAL_ISSUER],
     now: NOW,
   });
 
   assert.ok(identity);
-  assert.equal(identity.subject, 'cail-abc12300abc12300abc12300abc12300');
+  assert.equal(identity.subject, TEST_SUBJECTS.alice);
   assert.equal(identity.email, 'someone@gc.cuny.edu');
   assert.deepEqual(identity.entitlements, ['tools', 'agent-studio']);
 });
 
 test('canonical header accepts either key during rotation overlap', async () => {
-  const [oldKey, newKey] = await Promise.all([makeKey('old-key'), makeKey('new-key')]);
-  const env = identityEnv(oldKey, newKey);
+  const [oldIssuer, newIssuer] = await Promise.all([
+    createTestIdentityIssuer({ kid: 'old-key' }),
+    createTestIdentityIssuer({ kid: 'new-key' }),
+  ]);
+  const env = identityEnv(oldIssuer, newIssuer);
 
-  for (const key of [oldKey, newKey]) {
-    const token = await mintIdentityJwt(validPayload(), key);
+  for (const issuer of [oldIssuer, newIssuer]) {
+    const token = await mintValid(issuer);
     const request = new Request('https://agent-studio.example/api/session', {
       headers: { [CAIL_IDENTITY_HEADER]: token },
     });
     const result = await getCailIdentityFromRequest(request, env, NOW);
     assert.ok(result);
     assert.equal(result.token, token);
-    assert.equal(result.identity.subject, 'cail-abc12300abc12300abc12300abc12300');
+    assert.equal(result.identity.subject, TEST_SUBJECTS.alice);
     assert.deepEqual(Object.keys(result).sort(), ['identity', 'token']);
   }
 });
 
 test('unconfigured identity is anonymous; an unloadable config is a CONFIG error, not a token error', async () => {
-  const key = await makeKey('active-key');
-  const token = await mintIdentityJwt(validPayload(), key);
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
+  const token = await mintValid(issuer);
   const request = new Request('https://agent-studio.example/api/session', {
     headers: { [CAIL_IDENTITY_HEADER]: token },
   });
@@ -126,16 +121,13 @@ test('unconfigured identity is anonymous; an unloadable config is a CONFIG error
 });
 
 test('identity trust is one exact configured issuer and fails closed when ambiguous', async () => {
-  const key = await makeKey('issuer-key');
-  const productionToken = await mintIdentityJwt(validPayload(), key);
-  const stagingToken = await mintIdentityJwt(
-    validPayload({ iss: CAIL_STAGING_ISSUER }),
-    key,
-  );
+  const issuer = await createTestIdentityIssuer({ kid: 'issuer-key' });
+  const productionToken = await mintValid(issuer);
+  const stagingToken = await mintValid(issuer, { issuer: CAIL_STAGING_ISSUER });
   const requestFor = (token) => new Request('https://agent-studio.example/api/session', {
     headers: { [CAIL_IDENTITY_HEADER]: token },
   });
-  const jwks = JSON.stringify({ keys: [key.publicJwk] });
+  const jwks = issuer.jwksJson;
 
   assert.ok(await getCailIdentityFromRequest(requestFor(productionToken), {
     CAIL_IDENTITY_JWKS: jwks,
@@ -163,9 +155,16 @@ test('identity trust is one exact configured issuer and fails closed when ambigu
 });
 
 test('canonical header rejects unsupported algorithms', async () => {
-  const key = await makeKey('active-key');
+  // Deliberately outside the canonical test issuer: an HS256 token is a
+  // contract violation createTestIdentityIssuer cannot (and must not) mint.
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
   const hsKey = new TextEncoder().encode('identity-algorithm-confusion-test-key');
-  const token = await new SignJWT(validPayload())
+  const token = await new SignJWT({
+    sub: TEST_SUBJECTS.alice,
+    aud: CAIL_IDENTITY_AUDIENCE,
+    iss: CAIL_CANONICAL_ISSUER,
+    exp: NOW + 3600,
+  })
     .setProtectedHeader({ alg: 'HS256', kid: 'active-key', typ: 'JWT' })
     .sign(hsKey);
   const request = new Request('https://agent-studio.example/api/session', {
@@ -173,22 +172,22 @@ test('canonical header rejects unsupported algorithms', async () => {
   });
 
   assert.equal(
-    await getCailIdentityFromRequest(request, identityEnv(key), NOW),
+    await getCailIdentityFromRequest(request, identityEnv(issuer), NOW),
     null,
   );
 });
 
 test('canonical header rejects wrong audience, issuer, and expired tokens', async () => {
-  const key = await makeKey('active-key');
-  const env = identityEnv(key);
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
+  const env = identityEnv(issuer);
 
   for (const overrides of [
-    { aud: 'cail:other-service' },
-    { aud: [CAIL_IDENTITY_AUDIENCE] },
-    { iss: 'https://evil.example/cail-sso' },
-    { exp: NOW - 120 },
+    { audience: 'cail:other-service' },
+    { issuer: 'https://evil.example/cail-sso' },
+    // exp = NOW - 120.
+    { now: NOW - 3720, expiresInSeconds: 3600 },
   ]) {
-    const token = await mintIdentityJwt(validPayload(overrides), key);
+    const token = await mintValid(issuer, overrides);
     const request = new Request('https://agent-studio.example/api/session', {
       headers: { [CAIL_IDENTITY_HEADER]: token },
     });
@@ -196,32 +195,56 @@ test('canonical header rejects wrong audience, issuer, and expired tokens', asyn
   }
 });
 
+test('canonical header rejects an array audience claim', async () => {
+  // mintIdentityJwt requires a string audience by contract, so an aud ARRAY
+  // (a shape the verifier must still reject) stays hand-minted with jose.
+  const kid = 'active-key';
+  const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
+  const publicJwk = { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' };
+  const token = await new SignJWT({
+    sub: TEST_SUBJECTS.alice,
+    aud: [CAIL_IDENTITY_AUDIENCE],
+    iss: CAIL_CANONICAL_ISSUER,
+    exp: NOW + 3600,
+  })
+    .setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' })
+    .sign(privateKey);
+  const request = new Request('https://agent-studio.example/api/session', {
+    headers: { [CAIL_IDENTITY_HEADER]: token },
+  });
+
+  assert.equal(await getCailIdentityFromRequest(request, {
+    CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [publicJwk] }),
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+  }, NOW), null);
+});
+
 test('getCailIdentityFromRequest returns null with no canonical header', async () => {
-  const key = await makeKey('active-key');
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
   const request = new Request('https://agent-studio.example/api/session');
-  assert.equal(await getCailIdentityFromRequest(request, identityEnv(key), NOW), null);
+  assert.equal(await getCailIdentityFromRequest(request, identityEnv(issuer), NOW), null);
 });
 
 test('sessionIdForSubject is stable and subject-specific', async () => {
-  const id = await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300');
+  const id = await sessionIdForSubject(TEST_SUBJECTS.alice);
   assert.match(id, /^[a-f0-9]{32}$/);
-  assert.equal(id, await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300'));
-  assert.notEqual(id, await sessionIdForSubject('cail-07e7000007e7000007e7000007e70000'));
+  assert.equal(id, await sessionIdForSubject(TEST_SUBJECTS.alice));
+  assert.notEqual(id, await sessionIdForSubject(TEST_SUBJECTS.bob));
 });
 
 test('verifyCredentialForSession accepts only a matching subject session', async () => {
-  const key = await makeKey('credential-key');
-  const token = await mintIdentityJwt(validPayload(), key);
-  const env = identityEnv(key);
-  const expected = await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300');
+  const issuer = await createTestIdentityIssuer({ kid: 'credential-key' });
+  const token = await mintValid(issuer);
+  const env = identityEnv(issuer);
+  const expected = await sessionIdForSubject(TEST_SUBJECTS.alice);
   const identity = await verifyCredentialForSession(token, expected, env, NOW);
 
   assert.ok(identity);
-  assert.equal(identity.subject, 'cail-abc12300abc12300abc12300abc12300');
+  assert.equal(identity.subject, TEST_SUBJECTS.alice);
   assert.equal(
     await verifyCredentialForSession(
       token,
-      await sessionIdForSubject('cail-f0e19000f0e19000f0e19000f0e19000'),
+      await sessionIdForSubject(TEST_SUBJECTS.carol),
       env,
       NOW,
     ),
@@ -230,9 +253,9 @@ test('verifyCredentialForSession accepts only a matching subject session', async
 });
 
 test('verifyCredentialForSession rejects empty and malformed credentials', async () => {
-  const key = await makeKey('credential-key');
-  const env = identityEnv(key);
-  const expected = await sessionIdForSubject('cail-abc12300abc12300abc12300abc12300');
+  const issuer = await createTestIdentityIssuer({ kid: 'credential-key' });
+  const env = identityEnv(issuer);
+  const expected = await sessionIdForSubject(TEST_SUBJECTS.alice);
 
   assert.equal(await verifyCredentialForSession('not-a-jwt', expected, env, NOW), null);
   assert.equal(await verifyCredentialForSession('', expected, env, NOW), null);

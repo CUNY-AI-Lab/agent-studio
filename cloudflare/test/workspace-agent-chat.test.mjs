@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { TEST_SUBJECTS } from '@cuny-ai-lab/cail-identity/testing';
+import {
+  cailErrorResponse,
+  quotaExceededEnvelope,
+} from '@cuny-ai-lab/cail-client/testing';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
 
@@ -127,7 +132,7 @@ test('code rate-limit denial does not emit an orphan canonical action terminal',
       },
       HEAVY_RATE_LIMIT: { limit: async () => ({ success: false }) },
     },
-    cailSubject: 'cail-0123456789abcdef0123456789abcdef',
+    cailSubject: TEST_SUBJECTS.alice,
     assertNotFrozen() {},
     assertAuthorizedRpc() {},
     withMutationFence(operation) { return operation(); },
@@ -167,7 +172,7 @@ test('successful code execution emits one paired canonical action lifecycle', as
         id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
       },
     },
-    cailSubject: 'cail-0123456789abcdef0123456789abcdef',
+    cailSubject: TEST_SUBJECTS.alice,
     assertNotFrozen() {},
     assertAuthorizedRpc() {},
     withMutationFence(operation) { return operation(); },
@@ -261,24 +266,13 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   // globalThis.fetch — so this stub IS the gateway for the model call.
   globalThis.fetch = async () => {
     wireCalls += 1;
-    return new Response(
-      JSON.stringify({
-        error: {
-          message: quotaMessage,
-          type: 'rate_limit_error',
-          param: null,
-          code: 'quota_exceeded',
-          cail: { retry_after_seconds: 1800 },
-        },
-      }),
+    return cailErrorResponse(
+      429,
+      quotaExceededEnvelope({ message: quotaMessage, retryAfterSeconds: 1800 }),
       {
-        status: 429,
-        headers: {
-          'content-type': 'application/json',
-          'retry-after': '1800',
-          'x-request-id': 'req-agent-quota-1',
-          'x-should-retry': 'false',
-        },
+        'retry-after': '1800',
+        'x-request-id': 'req-agent-quota-1',
+        'x-should-retry': 'false',
       },
     );
   };

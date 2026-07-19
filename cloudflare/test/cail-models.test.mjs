@@ -6,6 +6,11 @@
 
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import {
+  cailErrorEnvelope,
+  cailErrorResponse,
+  quotaExceededResponse,
+} from '@cuny-ai-lab/cail-client/testing';
 
 import {
   fetchCailModels,
@@ -51,20 +56,12 @@ function dataResponse(data) {
     });
 }
 
-function cailErrorResponse(status, code, message) {
-  return () =>
-    new Response(JSON.stringify({
-      error: {
-        message,
-        type: status === 429 ? 'rate_limit_error' : 'authentication_error',
-        param: null,
-        code,
-        cail: {},
-      },
-    }), {
-      status,
-      headers: { 'Content-Type': 'application/json' },
-    });
+/**
+ * Responder thunk over the canonical envelope builders (a fresh Response per
+ * call, since retrying tests replay the same responder).
+ */
+function cailErrorResponder(status, overrides) {
+  return () => cailErrorResponse(status, cailErrorEnvelope(overrides));
 }
 
 beforeEach(() => {
@@ -150,7 +147,11 @@ test('401 and 403 proxy responses fail loud as ModelCatalogAuthError', async () 
   for (const status of [401, 403]) {
     resetCailModelsCache();
     const { fetchImpl } = makeFetch([
-      cailErrorResponse(status, 'authentication_required', `auth failed ${status}`),
+      cailErrorResponder(status, {
+        code: 'authentication_required',
+        message: `auth failed ${status}`,
+        type: 'authentication_error',
+      }),
     ]);
     await assert.rejects(
       () => fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl }),
@@ -165,7 +166,7 @@ test('401 and 403 proxy responses fail loud as ModelCatalogAuthError', async () 
 
 test('429 proxy responses fail loud as ModelCatalogQuotaError without retrying', async () => {
   const { fetchImpl, calls } = makeFetch([
-    cailErrorResponse(429, 'quota_exceeded', 'quota exceeded'),
+    () => quotaExceededResponse({ message: 'quota exceeded' }),
   ]);
   await assert.rejects(
     () => fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl }),
@@ -180,7 +181,7 @@ test('429 proxy responses fail loud as ModelCatalogQuotaError without retrying',
 
 test('non-auth, non-quota 4xx falls back immediately', async () => {
   const { fetchImpl, calls } = makeFetch([
-    cailErrorResponse(400, 'bad_request', 'bad request'),
+    cailErrorResponder(400, { code: 'bad_request', message: 'bad request' }),
   ]);
   const result = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
   assert.equal(result.source, 'fallback');

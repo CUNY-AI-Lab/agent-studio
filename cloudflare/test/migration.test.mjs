@@ -5,7 +5,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import {
+  TEST_SUBJECTS,
+  createTestIdentityIssuer,
+} from '@cuny-ai-lab/cail-identity/testing';
 
 import {
   CLAIM_STALE_MS,
@@ -627,24 +630,15 @@ test('expired import window refuses migration before claiming or reading legacy 
 // authenticated request with a legacy cookie migrates and drops the cookie.
 // ---------------------------------------------------------------------------
 
-const IDENTITY_KID = 'migration-middleware-key';
-const identityKeyPair = await generateKeyPair('RS256', { extractable: true });
-const identityPublicJwk = {
-  ...(await exportJWK(identityKeyPair.publicKey)),
-  kid: IDENTITY_KID,
-  alg: 'RS256',
-  use: 'sig',
-};
+const identityIssuer = await createTestIdentityIssuer({
+  kid: 'migration-middleware-key',
+});
 
 async function mintJwt(sub) {
-  return new SignJWT({
-    sub,
-    aud: CAIL_IDENTITY_AUDIENCE,
-    iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
-    exp: Math.floor(Date.now() / 1000) + 3600,
-  })
-    .setProtectedHeader({ alg: 'RS256', kid: IDENTITY_KID, typ: 'JWT' })
-    .sign(identityKeyPair.privateKey);
+  return identityIssuer.mintIdentityJwt({
+    audience: CAIL_IDENTITY_AUDIENCE,
+    subject: sub,
+  });
 }
 
 async function makeMiddlewareApp() {
@@ -662,8 +656,8 @@ async function makeMiddlewareApp() {
       tag: '',
       timestamp: '2026-07-13T14:00:00Z',
     },
-    CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [identityPublicJwk] }),
-    CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+    CAIL_IDENTITY_JWKS: identityIssuer.jwksJson,
+    CAIL_IDENTITY_ISSUER: identityIssuer.issuer,
     WORKSPACE_FILES: r2,
     MIGRATION_REGISTRY: {
       idFromName: (name) => name,
@@ -709,7 +703,7 @@ test('middleware: first authenticated request with legacy cookie migrates once a
   await seedGalleryItem(r2, 'galM', anonSessionId);
 
   // Authenticate with the legacy cookie still present.
-  const jwt = await mintJwt('cail-31dd7e5731dd7e5731dd7e5731dd7e57');
+  const jwt = await mintJwt(TEST_SUBJECTS.bob);
   const authed = await app.request('/api/session', {
     headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
   }, env);
@@ -750,7 +744,7 @@ test('middleware: authenticated request after expiry refuses import and clears t
     CAIL_SSO_SWITCHED_AT: '2026-01-01T00:00:00Z',
     CAIL_ACCOUNT_IMPORT_UNTIL: '2026-01-02T00:00:00Z',
   });
-  const jwt = await mintJwt('cail-e8b19ed0e8b19ed0e8b19ed0e8b19ed0');
+  const jwt = await mintJwt(TEST_SUBJECTS.carol);
 
   const warnings = t.mock.method(console, 'warn', () => {});
   const authed = await app.request('/api/session', {

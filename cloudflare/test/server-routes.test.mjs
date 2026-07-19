@@ -12,7 +12,12 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SignJWT, exportJWK, generateKeyPair } from 'jose';
+import { createTestIdentityIssuer } from '@cuny-ai-lab/cail-identity/testing';
+import {
+  cailErrorEnvelope,
+  cailErrorResponse,
+  quotaExceededResponse,
+} from '@cuny-ai-lab/cail-client/testing';
 
 import {
   importServer,
@@ -52,20 +57,13 @@ async function readError(response) {
 }
 
 async function makeRouteCredential(overrides = {}) {
-  const kid = 'route-key';
-  const { privateKey, publicKey } = await generateKeyPair('RS256', { extractable: true });
-  const publicJwk = { ...(await exportJWK(publicKey)), kid, alg: 'RS256', use: 'sig' };
-  const token = await new SignJWT({
-    sub: 'cail-40e7e57040e7e57040e7e57040e7e570',
-    aud: CAIL_IDENTITY_AUDIENCE,
-    iss: 'https://tools.ailab.gc.cuny.edu/cail-sso',
-    exp: Math.floor(Date.now() / 1000) + 3600,
+  const issuer = await createTestIdentityIssuer({ kid: 'route-key' });
+  const token = await issuer.mintIdentityJwt({
+    audience: CAIL_IDENTITY_AUDIENCE,
     entitlements: ['tools', 'agent-studio'],
     ...overrides,
-  })
-    .setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' })
-    .sign(privateKey);
-  return { token, jwks: JSON.stringify({ keys: [publicJwk] }) };
+  });
+  return { token, jwks: issuer.jwksJson };
 }
 
 // ---------------------------------------------------------------------------
@@ -1066,18 +1064,12 @@ test('/api/models surfaces proxy auth failure as 502', async () => {
   const session = new Session(env);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({
-      error: {
-        message: 'bad gateway auth',
-        type: 'authentication_error',
-        param: null,
-        code: 'authentication_required',
-        cail: { login_url: '/login' },
-      },
-    }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    cailErrorResponse(401, cailErrorEnvelope({
+      message: 'bad gateway auth',
+      type: 'authentication_error',
+      code: 'authentication_required',
+      cail: { login_url: '/login' },
+    }));
 
   try {
     const res = await session.request(app, '/api/models', {
@@ -1100,18 +1092,7 @@ test('/api/models surfaces proxy quota exhaustion as 429', async () => {
   const session = new Session(env);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
-    new Response(JSON.stringify({
-      error: {
-        message: 'quota exhausted',
-        type: 'rate_limit_error',
-        param: null,
-        code: 'quota_exceeded',
-        cail: { retry_after_seconds: 1800 },
-      },
-    }), {
-      status: 429,
-      headers: { 'Content-Type': 'application/json' },
-    });
+    quotaExceededResponse({ message: 'quota exhausted', retryAfterSeconds: 1800 });
 
   try {
     const res = await session.request(app, '/api/models', {

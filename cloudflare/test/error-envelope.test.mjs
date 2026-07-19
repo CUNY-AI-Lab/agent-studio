@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import {
+  cailErrorEnvelope,
+  cailErrorResponse,
+} from '@cuny-ai-lab/cail-client/testing';
 
 import { canonicalizeErrorResponse } from '../src/lib/error-envelope.ts';
 
@@ -20,15 +24,16 @@ test('legacy flat errors are normalized to the CAIL nested envelope', async () =
 });
 
 test('normalization preserves status, headers, explicit retry posture, and nested data', async () => {
-  const response = await canonicalizeErrorResponse(Response.json({
-    error: {
+  const response = await canonicalizeErrorResponse(cailErrorResponse(
+    429,
+    cailErrorEnvelope({
       message: 'Budget exhausted',
       type: 'rate_limit_error',
-      param: null,
       code: 'quota_exceeded',
       cail: {},
-    },
-  }, { status: 429, headers: { 'X-Should-Retry': 'false', 'Retry-After': '60' } }), 'req-2');
+    }),
+    { 'X-Should-Retry': 'false', 'Retry-After': '60' },
+  ), 'req-2');
   assert.equal(response.status, 429);
   assert.equal(response.headers.get('Retry-After'), '60');
   assert.equal((await response.json()).error.cail.retryable, false);
