@@ -13,11 +13,12 @@ export function FilePreview({
   panel: Extract<WorkspacePanel, { type: 'pdf' | 'editor' | 'file' }>;
   cacheKey?: string | null;
 }) {
-  const url = useFileObjectUrl(fileSource, panel.filePath, cacheKey);
+  const { url, error } = useFileObjectUrl(fileSource, panel.filePath, cacheKey);
   const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(panel.filePath);
   const isPdf = panel.type === 'pdf';
   const isHtml = /\.html?$/i.test(panel.filePath);
 
+  if (error) return <div className="panel-empty">{error}</div>;
   if (!url) return <div className="panel-empty">Loading file…</div>;
 
   if (isImage) {
@@ -96,17 +97,22 @@ function ProtectedPreviewFrame({
     ? getGalleryPanelPreviewUrl(fileSource.id, panel.id)
     : null;
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   useEffect(() => {
     if (fileSource.kind === 'gallery') return;
     let active = true;
     let created: string | null = null;
+    setLoadError(null);
     void fetchWorkspacePanelPreview(fileSource.id, panel.id).then(async (response) => {
-      if (!response.ok) throw new Error(`Preview request failed with ${response.status}`);
+      if (!response.ok) throw new Error(`Failed to load preview (${response.status})`);
       created = URL.createObjectURL(await response.blob());
       if (active) setObjectUrl(created);
       else URL.revokeObjectURL(created);
-    }).catch(() => {
-      if (active) setObjectUrl(null);
+    }).catch((fetchError) => {
+      if (active) {
+        setObjectUrl(null);
+        setLoadError(fetchError instanceof Error ? fetchError.message : 'Failed to load preview');
+      }
     });
     return () => {
       active = false;
@@ -114,6 +120,7 @@ function ProtectedPreviewFrame({
     };
   }, [fileSource.kind, fileSource.id, panel.id]);
   const previewUrl = publicUrl ?? objectUrl;
+  if (!previewUrl && loadError) return <div className="panel-empty">{loadError}</div>;
   if (!previewUrl) return <div className="panel-empty">Loading preview…</div>;
   return (
     <iframe

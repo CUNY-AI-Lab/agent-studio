@@ -27,33 +27,44 @@ export function getWorkspaceFileCacheKey(
   return file.etag || file.modifiedAt || file.uploadedAt || (typeof file.size === 'number' ? String(file.size) : null);
 }
 
-/** Resolve protected workspace bytes through the CSRF header, never a URL token. */
+/**
+ * Resolve protected workspace bytes through the CSRF header, never a URL token.
+ *
+ * A failed fetch surfaces as `error` — it must never leave the consumer stuck
+ * on a loading state that is indistinguishable from a real pending request.
+ */
 export function useFileObjectUrl(
   source: FileSource,
   filePath: string,
   cacheKey?: string | null,
-): string | null {
+): { url: string | null; error: string | null } {
   const publicUrl = source.kind === 'gallery'
     ? withCacheKey(getGalleryFileUrl(source.id, filePath), cacheKey)
     : null;
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (source.kind === 'gallery') {
       setObjectUrl(null);
+      setError(null);
       return;
     }
     let active = true;
     let created: string | null = null;
+    setError(null);
     void fetchWorkspaceFile(source.id, filePath)
       .then(async (response) => {
-        if (!response.ok) throw new Error(`File request failed with ${response.status}`);
+        if (!response.ok) throw new Error(`Failed to load file (${response.status})`);
         created = URL.createObjectURL(await response.blob());
         if (active) setObjectUrl(created);
         else URL.revokeObjectURL(created);
       })
-      .catch(() => {
-        if (active) setObjectUrl(null);
+      .catch((fetchError) => {
+        if (active) {
+          setObjectUrl(null);
+          setError(fetchError instanceof Error ? fetchError.message : 'Failed to load file');
+        }
       });
     return () => {
       active = false;
@@ -61,7 +72,7 @@ export function useFileObjectUrl(
     };
   }, [source.kind, source.id, filePath, cacheKey]);
 
-  return publicUrl ?? objectUrl;
+  return { url: publicUrl ?? objectUrl, error: publicUrl ? null : error };
 }
 
 export async function downloadFileSource(
