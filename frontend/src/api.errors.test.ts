@@ -107,13 +107,31 @@ describe('fetchModels quota errors', () => {
     expect(error).toHaveProperty('message', 'You have used your $10 monthly AI budget.');
   });
 
-  it('keeps non-429 failures as plain errors', async () => {
-    const { fetchModels, ModelsQuotaError } = await loadApi();
+  it('throws typed ModelsUnavailableError for 5xx so a broken deployment surfaces', async () => {
+    const { fetchModels, ModelsQuotaError, ModelsUnavailableError } = await loadApi();
     mockFetch(() => jsonResponse({ message: 'Catalog failed upstream' }, 500));
+
+    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(ModelsUnavailableError);
+    expect(error).not.toBeInstanceOf(ModelsQuotaError);
+    expect(error).toHaveProperty('message', 'Catalog failed upstream');
+  });
+
+  it('throws ModelsUnavailableError for the deliberate 502 config-drift response', async () => {
+    const { fetchModels, ModelsUnavailableError } = await loadApi();
+    mockFetch(() => jsonResponse({ error: 'Model catalog authentication failed' }, 502));
+
+    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(ModelsUnavailableError);
+  });
+
+  it('keeps non-429, non-5xx failures as plain errors', async () => {
+    const { fetchModels, ModelsQuotaError, ModelsUnavailableError } = await loadApi();
+    mockFetch(() => jsonResponse({ message: 'Not found' }, 404));
 
     const error = await fetchModels().catch((nextError: unknown) => nextError);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(ModelsQuotaError);
-    expect(error).toHaveProperty('message', 'Catalog failed upstream');
+    expect(error).not.toBeInstanceOf(ModelsUnavailableError);
   });
 });

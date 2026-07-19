@@ -42,6 +42,7 @@ import {
   fetchWorkspaces,
   fetchModels,
   ModelsQuotaError,
+  ModelsUnavailableError,
   importWorkspaceBundle,
   publishWorkspace,
   unpublishGalleryItem,
@@ -353,10 +354,18 @@ function WorkspaceShell({
         }
       })
       .catch((nextError) => {
-        if (!cancelled && nextError instanceof ModelsQuotaError) {
+        if (cancelled) return;
+        if (nextError instanceof ModelsQuotaError) {
           setModelQuotaNotice(nextError.message || 'Model list unavailable: usage quota reached.');
+        } else if (nextError instanceof ModelsUnavailableError) {
+          // A 5xx catalog response (including the deliberate 502 for
+          // config/secret drift) means a broken deployment — surface it
+          // instead of silently hiding the picker.
+          setModelQuotaNotice(
+            `Model list unavailable: ${nextError.message || 'the model catalog failed upstream.'}`
+          );
         }
-        // Other failures remain non-fatal and leave the picker hidden.
+        // Network-level failures remain non-fatal and leave the picker hidden.
       });
     return () => {
       cancelled = true;

@@ -244,12 +244,20 @@ export interface ModelCatalog {
 }
 
 export class ModelsQuotaError extends Error {}
+/** A 5xx from the catalog route — including the 502 the worker mints for
+ * config/secret drift. Typed so the UI can surface a broken deployment
+ * instead of silently hiding the picker. */
+export class ModelsUnavailableError extends Error {}
 
 export async function fetchModels(): Promise<ModelCatalog> {
   const response = await fetch(appPath('/api/models'), { credentials: 'include' });
   if (response.status === 429) {
     const { message } = await readResponseError(response);
     throw new ModelsQuotaError(message);
+  }
+  if (response.status >= 500) {
+    const { message } = await readResponseError(response);
+    throw new ModelsUnavailableError(message);
   }
   return parseJson<ModelCatalog>(response);
 }

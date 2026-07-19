@@ -57,6 +57,7 @@ export const STUDIO_EVENTS = Object.freeze({
   CREDENTIAL_REJECTED: 'agent_studio.credential.rejected',
   CHAT_DENIED: 'agent_studio.chat.denied',
   CODE_DENIED: 'agent_studio.code.denied',
+  MODEL_CATALOG_CONTRACT_DRIFT: 'agent_studio.model_catalog.contract_drift',
 } as const);
 
 export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
@@ -116,6 +117,17 @@ export const STUDIO_EVENT_CATALOG = extendCailEventCatalog({
     optional: [],
     outcomes: ['denied'],
     terminal_reasons: ['rate_limited'],
+  },
+  // The model proxy answered 200 but the body failed the (tolerant) catalog
+  // schema: contract drift, not an outage. The picker falls back to the single
+  // default model, so without this event the drift is invisible.
+  [STUDIO_EVENTS.MODEL_CATALOG_CONTRACT_DRIFT]: {
+    source: 'platform',
+    severity: 'outcome',
+    required: ['product_id', 'terminal', 'error_type'],
+    optional: ['request_id', 'trace'],
+    outcomes: ['error'],
+    terminal_reasons: ['upstream_failure'],
   },
 } as const);
 

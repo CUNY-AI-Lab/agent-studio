@@ -28,7 +28,14 @@ import { CailError, createCailClient } from '@cuny-ai-lab/cail-client';
 import { z } from 'zod';
 import { CAIL_APP_SLUG } from './cail-identity';
 import { resolveCailModelName, type CailModelEnv } from './cail-model';
-import type { CailCorrelation } from './logging';
+import {
+  LOG_PRODUCT,
+  STUDIO_EVENTS,
+  studioLogger,
+  traceFromCorrelation,
+  type CailCorrelation,
+  type StudioLogRuntime,
+} from './logging';
 
 export type CailModelTier = 'recommended' | 'advanced';
 export type CailModelStatus = 'active' | 'deprecated' | 'retiring';
@@ -220,6 +227,20 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
   try {
     parsed = modelListSchema.parse(await response.json());
   } catch {
+    // A 200 whose body fails the tolerant schema is proxy contract drift, not
+    // an outage. Keep the fallback so chat stays usable, but surface the drift
+    // — a working-looking single-model picker must not hide it.
+    studioLogger(env as StudioLogRuntime)?.emit(STUDIO_EVENTS.MODEL_CATALOG_CONTRACT_DRIFT, {
+      product_id: LOG_PRODUCT,
+      terminal: { outcome: 'error', reason: 'upstream_failure' },
+      error_type: 'model_catalog_schema_invalid',
+      ...(options.correlation
+        ? {
+            request_id: options.correlation.request_id,
+            trace: traceFromCorrelation(options.correlation),
+          }
+        : {}),
+    });
     return fallbackResult(env);
   }
 

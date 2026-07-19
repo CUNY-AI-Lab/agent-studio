@@ -239,6 +239,11 @@ test('every Studio-local catalog mapping emits its static, content-free structur
     route: STUDIO_ACTION_ROUTES.CODE, http_method: 'POST',
     terminal: { outcome: 'denied', reason: 'rate_limited' }, error_type: 'rate_limited',
   });
+  log.emit(STUDIO_EVENTS.MODEL_CATALOG_CONTRACT_DRIFT, {
+    request_id: REQUEST_ID, product_id: LOG_PRODUCT, trace: TRACE,
+    terminal: { outcome: 'error', reason: 'upstream_failure' },
+    error_type: 'model_catalog_schema_invalid',
+  });
 
   assert.deepEqual(events.map((event) => event.event_name), Object.values(STUDIO_EVENTS));
   for (const event of events) {

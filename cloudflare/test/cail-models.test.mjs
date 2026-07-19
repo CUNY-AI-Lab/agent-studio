@@ -210,6 +210,44 @@ test('falls back when the response fails shape validation', async () => {
   assert.equal(result.models[0].recommended, true);
 });
 
+// Contract-drift surfacing: a schema-invalid 200 still falls back, but must
+// emit the structured drift event so the masking is observable in the fleet
+// dataset. An unreachable proxy (documented fallback) stays event-silent.
+function makeLogEnv(points) {
+  return {
+    CAIL_API_BASE: BASE,
+    CAIL_LOG_ENV: 'test',
+    CF_VERSION_METADATA: { id: 'test-release' },
+    CAIL_FLEET_EVENTS: { writeDataPoint: (point) => points.push(point) },
+  };
+}
+
+test('a schema-invalid 200 surfaces a contract-drift event alongside the fallback', async () => {
+  const { fetchImpl } = makeFetch([
+    () => new Response(JSON.stringify({ object: 'list', data: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }),
+  ]);
+  const points = [];
+  const result = await fetchCailModels({ env: makeLogEnv(points), identityJwt: JWT, fetchImpl });
+  assert.equal(result.source, 'fallback');
+  assert.equal(points.length, 1, 'contract drift emits exactly one structured event');
+  const encoded = JSON.stringify(points[0]);
+  assert.ok(encoded.includes('agent_studio.model_catalog.contract_drift'), encoded);
+  assert.ok(encoded.includes('model_catalog_schema_invalid'), encoded);
+});
+
+test('the unreachable-proxy fallback stays event-silent (documented degradation)', async () => {
+  const { fetchImpl } = makeFetch([
+    () => { throw new Error('network down'); },
+  ]);
+  const points = [];
+  const result = await fetchCailModels({ env: makeLogEnv(points), identityJwt: JWT, fetchImpl });
+  assert.equal(result.source, 'fallback');
+  assert.equal(points.length, 0, 'no drift event for a genuinely unreachable proxy');
+});
+
 test('caches the proxy list: a second call within TTL does not refetch', async () => {
   const { fetchImpl, calls } = makeFetch([listResponse(['@cf/zai-org/glm-5.2'])]);
   const first = await fetchCailModels({ env: { CAIL_API_BASE: BASE }, identityJwt: JWT, fetchImpl });
