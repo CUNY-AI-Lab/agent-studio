@@ -4,17 +4,24 @@ This is the canonical current-state contract for the Agent Studio Worker. It
 defines what the source enforces and which deployment or institutional actions
 remain outside the repository.
 
-## Shared primitive revisions
+## Shared primitive compatibility
 
-| Primitive | Consumer boundary | Reviewed revision |
+| Primitive | Consumer boundary | Installed version |
 | --- | --- | --- |
-| `cail-identity` | Direct identity verification dependency | `00419a9409680716a04e514068ba2b128ce7afa7` |
-| `cail-log` | Direct event/correlation dependency and the single transitive instance used by `cail-client` | `75e0dda3068794ae1543e1e2bb98c9c920bb848f` |
-| `cail-client` | Direct model and catalog transport dependency | `16da40171381b8bf38543730b45dba484ba01940` |
-| `cail-sandbox-client` | Not installed; reviewed as a separate remote-sandbox boundary that Agent Studio does not call | `3d90d1cdcf8953cf64822682f589099484734b5d` |
+| `cail-identity` | Direct identity verification dependency | `4.4.0` |
+| `cail-log` | Direct event/correlation dependency and the single transitive instance used by `cail-client` | `0.4.0` |
+| `cail-client` | Direct model and catalog transport dependency | `1.3.0` |
+| `cail-sandbox-client` | Not installed; Agent Studio uses Cloudflare Dynamic Workers instead | Not installed |
 
 `cloudflare/package.json` and `bun.lock` are the executable pin authorities.
-The table records why each shared primitive is or is not part of this consumer.
+The versions above are the resolved packages exercised by this repository.
+Historical source-repository review commits are not runtime compatibility
+claims and belong in version-control history, not this current-state contract.
+
+CI grants only read access to repository contents, pins third-party actions by
+commit, and disables checkout credential persistence. The private-package token
+exists only in each frozen dependency-install step; lint, tests, builds,
+Wrangler checks, and smoke execution do not inherit it.
 
 ## Production preflight
 
@@ -26,6 +33,7 @@ The table records why each shared primitive is or is not part of this consumer.
 | Session | `SESSION_SECRET` is at least 32 characters and comes from the authorized secret store. |
 | Identity | `CAIL_REQUIRE_IDENTITY=true`; `CAIL_IDENTITY_ISSUER` is the one exact issuer for the deployment environment; `CAIL_IDENTITY_JWKS` is a non-empty RS256 RSA signing-key set with `kid`, `n`, and `e`. |
 | Model proxy | `CAIL_API_BASE` is an HTTPS, non-placeholder URL without credentials, query, or fragment. |
+| Model | If set, `CAIL_MODEL` is a bounded Cloudflare Workers AI `@cf/...` identifier. |
 | Browser origin | `CAIL_CANONICAL_ORIGIN` is one exact HTTPS origin with no path, query, or fragment. |
 | Shared mount | `CAIL_BASE_PATH` is a valid non-root path. The checked-in build uses `/agent-studio`. |
 | Rate limiting | Both `API_RATE_LIMIT` and `HEAVY_RATE_LIMIT` bindings expose `limit()`. |
@@ -68,6 +76,11 @@ edge and Durable Object. The token remains in the WebSocket query because the
 browser API cannot set a custom header. `Referrer-Policy: no-referrer` is set
 on application responses. Once identity is required, anonymous-class
 capabilities are rejected; callable mutations also require a bound subject.
+The PartySocket `basePath` is host-relative without a leading slash, keeping
+the socket under `/agent-studio/agents/...` instead of producing a
+protocol-relative double-slash path.
+The generic Agents client-state replacement hook always rejects browser
+writes; clients can mutate only through the explicit callable schemas.
 Private reads, credential installation, files, migration, deletion, and
 reliability collection are not browser-callable.
 
@@ -90,6 +103,11 @@ Gateway-declared non-retryable responses and ambiguous network failures surface
 as typed errors before an SDK can replay them. Correlation forwarding preserves
 the W3C sampled flag and tracestate, replaces the correlation headers as one
 unit, and requires lowercase UUID-v4 request IDs.
+
+Local configuration, workspace overrides, and model-catalog responses accept
+only bounded Cloudflare Workers AI `@cf/...` identifiers. A drifted catalog
+falls back to the safe local model list; an invalid explicit workspace override
+is refused. Retired external-provider namespaces are not compatibility aliases.
 
 Studio code execution uses Cloudflare Dynamic Workers through codemode. It does
 not call the remote CAIL Sandbox bridge and therefore does not depend on
@@ -134,7 +152,7 @@ paid model work automatically.
 | Dynamic Worker workspace | Active workspace files and isolated execution effects. |
 | R2 session records | Workspace metadata, queued downloads, compatibility objects, and exports. |
 | R2 gallery records | Public manifest/state/files plus a private versioned owner record. |
-| MigrationRegistry Durable Object | One claim state machine per anonymous session. |
+| MigrationRegistry Durable Object | One claim state machine and active-request lease set per anonymous session. |
 
 R2 workspace metadata updates use entity-tag compare-and-swap with bounded
 retry. Layout changes merge panels, groups, and connections by identifier;
@@ -146,6 +164,11 @@ These controls do not create a transaction across Durable Objects, Dynamic
 Workers, and R2. Multi-store workflows use commit markers, idempotency keys,
 compensation, and explicit unknown-outcome errors.
 
+Create, account import, bundle import, and gallery clone write each workspace
+record last. List and get routes therefore cannot discover a workspace until
+its agent state, messages, and required files are committed. `syncWorkspace`
+also respects the durable migration/deletion freeze.
+
 ## Destructive and multi-store workflows
 
 Workspace deletion first refuses an active mutation, freezes the agent,
@@ -156,12 +179,26 @@ error and the same DELETE is the recovery action. A failure after destructive
 work may leave a frozen or partially removed workspace; do not recreate data
 under the same id before the delete retry succeeds.
 
-Batch upload accepts at most 50 files, 25 MB per file, and 50 MB total. It
-validates count, size, type, and every path before writing. It
-snapshots each original target. On failure it restores overwritten bytes and
-deletes newly created paths. `upload_outcome_unknown` means rollback itself
-failed; stop automatic retries, preserve the request file list, and reconcile
-each named target before retrying.
+Batch upload accepts at most 50 files, 25 MB per file, and 50 MB total. Raw
+file PUT enforces the same 25 MB per-file ceiling against declared and observed
+body size. Batch upload validates count, size, type, and every path before
+writing. It snapshots each original target. On failure it restores overwritten
+bytes and deletes newly created paths. `upload_outcome_unknown` means rollback
+itself failed; stop automatic retries, preserve the request file list, and
+reconcile each named target before retrying.
+
+Bundle import accepts at most 50 MB and 500 files. Every path and encoded body
+is sanitized and decoded before mutation begins. File writes are sequential to
+stay within the runtime connection budget; state and messages follow, and the
+R2 workspace record is the last visibility marker. A failure destroys the
+partial agent and removes both workspace and runtime prefixes before returning.
+
+Anonymous HTTP requests during the temporary account-import window acquire a
+durable per-session lease before entering application routes. A first-login
+claim waits while a lease is active; once claimed, stale anonymous requests
+receive a retryable `legacy_session_claimed` conflict instead of writing into
+the migrated source namespace. Leases expire after ten minutes if a request
+terminates without releasing one.
 
 Gallery publication requires a client operation UUID. Its deterministic
 24-hex id makes an ambiguous retry return the committed manifest without
@@ -225,6 +262,11 @@ prompts, messages, code, JWTs, session/workspace identifiers, filenames,
 destination URLs, and arbitrary exception text. One HTTP request produces one
 boundary event. The gateway remains the accounting authority; exact local
 action/model lifecycle rows live inside each workspace object.
+
+The browser's diagnostic trace action returns the authorized detail to the
+caller but writes only a content-free count/status summary to the developer
+console. Request identifiers, tool previews, panel identifiers, and error text
+are not console output.
 
 Cloudflare may retain platform-generated failures outside the application
 schema. Production retention, provider access, legal deletion requirements,

@@ -464,8 +464,9 @@ app.post('/api/gallery/:id', async (c) => {
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
   try {
-    await putWorkspace(c.env, sessionId, workspace);
-    ({ agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true }));
+    agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
+    await agent.syncWorkspace(workspace, sessionId);
+    await primeAgentCredential(c, agent);
 
     // Copy only the published file OBJECTS (a listed file that is missing from
     // R2 is a genuine integrity failure). Panel `filePath`s that dangle — a
@@ -493,11 +494,16 @@ app.post('/api/gallery/:id', async (c) => {
       throw new Error(`Gallery item ${sourceGalleryId} is missing file(s): ${missingPaths.join(', ')}`);
     }
     await agent.replaceWorkspaceState(item.state, workspace, sessionId);
+    // Commit marker last: list/get routes cannot observe a half-cloned
+    // workspace while files and state are still being copied.
+    await putWorkspace(c.env, sessionId, workspace);
   } catch (error) {
     if (agent) {
-      await agent.clearWorkspaceFiles().catch(() => undefined);
+      await agent.destroyWorkspaceState().catch(() => undefined);
     }
     await deleteWorkspaceFiles(c.env, sessionId, workspaceId).catch(() => undefined);
+    await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId))
+      .catch(() => undefined);
     await deleteWorkspace(c.env, sessionId, workspaceId).catch(() => undefined);
     throw error;
   }
@@ -540,8 +546,18 @@ app.post('/api/workspaces', async (c) => {
     description: body.description,
   });
 
-  await putWorkspace(c.env, sessionId, workspace);
-  await syncedWorkspaceAgent(c, workspace, { primeCredential: true });
+  let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
+  try {
+    agent = await getWorkspaceAgent(c.env, sessionId, workspace.id);
+    await agent.syncWorkspace(workspace, sessionId);
+    await primeAgentCredential(c, agent);
+    await putWorkspace(c.env, sessionId, workspace);
+  } catch (error) {
+    if (agent) await agent.destroyWorkspaceState().catch(() => undefined);
+    await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspace.id))
+      .catch(() => undefined);
+    throw error;
+  }
 
   return c.json({ workspace }, 201);
 });
@@ -568,6 +584,20 @@ app.post('/api/workspaces/import', async (c) => {
   if (bundle.files.length > MAX_IMPORT_FILE_COUNT) {
     return c.json({ error: `Workspace bundle exceeds the ${MAX_IMPORT_FILE_COUNT} file import limit` }, 400);
   }
+  let decodedFiles: Array<{
+    path: string;
+    data: string | Uint8Array;
+    contentType: string;
+  }>;
+  try {
+    decodedFiles = bundle.files.map((file) => ({
+      path: sanitizeRelativePath(file.path),
+      data: decodeWorkspaceImportFile(file),
+      contentType: file.contentType,
+    }));
+  } catch {
+    return c.json({ error: 'Workspace bundle contains an invalid file' }, 400);
+  }
 
   const workspaceId = createOpaqueId();
   const now = new Date().toISOString();
@@ -584,23 +614,28 @@ app.post('/api/workspaces/import', async (c) => {
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
   try {
-    await putWorkspace(c.env, sessionId, workspace);
-    ({ agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true }));
-    await Promise.all(
-      bundle.files.map((file) => agent!.writeWorkspaceFileContent(
-        sanitizeRelativePath(file.path),
-        decodeWorkspaceImportFile(file),
-        file.contentType
-      ))
-    );
+    agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
+    await agent.syncWorkspace(workspace, sessionId);
+    await primeAgentCredential(c, agent);
+    // Consume writes sequentially: RuntimeWorkspace/R2 has a bounded
+    // connection budget, and Promise.all over the 500-file import ceiling can
+    // otherwise produce a partial, ambiguous fan-out failure.
+    for (const file of decodedFiles) {
+      await agent.writeWorkspaceFileContent(file.path, file.data, file.contentType);
+    }
 
     await agent.replaceWorkspaceState(bundle.state, workspace, sessionId);
     await agent.persistMessages(bundle.messages);
+    // The R2 record is the visibility/commit marker for list/get routes.
+    await putWorkspace(c.env, sessionId, workspace);
   } catch (error) {
     if (agent) {
-      await agent.clearWorkspaceFiles().catch(() => undefined);
+      await agent.destroyWorkspaceState().catch(() => undefined);
     }
-    await deleteWorkspace(c.env, sessionId, workspaceId);
+    await deleteWorkspaceFiles(c.env, sessionId, workspaceId).catch(() => undefined);
+    await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId))
+      .catch(() => undefined);
+    await deleteWorkspace(c.env, sessionId, workspaceId).catch(() => undefined);
     return c.json({
       error: error instanceof Error ? error.message : 'Failed to import workspace',
     }, 400);
@@ -877,7 +912,14 @@ app.put('/api/workspaces/:id/files/*', async (c) => {
   if (!uploadVerdict.allowed) {
     return c.json({ error: uploadVerdict.reason || 'File type not allowed' }, 400);
   }
+  const declaredLength = Number(c.req.header('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_FILE_BYTES) {
+    return c.json({ error: 'File exceeds the 25 MB upload limit' }, 413);
+  }
   const body = await c.req.arrayBuffer();
+  if (body.byteLength > MAX_UPLOAD_FILE_BYTES) {
+    return c.json({ error: 'File exceeds the 25 MB upload limit' }, 413);
+  }
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   await agent.writeWorkspaceFileContent(filePath, body, c.req.header('content-type') || undefined);
   return c.json({ success: true, filePath });

@@ -1,11 +1,15 @@
 import { z } from 'zod';
 
-// Only accept CAIL catalog ids: Workers AI (`@cf/...`) or the gateway's
-// OpenRouter namespace (`cail/...`, e.g. `cail/gpt-4.1-nano`). Anything else is
-// rejected 400 by the PATCH route. Kept in its own module so it is testable
-// without pulling in the full Worker (server.ts uses `cloudflare:` imports
-// node can't load).
-export const CAIL_MODEL_ID_PATTERN = /^(@cf|cail)\/[\w.\/-]+$/;
+// Agent Studio's current CAIL gateway path is Cloudflare-native Workers AI.
+// Retired external-provider namespaces must not be persisted as workspace
+// overrides even if an old or misconfigured catalog happens to return them.
+export const CAIL_MODEL_ID_PATTERN = /^@cf\/[\w.\/-]+$/;
+
+export function isAllowedCailModelId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length <= 200
+    && CAIL_MODEL_ID_PATTERN.test(value);
+}
 
 export const patchWorkspaceSchema = z.object({
   name: z.string().trim().min(1).max(200).optional(),

@@ -7,7 +7,7 @@ export interface WorkspaceRecord {
   createdAt: string;
   updatedAt: string;
   galleryId?: string;
-  /** Optional per-workspace model override (a `@cf/...` or `cail/...` catalog id). */
+  /** Optional per-workspace Workers AI model override (`@cf/...`). */
   model?: string;
 }
 

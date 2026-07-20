@@ -271,6 +271,7 @@ test('resolveCailModelName honors the override and default', () => {
     '@cf/openai/gpt-oss-120b',
   );
   assert.equal(resolveCailModelName({}), DEFAULT_CAIL_MODEL);
+  assert.equal(resolveCailModelName({ CAIL_MODEL: 'cail/gpt-4.1-nano' }), DEFAULT_CAIL_MODEL);
 });
 
 test('createCailModel forwards the JWT + app header and sets no provider key', async () => {

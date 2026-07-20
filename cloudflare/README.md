@@ -31,7 +31,8 @@ the final identity/cutover inputs.
 Production preflight rejects traffic when identity, JWKS, model-proxy URL,
 canonical origin, non-root base path, rate-limit bindings, versioned gallery
 owner keys, telemetry metadata, or the temporary migration window is missing
-or invalid. `/health` reports the same validation result.
+or invalid. `CAIL_MODEL` and proxy catalog entries must use the Cloudflare
+Workers AI `@cf/...` namespace. `/health` reports the same validation result.
 
 Operational and security requirements are canonical in
 [Security and operations](../docs/security-and-operations.md). The temporary
@@ -44,4 +45,5 @@ Package checks:
 ```bash
 bun run --cwd cloudflare typecheck
 bun run --cwd cloudflare test
+(cd cloudflare && bunx wrangler deploy --dry-run)
 ```

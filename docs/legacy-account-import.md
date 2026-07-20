@@ -26,6 +26,12 @@ verified subject to claim it wins permanently. The same subject may retry a
 failed claim or an in-progress claim older than ten minutes; a different
 subject can never take it over.
 
+During the open compatibility window, each anonymous HTTP request first
+acquires a durable lease in that same registry. A claim cannot begin while an
+admitted request is active, so create and bundle-import work cannot finish in
+the anonymous namespace after migration has already listed and deleted it.
+Leases expire after ten minutes if an interrupted request cannot release one.
+
 For each workspace:
 
 1. An existing subject-side workspace id is never overwritten.
@@ -55,6 +61,11 @@ During the open window, a request carrying both a verified identity and a valid
 legacy cookie can run the claim. While another request owns a fresh in-progress
 claim, the request continues in the subject namespace and retains the legacy
 cookie for a later retry.
+
+An anonymous request that reaches a namespace after it has been claimed
+receives a retryable `legacy_session_claimed` conflict and must sign in. A
+first-login request that encounters an active anonymous lease retains the
+legacy cookie and retries the claim on a later authenticated request.
 
 At and after the exclusive deadline:
 

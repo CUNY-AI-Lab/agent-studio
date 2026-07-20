@@ -464,6 +464,30 @@ test('files: PUT -> GET (content-type) -> list -> DELETE', async () => {
   assert.equal(goneRes.status, 404);
 });
 
+test('files: raw PUT rejects a declared body over the per-file limit before writing', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+  const response = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/files/oversized.txt`,
+    {
+      method: 'PUT',
+      headers: {
+        'content-type': 'text/plain',
+        'content-length': String(25 * 1024 * 1024 + 1),
+      },
+      body: 'small test body',
+    },
+  );
+  assert.equal(response.status, 413);
+  assert.equal(
+    await session.request(app, `/api/workspaces/${workspace.id}/files/oversized.txt`)
+      .then((result) => result.status),
+    404,
+  );
+});
+
 test('files: GET content-type falls back to extension mime when the agent stores octet-stream', async () => {
   const { env, agents } = makeEnv();
   const { session, sessionId } = await openSession(app, env);
@@ -1168,6 +1192,66 @@ test('import: a valid bundle creates a workspace and its files (round-trip)', as
     await session.request(app, `/api/workspaces/${body.workspaceId}/export`)
   ).json();
   assert.equal(exported.files.find((f) => f.path === 'docs/hello.md').content, '# Imported');
+});
+
+test('import: workspace remains undiscoverable until files and state are committed', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const realGet = env.WorkspaceAgent.get.bind(env.WorkspaceAgent);
+  let releaseWrite;
+  let signalWriteStarted;
+  const writeStarted = new Promise((resolve) => {
+    signalWriteStarted = resolve;
+  });
+  const writeGate = new Promise((resolve) => {
+    releaseWrite = resolve;
+  });
+  env.WorkspaceAgent.get = (id) => {
+    const agent = realGet(id);
+    if (!agent.commitMarkerTestInstalled) {
+      agent.commitMarkerTestInstalled = true;
+      const realWrite = agent.writeWorkspaceFileContent.bind(agent);
+      agent.writeWorkspaceFileContent = async (...args) => {
+        signalWriteStarted();
+        await writeGate;
+        return realWrite(...args);
+      };
+    }
+    return agent;
+  };
+
+  const form = new FormData();
+  form.append('bundle', new File([JSON.stringify(makeImportBundle({
+    workspace: {
+      id: 'ignored',
+      name: 'Not visible early',
+      description: '',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    },
+    files: [
+      {
+        path: 'pending.md',
+        contentType: 'text/markdown',
+        encoding: 'utf8',
+        content: 'pending',
+      },
+    ],
+  }))], 'pending.json', { type: 'application/json' }));
+
+  const importing = session.request(app, '/api/workspaces/import', {
+    method: 'POST',
+    body: form,
+  });
+  await writeStarted;
+  const duringImport = await (await session.request(app, '/api/workspaces')).json();
+  assert.deepEqual(duringImport.workspaces, []);
+
+  releaseWrite();
+  const result = await importing;
+  assert.equal(result.status, 201);
+  const afterImport = await (await session.request(app, '/api/workspaces')).json();
+  assert.equal(afterImport.workspaces.length, 1);
 });
 
 test('import: no bundle part -> 400', async () => {

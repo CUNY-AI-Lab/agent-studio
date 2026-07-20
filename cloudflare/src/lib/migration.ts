@@ -53,7 +53,12 @@ export interface MigrationClaim {
   completedAt?: number;
 }
 
-export type ClaimAction = 'run' | 'already-done' | 'in-progress' | 'claimed-by-other';
+export type ClaimAction =
+  | 'run'
+  | 'already-done'
+  | 'in-progress'
+  | 'claimed-by-other'
+  | 'anonymous-active';
 
 export interface ClaimDecision {
   action: ClaimAction;
@@ -294,18 +299,49 @@ export interface MigrationRegistryClient {
   claim(subjectSessionId: string): Promise<ClaimAction>;
   markDone(subjectSessionId: string): Promise<void>;
   markFailed(subjectSessionId: string): Promise<void>;
+  beginAnonymousRequest(requestId: string): Promise<boolean>;
+  endAnonymousRequest(requestId: string): Promise<void>;
 }
 
 export type MigrationOutcome = 'migrated' | 'window-not-open' | ClaimAction;
 
+function migrationRegistryClient(
+  env: Env,
+  anonSessionId: string,
+): MigrationRegistryClient {
+  return env.MIGRATION_REGISTRY.get(
+    env.MIGRATION_REGISTRY.idFromName(anonSessionId)
+  ) as unknown as MigrationRegistryClient;
+}
+
+/**
+ * Fence one anonymous HTTP request against first-login migration. The registry
+ * serializes this lease with claim(), so either the request finishes before a
+ * claim can start or the claimed namespace rejects the stale anonymous request.
+ */
+export async function beginAnonymousSessionRequest(
+  env: Env,
+  anonSessionId: string,
+  requestId: string,
+): Promise<boolean> {
+  return migrationRegistryClient(env, anonSessionId).beginAnonymousRequest(requestId);
+}
+
+export async function endAnonymousSessionRequest(
+  env: Env,
+  anonSessionId: string,
+  requestId: string,
+): Promise<void> {
+  await migrationRegistryClient(env, anonSessionId).endAnonymousRequest(requestId);
+}
+
 /**
  * Claim the anonymous namespace for this subject and run the copy if the
- * claim wins. Returns what happened; throws only never — a failed copy marks
- * the claim failed (so a later request retries) and reports 'run' failure as
- * a thrown error to the caller-provided catch. The caller decides whether the
- * legacy cookie can be dropped (yes for 'migrated'/'already-done'/
- * 'claimed-by-other'; keep it for 'in-progress' and on failure so a later
- * request can retry).
+ * claim wins. Claim-state outcomes return normally. A failed copy marks the
+ * claim failed (so a later request retries) and throws to the caller. The
+ * caller decides whether the legacy cookie can be dropped (yes for
+ * 'migrated'/'already-done'/'claimed-by-other'; keep it for active/in-progress
+ * work and on failure so a later request can retry).
  */
 export async function maybeMigrateAnonymousSession(args: {
   env: Env;
@@ -347,9 +383,7 @@ export async function runFirstLoginMigration(
   subjectSessionId: string,
   now = Date.now(),
 ): Promise<MigrationOutcome> {
-  const registry = env.MIGRATION_REGISTRY.get(
-    env.MIGRATION_REGISTRY.idFromName(anonSessionId)
-  ) as unknown as MigrationRegistryClient;
+  const registry = migrationRegistryClient(env, anonSessionId);
 
   const getAgent: AgentFactory = async (sessionId, workspaceId) => {
     const { getAgentByName } = await import('agents');

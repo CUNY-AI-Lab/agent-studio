@@ -125,6 +125,7 @@ function makeAgentPool() {
 class FakeRegistry {
   constructor() {
     this.record = undefined;
+    this.activeRequests = new Set();
     this.queue = Promise.resolve();
     this.claimCalls = 0;
   }
@@ -138,9 +139,24 @@ class FakeRegistry {
   claim(subjectSessionId) {
     this.claimCalls += 1;
     return this.#serialize(() => {
+      if (this.activeRequests.size > 0) return 'anonymous-active';
       const decision = decideClaim(this.record, subjectSessionId, Date.now());
       if (decision.record) this.record = decision.record;
       return decision.action;
+    });
+  }
+
+  beginAnonymousRequest(requestId) {
+    return this.#serialize(() => {
+      if (this.record) return false;
+      this.activeRequests.add(requestId);
+      return true;
+    });
+  }
+
+  endAnonymousRequest(requestId) {
+    return this.#serialize(() => {
+      this.activeRequests.delete(requestId);
     });
   }
 
@@ -235,6 +251,18 @@ test('decideClaim: stale in-progress and failed claims retry for the same subjec
   assert.equal(decideClaim(stale, SUBJECT, NOW).action, 'run');
   const failed = { subjectSessionId: SUBJECT, status: 'failed', startedAt: NOW - 1000 };
   assert.equal(decideClaim(failed, SUBJECT, NOW).action, 'run');
+});
+
+test('claim waits for an admitted anonymous request before migration can start', async () => {
+  const registry = new FakeRegistry();
+  assert.equal(await registry.beginAnonymousRequest('request-1'), true);
+  assert.equal(await registry.claim(SUBJECT), 'anonymous-active');
+  assert.equal(registry.record, undefined);
+
+  await registry.endAnonymousRequest('request-1');
+  assert.equal(await registry.claim(SUBJECT), 'run');
+  assert.equal(registry.record.subjectSessionId, SUBJECT);
+  assert.equal(await registry.beginAnonymousRequest('request-2'), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -678,7 +706,7 @@ function cookieFrom(response) {
   return match ? `agent-studio-session=${match[1]}` : null;
 }
 
-test('middleware: pure anonymous flow never touches migration', async () => {
+test('middleware: pure anonymous flow preserves its session without making a claim', async () => {
   const { app, env, registry } = await makeMiddlewareApp();
 
   const first = await app.request('/api/session', {}, env);
@@ -691,6 +719,17 @@ test('middleware: pure anonymous flow never touches migration', async () => {
   const second = await app.request('/api/session', { headers: { Cookie: cookie } }, env);
   assert.equal((await second.json()).sessionId, sessionId);
   assert.equal(registry.claimCalls, 0);
+});
+
+test('middleware: lease-release failure does not make a completed request ambiguous', async () => {
+  const { app, env, registry } = await makeMiddlewareApp();
+  registry.endAnonymousRequest = async () => {
+    throw new Error('simulated registry release failure');
+  };
+
+  const response = await app.request('/api/session', {}, env);
+  assert.equal(response.status, 200);
+  assert.match((await response.json()).sessionId, /^[a-f0-9]{32}$/);
 });
 
 test('middleware: first authenticated request with legacy cookie migrates once and drops the cookie', async () => {
@@ -731,6 +770,23 @@ test('middleware: first authenticated request with legacy cookie migrates once a
   assert.equal((await again.json()).sessionId, subjectSessionId);
   assert.equal(registry.claimCalls, claimCallsBefore + 1); // claim checked, returns already-done
   assert.equal(registry.record.status, 'done');
+});
+
+test('middleware: a claimed namespace rejects stale anonymous HTTP work', async () => {
+  const { app, env, registry } = await makeMiddlewareApp();
+  const first = await app.request('/api/session', {}, env);
+  const cookie = cookieFrom(first);
+  registry.record = {
+    subjectSessionId: SUBJECT,
+    status: 'in-progress',
+    startedAt: Date.now(),
+  };
+
+  const stale = await app.request('/api/session', {
+    headers: { Cookie: cookie },
+  }, env);
+  assert.equal(stale.status, 409);
+  assert.equal((await stale.json()).error.code, 'legacy_session_claimed');
 });
 
 test('middleware: authenticated request after expiry refuses import and clears the legacy cookie', async (t) => {

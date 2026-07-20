@@ -420,6 +420,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (source === 'server') return;
     this.assertAuthorizedRpc();
     assertClientStateIdentity(this.name, nextState);
+    // The browser has bounded callable methods for every supported mutation.
+    // Accepting the Agents SDK's generic full-state replacement would bypass
+    // those schemas, migration/deletion freezes, and layout merge semantics.
+    throw new Error('client state replacement is disabled; use callable mutations');
   }
 
   /**
@@ -502,6 +506,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     sessionId: string,
     legacyCompatibilityNow?: number,
   ): Promise<void> {
+    this.assertNotFrozen();
     await this.ensureRuntimeWorkspaceHydrated(workspace, sessionId, legacyCompatibilityNow);
     const nextState: WorkspaceState = {
       ...this.state,

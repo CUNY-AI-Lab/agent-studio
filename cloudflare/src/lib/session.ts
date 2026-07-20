@@ -15,7 +15,12 @@ import {
   sessionIdForSubject,
   type CailIdentity,
 } from './cail-identity';
-import { runFirstLoginMigration } from './migration';
+import {
+  beginAnonymousSessionRequest,
+  endAnonymousSessionRequest,
+  runFirstLoginMigration,
+} from './migration';
+import { canonicalError } from './error-envelope';
 import {
   LOG_PRODUCT,
   STUDIO_EVENTS,
@@ -155,7 +160,11 @@ export const sessionMiddleware: MiddlewareHandler<{
           const startedAt = now;
           try {
             const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId, now);
-            if (outcome !== 'in-progress' && outcome !== 'window-not-open') {
+            if (
+              outcome === 'migrated'
+              || outcome === 'already-done'
+              || outcome === 'claimed-by-other'
+            ) {
               deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
             }
             const succeeded = outcome === 'migrated' || outcome === 'already-done';
@@ -227,7 +236,45 @@ export const sessionMiddleware: MiddlewareHandler<{
   }
 
   c.set('sessionId', sessionId);
-  await next();
+
+  // During the compatibility window, serialize anonymous HTTP work with the
+  // first-login claim. This prevents an already-started create/import request
+  // from writing into the anonymous prefix after migration has listed it and
+  // before that prefix is deleted.
+  const shouldFenceAnonymous =
+    !verified
+    && Boolean(c.env.CAIL_IDENTITY_JWKS?.trim())
+    && legacyAccountCompatibilityAllowed(c.env);
+  if (!shouldFenceAnonymous) {
+    await next();
+    return;
+  }
+
+  const requestLeaseId = crypto.randomUUID();
+  const admitted = await beginAnonymousSessionRequest(
+    c.env,
+    sessionId,
+    requestLeaseId,
+  );
+  if (!admitted) {
+    return c.json(
+      canonicalError(
+        'legacy_session_claimed',
+        'This anonymous session is being moved to your signed-in account. Sign in and retry.',
+        { type: 'conflict_error', retryable: true },
+      ),
+      409,
+    );
+  }
+  try {
+    await next();
+  } finally {
+    // Releasing the fence is best-effort. A release failure must not replace a
+    // successful mutation response with an ambiguous 500; the durable lease
+    // expires after ten minutes and blocks migration safely in the meantime.
+    await endAnonymousSessionRequest(c.env, sessionId, requestLeaseId)
+      .catch(() => undefined);
+  }
 };
 
 export function requireSession(c: SessionContext): string {

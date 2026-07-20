@@ -203,6 +203,7 @@ test('production fails closed unless identity, route, proxy, and rate boundaries
     ['CAIL_IDENTITY_JWKS', '{}', 'production_identity_jwks_invalid'],
     ['CAIL_IDENTITY_JWKS', JSON.stringify({ keys: [{ kty: 'RSA', kid: 'active' }] }), 'production_identity_jwks_invalid'],
     ['CAIL_API_BASE', 'http://model-proxy.example', 'production_api_base_invalid'],
+    ['CAIL_MODEL', 'cail/gpt-4.1-nano', 'cail_model_invalid'],
     ['CAIL_CANONICAL_ORIGIN', 'https://tools.example/path', 'production_canonical_origin_invalid'],
     ['CAIL_BASE_PATH', '', 'production_base_path_missing'],
     ['CAIL_BASE_PATH', '/agent%2fother', 'production_base_path_invalid'],

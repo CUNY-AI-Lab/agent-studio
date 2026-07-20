@@ -25,7 +25,7 @@ async function waitForHealth(baseUrl, timeoutMs) {
 
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(new URL('/health', baseUrl));
+      const response = await fetch(new URL('health', `${baseUrl.replace(/\/+$/, '')}/`));
       if (response.ok) {
         const payload = await response.json();
         assert(payload?.ok === true, 'Health check did not return ok=true');
@@ -81,6 +81,10 @@ async function main() {
     assert(created.runtime?.provider === 'dynamic-workers', 'Runtime provider is not dynamic-workers');
     assert(created.state?.panels?.some((panel) => panel.id === 'chat'), 'Initial chat panel is missing');
     log('workspace-fetched', created.workspace.name);
+
+    const liveAgent = await connectAgent(session, created);
+    liveAgent.close();
+    log('agent-websocket', 'connected');
 
     const patched = await session.json(`/api/workspaces/${workspaceId}`, {
       method: 'PATCH',

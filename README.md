@@ -93,10 +93,12 @@ client use the same prefix. Local split development defaults to `/`.
 - Browser-callable Durable Object methods are limited to bounded state
   mutations and code execution. Credential installation, private reads, file
   operations, migration, deletion, and reliability collection are internal
-  RPCs.
+  RPCs. Generic client state replacement is refused; every browser mutation
+  must pass through an explicit callable schema.
 - Workspace metadata uses R2 compare-and-swap. Layout patches merge by item
-  identifier. Migration and deletion fence active mutations before destructive
-  state changes.
+  identifier. Create, import, and gallery clone write the workspace record last
+  as their visibility marker. Migration and deletion fence active mutations
+  before destructive state changes.
 - Gallery publication uses a client operation UUID, deterministic object id,
   manifest-last commit marker, and compensating delete if the workspace CAS
   cannot be stamped.
@@ -111,13 +113,18 @@ The temporary anonymous-to-subject workflow is in
 ## Verification
 
 ```bash
+bun install --frozen-lockfile
+bun run lint
 bun run typecheck
 bun run test
 bun run build
+bun audit
+(cd cloudflare && bunx wrangler deploy --dry-run --outdir /tmp/agent-studio-wrangler-dry-run)
 ```
 
-An authorized release should additionally run a Wrangler dry-run, verify the
-mounted asset paths, probe `/agent-studio/health` with deployment inputs, and
-complete the activation checklist in the operations guide. Do not infer
-permission to create buckets, secrets, domains, OAuth grants, or deployments
-from the presence of repository scripts.
+The smoke client accepts a mounted base URL and verifies the protected Agents
+WebSocket without invoking a model. An authorized release should additionally
+verify the mounted asset paths, probe `/agent-studio/health` with deployment
+inputs, and complete the activation checklist in the operations guide. Do not
+infer permission to create buckets, secrets, domains, OAuth grants, or
+deployments from the presence of repository scripts.

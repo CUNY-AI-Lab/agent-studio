@@ -52,3 +52,27 @@ test('assertClientStateIdentity rejects identities when the agent name is unpars
     /client state cannot set sessionId \(unresolvable agent name\)/,
   );
 });
+
+test('WorkspaceAgent rejects every generic client state replacement', async () => {
+  const { registerCloudflareStub } = await import('./helpers/env.mjs');
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = {
+    name: AGENT_NAME,
+    env: { CAIL_REQUIRE_IDENTITY: 'true' },
+    cailSubject: 'cail-subject',
+    assertAuthorizedRpc: WorkspaceAgent.prototype.assertAuthorizedRpc,
+  };
+
+  assert.throws(
+    () => WorkspaceAgent.prototype.validateStateChange.call(agent, {
+      sessionId: SESSION_ID,
+      workspace: { id: WORKSPACE_ID },
+      panels: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [],
+    }, 'client'),
+    /client state replacement is disabled/,
+  );
+});

@@ -3,6 +3,7 @@ import type { MigrationRegistry } from './migration-registry';
 import type { CailAnalyticsEngineDataset, CailLogEnvironment } from '@cuny-ai-lab/cail-log';
 import { CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER } from '@cuny-ai-lab/cail-identity';
 import { isValidBasePath, normalizeBasePath } from './lib/base-path';
+import { isAllowedCailModelId } from './lib/workspace-validation';
 
 export interface Env {
   ASSETS: Fetcher;
@@ -119,6 +120,7 @@ export type AgentStudioConfigErrorCode =
   | 'production_identity_required'
   | 'production_identity_jwks_missing'
   | 'production_identity_jwks_invalid'
+  | 'cail_model_invalid'
   | 'production_api_base_invalid'
   | 'production_canonical_origin_invalid'
   | 'production_base_path_missing'
@@ -259,6 +261,7 @@ export function validateAgentStudioConfig(
     CAIL_IDENTITY_JWKS?: string;
     CAIL_IDENTITY_ISSUER?: string;
     CAIL_API_BASE?: string;
+    CAIL_MODEL?: string;
     CAIL_CANONICAL_ORIGIN?: string;
     CAIL_BASE_PATH?: string;
     API_RATE_LIMIT?: { limit?: unknown };
@@ -314,6 +317,9 @@ export function validateAgentStudioConfig(
     || (env.CAIL_LOG_ENV === 'staging' && identityIssuer !== CAIL_STAGING_ISSUER)
   ) {
     return { ok: false, errorCode: 'cail_identity_issuer_environment_mismatch' };
+  }
+  if (env.CAIL_MODEL !== undefined && !isAllowedCailModelId(env.CAIL_MODEL)) {
+    return { ok: false, errorCode: 'cail_model_invalid' };
   }
 
   if (env.CAIL_LOG_ENV === 'production') {

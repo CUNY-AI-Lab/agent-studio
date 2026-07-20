@@ -45,6 +45,35 @@ export function parseArgs(argv) {
   return args;
 }
 
+function applicationMount(baseUrl) {
+  const pathname = new URL(baseUrl).pathname.replace(/\/+$/g, '');
+  return pathname === '/' ? '' : pathname;
+}
+
+export function applicationUrl(path, baseUrl) {
+  if (!path.startsWith('/')) {
+    throw new Error('Application path must start with /');
+  }
+  const url = new URL(baseUrl);
+  url.pathname = `${applicationMount(url)}${path}`.replace(/\/+/g, '/');
+  url.search = '';
+  url.hash = '';
+  return url;
+}
+
+export function agentSocketBasePath(baseUrl, agentClass, agentName) {
+  const agent = agentClass
+    .replace(/([a-z0-9])([A-Z])/g, '$1-$2')
+    .replace(/[_\s]+/g, '-')
+    .toLowerCase();
+  return [
+    applicationMount(baseUrl).replace(/^\/+/, ''),
+    'agents',
+    agent,
+    encodeURIComponent(agentName),
+  ].filter(Boolean).join('/');
+}
+
 // Protected workspace reads and every mutation carry the CSRF header (fleet
 // contract §3¾ rule 3). Sending it on public reads is harmless and keeps this
 // non-browser client aligned with both frontend fetch wrappers.
@@ -72,7 +101,7 @@ export class SessionClient {
   }
 
   async fetch(path, init = {}) {
-    const url = new URL(path, this.baseUrl);
+    const url = applicationUrl(path, this.baseUrl);
     const headers = new Headers(init.headers || {});
     if (this.cookie) {
       headers.set('Cookie', this.cookie);
@@ -165,7 +194,7 @@ export async function saveObservability(observability, prefix = 'chat-trace') {
   return path;
 }
 
-export async function connectAgent(session, workspacePayload) {
+export async function connectAgent(session, workspacePayload, { timeoutMs = 10000 } = {}) {
   const { agent } = workspacePayload;
   const url = new URL(session.baseUrl);
   const client = new AgentClient({
@@ -173,14 +202,31 @@ export async function connectAgent(session, workspacePayload) {
     name: agent.name,
     host: url.host,
     secure: url.protocol === 'https:',
+    basePath: agentSocketBasePath(url, agent.className, agent.name),
     headers: session.cookie ? { Cookie: session.cookie } : undefined,
     // Per-connection CSRF token on the WS upgrade (fleet contract §3¾ rule 4).
     // The DO closes the socket at accept without it, so smoke exercises the
     // protected handshake rather than bypassing it.
     query: session.csrfToken ? { csrfToken: session.csrfToken } : undefined,
   });
-  await client.ready;
-  return client;
+  let timeout;
+  try {
+    await Promise.race([
+      client.ready,
+      new Promise((_, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`Agent WebSocket did not become ready within ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+    return client;
+  } catch (error) {
+    client.close();
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function makeUserMessage(prompt) {

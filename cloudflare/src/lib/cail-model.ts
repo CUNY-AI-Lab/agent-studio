@@ -26,6 +26,7 @@ import { createCailClient } from '@cuny-ai-lab/cail-client';
 import type { LanguageModel } from 'ai';
 import { CAIL_APP_SLUG } from './cail-identity';
 import type { CailCorrelation } from './logging';
+import { isAllowedCailModelId } from './workspace-validation';
 
 /**
  * Default model slug. CAIL policy (2026-07-04) is Workers AI catalog only —
@@ -48,7 +49,7 @@ export interface CailModelEnv {
 }
 
 export function resolveCailModelName(env: CailModelEnv): string {
-  return env.CAIL_MODEL || DEFAULT_CAIL_MODEL;
+  return isAllowedCailModelId(env.CAIL_MODEL) ? env.CAIL_MODEL : DEFAULT_CAIL_MODEL;
 }
 
 export interface CreateCailModelOptions {
@@ -81,6 +82,9 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
   if (!identityJwt) {
     throw new Error('Missing CAIL identity JWT; cannot authenticate the model call.');
   }
+  if (options.model !== undefined && !isAllowedCailModelId(options.model)) {
+    throw new Error('Model id is outside the Cloudflare Workers AI catalog namespace.');
+  }
 
   // The client trims trailing slashes from its baseUrl; mirror that here so
   // the SDK-derived URL matches chatFetch()'s single served target exactly:
@@ -106,5 +110,5 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     fetch: chatFetch as typeof fetch,
   });
 
-  return provider(options.model || resolveCailModelName(env));
+  return provider(options.model ?? resolveCailModelName(env));
 }

@@ -28,6 +28,7 @@ import { CailError, createCailClient } from '@cuny-ai-lab/cail-client';
 import { z } from 'zod';
 import { CAIL_APP_SLUG } from './cail-identity';
 import { resolveCailModelName, type CailModelEnv } from './cail-model';
+import { CAIL_MODEL_ID_PATTERN } from './workspace-validation';
 import {
   LOG_PRODUCT,
   STUDIO_EVENTS,
@@ -84,7 +85,7 @@ export interface FetchCailModelsOptions {
 // strings so an unknown tier/status the fleet adds later doesn't reject the
 // list — normalization below coerces to known values with sensible defaults.
 const modelEntrySchema = z.object({
-  id: z.string().min(1),
+  id: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200),
   object: z.string().optional(),
   name: z.string().optional(),
   description: z.string().optional(),

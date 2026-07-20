@@ -228,10 +228,25 @@ function WorkspaceShell({
   const dumpWorkspaceObservability = useCallback(async (): Promise<WorkspaceObservabilitySnapshot | null> => {
     try {
       const observability = await fetchWorkspaceObservability(workspace.workspace.id);
-      console.error('Workspace observability snapshot', observability);
+      // Browser consoles can be collected by extensions or support tooling.
+      // Keep the convenient trace action, but never print request ids, errors,
+      // tool previews, panel ids, or other workspace content.
+      console.error('Workspace observability summary', {
+        generatedAt: observability.generatedAt,
+        eventCount: observability.events.length,
+        requests: observability.requests.map((request) => ({
+          status: request.status,
+          model: request.model,
+          steps: request.steps,
+          idleMs: request.idleMs,
+          suspectedStall: request.suspectedStall,
+          chunkCounts: request.chunkCounts,
+          toolCount: request.tools.length,
+        })),
+      });
       return observability;
-    } catch (observabilityError) {
-      console.error('Failed to fetch workspace observability', observabilityError);
+    } catch {
+      console.error('Failed to fetch workspace observability');
       return null;
     }
   }, [workspace.workspace.id]);
