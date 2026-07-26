@@ -144,7 +144,8 @@ function emitBoundaryEvent(c: AppContext, status: number, errorType?: string): v
     route: classifiedRoute(c),
     status,
     durationMs: Date.now() - (c.get('logStartedAt') ?? Date.now()),
-    subject: c.get('cailIdentity')?.subject,
+    // The verified log_sub, never the ownership subject.
+    operationalSubject: c.get('cailIdentity')?.operationalSubject,
     ...(errorType ? { errorType } : {}),
   });
 }

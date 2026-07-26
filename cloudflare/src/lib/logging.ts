@@ -205,9 +205,26 @@ export function studioLogger(runtime?: StudioLogRuntime): StudioLogger | null {
   return logger;
 }
 
-export function principalForSubject(subject?: string | null): CailPrincipalFields {
-  return subject && /^cail-[0-9a-f]{32}$/.test(subject)
-    ? { type: 'user', subject: `cail-${LOG_SUBJECT_VERSION}-${subject.slice(5)}` }
+/**
+ * Build the log principal from the VERIFIED operational subject (`log_sub`).
+ *
+ * The operational subject is derived at the identity boundary under a separate
+ * salt; it is deliberately NOT a reversible transform of the ownership
+ * subject. Relabelling `cail-<hex>` as `cail-v1-<same hex>` — which this
+ * function used to do — put the durable workspace-owner key into every log
+ * line in recoverable form, defeating the separation the two salts exist for,
+ * and produced a principal that does not match the one other CAIL services log
+ * for the same person.
+ *
+ * When no operational subject was issued, emit an anonymous principal. Never
+ * invent one from the ownership subject.
+ */
+export function principalForOperationalSubject(
+  operationalSubject?: string | null,
+): CailPrincipalFields {
+  return operationalSubject
+    && new RegExp(`^cail-${LOG_SUBJECT_VERSION}-[0-9a-f]{32}$`).test(operationalSubject)
+    ? { type: 'user', subject: operationalSubject }
     : { type: 'anonymous' };
 }
 
@@ -262,12 +279,13 @@ export interface BoundaryEvent {
   route: string;
   status: number;
   durationMs: number;
-  subject?: string;
+  /** Verified operational subject (`log_sub`), never the ownership subject. */
+  operationalSubject?: string;
   errorType?: string;
 }
 
 export function logBoundaryEvent(log: StudioLogger, input: BoundaryEvent): void {
-  const principal = principalForSubject(input.subject);
+  const principal = principalForOperationalSubject(input.operationalSubject);
   const trace = traceFromCorrelation(input.correlation);
   const route = normalizeRouteTemplate(input.route);
   const terminal = terminalForRequest(input.status, input.errorType);

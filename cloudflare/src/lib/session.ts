@@ -24,7 +24,7 @@ import { canonicalError } from './error-envelope';
 import {
   LOG_PRODUCT,
   STUDIO_EVENTS,
-  principalForSubject,
+  principalForOperationalSubject,
   studioLogger,
 } from './logging';
 
@@ -170,7 +170,7 @@ export const sessionMiddleware: MiddlewareHandler<{
             const succeeded = outcome === 'migrated' || outcome === 'already-done';
             const importFields = {
               product_id: LOG_PRODUCT,
-              principal: principalForSubject(verified.identity.subject),
+              principal: principalForOperationalSubject(verified.identity.operationalSubject),
               duration_ms: Date.now() - startedAt,
             };
             if (succeeded) {
@@ -192,7 +192,7 @@ export const sessionMiddleware: MiddlewareHandler<{
             // (session ids derive from it); the error itself is never logged.
             studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
               product_id: LOG_PRODUCT,
-              principal: principalForSubject(verified.identity.subject),
+              principal: principalForOperationalSubject(verified.identity.operationalSubject),
               terminal: { outcome: 'error', reason: 'application_failure' },
               duration_ms: Date.now() - startedAt,
               error_type: 'first_login_migration_failed',
@@ -204,7 +204,7 @@ export const sessionMiddleware: MiddlewareHandler<{
           deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
           studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
             product_id: LOG_PRODUCT,
-            principal: principalForSubject(verified.identity.subject),
+            principal: principalForOperationalSubject(verified.identity.operationalSubject),
             terminal: { outcome: 'denied', reason: 'denied' },
             duration_ms: 0,
             error_type: 'legacy_account_import_window_expired',

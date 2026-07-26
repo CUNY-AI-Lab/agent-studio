@@ -19,7 +19,7 @@ import {
   logBoundaryEvent,
   mintCorrelation,
   normalizeRouteTemplate,
-  principalForSubject,
+  principalForOperationalSubject,
   resolveStudioLogConfig,
   terminalForRequest,
   traceFromCorrelation,
@@ -64,7 +64,7 @@ test('HTTP success maps to canonical request completion with fleet product ident
     route: '/api/workspaces/:id',
     status: 201,
     durationMs: 42,
-    subject: DURABLE_SUBJECT,
+    operationalSubject: LOG_SUBJECT,
   });
 
   assert.equal(events.length, 1);
@@ -274,8 +274,13 @@ test('content, raw identities, and arbitrary attributes cannot enter an event', 
 });
 
 test('principal and trace helpers preserve only approved atomic facts', () => {
-  assert.deepEqual(principalForSubject(DURABLE_SUBJECT), PRINCIPAL);
-  assert.deepEqual(principalForSubject('raw-idp-subject'), { type: 'anonymous' });
+  // The log principal comes from the VERIFIED operational subject only.
+  assert.deepEqual(principalForOperationalSubject(LOG_SUBJECT), PRINCIPAL);
+  // An ownership subject must never be relabelled into a log principal: that
+  // reversible transform would put the durable owner key in every log line.
+  assert.deepEqual(principalForOperationalSubject(DURABLE_SUBJECT), { type: 'anonymous' });
+  assert.deepEqual(principalForOperationalSubject('raw-idp-subject'), { type: 'anonymous' });
+  assert.deepEqual(principalForOperationalSubject(undefined), { type: 'anonymous' });
   assert.equal(LOG_SUBJECT_VERSION, 'v1');
   const correlation = { ...TRACE, request_id: REQUEST_ID };
   assert.deepEqual(traceFromCorrelation(correlation), TRACE);

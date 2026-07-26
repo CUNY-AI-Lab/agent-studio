@@ -46,7 +46,7 @@ import {
   STUDIO_ACTION_ROUTES,
   STUDIO_EVENTS,
   mintCorrelation,
-  principalForSubject,
+  principalForOperationalSubject,
   studioLogger,
   traceFromCorrelation,
   type CailCorrelation,
@@ -263,6 +263,7 @@ function summarizeChunkData(chunk: { type: string } & Record<string, unknown>): 
 }
 
 const CAIL_CREDENTIAL_STORAGE_KEY = 'cail:identity-jwt';
+const CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY = 'cail:operational-subject';
 const CAIL_SUBJECT_STORAGE_KEY = 'cail:subject';
 
 /**
@@ -322,6 +323,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * it survives hibernation with it.
    */
   private cailSubject: string | null = null;
+  /** Verified `log_sub`; separate salt, never derived from cailSubject. */
+  private cailOperationalSubject: string | null = null;
   private pendingChatAction: PendingChatAction | null = null;
 
   async onStart() {
@@ -341,6 +344,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const storedSubject = await this.ctx.storage.get<string>(CAIL_SUBJECT_STORAGE_KEY);
       if (typeof storedSubject === 'string') {
         this.cailSubject = storedSubject;
+      }
+    }
+    if (this.cailOperationalSubject === null) {
+      const storedOperational = await this.ctx.storage.get<string>(
+        CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
+      );
+      if (typeof storedOperational === 'string') {
+        this.cailOperationalSubject = storedOperational;
       }
     }
     if (await this.ctx.storage.get(MIGRATION_FROZEN_KEY)) {
@@ -455,7 +466,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
-        principal: principalForSubject(this.cailSubject),
+        principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
         error_type: 'session_unbound',
@@ -475,7 +486,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
-        principal: principalForSubject(this.cailSubject),
+        principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
         error_type: `identity_config_${identity.configError}`,
@@ -487,7 +498,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
-        principal: principalForSubject(this.cailSubject),
+        principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
         error_type: 'invalid_credential',
@@ -497,8 +508,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     this.cailIdentityJwt = identityJwt;
     this.cailSubject = identity.subject;
+    this.cailOperationalSubject = identity.operationalSubject ?? null;
     await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
     await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
+    if (identity.operationalSubject === undefined) {
+      await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
+    } else {
+      await this.ctx.storage.put(
+        CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
+        identity.operationalSubject,
+      );
+    }
   }
 
   async syncWorkspace(
@@ -544,6 +564,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     await this.clearRuntimeFilesUnchecked();
     this.cailIdentityJwt = null;
     this.cailSubject = null;
+    this.cailOperationalSubject = null;
     this.messages = [];
     for (const table of [
       'cf_ai_chat_agent_messages',
@@ -721,7 +742,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       studioLogger(this.env)?.emit(STUDIO_EVENTS.CHAT_DENIED, {
         request_id: correlation.request_id,
         product_id: LOG_PRODUCT,
-        principal: principalForSubject(this.cailSubject),
+        principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
         error_type: 'authentication_required',
@@ -792,7 +813,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       action = {
         actionId: crypto.randomUUID(),
         correlation,
-        principal: principalForSubject(this.cailSubject),
+        principal: principalForOperationalSubject(this.cailOperationalSubject),
         requestModel: modelName,
         startedAt: Date.now(),
         actionTerminal: false,
@@ -974,7 +995,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // stable error code); the code and its output are content and never
     // logged. Control flow is unchanged: every failure still rethrows.
     const correlation = mintCorrelation();
-    const principal = principalForSubject(this.cailSubject);
+    const principal = principalForOperationalSubject(this.cailOperationalSubject);
     this.assertNotFrozen();
     this.assertAuthorizedRpc();
     code = runtimeCodeSchema.parse(code);
