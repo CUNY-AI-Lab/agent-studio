@@ -48,7 +48,12 @@ export const CAIL_IDENTITY_AUDIENCE = 'cail:agent-studio';
  * exactly one configured value, so production and staging namespaces can
  * never be combined in one trust decision.
  */
-export const CAIL_SUPPORTED_ISSUERS = [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER] as const;
+// Frozen at runtime, not just in the type system: a mutation here would be
+// reflected in cached verifier snapshots loaded afterwards.
+export const CAIL_SUPPORTED_ISSUERS = Object.freeze([
+  CAIL_CANONICAL_ISSUER,
+  CAIL_STAGING_ISSUER,
+] as const);
 
 export interface CailIdentityEnv {
   CAIL_IDENTITY_JWKS?: string;
@@ -139,12 +144,16 @@ async function verifyCailIdentityToken(
   env: CailIdentityEnv,
   now?: number,
 ): Promise<CailIdentity | CailIdentityConfigError | null> {
-  if (!token) return null;
+  // Configuration is classified BEFORE the absent-token check: a JWKS the
+  // verifier cannot load must surface as a config error (503) even for an
+  // anonymous request, or enforcement turns a misconfiguration into a
+  // sign-in loop and non-enforcement silently serves anonymous traffic.
   // 5.0.0 moved the clock from the verify call into the loaded snapshot, so a
   // pinned `now` has to be threaded through the loader.
   const config = await loadIdentityConfig(env, now);
-  if (config === null) return null;
   if (isCailIdentityConfigError(config)) return config;
+  if (!token) return null;
+  if (config === null) return null;
   return verifyIdentityJwt(token, config.config);
 }
 
