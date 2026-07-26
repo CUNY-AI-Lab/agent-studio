@@ -8,6 +8,25 @@ import {
   TEST_SUBJECTS,
   createTestIdentityIssuer,
 } from '@cuny-ai-lab/cail-identity/testing';
+import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
+
+/**
+ * cail-identity 5.0.0 verifies against a snapshot from
+ * loadIdentityVerifierConfig rather than raw jwks + per-call options. This
+ * helper keeps the tests' intent (audience/issuer/clock under test control)
+ * while using the current contract.
+ */
+async function verifyWith(token, issuer, overrides = {}) {
+  const loaded = await loadIdentityVerifierConfig({
+    jwks: typeof issuer.jwksJson === 'string' ? issuer.jwksJson : JSON.stringify(issuer.jwks),
+    issuer: overrides.issuer ?? CAIL_CANONICAL_ISSUER,
+    expectedAudience: overrides.expectedAudience ?? CAIL_IDENTITY_AUDIENCE,
+    supportedIssuers: overrides.supportedIssuers ?? [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
+    ...(overrides.now === undefined ? {} : { now: overrides.now }),
+  });
+  if (!loaded.ok) return { configError: loaded.reason };
+  return verifyIdentityJwt(token, loaded.config);
+}
 
 import {
   verifyIdentityJwt,
@@ -56,7 +75,7 @@ function identityEnv(...issuers) {
 test('verifies the canonical RS256 identity contract', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
   const token = await mintValid(issuer);
-  const identity = await verifyIdentityJwt(token, issuer.jwks, {
+  const identity = await verifyWith(token, issuer, {
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
     allowedIssuers: [CAIL_CANONICAL_ISSUER],
     now: NOW,

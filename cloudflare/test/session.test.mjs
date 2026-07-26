@@ -60,12 +60,17 @@ test('middleware maps an unloadable identity config to a typed 503, distinct fro
   app.get('/api/session', (c) => c.json({ sessionId: c.get('sessionId') }));
 
   // Token invalid against a LOADED config → the caller's 401.
+  // The JWKS must be one the verifier can actually load: since cail-identity
+  // 5.0.0 an EMPTY key set is a configuration failure (503), not a loaded
+  // config that happens to reject the token.
+  const { createTestIdentityIssuer } = await import('@cuny-ai-lab/cail-identity/testing');
+  const loadableIssuer = await createTestIdentityIssuer({ kid: 'session-test-key' });
   const unauthorized = await app.request(
     '/api/session',
     { headers: { [CAIL_IDENTITY_HEADER]: 'bad.jwt.token' } },
     {
       ...baseEnv,
-      CAIL_IDENTITY_JWKS: JSON.stringify({ keys: [] }),
+      CAIL_IDENTITY_JWKS: loadableIssuer.jwksJson ?? JSON.stringify(loadableIssuer.jwks),
       CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
     }
   );

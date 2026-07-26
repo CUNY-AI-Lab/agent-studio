@@ -89,7 +89,9 @@ test('the versioned product reliability contract fixes access, windows, and coll
   assert.equal(contract.collection.fleet_projection.dataset_contract, CAIL_ANALYTICS_ENGINE_DATASET);
   const pkg = await readPackage();
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-log'], '^0.4.0');
-  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-identity'], '^4.4.0');
+  // Exact pin: 5.0.0 carries the v2 subject derivation, whose ownership
+  // subjects differ from every 4.x value; a caret range could move it silently.
+  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-identity'], '5.0.0');
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-client'], '^1.3.0');
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-sandbox-client'], undefined);
 });

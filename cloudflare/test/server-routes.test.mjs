@@ -199,7 +199,11 @@ test('verified canonical token is stored and forwarded to the workspace agent', 
 
 test('required identity rejects an invalid canonical credential', async () => {
   const { env } = makeEnv();
-  env.CAIL_IDENTITY_JWKS = JSON.stringify({ keys: [] });
+  // Loadable key set: since cail-identity 5.0.0 an empty JWKS is a config
+  // failure (503), so a 401-for-bad-token test needs a config that loads.
+  const { createTestIdentityIssuer } = await import('@cuny-ai-lab/cail-identity/testing');
+  const loadableIssuer = await createTestIdentityIssuer({ kid: 'routes-test-key' });
+  env.CAIL_IDENTITY_JWKS = loadableIssuer.jwksJson ?? JSON.stringify(loadableIssuer.jwks);
   env.CAIL_REQUIRE_IDENTITY = 'true';
   env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
   env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();

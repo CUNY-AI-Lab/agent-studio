@@ -18,13 +18,22 @@
  */
 
 import {
-  parseIdentityConfig,
+  loadIdentityVerifierConfig,
   verifyIdentityJwt,
   CAIL_CANONICAL_ISSUER,
   CAIL_STAGING_ISSUER,
   type CailIdentity,
-  type IdentityConfigErrorReason,
+  type IdentityVerifierConfig,
 } from '@cuny-ai-lab/cail-identity';
+
+/**
+ * cail-identity 5.0.0 replaced the synchronous `parseIdentityConfig` + per-call
+ * jwks/options with an async loader that validates issuer, audience, and every
+ * JWKS key once, returning a frozen snapshot. Snapshots are cached per
+ * (jwks, issuer) so a request never re-imports keys.
+ */
+type IdentityConfigErrorReason = string;
+const verifierCache = new Map<string, IdentityVerifierConfig>();
 import { canonicalError } from './error-envelope';
 
 export { verifyIdentityJwt, CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER };
@@ -86,19 +95,30 @@ export function resolveCailIdentityIssuer(env: CailIdentityEnv): string | null {
  * malformed configuration, or enforcement without configuration, is a config
  * error: the operator intended identity to work and it cannot.
  */
-function loadIdentityConfig(
+async function loadIdentityConfig(
   env: CailIdentityEnv,
-): { ok: true; jwks: Parameters<typeof verifyIdentityJwt>[1]; issuer: string } | CailIdentityConfigError | null {
+  now?: number,
+): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError | null> {
   const jwksConfigured = typeof env.CAIL_IDENTITY_JWKS === 'string' && env.CAIL_IDENTITY_JWKS.trim() !== '';
   const issuerConfigured = typeof env.CAIL_IDENTITY_ISSUER === 'string' && env.CAIL_IDENTITY_ISSUER !== '';
   if (!jwksConfigured && !issuerConfigured && !cailIdentityRequired(env)) return null;
-  const config = parseIdentityConfig({
+  // A pinned clock (tests, replay analysis) must never be served from — or
+  // written to — the shared snapshot cache.
+  const cacheKey = `${env.CAIL_IDENTITY_ISSUER ?? ''}\u0000${env.CAIL_IDENTITY_JWKS ?? ''}`;
+  if (now === undefined) {
+    const cached = verifierCache.get(cacheKey);
+    if (cached) return { ok: true, config: cached };
+  }
+  const loaded = await loadIdentityVerifierConfig({
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
+    expectedAudience: CAIL_IDENTITY_AUDIENCE,
     supportedIssuers: CAIL_SUPPORTED_ISSUERS,
+    ...(now === undefined ? {} : { now }),
   });
-  if (!config.ok) return { configError: config.reason };
-  return config;
+  if (!loaded.ok) return { configError: loaded.reason };
+  if (now === undefined) verifierCache.set(cacheKey, loaded.config);
+  return { ok: true, config: loaded.config };
 }
 
 /**
@@ -120,14 +140,12 @@ async function verifyCailIdentityToken(
   now?: number,
 ): Promise<CailIdentity | CailIdentityConfigError | null> {
   if (!token) return null;
-  const config = loadIdentityConfig(env);
+  // 5.0.0 moved the clock from the verify call into the loaded snapshot, so a
+  // pinned `now` has to be threaded through the loader.
+  const config = await loadIdentityConfig(env, now);
   if (config === null) return null;
   if (isCailIdentityConfigError(config)) return config;
-  return verifyIdentityJwt(token, config.jwks, {
-    expectedAudience: CAIL_IDENTITY_AUDIENCE,
-    allowedIssuers: [config.issuer],
-    now,
-  });
+  return verifyIdentityJwt(token, config.config);
 }
 
 export async function verifyCredentialForSession(
