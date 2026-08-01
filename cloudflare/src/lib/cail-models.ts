@@ -87,9 +87,9 @@ export interface FetchCailModelsOptions {
 const modelEntrySchema = z.object({
   id: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200),
   object: z.string().optional(),
-  name: z.string().optional(),
-  description: z.string().optional(),
-  task: z.string().optional(),
+  name: z.string().nullable().optional(),
+  description: z.string().nullable().optional(),
+  task: z.string().nullable().optional(),
   recommended: z.boolean().optional(),
   tier: z.string().optional(),
   order: z.number().optional(),
@@ -104,7 +104,7 @@ type ModelEntry = z.infer<typeof modelEntrySchema>;
 
 const modelListSchema = z.object({
   object: z.literal('list'),
-  data: z.array(modelEntrySchema).min(1),
+  data: z.array(z.unknown()).min(1),
 });
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -184,7 +184,9 @@ function fallbackResult(env: CailModelEnv): CailModelsResult {
  */
 export async function fetchCailModels(options: FetchCailModelsOptions): Promise<CailModelsResult> {
   const { env, identityJwt } = options;
-  const fetchImpl = options.fetchImpl ?? fetch;
+  const fetchImpl =
+    options.fetchImpl ??
+    (env.GATEWAY ? (env.GATEWAY.fetch.bind(env.GATEWAY) as typeof fetch) : fetch);
   const apiBase = env.CAIL_API_BASE;
 
   if (!apiBase) {
@@ -224,9 +226,17 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
     return fallbackResult(env);
   }
 
-  let parsed: z.infer<typeof modelListSchema>;
+  // The gateway catalog is pass-through (Workers AI + OpenRouter). This app's
+  // policy is Workers AI ids only, so filter per entry instead of letting one
+  // out-of-policy entry reject the whole catalog.
+  let entries: ModelEntry[];
   try {
-    parsed = modelListSchema.parse(await response.json());
+    const raw = modelListSchema.parse(await response.json());
+    entries = raw.data
+      .map((entry) => modelEntrySchema.safeParse(entry))
+      .filter((result): result is { success: true; data: ModelEntry } => result.success)
+      .map((result) => result.data);
+    if (entries.length === 0) throw new Error('no in-policy entries');
   } catch {
     // A 200 whose body fails the tolerant schema is proxy contract drift, not
     // an outage. Keep the fallback so chat stays usable, but surface the drift
@@ -246,7 +256,7 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
   }
 
   // Convention: the proxy returns the catalog pre-sorted, recommended-first.
-  const models: CailModelInfo[] = parsed.data.map((entry, index) => normalizeEntry(entry, index));
+  const models: CailModelInfo[] = entries.map((entry, index) => normalizeEntry(entry, index));
 
   proxyCache = { models, expiresAt: Date.now() + CACHE_TTL_MS };
   return { models, source: 'proxy' };

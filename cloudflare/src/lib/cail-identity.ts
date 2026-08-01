@@ -18,6 +18,9 @@
  */
 
 import {
+  CAIL_GATEWAY_AUDIENCE,
+  readIdentityKeyring,
+  verifyKeyringGatewayJwt,
   loadIdentityVerifierConfig,
   verifyIdentityJwt,
   CAIL_CANONICAL_ISSUER,
@@ -246,4 +249,51 @@ export function cailAuthRequiredResponse(loginPath = '/login'): Response {
       },
     },
   );
+}
+
+
+/**
+ * Load the verifier config for keyring gateway legs (aud "cail:gateway").
+ * Same issuer/JWKS discipline as the app-audience config.
+ */
+async function loadGatewayLegConfig(
+  env: CailIdentityEnv,
+): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError | null> {
+  const jwksConfigured = typeof env.CAIL_IDENTITY_JWKS === 'string' && env.CAIL_IDENTITY_JWKS.trim() !== '';
+  if (!jwksConfigured) return null;
+  const cacheKey = `gateway-leg\u0000${env.CAIL_IDENTITY_ISSUER ?? ''}\u0000${env.CAIL_IDENTITY_JWKS ?? ''}`;
+  const cached = verifierCache.get(cacheKey);
+  if (cached) return { ok: true, config: cached };
+  const loaded = await loadIdentityVerifierConfig({
+    jwks: env.CAIL_IDENTITY_JWKS,
+    issuer: env.CAIL_IDENTITY_ISSUER,
+    expectedAudience: CAIL_GATEWAY_AUDIENCE,
+    supportedIssuers: CAIL_SUPPORTED_ISSUERS,
+  });
+  if (!loaded.ok) return { configError: loaded.reason };
+  verifierCache.set(cacheKey, loaded.config);
+  return { ok: true, config: loaded.config };
+}
+
+/**
+ * Resolve the keyring's gateway leg for an already verified request identity
+ * (identity-keyring-v1): transport-parse the keyring, then fully verify the
+ * gateway leg and require subject agreement with the verified app leg.
+ *
+ * Returns the verified gateway JWT string to forward, `null` when the leg is
+ * absent, or `"invalid"` when a leg is present but malformed, unverifiable,
+ * or names a different person — callers fail closed on that.
+ */
+export async function resolveKeyringGatewayJwt(
+  request: Request,
+  env: CailIdentityEnv,
+  verifiedSubject: string,
+): Promise<string | null | 'invalid'> {
+  const keyring = readIdentityKeyring(request.headers);
+  if (keyring === null) return 'invalid';
+  if (keyring.gatewayJwt === undefined) return null;
+  const config = await loadGatewayLegConfig(env);
+  if (config === null || !('ok' in config)) return 'invalid';
+  const identity = await verifyKeyringGatewayJwt(keyring, config.config, verifiedSubject);
+  return identity === null ? 'invalid' : keyring.gatewayJwt;
 }

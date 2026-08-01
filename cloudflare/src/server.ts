@@ -42,7 +42,7 @@ import {
   runtimeCodeSchema,
 } from './lib/workspace-validation';
 import {
-  cailIdentityJwt,
+  cailGatewayJwt,
   requireSession,
   sessionMiddleware,
   type SessionVariables,
@@ -219,7 +219,7 @@ async function primeAgentCredential(
   c: AppContext,
   agent: Awaited<ReturnType<typeof getWorkspaceAgent>>
 ): Promise<void> {
-  const jwt = cailIdentityJwt(c);
+  const jwt = cailGatewayJwt(c);
   if (jwt) {
     await agent.setCailCredential(jwt);
   }
@@ -368,7 +368,7 @@ app.get('/api/models', async (c) => {
   const correlation = c.get('logCorrelation') ?? correlationFromHeaders(c.req.raw);
   const { models, source } = await fetchCailModels({
     env: c.env,
-    identityJwt: cailIdentityJwt(c),
+    identityJwt: cailGatewayJwt(c),
     correlation,
   });
   const recommended = models.find((model) => model.recommended) ?? models[0];
