@@ -14,6 +14,7 @@ import {
   isCailIdentityConfigError,
   sessionIdForSubject,
   type CailIdentity,
+  resolveKeyringGatewayJwt,
 } from './cail-identity';
 import {
   beginAnonymousSessionRequest,
@@ -36,6 +37,7 @@ export type SessionVariables = {
   cailIdentity: CailIdentity | null;
   /** Verified raw identity JWT to forward to the model proxy, or null. */
   cailIdentityJwt: string | null;
+  cailGatewayJwt: string | null;
 };
 
 type SessionContext = Context<{
@@ -143,6 +145,18 @@ export const sessionMiddleware: MiddlewareHandler<{
     sessionId = await sessionIdForSubject(verified.identity.subject);
     c.set('cailIdentity', verified.identity);
     c.set('cailIdentityJwt', verified.token);
+    // Keyring gateway leg (identity-keyring-v1): verified against the
+    // gateway audience and bound to this request's verified subject before
+    // it may ever be forwarded. A present-but-invalid leg fails closed.
+    const gatewayLeg = await resolveKeyringGatewayJwt(
+      c.req.raw,
+      c.env,
+      verified.identity.subject
+    );
+    if (gatewayLeg === 'invalid') {
+      return cailAuthRequiredResponse();
+    }
+    c.set('cailGatewayJwt', gatewayLeg);
 
     // First login after working anonymously: the browser still carries a
     // valid legacy anonymous cookie. Migrate that namespace's data into the
@@ -233,6 +247,7 @@ export const sessionMiddleware: MiddlewareHandler<{
     }
     c.set('cailIdentity', null);
     c.set('cailIdentityJwt', null);
+    c.set('cailGatewayJwt', null);
   }
 
   c.set('sessionId', sessionId);
@@ -283,4 +298,9 @@ export function requireSession(c: SessionContext): string {
 
 export function cailIdentityJwt(c: SessionContext): string | null {
   return c.get('cailIdentityJwt');
+}
+
+/** The verified keyring gateway leg for this request, if delivered. */
+export function cailGatewayJwt(c: SessionContext): string | null {
+  return c.get('cailGatewayJwt');
 }

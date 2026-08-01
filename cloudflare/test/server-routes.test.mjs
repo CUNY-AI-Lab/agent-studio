@@ -63,7 +63,19 @@ async function makeRouteCredential(overrides = {}) {
     entitlements: ['tools', 'agent-studio'],
     ...overrides,
   });
-  return { token, jwks: issuer.jwksJson };
+  // Keyring gateway leg (identity-keyring-v1): same person, gateway audience.
+  const gatewayToken = await issuer.mintIdentityJwt({
+    audience: 'cail:gateway',
+    ...(overrides.subject === undefined ? {} : { subject: overrides.subject }),
+  });
+  return { token, gatewayToken, jwks: issuer.jwksJson };
+}
+
+function keyringHeaders(token, gatewayToken) {
+  return {
+    [CAIL_IDENTITY_HEADER]: token,
+    'x-cail-gateway-identity-jwt': gatewayToken,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -175,12 +187,12 @@ test('garbage cookie -> fresh session, never a 500', async () => {
 
 test('verified canonical token is stored and forwarded to the workspace agent', async () => {
   const { env, agents } = makeEnv();
-  const { token, jwks } = await makeRouteCredential();
+  const { token, gatewayToken, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
   env.CAIL_REQUIRE_IDENTITY = 'true';
   env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
   env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
-  const headers = { [CAIL_IDENTITY_HEADER]: token };
+  const headers = keyringHeaders(token, gatewayToken);
   const session = new Session(env);
 
   const sessionRes = await session.request(app, '/api/session', { headers });
@@ -194,7 +206,31 @@ test('verified canonical token is stored and forwarded to the workspace agent', 
 
   const agent = [...agents.values()][0];
   assert.ok(agent);
-  assert.equal(agent.credential, token);
+  assert.equal(agent.credential, gatewayToken);
+});
+
+test('a keyring gateway leg for a different person fails the request closed', async () => {
+  const { env } = makeEnv();
+  const issuer = await createTestIdentityIssuer({ kid: 'route-key' });
+  const { TEST_SUBJECTS } = await import('@cuny-ai-lab/cail-identity/testing');
+  const token = await issuer.mintIdentityJwt({
+    audience: CAIL_IDENTITY_AUDIENCE,
+    subject: TEST_SUBJECTS.alice,
+    entitlements: ['tools', 'agent-studio'],
+  });
+  const bobGateway = await issuer.mintIdentityJwt({
+    audience: 'cail:gateway',
+    subject: TEST_SUBJECTS.bob,
+  });
+  env.CAIL_IDENTITY_JWKS = issuer.jwksJson;
+  env.CAIL_REQUIRE_IDENTITY = 'true';
+  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
+  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
+  const session = new Session(env);
+  const res = await session.request(app, '/api/session', {
+    headers: keyringHeaders(token, bobGateway),
+  });
+  assert.equal(res.status, 401);
 });
 
 test('required identity rejects an invalid canonical credential', async () => {
@@ -1115,7 +1151,7 @@ test('/api/models surfaces proxy quota exhaustion as 429', async () => {
   resetCailModelsCache();
   const { env } = makeEnv();
   env.CAIL_API_BASE = 'https://proxy.example';
-  const { token, jwks } = await makeRouteCredential();
+  const { token, gatewayToken, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
   const session = new Session(env);
   const originalFetch = globalThis.fetch;
@@ -1124,7 +1160,7 @@ test('/api/models surfaces proxy quota exhaustion as 429', async () => {
 
   try {
     const res = await session.request(app, '/api/models', {
-      headers: { [CAIL_IDENTITY_HEADER]: token },
+      headers: keyringHeaders(token, gatewayToken),
     });
     assert.equal(res.status, 429);
     const error = await readError(res);

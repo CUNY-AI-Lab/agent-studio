@@ -11,6 +11,8 @@ export interface Env {
   WorkspaceAgent: DurableObjectNamespace<WorkspaceAgent>;
   MIGRATION_REGISTRY: DurableObjectNamespace<MigrationRegistry>;
   WORKSPACE_FILES: R2Bucket;
+  // Service binding to CAIL Model API (same-account workers.dev fetch is blocked).
+  GATEWAY?: Fetcher;
   SESSION_SECRET: string;
   // Cloudflare Rate Limiting bindings (wrangler.jsonc unsafe.bindings, type
   // "ratelimit"). Optional so local dev / tests / miniflare quirks fail open —

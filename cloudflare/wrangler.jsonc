@@ -93,6 +93,15 @@
       }
     ]
   },
+  "services": [
+    {
+      // Same-account workers.dev fetches are blocked by Cloudflare; the
+      // gateway is reached through a service binding instead. Points at the
+      // candidate for staging; production points at cail-model-api.
+      "binding": "GATEWAY",
+      "service": "cail-model-api-candidate"
+    }
+  ],
   "vars": {
     // Institutional CAIL model proxy base URL (serves /v1/... and /keys).
     // No trailing slash.

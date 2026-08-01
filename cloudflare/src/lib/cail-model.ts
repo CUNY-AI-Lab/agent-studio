@@ -46,6 +46,8 @@ export interface CailModelEnv {
   CAIL_API_BASE?: string;
   /** Optional model override; defaults to DEFAULT_CAIL_MODEL. */
   CAIL_MODEL?: string;
+  /** Service binding to CAIL Model API; preferred over public fetch. */
+  GATEWAY?: Fetcher;
 }
 
 export function resolveCailModelName(env: CailModelEnv): string {
@@ -93,6 +95,8 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
   const cail = createCailClient({
     baseUrl: base,
     app: CAIL_APP_SLUG,
+    // Same-account workers.dev fetches are blocked; prefer the service binding.
+    ...(env.GATEWAY ? { fetchImpl: env.GATEWAY.fetch.bind(env.GATEWAY) as typeof fetch } : {}),
   });
 
   const chatFetch = cail.chatFetch(
