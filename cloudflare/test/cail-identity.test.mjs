@@ -34,12 +34,15 @@ import {
   cailIdentityRequired,
   cailAuthRequiredResponse,
   verifyCredentialForSession,
+  verifyGatewayCredentialForSession,
+  resolveKeyringGatewayJwt,
   sessionIdForSubject,
   CAIL_CANONICAL_ISSUER,
   CAIL_STAGING_ISSUER,
   CAIL_APP_SLUG,
   CAIL_IDENTITY_HEADER,
   CAIL_IDENTITY_AUDIENCE,
+  CAIL_GATEWAY_AUDIENCE,
 } from '../src/lib/cail-identity.ts';
 import {
   createCailModel,
@@ -55,6 +58,17 @@ const NOW = 1_800_000_000;
 function mintValid(issuer, overrides = {}) {
   return issuer.mintIdentityJwt({
     audience: CAIL_IDENTITY_AUDIENCE,
+    email: 'someone@gc.cuny.edu',
+    name: 'Some One',
+    entitlements: ['tools', 'agent-studio'],
+    now: NOW,
+    ...overrides,
+  });
+}
+
+function mintGateway(issuer, overrides = {}) {
+  return issuer.mintIdentityJwt({
+    audience: CAIL_GATEWAY_AUDIENCE,
     email: 'someone@gc.cuny.edu',
     name: 'Some One',
     entitlements: ['tools', 'agent-studio'],
@@ -268,6 +282,109 @@ test('verifyCredentialForSession rejects empty and malformed credentials', async
   assert.equal(await verifyCredentialForSession('not-a-jwt', expected, env, NOW), null);
   assert.equal(await verifyCredentialForSession('', expected, env, NOW), null);
   assert.equal(await verifyCredentialForSession(null, expected, env, NOW), null);
+});
+
+test('gateway credential verifier accepts only the gateway leg and matching session', async () => {
+  const issuer = await createTestIdentityIssuer({ kid: 'gateway-key' });
+  const env = identityEnv(issuer);
+  const expected = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  const gatewayToken = await mintGateway(issuer);
+  const identity = await verifyGatewayCredentialForSession(gatewayToken, expected, env, NOW);
+
+  assert.ok(identity);
+  assert.equal(identity.subject, TEST_SUBJECTS.alice);
+  // The application verifier must remain closed to the gateway audience.
+  assert.equal(await verifyCredentialForSession(gatewayToken, expected, env, NOW), null);
+  // A gateway token for another subject cannot be installed onto this DO.
+  const otherSubject = await mintGateway(issuer, { subject: TEST_SUBJECTS.carol });
+  assert.equal(
+    await verifyGatewayCredentialForSession(otherSubject, expected, env, NOW),
+    null,
+  );
+});
+
+test('gateway credential verifier fails closed for wrong audience, expiry, malformed token, and config', async () => {
+  const issuer = await createTestIdentityIssuer({ kid: 'gateway-adverse-key' });
+  const env = identityEnv(issuer);
+  const expected = await sessionIdForSubject(TEST_SUBJECTS.alice);
+
+  for (const token of [
+    await mintValid(issuer),
+    await mintGateway(issuer, { now: NOW - 3720, expiresInSeconds: 3600 }),
+    'not-a-jwt',
+  ]) {
+    assert.equal(
+      await verifyGatewayCredentialForSession(token, expected, env, NOW),
+      null,
+    );
+  }
+
+  assert.deepEqual(
+    await verifyGatewayCredentialForSession(
+      await mintGateway(issuer),
+      expected,
+      {},
+      NOW,
+    ),
+    { configError: 'jwks_missing' },
+  );
+  assert.deepEqual(
+    await verifyGatewayCredentialForSession(
+      await mintGateway(issuer),
+      expected,
+      { CAIL_IDENTITY_JWKS: '{not-json', CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER },
+      NOW,
+    ),
+    { configError: 'jwks_malformed' },
+  );
+});
+
+test('keyring transport rejects missing, duplicate, and conflicting gateway legs before forwarding', async () => {
+  const issuer = await createTestIdentityIssuer({ kid: 'keyring-transport-key' });
+  const env = identityEnv(issuer);
+  const appToken = await mintValid(issuer);
+  const gatewayToken = await mintGateway(issuer);
+  const requestFor = (headers) => new Request('https://agent-studio.example/api/session', { headers });
+
+  assert.equal(
+    await resolveKeyringGatewayJwt(
+      requestFor({ [CAIL_IDENTITY_HEADER]: appToken }),
+      env,
+      TEST_SUBJECTS.alice,
+    ),
+    null,
+  );
+
+  const duplicate = new Headers({
+    [CAIL_IDENTITY_HEADER]: appToken,
+    'x-cail-gateway-identity-jwt': gatewayToken,
+  });
+  duplicate.append('x-cail-gateway-identity-jwt', gatewayToken);
+  assert.equal(
+    await resolveKeyringGatewayJwt(requestFor(duplicate), env, TEST_SUBJECTS.alice),
+    'invalid',
+  );
+
+  const duplicateApp = new Headers({
+    [CAIL_IDENTITY_HEADER]: appToken,
+    'x-cail-gateway-identity-jwt': gatewayToken,
+  });
+  duplicateApp.append(CAIL_IDENTITY_HEADER, appToken);
+  assert.equal(
+    await resolveKeyringGatewayJwt(requestFor(duplicateApp), env, TEST_SUBJECTS.alice),
+    'invalid',
+  );
+
+  const conflicting = new Headers({ [CAIL_IDENTITY_HEADER]: appToken });
+  conflicting.append('x-cail-gateway-identity-jwt', gatewayToken);
+  conflicting.append(
+    'x-cail-gateway-identity-jwt',
+    await mintGateway(issuer, { subject: TEST_SUBJECTS.carol }),
+  );
+  assert.equal(
+    await resolveKeyringGatewayJwt(requestFor(conflicting), env, TEST_SUBJECTS.alice),
+    'invalid',
+  );
 });
 
 test('cailIdentityRequired only true for the literal "true"', () => {

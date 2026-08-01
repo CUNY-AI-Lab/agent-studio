@@ -34,7 +34,10 @@ import {
 import { accountImportWindowState, type Env } from '../env';
 import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
-import { isCailIdentityConfigError, verifyCredentialForSession } from '../lib/cail-identity';
+import {
+  isCailIdentityConfigError,
+  verifyGatewayCredentialForSession,
+} from '../lib/cail-identity';
 import { panelSchema } from '../lib/import';
 import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
@@ -299,6 +302,10 @@ interface PendingChatAction {
   deferredTerminal?: { terminal: CailTerminalFields; errorType?: string };
 }
 
+type CurrentGatewayCredentialCheck =
+  | { status: 'valid' | 'missing' | 'invalid' }
+  | { status: 'config' };
+
 export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   initialState: WorkspaceState = DEFAULT_WORKSPACE_STATE;
   private runtimeWorkspace?: RuntimeWorkspace;
@@ -337,21 +344,40 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (this.cailIdentityJwt === null) {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
       if (typeof stored === 'string') {
-        this.cailIdentityJwt = stored;
-      }
-    }
-    if (this.cailSubject === null) {
-      const storedSubject = await this.ctx.storage.get<string>(CAIL_SUBJECT_STORAGE_KEY);
-      if (typeof storedSubject === 'string') {
-        this.cailSubject = storedSubject;
-      }
-    }
-    if (this.cailOperationalSubject === null) {
-      const storedOperational = await this.ctx.storage.get<string>(
-        CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
-      );
-      if (typeof storedOperational === 'string') {
-        this.cailOperationalSubject = storedOperational;
+        const expectedSessionId = this.csrfSessionId();
+        if (expectedSessionId) {
+          // Re-verify credentials restored after hibernation/eviction. This
+          // also prevents a pre-F04 app-audience token from being revived by
+          // the new code after it was persisted by an older deployment.
+          const identity = await verifyGatewayCredentialForSession(
+            stored,
+            expectedSessionId,
+            this.env,
+          );
+          if (!isCailIdentityConfigError(identity) && identity) {
+            this.cailIdentityJwt = stored;
+            this.cailSubject = identity.subject;
+            this.cailOperationalSubject = identity.operationalSubject ?? null;
+            // Rewrite the derived fields from the verified token so a stale
+            // or hand-edited companion value cannot survive a restart.
+            await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
+            if (identity.operationalSubject === undefined) {
+              await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
+            } else {
+              await this.ctx.storage.put(
+                CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
+                identity.operationalSubject,
+              );
+            }
+          } else if (!isCailIdentityConfigError(identity)) {
+            // Invalid, expired, wrong-audience, or cross-session credentials
+            // must never remain available to a later model call. A config
+            // error is retained for a later retry after operator repair.
+            await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
+            await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
+            await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
+          }
+        }
       }
     }
     if (await this.ctx.storage.get(MIGRATION_FROZEN_KEY)) {
@@ -473,7 +499,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
       throw new Error('setCailCredential: session id unavailable for credential binding');
     }
-    const identity = await verifyCredentialForSession(
+    const identity = await verifyGatewayCredentialForSession(
       identityJwt,
       expectedSessionId,
       this.env,
@@ -489,7 +515,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: `identity_config_${identity.configError}`,
+        error_type: 'identity_config_unavailable',
       });
       throw new Error('setCailCredential: identity verification config could not be loaded');
     }
@@ -519,6 +545,48 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         identity.operationalSubject,
       );
     }
+  }
+
+  /**
+   * Re-verify the in-memory Gateway leg before a warm WebSocket starts a model
+   * turn. Durable Object memory can outlive a short-lived JWT, so installation
+   * time verification alone is not enough. Invalid or expired credentials are
+   * removed from memory and storage; an unavailable verifier is kept for the
+   * operator to repair and is reported separately to the chat boundary.
+   */
+  protected async verifyCurrentGatewayCredential(
+    expectedSessionId: string,
+  ): Promise<CurrentGatewayCredentialCheck> {
+    const token = this.cailIdentityJwt;
+    if (!token) return { status: 'missing' };
+
+    // Pass the current clock explicitly so a warm DO never reuses an
+    // installation-time validity decision. The shared verifier still owns all
+    // JWT signature, issuer, audience, subject, exp, and nbf checks.
+    const identity = await verifyGatewayCredentialForSession(
+      token,
+      expectedSessionId,
+      this.env,
+      Math.floor(Date.now() / 1000),
+    );
+    if (isCailIdentityConfigError(identity)) {
+      return { status: 'config' };
+    }
+    if (!identity) {
+      this.cailIdentityJwt = null;
+      this.cailSubject = null;
+      this.cailOperationalSubject = null;
+      await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
+      await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
+      await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
+      return { status: 'invalid' };
+    }
+
+    // Keep the in-memory derived fields tied to the claims just verified. The
+    // token itself is unchanged, so the persisted credential remains intact.
+    this.cailSubject = identity.subject;
+    this.cailOperationalSubject = identity.operationalSubject ?? null;
+    return { status: 'valid' };
   }
 
   async syncWorkspace(
@@ -735,7 +803,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // short request label remains only in local observability.
     const correlation = mintCorrelation();
 
-    if (!this.cailIdentityJwt) {
+    const credentialCheck = await this.verifyCurrentGatewayCredential(sessionId);
+    const identityJwt = this.cailIdentityJwt;
+    if (credentialCheck.status !== 'valid' || !identityJwt) {
       // No verified CAIL credential reached this workspace: the model proxy
       // has no way to authenticate or attribute spend. Surface the CAIL
       // authentication_required envelope rather than calling out anonymously.
@@ -745,7 +815,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: 'authentication_required',
+        error_type: credentialCheck.status === 'config'
+          ? 'identity_config_unavailable'
+          : 'authentication_required',
       });
       this.finalizeObservabilityRequest(requestId, 'error', 'No CAIL identity credential for model call', {
         error: 'authentication_required',
@@ -834,7 +906,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
       const model = createCailModel({
         env: this.env,
-        identityJwt: this.cailIdentityJwt,
+        identityJwt,
         model: workspace.model,
         // Propagate this turn's correlation to the model proxy so gateway/
         // proxy logs join to this DO's wide events.

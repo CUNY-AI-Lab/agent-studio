@@ -212,6 +212,11 @@ test('anonymous chat streams an authentication error instead of assistant JSON',
       return 'session-1';
     },
     cailIdentityJwt: null,
+    // Explicit isolated seam: this test exercises the stream envelope on a
+    // plain object, not the constructed Durable Object verifier.
+    verifyCurrentGatewayCredential() {
+      return { status: 'missing' };
+    },
     finalizeObservabilityRequest() {},
   };
 
@@ -237,6 +242,11 @@ test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
     requireWorkspace() { return { id: 'workspace-1' }; },
     requireSessionId() { return 'session-1'; },
     cailIdentityJwt: 'verified-jwt',
+    // Explicit isolated seam: rate-limit behavior is independent of JWT
+    // cryptography and storage lifecycle.
+    verifyCurrentGatewayCredential() {
+      return { status: 'valid' };
+    },
     env: { HEAVY_RATE_LIMIT: { limit: async () => ({ success: false }) } },
   };
   const response = await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, {
@@ -295,6 +305,11 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
       return 'session-1';
     },
     cailIdentityJwt: 'header.payload.signature',
+    // Explicit isolated seam: this test pins quota error surfacing after the
+    // credential boundary has already been admitted.
+    verifyCurrentGatewayCredential() {
+      return { status: 'valid' };
+    },
     env: { CAIL_API_BASE: 'https://cail.test' },
     state: { panels: [] },
     messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
