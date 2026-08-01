@@ -2,4 +2,4 @@
 linker = "hoisted"
 
 [install.scopes]
-"@cuny-ai-lab" = { url = "https://npm.pkg.github.com", token = "$NPM_CONFIG_TOKEN" }
+"@cuny-ai-lab" = { url = "https://npm.pkg.github.com", token = "$NODE_AUTH_TOKEN" }
