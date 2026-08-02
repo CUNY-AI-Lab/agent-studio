@@ -83,7 +83,7 @@ async function writeSymlink(linkPath, targetPath) {
   await fs.symlink(targetPath, linkPath, 'dir');
 }
 
-async function makeWorkspaceProtocolFixture() {
+async function makeWorkspaceProtocolFixture({ descriptorName = '@fixture/provider', workspacePath = 'packages/provider', lockedProviderVersion = '1.2.3' } = {}) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-workspace-protocol-'));
   await writeJson(path.join(rootDir, 'package.json'), {
     name: 'workspace-protocol-fixture',
@@ -105,11 +105,11 @@ async function makeWorkspaceProtocolFixture() {
     lockfileVersion: 1,
     workspaces: {
       '': { name: 'workspace-protocol-fixture' },
-      'packages/provider': { name: '@fixture/provider', version: '1.2.3' },
+      'packages/provider': { name: '@fixture/provider', version: lockedProviderVersion },
       'packages/consumer': { name: '@fixture/consumer', dependencies: { '@fixture/provider': 'workspace:*' } },
     },
     packages: {
-      '@fixture/provider': ['@fixture/provider@workspace:packages/provider'],
+      '@fixture/provider': [`${descriptorName}@workspace:${workspacePath}`],
     },
   });
   await writeSymlink(path.join(rootDir, 'node_modules/@fixture/provider'), path.join(rootDir, 'packages/provider'));
@@ -171,6 +171,29 @@ async function makeAliasFixture() {
   return rootDir;
 }
 
+async function makeAliasVersionMismatchFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-alias-version-mismatch-'));
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'alias-version-mismatch-fixture',
+    private: true,
+    workspaces: ['app'],
+  });
+  await writeJson(path.join(rootDir, 'app/package.json'), {
+    name: '@fixture/app',
+    dependencies: { 'alias-tool': 'npm:real-tool@1.2.3' },
+  });
+  await writeInstalledPackage(rootDir, 'node_modules/alias-tool', 'real-tool', '2.0.0');
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: {
+      '': { name: 'alias-version-mismatch-fixture' },
+      app: { name: '@fixture/app', dependencies: { 'alias-tool': 'npm:real-tool@1.2.3' } },
+    },
+    packages: { 'alias-tool': ['real-tool@2.0.0', '', {}, 'sha512-fixture'] },
+  });
+  return rootDir;
+}
+
 async function makePrivateUrlFixture() {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-private-url-'));
   const url = 'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tgz?token=do-not-print';
@@ -189,6 +212,47 @@ async function makePrivateUrlFixture() {
     packages: { 'private-tool': [`private-tool@${url}`, url, {}, 'sha512-fixture'] },
   });
   return { rootDir, url };
+}
+
+async function makeOutsideSymlinkFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-outside-install-'));
+  const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-outside-package-'));
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'outside-install-fixture',
+    private: true,
+    dependencies: { evil: '1.0.0' },
+  });
+  await writeInstalledPackage(outsideDir, '.', 'evil', '1.0.0');
+  await writeSymlink(path.join(rootDir, 'node_modules/evil'), outsideDir);
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: { '': { name: 'outside-install-fixture', dependencies: { evil: '1.0.0' } } },
+    packages: { evil: ['evil@1.0.0', '', {}, 'sha512-fixture'] },
+  });
+  return { rootDir, outsideDir };
+}
+
+async function makeInvalidDependencyNameFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-invalid-dependency-name-'));
+  const dependencies = {
+    '../../evil': '1.0.0',
+    '@scope/../../evil': '1.0.0',
+    'foo/bar': '1.0.0',
+    'foo\\bar': '1.0.0',
+    'foo%2fbar': '1.0.0',
+    'foo\u0000bar': '1.0.0',
+  };
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'invalid-dependency-name-fixture',
+    private: true,
+    dependencies,
+  });
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: { '': { name: 'invalid-dependency-name-fixture', dependencies } },
+    packages: {},
+  });
+  return rootDir;
 }
 
 test('parses Bun lock comments and trailing commas without evaluating package data', () => {
@@ -264,6 +328,39 @@ test('binds workspace protocol resolution to the discovered workspace identity a
   }
 });
 
+test('rejects a workspace lock descriptor with a different target path', async () => {
+  const rootDir = await makeWorkspaceProtocolFixture({ workspacePath: 'packages/other' });
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /workspace protocol lock identity/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects a workspace lock descriptor with a different target name', async () => {
+  const rootDir = await makeWorkspaceProtocolFixture({ descriptorName: '@other/provider' });
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /workspace protocol lock identity/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects a workspace importer with a different target version', async () => {
+  const rootDir = await makeWorkspaceProtocolFixture({ lockedProviderVersion: '9.9.9' });
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /workspace package version/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test('applies ordered negative workspace globs and ignores out-of-root symlinks', async () => {
   const { rootDir, outsideDir } = await makeNegativeGlobFixture();
   try {
@@ -281,6 +378,17 @@ test('binds npm aliases and Git aliases to importer-keyed lock records', async (
   try {
     const result = verifyDependencyResolution({ rootDir });
     assert.equal(result.ok, true, result.issues.join('\n'));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects an npm alias when its lock target version differs from the requested target', async () => {
+  const rootDir = await makeAliasVersionMismatchFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /npm alias target version/);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
@@ -325,6 +433,30 @@ test('redacts credential-bearing source forms from manifest-lock diagnostics', a
     assert.equal(result.ok, false);
     assert.match(diagnostics, /<dependency source>/);
     assert.doesNotMatch(diagnostics, /user:secret|private\.example|ssh:|https?:|\/\//);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects a dependency installed through an outside symlink', async () => {
+  const { rootDir, outsideDir } = await makeOutsideSymlinkFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /outside the accepted repository install root/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects traversal and extra-segment dependency names before resolution', async () => {
+  const rootDir = await makeInvalidDependencyNameFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.equal(result.checked, 0);
+    assert.equal(result.issues.filter((issue) => issue.includes('invalid dependency name')).length, 12);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
