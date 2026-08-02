@@ -29,6 +29,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.CAIL_PACKAGES_TOKEN }}
         run: bun install --frozen-lockfile
 
+      - name: Dependency resolution gate
+        run: bun run check:dependencies
+
       - name: Lint (import boundary)
         run: bun run lint
 

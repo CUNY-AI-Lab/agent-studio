@@ -25,6 +25,7 @@
     "build": "bun run --cwd frontend build && bun run --cwd cloudflare typecheck",
     "typecheck": "bun run --cwd cloudflare typecheck && bun run --cwd frontend typecheck",
     "lint": "biome lint .",
+    "check:dependencies": "node ./scripts/dependency-resolution-gate.mjs",
     "test": "bun run test:backend && bun run test:frontend && bun run test:tools",
     "test:backend": "bun run --cwd cloudflare test",
     "test:frontend": "bun run --cwd frontend test",
