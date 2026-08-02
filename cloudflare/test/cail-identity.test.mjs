@@ -247,6 +247,24 @@ test('getCailIdentityFromRequest returns null with no canonical header', async (
   assert.equal(await getCailIdentityFromRequest(request, identityEnv(issuer), NOW), null);
 });
 
+test('absent canonical header still surfaces malformed verifier configuration', async () => {
+  const request = new Request('https://agent-studio.example/api/session');
+  assert.equal(await getCailIdentityFromRequest(request, {}, NOW), null);
+  assert.deepEqual(
+    await getCailIdentityFromRequest(request, {
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+    }, NOW),
+    { configError: 'jwks_missing' },
+  );
+  assert.deepEqual(
+    await getCailIdentityFromRequest(request, {
+      CAIL_IDENTITY_JWKS: '{not-json',
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+    }, NOW),
+    { configError: 'jwks_malformed' },
+  );
+});
+
 test('sessionIdForSubject is stable and subject-specific', async () => {
   const id = await sessionIdForSubject(TEST_SUBJECTS.alice);
   assert.match(id, /^[a-f0-9]{32}$/);

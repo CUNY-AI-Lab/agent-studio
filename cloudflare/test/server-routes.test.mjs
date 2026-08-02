@@ -30,6 +30,7 @@ import {
 import {
   CAIL_IDENTITY_AUDIENCE,
   CAIL_IDENTITY_HEADER,
+  CAIL_CANONICAL_ISSUER,
 } from '../src/lib/cail-identity.ts';
 import { resetCailModelsCache } from '../src/lib/cail-models.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
@@ -151,6 +152,7 @@ test('startup guard refuses application traffic when SESSION_SECRET is missing',
 test('startup guard refuses enforced identity without migration-window configuration', async () => {
   const { env } = makeEnv();
   env.CAIL_REQUIRE_IDENTITY = 'true';
+  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
   const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
   assert.equal(res.status, 503);
   assert.equal((await readError(res)).code, 'cail_sso_switched_at_missing');
@@ -189,6 +191,7 @@ test('verified canonical token is stored and forwarded to the workspace agent', 
   const { env, agents } = makeEnv();
   const { token, gatewayToken, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
+  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
   env.CAIL_REQUIRE_IDENTITY = 'true';
   env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
   env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
@@ -223,6 +226,7 @@ test('a keyring gateway leg for a different person fails the request closed', as
     subject: TEST_SUBJECTS.bob,
   });
   env.CAIL_IDENTITY_JWKS = issuer.jwksJson;
+  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
   env.CAIL_REQUIRE_IDENTITY = 'true';
   env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
   env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
@@ -240,6 +244,7 @@ test('required identity rejects an invalid canonical credential', async () => {
   const { createTestIdentityIssuer } = await import('@cuny-ai-lab/cail-identity/testing');
   const loadableIssuer = await createTestIdentityIssuer({ kid: 'routes-test-key' });
   env.CAIL_IDENTITY_JWKS = loadableIssuer.jwksJson ?? JSON.stringify(loadableIssuer.jwks);
+  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
   env.CAIL_REQUIRE_IDENTITY = 'true';
   env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
   env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
@@ -1125,6 +1130,7 @@ test('/api/models surfaces proxy auth failure as 502', async () => {
   env.CAIL_API_BASE = 'https://proxy.example';
   const { token, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
+  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
   const session = new Session(env);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>
@@ -1153,6 +1159,7 @@ test('/api/models surfaces proxy quota exhaustion as 429', async () => {
   env.CAIL_API_BASE = 'https://proxy.example';
   const { token, gatewayToken, jwks } = await makeRouteCredential();
   env.CAIL_IDENTITY_JWKS = jwks;
+  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
   const session = new Session(env);
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () =>

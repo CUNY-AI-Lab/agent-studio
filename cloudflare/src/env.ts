@@ -113,6 +113,7 @@ export type AgentStudioConfigErrorCode =
   | 'cail_identity_issuer_missing'
   | 'cail_identity_issuer_invalid'
   | 'cail_identity_issuer_environment_mismatch'
+  | 'production_gateway_binding_missing'
   | 'cail_sso_switched_at_missing'
   | 'cail_sso_switched_at_invalid'
   | 'cail_account_import_until_missing'
@@ -264,6 +265,7 @@ export function validateAgentStudioConfig(
     CAIL_IDENTITY_ISSUER?: string;
     CAIL_API_BASE?: string;
     CAIL_MODEL?: string;
+    GATEWAY?: { fetch?: unknown };
     CAIL_CANONICAL_ORIGIN?: string;
     CAIL_BASE_PATH?: string;
     API_RATE_LIMIT?: { limit?: unknown };
@@ -281,7 +283,10 @@ export function validateAgentStudioConfig(
   if (env.CAIL_LOG_ENV === undefined || env.CAIL_LOG_ENV === '') {
     return { ok: false, errorCode: 'cail_log_environment_missing' };
   }
-  if (!['production', 'staging', 'development', 'test'].includes(String(env.CAIL_LOG_ENV))) {
+  if (
+    typeof env.CAIL_LOG_ENV !== 'string'
+    || !['production', 'staging', 'development', 'test'].includes(env.CAIL_LOG_ENV)
+  ) {
     return { ok: false, errorCode: 'cail_log_environment_invalid' };
   }
   if (env.CF_VERSION_METADATA === undefined) {
@@ -422,6 +427,14 @@ export function validateAgentStudioConfig(
       || typeof ownerKeys[env.GALLERY_OWNER_ACTIVE_KEY_ID] !== 'string'
     ) {
       return { ok: false, errorCode: 'production_gallery_owner_active_key_missing' };
+    }
+    // The production profile declares a service binding to the gateway. Do
+    // not silently fall back to a public fetch when that binding is absent;
+    // the binding target itself is source-controlled in wrangler.jsonc and is
+    // asserted by the configuration test because Workers do not expose it at
+    // runtime.
+    if (typeof env.GATEWAY?.fetch !== 'function') {
+      return { ok: false, errorCode: 'production_gateway_binding_missing' };
     }
   }
   return validateAccountImportWindow(env);

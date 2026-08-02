@@ -204,10 +204,13 @@ export async function getCailIdentityFromRequest(
   now?: number,
 ): Promise<VerifiedCailIdentity | CailIdentityConfigError | null> {
   const token = request.headers.get(CAIL_IDENTITY_HEADER);
-  if (!token) return null;
+  // Always classify verifier configuration, even for an anonymous request.
+  // A malformed/partial JWKS is an operator error (503), not an anonymous
+  // request (or a token-invalid 401); the verifier performs the absent-token
+  // check only after loading the configuration.
   const identity = await verifyCailIdentityToken(token, env, now);
   if (isCailIdentityConfigError(identity)) return identity;
-  if (!identity) return null;
+  if (!token || !identity) return null;
   return { token, identity };
 }
 
