@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toWorkersLogEvent } from '@cuny-ai-lab/cail-log';
+import { REQUEST_ID_RE, toWorkersLogEvent } from '@cuny-ai-lab/cail-log';
 import { TEST_QUOTA_SUBJECT } from '@cuny-ai-lab/cail-client/testing';
 
 import {
@@ -35,6 +35,9 @@ const SPAN_ID = 'b'.repeat(16);
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
 const ACTION_ID = '22222222-2222-4222-8222-222222222222';
 const CALL_ID = '33333333-3333-4333-8333-333333333333';
+const REQUEST_ID_V7 = '019f8bdc-342a-76e1-ba71-005d69808f86';
+const UUID_V4_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TRACE = { trace_id: TRACE_ID, span_id: SPAN_ID, trace_flags: 1 };
 const PRINCIPAL = { type: 'user', subject: LOG_SUBJECT };
 
@@ -98,6 +101,29 @@ test('HTTP denial maps to canonical auth denial with an atomic anonymous princip
   assert.equal(events[0].attributes['cail.principal.type'], 'anonymous');
   assert.equal(events[0].attributes['cail.outcome'], 'denied');
   assert.equal(events[0].attributes['error.type'], 'csrf_invalid');
+});
+
+test('request correlation preserves UUIDv7 when the installed cail-log contract supports it', async () => {
+  const correlation = correlationFromHeaders(new Headers({
+    'x-cail-request-id': REQUEST_ID_V7,
+  }));
+
+  // Agent remains installable against cail-log 0.4 during the staged upgrade;
+  // that release mints v4 for v7 input. Once cail-log 0.6 is installed, its
+  // widened request validator makes preservation the required behavior here.
+  if (REQUEST_ID_RE.test(REQUEST_ID_V7)) {
+    assert.equal(correlation.request_id, REQUEST_ID_V7);
+    const seen = [];
+    const fetcher = async (_input, init) => {
+      seen.push(new Headers(init?.headers));
+      return new Response('ok');
+    };
+    await withOutboundCorrelation(fetcher, { ...TRACE, ...correlation });
+    assert.equal(seen[0].get('x-cail-request-id'), REQUEST_ID_V7);
+  } else {
+    assert.notEqual(correlation.request_id, REQUEST_ID_V7);
+    assert.match(correlation.request_id, UUID_V4_RE);
+  }
 });
 
 test('request terminal mapping keeps product outcome separate from HTTP status facts', () => {

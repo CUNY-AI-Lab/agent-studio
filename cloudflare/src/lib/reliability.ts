@@ -1,4 +1,4 @@
-import { REQUEST_ID_RE, type CailOutcome } from '@cuny-ai-lab/cail-log';
+import { type CailOutcome } from '@cuny-ai-lab/cail-log';
 import { LOG_PRODUCT, STUDIO_ACTION_ROUTES } from './logging';
 
 export const STUDIO_RELIABILITY_SCHEMA_VERSION = 1 as const;
@@ -61,6 +61,14 @@ const FAILURE_OUTCOMES = new Set<CailOutcome>(['error', 'timeout', 'outcome_unkn
 const EXCLUDED_OUTCOMES = new Set<CailOutcome>(['client_error', 'denied', 'cancelled']);
 const ROUTES = new Set<string>(Object.values(STUDIO_ACTION_ROUTES));
 
+// Action and model-call IDs have a stricter contract than request correlation:
+// cail-log 0.6 accepts UUIDv4/v7 for request_id, but action_id and call_id stay
+// lowercase UUIDv4. The canonical logger keeps this validator private, so keep
+// the local anchored copy explicit rather than reusing the widened request-ID
+// validator and silently admitting UUIDv7 lifecycle IDs.
+const STUDIO_EVENT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 export function initializeStudioReliability(sql: StudioSqlStorage): void {
   sql.exec(`
     CREATE TABLE IF NOT EXISTS studio_action_lifecycle_events_v1 (
@@ -94,7 +102,9 @@ export function initializeStudioReliability(sql: StudioSqlStorage): void {
 }
 
 function assertId(value: string, label: string): void {
-  if (!REQUEST_ID_RE.test(value)) throw new TypeError(`Studio reliability ${label} must be a UUID v4`);
+  if (!STUDIO_EVENT_ID_RE.test(value)) {
+    throw new TypeError(`Studio reliability ${label} must be a UUID v4`);
+  }
 }
 
 function assertRoute(value: string): asserts value is StudioActionRoute {
