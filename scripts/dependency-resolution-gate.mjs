@@ -4,7 +4,6 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'];
-const IGNORED_LOCAL_ENTRIES = new Set(['.bin', '.bun', '.cache', '.vite', '.vite-temp']);
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -95,13 +94,6 @@ function readBunLock(rootDir) {
   return parseBunLock(fs.readFileSync(lockPath, 'utf8'));
 }
 
-function readBunLinker(rootDir) {
-  const bunfigPath = path.join(rootDir, 'bunfig.toml');
-  if (!fs.existsSync(bunfigPath)) return 'hoisted';
-  const bunfig = fs.readFileSync(bunfigPath, 'utf8');
-  return /^\s*linker\s*=\s*"([^"]+)"\s*$/m.exec(bunfig)?.[1] ?? 'hoisted';
-}
-
 function dependencyMap(manifest) {
   const result = new Map();
   for (const section of DEPENDENCY_SECTIONS) {
@@ -125,36 +117,78 @@ function matchSegment(segment, value) {
   return new RegExp(`^${escaped}$`).test(value);
 }
 
-function childDirectories(directory) {
-  return fs
-    .readdirSync(directory, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules')
-    .map((entry) => path.join(directory, entry.name));
+function realpathSafe(filePath) {
+  try {
+    return fs.realpathSync(filePath);
+  } catch {
+    return null;
+  }
 }
 
-function expandWorkspacePattern(rootDir, pattern) {
+function pathInside(rootDirectory, candidate) {
+  const relative = path.relative(rootDirectory, candidate);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+
+function workspaceChildren(rootRealPath, directory) {
+  const children = [];
+  let entries;
+  try {
+    entries = fs.readdirSync(directory, { withFileTypes: true });
+  } catch {
+    return children;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+    const candidate = path.join(directory, entry.name);
+    let stat;
+    try {
+      stat = fs.statSync(candidate);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+    const realPath = realpathSafe(candidate);
+    if (!realPath || !pathInside(rootRealPath, realPath)) continue;
+    children.push({ path: candidate, realPath });
+  }
+  return children;
+}
+
+function expandWorkspacePattern(rootDir, rootRealPath, pattern) {
+  if (path.isAbsolute(pattern)) return [];
   const segments = pattern.replaceAll('\\', '/').replace(/^\.\//, '').split('/').filter(Boolean);
   const matches = [];
+  const visited = new Set();
 
-  function walk(directory, segmentIndex) {
+  function walk(directory, realDirectory, segmentIndex) {
+    const visitKey = `${realDirectory}:${segmentIndex}`;
+    if (visited.has(visitKey)) return;
+    visited.add(visitKey);
     if (segmentIndex === segments.length) {
-      if (fs.existsSync(path.join(directory, 'package.json'))) matches.push(directory);
+      const manifestPath = path.join(directory, 'package.json');
+      const manifestRealPath = realpathSafe(manifestPath);
+      if (manifestRealPath && pathInside(rootRealPath, manifestRealPath)) {
+        matches.push({ path: directory, realPath: realDirectory });
+      }
       return;
     }
 
     const segment = segments[segmentIndex];
     if (segment === '**') {
-      walk(directory, segmentIndex + 1);
-      for (const child of childDirectories(directory)) walk(child, segmentIndex);
+      walk(directory, realDirectory, segmentIndex + 1);
+      for (const child of workspaceChildren(rootRealPath, directory)) walk(child.path, child.realPath, segmentIndex);
       return;
     }
 
-    for (const child of childDirectories(directory)) {
-      if (matchSegment(segment, path.basename(child))) walk(child, segmentIndex + 1);
+    for (const child of workspaceChildren(rootRealPath, directory)) {
+      if (matchSegment(segment, path.basename(child.path))) walk(child.path, child.realPath, segmentIndex + 1);
     }
   }
 
-  walk(rootDir, 0);
+  const rootReal = realpathSafe(rootDir);
+  if (!rootReal) return matches;
+  walk(rootDir, rootReal, 0);
   return matches;
 }
 
@@ -167,25 +201,41 @@ function workspacePatterns(rootManifest) {
 }
 
 function discoverWorkspaces(rootDir, rootManifest, issues) {
-  const workspaces = [{ key: '', directory: rootDir, manifest: rootManifest }];
-  const seen = new Set([path.resolve(rootDir)]);
+  const rootRealPath = realpathSafe(rootDir);
+  if (!rootRealPath) {
+    issues.push('project root cannot be resolved safely');
+    return [{ key: '', directory: rootDir, realDirectory: rootDir, manifest: rootManifest }];
+  }
+  const selected = new Map();
+  for (const rawPattern of workspacePatterns(rootManifest)) {
+    if (typeof rawPattern !== 'string' || rawPattern.length === 0) continue;
+    const negative = rawPattern.startsWith('!');
+    const pattern = negative ? rawPattern.slice(1) : rawPattern;
+    if (pattern.includes('..')) {
+      issues.push('workspace glob escapes the project root');
+      continue;
+    }
+    for (const match of expandWorkspacePattern(rootDir, rootRealPath, pattern)) {
+      if (negative) selected.delete(match.realPath);
+      else selected.set(match.realPath, match);
+    }
+  }
 
-  for (const pattern of workspacePatterns(rootManifest)) {
-    if (typeof pattern !== 'string' || pattern.startsWith('!')) continue;
-    for (const directory of expandWorkspacePattern(rootDir, pattern)) {
-      const resolvedDirectory = path.resolve(directory);
-      if (seen.has(resolvedDirectory)) continue;
-      const manifestPath = path.join(resolvedDirectory, 'package.json');
-      try {
-        workspaces.push({
-          key: path.relative(rootDir, resolvedDirectory).replaceAll(path.sep, '/'),
-          directory: resolvedDirectory,
-          manifest: readJson(manifestPath),
-        });
-        seen.add(resolvedDirectory);
-      } catch {
-        issues.push(`workspace ${path.relative(rootDir, resolvedDirectory)} has an unreadable package.json`);
-      }
+  const workspaces = [{ key: '', directory: rootDir, realDirectory: rootRealPath, manifest: rootManifest }];
+  for (const { path: directory, realPath } of selected.values()) {
+    const manifestPath = path.join(directory, 'package.json');
+    const workspaceKey = path.relative(rootDir, directory).replaceAll(path.sep, '/');
+    if (!workspaceKey || !pathInside(rootRealPath, realPath)) continue;
+    if (workspaces.some((workspace) => workspace.realDirectory === realPath)) continue;
+    try {
+      workspaces.push({
+        key: workspaceKey,
+        directory,
+        realDirectory: realPath,
+        manifest: readJson(manifestPath),
+      });
+    } catch {
+      issues.push(`workspace ${workspaceKey} has an unreadable package.json`);
     }
   }
   return workspaces;
@@ -203,41 +253,118 @@ function descriptorNameVersion(descriptor) {
   return { name: descriptor.slice(0, at), version: descriptor.slice(at + 1) };
 }
 
-function normalizeLockedVersion(name, version) {
-  if (typeof version !== 'string' || version.length === 0) return undefined;
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(version)) return version;
-  const packageBase = name.split('/').at(-1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`${packageBase}[-@]([0-9][^/]+?)(?:\\.tgz)?(?:$|[/?#])`).exec(version)?.[1];
+function isExactVersion(value) {
+  return typeof value === 'string' && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
 }
 
-function lockPackageVersions(lock, name) {
-  const versions = new Set();
-  for (const record of Object.values(lock.packages ?? {})) {
-    const descriptor = descriptorNameVersion(Array.isArray(record) ? record[0] : undefined);
-    if (descriptor?.name === name) {
-      const normalized = normalizeLockedVersion(name, descriptor.version);
-      if (normalized) versions.add(normalized);
-    }
-  }
-  return versions;
+function isVersionForm(value) {
+  return typeof value === 'string' && /^[v\d*^~<>=|.\-+ ]+$/.test(value) && /\d/.test(value);
 }
 
-function lockRootVersion(lock, name) {
-  const descriptor = descriptorNameVersion(lock.packages?.[name]?.[0]);
-  return descriptor?.name === name ? normalizeLockedVersion(name, descriptor.version) : undefined;
+function isSourceForm(value) {
+  return typeof value === 'string' && /^(?:[a-z][a-z\d+.-]*:|git@|\/\/)/i.test(value);
+}
+
+function normalizeUrlVersion(packageName, value) {
+  if (typeof value !== 'string' || !/^(?:https?:|\/\/)/i.test(value)) return undefined;
+  const packageBase = packageName.split('/').at(-1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[/_-])${packageBase}[-@](v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\.tgz)?(?:$|[/?#])`, 'i').exec(value)?.[1];
+}
+
+function parseNpmAlias(spec) {
+  const target = spec.slice(4);
+  const at = target.startsWith('@') ? target.indexOf('@', 1) : target.indexOf('@');
+  if (at <= 0) return { targetName: target, targetSpec: undefined };
+  return { targetName: target.slice(0, at), targetSpec: target.slice(at + 1) };
+}
+
+function dependencySpecInfo(name, spec) {
+  if (typeof spec !== 'string') return { kind: 'unsupported' };
+  if (spec.startsWith('workspace:')) return { kind: 'workspace', protocol: spec.slice('workspace:'.length) };
+  if (spec.startsWith('npm:')) return { kind: 'alias', ...parseNpmAlias(spec) };
+  if (isSourceForm(spec)) return { kind: 'source', source: spec };
+  return { kind: 'version', requested: spec, name };
+}
+
+function formatSpec(spec) {
+  if (typeof spec !== 'string') return '<missing>';
+  return isVersionForm(spec) ? spec : '<dependency source>';
 }
 
 function relativePath(rootDir, filePath) {
   return path.relative(rootDir, filePath).replaceAll(path.sep, '/') || '.';
 }
 
-function formatSpec(spec) {
-  if (typeof spec !== 'string') return '<missing>';
-  // Keep registry URLs, aliases, and other non-version specs out of diagnostics.
-  return /^(?:workspace:|https?:|git\+|npm:)/.test(spec) ? '<non-version spec>' : spec;
+function lockRecords(lock) {
+  const records = [];
+  for (const [key, value] of Object.entries(lock.packages ?? {})) {
+    if (!Array.isArray(value) || typeof value[0] !== 'string') continue;
+    const descriptor = descriptorNameVersion(value[0]);
+    if (!descriptor) continue;
+    records.push({
+      key,
+      descriptorName: descriptor.name,
+      rawVersion: descriptor.version,
+      source: typeof value[1] === 'string' ? value[1] : undefined,
+    });
+  }
+  return records;
 }
 
-function packageDirectoryFromResolved(rootDir, name, resolvedPath) {
+function recordVersion(record, packageName, specInfo) {
+  const candidates = [record.rawVersion, record.source];
+  if (specInfo.kind === 'alias') candidates.push(specInfo.targetSpec);
+  for (const candidate of candidates) {
+    if (isExactVersion(candidate)) return candidate.replace(/^v/, '');
+    if (isSourceForm(candidate)) {
+      const urlVersion = normalizeUrlVersion(packageName, candidate);
+      if (urlVersion) return urlVersion.replace(/^v/, '');
+    }
+  }
+  return undefined;
+}
+
+function isWorkspaceScopedRecord(record, workspaceKeys) {
+  return workspaceKeys.some((workspaceKey) => workspaceKey && record.key.startsWith(`${workspaceKey}/`));
+}
+
+function recordsForDependency(records, workspaceKey, dependencyName, specInfo, workspaceKeys) {
+  const names = new Set([dependencyName]);
+  if (specInfo.targetName) names.add(specInfo.targetName);
+  const sourceMatches = specInfo.source
+    ? records.filter((record) => record.source === specInfo.source || record.rawVersion === specInfo.source)
+    : [];
+  const root = records.filter(
+    (record) => !isWorkspaceScopedRecord(record, workspaceKeys) && (names.has(record.key) || sourceMatches.includes(record)),
+  );
+  const scoped = workspaceKey
+    ? records.filter((record) => {
+        const prefix = `${workspaceKey}/`;
+        if (!record.key.startsWith(prefix)) return false;
+        const tail = record.key.slice(prefix.length).replace(/^node_modules\//, '');
+        return names.has(tail) || sourceMatches.includes(record);
+      })
+    : [];
+  return { root, scoped };
+}
+
+function expectedRecord(records, workspace, dependencyName, specInfo, workspaceKeys) {
+  const { root, scoped } = recordsForDependency(records, workspace.key, dependencyName, specInfo, workspaceKeys);
+  if (scoped.length > 1) return { error: 'multiple workspace-specific lock records' };
+  if (root.length > 1) return { error: 'multiple root lock records' };
+  if (scoped.length === 1) return { record: scoped[0], location: 'workspace' };
+  if (root.length === 1) return { record: root[0], location: 'root' };
+
+  const names = new Set([dependencyName]);
+  if (specInfo.targetName) names.add(specInfo.targetName);
+  const descriptorMatches = records.filter(
+    (record) => names.has(record.descriptorName) && !isWorkspaceScopedRecord(record, workspaceKeys),
+  );
+  if (descriptorMatches.length === 1) return { record: descriptorMatches[0], location: 'root' };
+  return { error: 'no unambiguous importer-to-package lock record' };
+}
+
+function packageDirectoryFromResolved(rootDir, resolvedPath) {
   let directory = path.dirname(resolvedPath);
   const stop = path.dirname(rootDir);
   while (directory !== stop) {
@@ -245,7 +372,7 @@ function packageDirectoryFromResolved(rootDir, name, resolvedPath) {
     if (fs.existsSync(packagePath)) {
       try {
         const manifest = readJson(packagePath);
-        if (manifest.name === name) return { directory, manifest };
+        if (typeof manifest.name === 'string') return { directory, manifest };
       } catch {
         return null;
       }
@@ -253,17 +380,6 @@ function packageDirectoryFromResolved(rootDir, name, resolvedPath) {
     directory = path.dirname(directory);
   }
   return null;
-}
-
-function canonicalRootPackage(rootDir, name) {
-  const packageDirectory = path.join(rootDir, 'node_modules', ...name.split('/'));
-  const packagePath = path.join(packageDirectory, 'package.json');
-  if (!fs.existsSync(packagePath)) return null;
-  try {
-    return { directory: packageDirectory, manifest: readJson(packagePath) };
-  } catch {
-    return null;
-  }
 }
 
 function packageDirectoryFromWorkspaceNodeModules(rootDir, workspaceDirectory, name) {
@@ -275,7 +391,7 @@ function packageDirectoryFromWorkspaceNodeModules(rootDir, workspaceDirectory, n
     if (fs.existsSync(packagePath)) {
       try {
         const manifest = readJson(packagePath);
-        if (manifest.name === name) return { directory: packageDirectory, manifest };
+        if (typeof manifest.name === 'string') return { directory: packageDirectory, manifest };
       } catch {
         return null;
       }
@@ -285,104 +401,94 @@ function packageDirectoryFromWorkspaceNodeModules(rootDir, workspaceDirectory, n
   return null;
 }
 
-function localPackageEntries(nodeModulesDirectory) {
-  if (!fs.existsSync(nodeModulesDirectory)) return [];
-  const entries = [];
-  for (const entry of fs.readdirSync(nodeModulesDirectory, { withFileTypes: true })) {
-    if (!entry.isDirectory() || IGNORED_LOCAL_ENTRIES.has(entry.name) || entry.name.startsWith('.')) continue;
-    if (entry.name.startsWith('@')) {
-      const scopeDirectory = path.join(nodeModulesDirectory, entry.name);
-      for (const scopedEntry of fs.readdirSync(scopeDirectory, { withFileTypes: true })) {
-        if (scopedEntry.isDirectory() && !scopedEntry.name.startsWith('.')) {
-          entries.push({ name: `${entry.name}/${scopedEntry.name}`, directory: path.join(scopeDirectory, scopedEntry.name) });
-        }
-      }
-    } else {
-      entries.push({ name: entry.name, directory: path.join(nodeModulesDirectory, entry.name) });
-    }
-  }
-  return entries;
-}
-
-function checkWorkspaceLocalShadows(rootDir, workspace, directDependencies, lock, rootSelectedNames, issues) {
-  const nodeModulesDirectory = path.join(workspace.directory, 'node_modules');
-  for (const entry of localPackageEntries(nodeModulesDirectory)) {
-    if (!directDependencies.has(entry.name)) continue;
-    const expectedVersion = rootSelectedNames.has(entry.name) ? lockRootVersion(lock, entry.name) : undefined;
-    if (!expectedVersion) continue;
-    const packagePath = path.join(entry.directory, 'package.json');
-    if (!fs.existsSync(packagePath)) {
-      issues.push(`${relativePath(rootDir, entry.directory)} shadows the root install for ${entry.name} (package.json is missing)`);
-      continue;
-    }
-    let manifest;
-    try {
-      manifest = readJson(packagePath);
-    } catch {
-      issues.push(`${relativePath(rootDir, entry.directory)} shadows the root install for ${entry.name} (package.json is unreadable)`);
-      continue;
-    }
-    if (manifest.version !== expectedVersion) {
-      issues.push(
-        `${relativePath(rootDir, entry.directory)} resolves ${entry.name}@${manifest.version ?? 'unknown'}; ` +
-          `bun.lock selects ${entry.name}@${expectedVersion}`,
-      );
-    }
-  }
-}
-
-function checkResolvedDependency(rootDir, workspace, name, spec, lock, rootSelectedNames, issues) {
-  const expectedRootVersion = rootSelectedNames.has(name) ? lockRootVersion(lock, name) : undefined;
-  const expectedVersions = lockPackageVersions(lock, name);
-  if (expectedVersions.size === 0 && !String(spec).startsWith('workspace:')) {
-    issues.push(`${workspace.key || '.'} declares ${name}, but bun.lock has no resolved package entry`);
-  }
-
+function resolveInstalledPackage(rootDir, workspace, name) {
   const requireFromWorkspace = createRequire(path.join(workspace.directory, 'package.json'));
   let resolvedPath;
   try {
     resolvedPath = requireFromWorkspace.resolve(name);
   } catch {
     try {
-      // Type-only and bin-only packages often export no runtime entry point;
-      // package.json is still a deterministic, local resolution target.
       resolvedPath = requireFromWorkspace.resolve(`${name}/package.json`);
     } catch {
       resolvedPath = null;
     }
   }
+  return (
+    (resolvedPath ? packageDirectoryFromResolved(rootDir, resolvedPath) : null) ??
+    packageDirectoryFromWorkspaceNodeModules(rootDir, workspace.directory, name)
+  );
+}
 
-  const resolvedPackage =
-    (resolvedPath ? packageDirectoryFromResolved(rootDir, name, resolvedPath) : null) ??
-    packageDirectoryFromWorkspaceNodeModules(rootDir, workspace.directory, name);
+function workspaceTarget(workspaces, dependencyName) {
+  return workspaces.find((workspace) => workspace.manifest.name === dependencyName);
+}
+
+function expectedSelection(workspace, dependencyName, spec, records, workspaces, workspaceKeys) {
+  const info = dependencySpecInfo(dependencyName, spec);
+  if (info.kind === 'unsupported') return { error: 'unsupported dependency spec' };
+  if (info.kind === 'workspace') {
+    const target = workspaceTarget(workspaces, dependencyName);
+    if (!target) return { error: 'workspace protocol target is not a discovered workspace' };
+    const record = expectedRecord(records, workspace, dependencyName, { targetName: dependencyName }, workspaceKeys);
+    if (record.error) return record;
+    if (!record.record.rawVersion.startsWith('workspace:')) return { error: 'workspace protocol has no workspace lock identity' };
+    return {
+      ...record,
+      location: 'workspace-target',
+      target,
+      expectedName: target.manifest.name,
+      expectedVersion: target.manifest.version,
+    };
+  }
+
+  const record = expectedRecord(records, workspace, dependencyName, info, workspaceKeys);
+  if (record.error) return record;
+  const expectedName = info.kind === 'alias' && info.targetName ? info.targetName : record.record.descriptorName || dependencyName;
+  const expectedVersion = recordVersion(record.record, expectedName, info);
+  if (record.record.rawVersion.startsWith('workspace:')) return { error: 'non-workspace dependency points to a workspace lock identity' };
+  if (!expectedVersion && info.kind === 'version' && isExactVersion(info.requested)) {
+    return { error: 'locked package version is opaque' };
+  }
+  return { ...record, expectedName, expectedVersion };
+}
+
+function checkResolvedDependency(rootDir, workspace, dependencyName, spec, records, workspaces, workspaceKeys, issues) {
+  const selection = expectedSelection(workspace, dependencyName, spec, records, workspaces, workspaceKeys);
+  if (selection.error) {
+    issues.push(`${workspace.key || '.'} dependency ${dependencyName} has unsupported lock resolution (${selection.error})`);
+    return;
+  }
+  const resolvedPackage = resolveInstalledPackage(rootDir, workspace, dependencyName);
   if (!resolvedPackage) {
-    issues.push(`${workspace.key || '.'} cannot resolve ${name} from its workspace cwd`);
+    issues.push(`${workspace.key || '.'} cannot resolve ${dependencyName} from its workspace cwd`);
     return;
   }
 
-  const actualVersion = resolvedPackage.manifest.version;
-  if (expectedRootVersion && actualVersion !== expectedRootVersion) {
+  const actualDirectory = realpathSafe(resolvedPackage.directory);
+  const expectedDirectory =
+    selection.location === 'workspace-target'
+      ? selection.target.realDirectory
+      : path.join(selection.location === 'workspace' ? workspace.directory : rootDir, 'node_modules', ...dependencyName.split('/'));
+  const expectedRealDirectory = realpathSafe(expectedDirectory);
+  if (!expectedRealDirectory) {
+    issues.push(`${workspace.key || '.'} expected ${dependencyName} at its locked ${selection.location} install path, but that path is missing`);
+  } else if (!actualDirectory || actualDirectory !== expectedRealDirectory) {
     issues.push(
-      `${workspace.key || '.'} resolves ${name}@${actualVersion ?? 'unknown'} from ` +
-        `${relativePath(rootDir, resolvedPackage.directory)}; bun.lock selects ${name}@${expectedRootVersion}`,
-    );
-  } else if (!expectedRootVersion && expectedVersions.size > 0 && !expectedVersions.has(actualVersion)) {
-    issues.push(
-      `${workspace.key || '.'} resolves ${name}@${actualVersion ?? 'unknown'}; ` +
-        `bun.lock contains no matching locked version for this workspace`,
+      `${workspace.key || '.'} resolves ${dependencyName} from ${relativePath(rootDir, resolvedPackage.directory)}; ` +
+        `bun.lock selects a different ${selection.location} install path`,
     );
   }
-
-  if (expectedRootVersion) {
-    const rootPackage = canonicalRootPackage(rootDir, name);
-    if (!rootPackage) {
-      issues.push(`root node_modules is missing the locked package ${name}@${expectedRootVersion}`);
-    } else if (rootPackage.manifest.version !== expectedRootVersion) {
-      issues.push(
-        `root node_modules contains ${name}@${rootPackage.manifest.version ?? 'unknown'}; ` +
-          `bun.lock selects ${name}@${expectedRootVersion}`,
-      );
-    }
+  if (selection.expectedName && resolvedPackage.manifest.name !== selection.expectedName) {
+    issues.push(
+      `${workspace.key || '.'} resolves ${dependencyName} as ${resolvedPackage.manifest.name}; ` +
+        `bun.lock selects package identity ${selection.expectedName}`,
+    );
+  }
+  if (selection.expectedVersion && resolvedPackage.manifest.version !== selection.expectedVersion) {
+    issues.push(
+      `${workspace.key || '.'} resolves ${dependencyName}@${resolvedPackage.manifest.version ?? 'unknown'}; ` +
+        `bun.lock selects ${selection.expectedName}@${selection.expectedVersion}`,
+    );
   }
 }
 
@@ -423,41 +529,19 @@ export function verifyDependencyResolution({ rootDir = process.cwd() } = {}) {
   }
 
   const workspaces = discoverWorkspaces(resolvedRoot, rootManifest, issues);
-  const linker = readBunLinker(resolvedRoot);
+  const records = lockRecords(lock);
+  const workspaceKeys = workspaces.map((workspace) => workspace.key);
   const workspaceDependencyChecks = [];
-  const requirementsByName = new Map();
   for (const workspace of workspaces) {
     const directDependencies = compareManifestToLock(workspace, lock, issues);
     workspaceDependencyChecks.push({ workspace, directDependencies });
-    for (const [name, spec] of directDependencies) {
-      if (!requirementsByName.has(name)) requirementsByName.set(name, new Set());
-      requirementsByName.get(name).add(spec);
-    }
-  }
-
-  // Only assert one root resolution when the lock importers establish one
-  // shared exact selection. Conflicting direct requirements may correctly live
-  // in nested node_modules, even with a hoisted workspace install.
-  const rootSelectedNames = new Set();
-  for (const [name, specs] of requirementsByName) {
-    if (specs.size !== 1) continue;
-    const [spec] = specs;
-    if (/^\d+\.\d+\.\d+(?:[-+].*)?$/.test(spec) || /^https?:\/\//.test(spec)) {
-      if (lockRootVersion(lock, name)) rootSelectedNames.add(name);
-    }
   }
 
   const checks = [];
   for (const { workspace, directDependencies } of workspaceDependencyChecks) {
     for (const [name, spec] of directDependencies) {
       checks.push({ workspace: workspace.key, name });
-      checkResolvedDependency(resolvedRoot, workspace, name, spec, lock, rootSelectedNames, issues);
-    }
-    // A hoisted install has one root package location for direct workspace
-    // dependencies. Isolated installs may legitimately use nested versions;
-    // those are validated by the lock-selected version check above instead.
-    if (workspace.key && linker === 'hoisted') {
-      checkWorkspaceLocalShadows(resolvedRoot, workspace, directDependencies, lock, rootSelectedNames, issues);
+      checkResolvedDependency(resolvedRoot, workspace, name, spec, records, workspaces, workspaceKeys, issues);
     }
   }
 

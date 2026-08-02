@@ -17,7 +17,7 @@ async function writeInstalledPackage(rootDir, relativeDirectory, name, version) 
   await fs.writeFile(path.join(packageDirectory, 'index.js'), 'module.exports = {};\n');
 }
 
-async function makeFixture({ conflictingDirectVersions = false } = {}) {
+async function makeFixture({ conflictingDirectVersions = false, swappedConflict = false } = {}) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-dependency-gate-'));
   const manifests = {
     root: {
@@ -71,11 +71,124 @@ async function makeFixture({ conflictingDirectVersions = false } = {}) {
     )}\n`,
   );
   await writeInstalledPackage(rootDir, 'node_modules/root-tool', 'root-tool', '1.0.0');
-  await writeInstalledPackage(rootDir, 'node_modules/shared-tool', 'shared-tool', '1.0.0');
+  await writeInstalledPackage(rootDir, 'node_modules/shared-tool', 'shared-tool', swappedConflict ? '2.0.0' : '1.0.0');
   if (conflictingDirectVersions) {
-    await writeInstalledPackage(rootDir, 'frontend/node_modules/shared-tool', 'shared-tool', '2.0.0');
+    await writeInstalledPackage(rootDir, 'frontend/node_modules/shared-tool', 'shared-tool', swappedConflict ? '1.0.0' : '2.0.0');
   }
   return rootDir;
+}
+
+async function writeSymlink(linkPath, targetPath) {
+  await fs.mkdir(path.dirname(linkPath), { recursive: true });
+  await fs.symlink(targetPath, linkPath, 'dir');
+}
+
+async function makeWorkspaceProtocolFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-workspace-protocol-'));
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'workspace-protocol-fixture',
+    private: true,
+    workspaces: ['packages/*'],
+  });
+  await writeJson(path.join(rootDir, 'packages/provider/package.json'), {
+    name: '@fixture/provider',
+    version: '1.2.3',
+    main: 'index.js',
+  });
+  await fs.writeFile(path.join(rootDir, 'packages/provider/index.js'), 'module.exports = {};\n');
+  await writeJson(path.join(rootDir, 'packages/consumer/package.json'), {
+    name: '@fixture/consumer',
+    private: true,
+    dependencies: { '@fixture/provider': 'workspace:*' },
+  });
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: {
+      '': { name: 'workspace-protocol-fixture' },
+      'packages/provider': { name: '@fixture/provider', version: '1.2.3' },
+      'packages/consumer': { name: '@fixture/consumer', dependencies: { '@fixture/provider': 'workspace:*' } },
+    },
+    packages: {
+      '@fixture/provider': ['@fixture/provider@workspace:packages/provider'],
+    },
+  });
+  await writeSymlink(path.join(rootDir, 'node_modules/@fixture/provider'), path.join(rootDir, 'packages/provider'));
+  return rootDir;
+}
+
+async function makeNegativeGlobFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-negative-glob-'));
+  const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-outside-'));
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'negative-glob-fixture',
+    private: true,
+    workspaces: ['packages/**', '!packages/**/test/**'],
+  });
+  await writeJson(path.join(rootDir, 'packages/app/package.json'), { name: '@fixture/app', version: '1.0.0' });
+  await writeJson(path.join(rootDir, 'packages/test/ignored/package.json'), {
+    name: '@fixture/ignored',
+    version: '1.0.0',
+    dependencies: { missing: '1.0.0' },
+  });
+  await writeJson(path.join(outsideDir, 'package.json'), { name: '@fixture/outside', version: '1.0.0' });
+  await writeSymlink(path.join(rootDir, 'packages/outside'), outsideDir);
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: {
+      '': { name: 'negative-glob-fixture' },
+      'packages/app': { name: '@fixture/app' },
+    },
+    packages: {},
+  });
+  return { rootDir, outsideDir };
+}
+
+async function makeAliasFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-alias-'));
+  const gitSpec = 'git+ssh://git@example.invalid/org/git-tool.git#v2.0.0';
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'alias-fixture',
+    private: true,
+    workspaces: ['app'],
+  });
+  await writeJson(path.join(rootDir, 'app/package.json'), {
+    name: '@fixture/app',
+    dependencies: { 'alias-tool': 'npm:real-tool@1.2.3', 'git-alias': gitSpec },
+  });
+  await writeInstalledPackage(rootDir, 'node_modules/alias-tool', 'real-tool', '1.2.3');
+  await writeInstalledPackage(rootDir, 'node_modules/git-alias', 'git-tool', '2.0.0');
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: {
+      '': { name: 'alias-fixture' },
+      app: { name: '@fixture/app', dependencies: { 'alias-tool': 'npm:real-tool@1.2.3', 'git-alias': gitSpec } },
+    },
+    packages: {
+      'alias-tool': ['real-tool@1.2.3', '', {}, 'sha512-fixture'],
+      'git-tool-record': [`git-tool@${gitSpec}`, gitSpec, {}, 'sha512-fixture'],
+    },
+  });
+  return rootDir;
+}
+
+async function makePrivateUrlFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-private-url-'));
+  const url = 'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tgz?token=do-not-print';
+  await writeJson(path.join(rootDir, 'package.json'), { name: 'private-url-fixture', private: true, workspaces: ['app'] });
+  await writeJson(path.join(rootDir, 'app/package.json'), {
+    name: '@fixture/app',
+    dependencies: { 'private-tool': url },
+  });
+  await writeInstalledPackage(rootDir, 'node_modules/private-tool', 'private-tool', '3.4.5');
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: {
+      '': { name: 'private-url-fixture' },
+      app: { name: '@fixture/app', dependencies: { 'private-tool': url } },
+    },
+    packages: { 'private-tool': [`private-tool@${url}`, url, {}, 'sha512-fixture'] },
+  });
+  return { rootDir, url };
 }
 
 test('parses Bun lock comments and trailing commas without evaluating package data', () => {
@@ -125,6 +238,93 @@ test('allows conflicting direct versions when the lock has a nested workspace se
   try {
     const result = verifyDependencyResolution({ rootDir });
     assert.equal(result.ok, true, result.issues.join('\n'));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects swapped workspace-specific versions even when both versions are locked', async () => {
+  const rootDir = await makeFixture({ conflictingDirectVersions: true, swappedConflict: true });
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /cloudflare|frontend/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('binds workspace protocol resolution to the discovered workspace identity and path', async () => {
+  const rootDir = await makeWorkspaceProtocolFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, true, result.issues.join('\n'));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('applies ordered negative workspace globs and ignores out-of-root symlinks', async () => {
+  const { rootDir, outsideDir } = await makeNegativeGlobFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, true, result.issues.join('\n'));
+    assert.equal(result.workspaces, 2);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  }
+});
+
+test('binds npm aliases and Git aliases to importer-keyed lock records', async () => {
+  const rootDir = await makeAliasFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, true, result.issues.join('\n'));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('derives a private tarball version from its URL path without printing the URL', async () => {
+  const { rootDir, url } = await makePrivateUrlFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, true, result.issues.join('\n'));
+    await writeInstalledPackage(rootDir, 'node_modules/private-tool', 'private-tool', '3.4.4');
+    const mismatch = verifyDependencyResolution({ rootDir });
+    assert.equal(mismatch.ok, false);
+    assert.match(mismatch.issues.join('\n'), /3\.4\.4|3\.4\.5/);
+    assert.doesNotMatch(mismatch.issues.join('\n'), /private\.example|do-not-print|https?:/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('redacts credential-bearing source forms from manifest-lock diagnostics', async () => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-redaction-'));
+  const manifestSource = '//user:secret@private.example.invalid/pkg.tgz';
+  const lockSource = 'ssh://user:secret@private.example.invalid/pkg.git';
+  try {
+    await writeJson(path.join(rootDir, 'package.json'), { name: 'redaction-fixture', private: true, workspaces: ['app'] });
+    await writeJson(path.join(rootDir, 'app/package.json'), {
+      name: '@fixture/app',
+      dependencies: { 'credential-tool': manifestSource },
+    });
+    await writeInstalledPackage(rootDir, 'node_modules/credential-tool', 'credential-tool', '1.0.0');
+    await writeJson(path.join(rootDir, 'bun.lock'), {
+      lockfileVersion: 1,
+      workspaces: {
+        '': { name: 'redaction-fixture' },
+        app: { name: '@fixture/app', dependencies: { 'credential-tool': lockSource } },
+      },
+      packages: { 'credential-tool': ['credential-tool@1.0.0', lockSource, {}, 'sha512-fixture'] },
+    });
+    const result = verifyDependencyResolution({ rootDir });
+    const diagnostics = result.issues.join('\n');
+    assert.equal(result.ok, false);
+    assert.match(diagnostics, /<dependency source>/);
+    assert.doesNotMatch(diagnostics, /user:secret|private\.example|ssh:|https?:|\/\//);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
