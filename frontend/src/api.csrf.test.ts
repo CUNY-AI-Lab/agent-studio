@@ -45,6 +45,25 @@ function sessionResponse() {
   });
 }
 
+function authRequiredPayload(loginUrl = '/login') {
+  return {
+    error: {
+      message: 'Sign in to continue.',
+      type: 'authentication_error',
+      param: null,
+      code: 'authentication_required',
+      cail: { login_url: loginUrl, retryable: false },
+    },
+  };
+}
+
+function authRequiredResponse(loginUrl = '/login') {
+  return new Response(JSON.stringify(authRequiredPayload(loginUrl)), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 describe('CSRF fetch helper (cookie delivery)', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -78,6 +97,93 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(value).toBe(token);
     // Cookie was already there, so no /api/session fetch was needed.
     expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('redirects once on a canonical bootstrap auth challenge and retries after failure', async () => {
+    const { ensureCsrfToken } = await loadApi();
+    const cookie = stubCookie();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio.test',
+        pathname: '/gallery',
+        search: '?id=abc',
+        assign,
+      },
+    });
+    let attempts = 0;
+    const firstResponse = authRequiredResponse();
+    const jsonSpy = vi.spyOn(firstResponse, 'json');
+    const spy = mockFetch(() => {
+      attempts += 1;
+      if (attempts === 1) {
+        return firstResponse;
+      }
+      cookie.set(`${CSRF_COOKIE}=${'recovered'.padEnd(64, '0')}`);
+      return sessionResponse();
+    });
+
+    await expect(ensureCsrfToken()).rejects.toThrow('Authentication required');
+    expect(assign).toHaveBeenCalledOnce();
+    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+    expect(jsonSpy).toHaveBeenCalledOnce();
+
+    const token = await ensureCsrfToken();
+    expect(token).toBe('recovered'.padEnd(64, '0'));
+    expect(attempts).toBe(2);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['malformed 401', new Response('secret malformed body', { status: 401 }), 401],
+    ['non-auth 401', new Response(JSON.stringify({ error: { code: 'invalid_token', message: 'secret details' } }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }), 401],
+    ['server failure', new Response(JSON.stringify({ error: { code: 'internal_error', message: 'secret details' } }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    }), 503],
+  ])('does not redirect or leak the body for %s bootstrap failures', async (_label, response, status) => {
+    const { ensureCsrfToken } = await loadApi();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio.test',
+        pathname: '/gallery',
+        search: '?id=abc',
+        assign,
+      },
+    });
+    mockFetch(() => response);
+
+    const error = await ensureCsrfToken().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(`Session bootstrap failed with ${status}`);
+    expect((error as Error).message).not.toContain('secret');
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe login paths and avoids redirecting the login route to itself', async () => {
+    const { handleAuthRequired } = await loadApi();
+    const assign = vi.fn();
+    const location = {
+      origin: 'https://studio.test',
+      pathname: '/gallery',
+      search: '?id=abc',
+      assign,
+    };
+    vi.stubGlobal('window', { location });
+
+    expect(handleAuthRequired(401, authRequiredPayload('//evil.test/login'))).toBe(true);
+    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+
+    assign.mockClear();
+    location.pathname = '/login';
+    expect(handleAuthRequired(401, {
+      error: { code: 'authentication_required', cail: { login_url: '/login' } },
+    })).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it('mutatingFetch attaches the X-CAIL-CSRF header with the cookie token', async () => {

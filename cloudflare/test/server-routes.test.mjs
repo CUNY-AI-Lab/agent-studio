@@ -160,6 +160,24 @@ test('startup guard refuses enforced identity without migration-window configura
   assert.equal((await readError(res)).code, 'cail_sso_switched_at_missing');
 });
 
+test('identity-required session bootstrap returns the canonical login challenge', async () => {
+  const { env } = makeEnv();
+  const issuer = await createTestIdentityIssuer({ kid: 'auth-required-key' });
+  env.CAIL_IDENTITY_JWKS = issuer.jwksJson;
+  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
+  env.CAIL_REQUIRE_IDENTITY = 'true';
+  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
+  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
+
+  const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
+  assert.equal(res.status, 401);
+  const body = await res.json();
+  assert.equal(body.error.code, 'authentication_required');
+  assert.equal(body.error.type, 'authentication_error');
+  assert.equal(body.error.cail.login_url, '/login');
+  assert.equal(body.error.cail.retryable, false);
+});
+
 test('no cookie -> a signed session cookie is issued and reused', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
