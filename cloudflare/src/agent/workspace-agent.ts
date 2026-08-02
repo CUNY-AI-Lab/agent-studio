@@ -1112,12 +1112,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   @callable()
   async executeCode(code: string): Promise<ExecuteResult> {
+    return this.withMutationFence(() => this.executeCodeFenced(code));
+  }
+
+  private async executeCodeFenced(code: string): Promise<ExecuteResult> {
     // One wide event per execution — metadata only (durations, outcome,
     // stable error code); the code and its output are content and never
     // logged. Control flow is unchanged: every failure still rethrows.
     const correlation = mintCorrelation();
     const principal = principalForOperationalSubject(this.cailOperationalSubject);
-    this.assertNotFrozen();
     this.assertAuthorizedRpc();
     code = runtimeCodeSchema.parse(code);
     const rateKey = this.csrfSessionId() ?? this.requireSessionId();
@@ -1156,9 +1159,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     try {
       const tools = this.buildHostTools(workspace, sessionId);
       const executor = this.createCodeExecutor();
-      result = await this.withMutationFence(
-        () => executor.execute(code, this.buildCodeProviders(tools)),
-      );
+      result = await executor.execute(code, this.buildCodeProviders(tools));
     } catch (error) {
       recordStudioActionTerminal(this.ctx.storage.sql, {
         actionId,

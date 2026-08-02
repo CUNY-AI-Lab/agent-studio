@@ -477,6 +477,7 @@ test('code rate-limit denial does not emit an orphan canonical action terminal',
     assertNotFrozen() {},
     assertAuthorizedRpc() {},
     withMutationFence(operation) { return operation(); },
+    executeCodeFenced: WorkspaceAgent.prototype.executeCodeFenced,
     csrfSessionId() { return 'session-1'; },
     requireSessionId() { return 'session-1'; },
   };
@@ -517,6 +518,7 @@ test('successful code execution emits one paired canonical action lifecycle', as
     assertNotFrozen() {},
     assertAuthorizedRpc() {},
     withMutationFence(operation) { return operation(); },
+    executeCodeFenced: WorkspaceAgent.prototype.executeCodeFenced,
     csrfSessionId() { return 'session-1'; },
     requireSessionId() { return 'session-1'; },
     requireWorkspace() { return { id: 'workspace-1' }; },
@@ -540,6 +542,95 @@ test('successful code execution emits one paired canonical action lifecycle', as
   assert.match(sqlWrites[0].query, /studio_action_lifecycle_events_v1/);
   assert.equal(sqlWrites[0].bindings[1], '/api/workspaces/{id}/runtime/execute');
   assert.equal(sqlWrites[1].bindings[3], 'ok');
+});
+
+test('code RPC fence spans rate-limit admission and rejects queued work before side effects', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  let resolveLimitEntered;
+  let resolveLimit;
+  const limitEntered = new Promise((resolve) => { resolveLimitEntered = resolve; });
+  const limitResult = new Promise((resolve) => { resolveLimit = resolve; });
+  let limitCalls = 0;
+  let executorCalls = 0;
+  const sqlWrites = [];
+  const agent = {
+    migrationFrozen: false,
+    activeMutations: 0,
+    cailSubject: TEST_SUBJECTS.alice,
+    cailOperationalSubject: null,
+    env: {
+      CAIL_LOG_ENV: 'test',
+      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
+      CF_VERSION_METADATA: {
+        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
+      },
+      HEAVY_RATE_LIMIT: {
+        limit: async () => {
+          limitCalls += 1;
+          resolveLimitEntered();
+          return limitResult;
+        },
+      },
+    },
+    ctx: {
+      blockConcurrencyWhile: async (operation) => operation(),
+      storage: {
+        put: async () => {},
+        sql: {
+          exec: (query, ...bindings) => {
+            sqlWrites.push({ query, bindings });
+            return { toArray: () => [] };
+          },
+        },
+      },
+    },
+    waitUntilStable: async () => true,
+    assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
+    assertAuthorizedRpc() {},
+    withMutationFence: WorkspaceAgent.prototype.withMutationFence,
+    executeCodeFenced: WorkspaceAgent.prototype.executeCodeFenced,
+    csrfSessionId() { return 'session-1'; },
+    requireSessionId() { return 'session-1'; },
+    requireWorkspace() { return { id: 'workspace-1' }; },
+    buildHostTools() { return {}; },
+    buildCodeProviders() { return {}; },
+    createCodeExecutor() {
+      return {
+        execute: async () => {
+          executorCalls += 1;
+          return { ok: true, stdout: '', stderr: '', logs: [] };
+        },
+      };
+    },
+  };
+
+  const first = WorkspaceAgent.prototype.executeCode.call(agent, 'return 1');
+  await limitEntered;
+  assert.equal(agent.activeMutations, 1);
+  await assert.rejects(
+    WorkspaceAgent.prototype.freezeForMigration.call(agent),
+    /active mutation/,
+  );
+  assert.equal(agent.migrationFrozen, false);
+
+  resolveLimit({ success: true });
+  await first;
+  assert.equal(agent.activeMutations, 0);
+  await WorkspaceAgent.prototype.freezeForMigration.call(agent);
+  assert.equal(agent.migrationFrozen, true);
+
+  const beforeQueuedCall = {
+    limitCalls,
+    executorCalls,
+    sqlWrites: sqlWrites.length,
+  };
+  await assert.rejects(
+    WorkspaceAgent.prototype.executeCode.call(agent, 'return 2'),
+    /workspace is frozen for migration/,
+  );
+  assert.equal(limitCalls, beforeQueuedCall.limitCalls);
+  assert.equal(executorCalls, beforeQueuedCall.executorCalls);
+  assert.equal(sqlWrites.length, beforeQueuedCall.sqlWrites);
 });
 
 test('anonymous chat streams an authentication error instead of assistant JSON', async () => {
