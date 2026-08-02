@@ -262,6 +262,32 @@ test('migration freeze refuses to race an active mutation', async () => {
   assert.deepEqual(writes, []);
 });
 
+test('migration freeze does not swallow falsy marker-write failures', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  for (const rejection of [null, undefined, 0, false]) {
+    const agent = {
+      activeMutations: 0,
+      migrationFrozen: false,
+      waitUntilStable: async () => true,
+      ctx: {
+        blockConcurrencyWhile: async (operation) => operation(),
+        storage: {
+          put: async () => {
+            throw rejection;
+          },
+        },
+      },
+    };
+    await assert.rejects(
+      WorkspaceAgent.prototype.freezeForMigration.call(agent),
+      (error) => error instanceof Error
+        && error.message === 'workspace migration freeze failed'
+        && error.cause === rejection,
+    );
+    assert.equal(agent.migrationFrozen, false);
+  }
+});
+
 test('framework chat admitted before freeze drains its assistant persistence', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = await makeRealWorkspaceAgent(WorkspaceAgent);

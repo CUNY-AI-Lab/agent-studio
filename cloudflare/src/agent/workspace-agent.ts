@@ -614,7 +614,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async freezeForMigration(): Promise<void> {
-    let failure: unknown = null;
+    let failure: unknown;
+    let failed = false;
     // blockConcurrencyWhile queues later Durable Object events, including
     // WebSocket tool-result/approval frames. waitUntilStable therefore drains
     // only already-delivered turns/interactions; a frame needed after this
@@ -635,9 +636,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         // throws. Capture the failure and throw only after the block exits.
         this.migrationFrozen = false;
         failure = error;
+        failed = true;
       }
     });
-    if (failure) throw failure;
+    if (failed) {
+      throw failure instanceof Error
+        ? failure
+        : new Error('workspace migration freeze failed', { cause: failure });
+    }
   }
 
   async unfreezeAfterMigration(): Promise<void> {
