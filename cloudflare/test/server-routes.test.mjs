@@ -24,6 +24,8 @@ import {
   makeEnv,
   openSession,
   Session,
+  cookieFrom,
+  csrfCookieFrom,
   makeImportBundle,
   seedGalleryItem,
 } from './helpers/env.mjs';
@@ -171,6 +173,40 @@ test('no cookie -> a signed session cookie is issued and reused', async () => {
   // The carried cookie yields the same session id (stable identity).
   const second = await session.request(app, '/api/session');
   assert.equal((await second.json()).sessionId, sessionId);
+});
+
+test('concurrent anonymous reads issue independent cookies and reject a mixed CSRF session', async () => {
+  const { env } = makeEnv();
+  const [bootstrap, gallery] = await Promise.all([
+    app.fetch(new Request('https://studio.test/api/session'), env, {}),
+    app.fetch(new Request('https://studio.test/api/gallery?limit=100'), env, {}),
+  ]);
+
+  assert.equal(bootstrap.status, 200);
+  assert.equal(gallery.status, 200);
+  const bootstrapCookie = cookieFrom(bootstrap);
+  const galleryCookie = cookieFrom(gallery);
+  const bootstrapCsrf = csrfCookieFrom(bootstrap);
+  assert.ok(bootstrapCookie);
+  assert.ok(galleryCookie);
+  assert.ok(bootstrapCsrf);
+  assert.notEqual(bootstrapCookie, galleryCookie);
+
+  // A browser that lets the later gallery response overwrite the session
+  // cookie still holds the CSRF token minted for the bootstrap session. The
+  // workspace read must reject that mixed pair rather than crossing sessions.
+  const mixed = await app.fetch(
+    new Request('https://studio.test/api/workspaces', {
+      headers: {
+        Cookie: galleryCookie,
+        'X-CAIL-CSRF': bootstrapCsrf,
+      },
+    }),
+    env,
+    {},
+  );
+  assert.equal(mixed.status, 403);
+  assert.equal((await readError(mixed)).code, 'csrf_token_invalid');
 });
 
 test('garbage cookie -> fresh session, never a 500', async () => {

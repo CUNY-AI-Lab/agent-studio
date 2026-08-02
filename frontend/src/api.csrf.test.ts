@@ -102,6 +102,53 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(mutationCall![1]?.credentials).toBe('include');
   });
 
+  it('serializes concurrent workspace and gallery reads behind one session bootstrap', async () => {
+    const { fetchGalleryItems, fetchWorkspaces } = await loadApi();
+    const token = 'a'.repeat(64);
+    const cookie = stubCookie();
+    let releaseBootstrap!: () => void;
+    const bootstrapBlocked = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    // Model the browser cookie jar separately from document.cookie: the
+    // session cookie is HttpOnly, while the CSRF cookie is page-readable.
+    let sessionCookie: string | null = null;
+    const observed: Array<{ path: string; sessionCookie: string | null }> = [];
+    const spy = mockFetch(async (input) => {
+      const url = new URL(String(input), 'https://studio.test');
+      observed.push({ path: `${url.pathname}${url.search}`, sessionCookie });
+      if (url.pathname.endsWith('/api/session')) {
+        await bootstrapBlocked;
+        sessionCookie = 'agent-studio-session=session-a';
+        cookie.set(`${CSRF_COOKIE}=${token}`);
+        return sessionResponse();
+      }
+      if (url.pathname.endsWith('/api/workspaces')) {
+        return Response.json({ workspaces: [] });
+      }
+      if (url.pathname.endsWith('/api/gallery')) {
+        return Response.json({ items: [] });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    const workspaces = fetchWorkspaces();
+    const gallery = fetchGalleryItems();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(observed).toEqual([{ path: '/api/session', sessionCookie: null }]);
+
+    releaseBootstrap();
+    await expect(Promise.all([workspaces, gallery])).resolves.toEqual([[], []]);
+
+    expect(observed.filter(({ path }) => path === '/api/session')).toHaveLength(1);
+    const reads = observed.filter(({ path }) => path.startsWith('/api/workspaces') || path.startsWith('/api/gallery'));
+    expect(reads).toHaveLength(2);
+    expect(reads.every(({ sessionCookie: value }) => value === 'agent-studio-session=session-a')).toBe(true);
+  });
+
   it('mutatingFetch preserves caller-supplied headers alongside the token', async () => {
     const { mutatingFetch, CSRF_HEADER } = await loadApi();
     const cookie = stubCookie();
