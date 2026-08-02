@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import semver from 'semver';
 
 const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 
@@ -95,12 +96,19 @@ function readBunLock(rootDir) {
 }
 
 function isValidPackageName(name) {
-  if (typeof name !== 'string' || name.length === 0) return false;
-  if (/[\\%\u0000-\u001f\u007f]/.test(name)) return false;
-  if (name.startsWith('@')) {
-    return /^@[a-z0-9][a-z0-9._~-]*\/[a-z0-9][a-z0-9._~-]*$/.test(name);
-  }
-  return /^[a-z0-9][a-z0-9._~-]*$/.test(name);
+  if (typeof name !== 'string' || name.length === 0 || name.length > 214) return false;
+  if (name.trim() !== name || name.startsWith('.') || name.startsWith('-') || name.startsWith('_')) return false;
+  if (name.toLowerCase() !== name || /[\u0000-\u001f\u007f]/.test(name)) return false;
+  if (name === 'node_modules' || name === 'favicon.ico') return false;
+
+  const scoped = /^@([^/]+)\/([^/]+)$/.exec(name);
+  if (!scoped && name.includes('/')) return false;
+  const scope = scoped?.[1];
+  const packageName = scoped?.[2] ?? name;
+  if (packageName.startsWith('.')) return false;
+  if (/[~'!()*]/.test(packageName)) return false;
+  if (scoped && (!scope || encodeURIComponent(scope) !== scope || encodeURIComponent(packageName) !== packageName)) return false;
+  return !scoped ? encodeURIComponent(name) === name : true;
 }
 
 function dependencyMap(manifest, invalidNames = new Set()) {
@@ -267,12 +275,15 @@ function descriptorNameVersion(descriptor) {
   return { name: descriptor.slice(0, at), version: descriptor.slice(at + 1) };
 }
 
-function isExactVersion(value) {
-  return typeof value === 'string' && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+function normalizedVersion(value) {
+  if (typeof value !== 'string') return undefined;
+  return semver.valid(value) ?? undefined;
 }
 
-function isVersionForm(value) {
-  return typeof value === 'string' && /^[v\d*^~<>=|.\-+ ]+$/.test(value) && /\d/.test(value);
+function satisfiesVersionRange(version, range) {
+  const normalized = normalizedVersion(version);
+  const validRange = typeof range === 'string' ? semver.validRange(range) : null;
+  return Boolean(normalized && validRange !== null && semver.satisfies(normalized, validRange));
 }
 
 function isSourceForm(value) {
@@ -283,6 +294,44 @@ function normalizeUrlVersion(packageName, value) {
   if (typeof value !== 'string' || !/^(?:https?:|\/\/)/i.test(value)) return undefined;
   const packageBase = packageName.split('/').at(-1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?:^|[/_-])${packageBase}[-@](v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\.tgz)?(?:$|[/?#])`, 'i').exec(value)?.[1];
+}
+
+function isVersionForm(value) {
+  return typeof value === 'string' && !isSourceForm(value) && semver.validRange(value) !== null;
+}
+
+function sourceProtocol(value) {
+  if (typeof value !== 'string') return undefined;
+  if (value.startsWith('//')) return 'https';
+  if (value.startsWith('git@')) return 'git';
+  return /^([a-z][a-z\d+.-]*):/i.exec(value)?.[1].toLowerCase();
+}
+
+function immutableGitCommit(value) {
+  return /#([0-9a-f]{40})$/i.exec(value)?.[1].toLowerCase();
+}
+
+function isHttpsTarball(value) {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value.startsWith('//') ? `https:${value}` : value);
+    return url.protocol === 'https:' && /\.(?:tgz|tar\.gz)$/i.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function sourceKind(value, packageName) {
+  const protocol = sourceProtocol(value);
+  if (protocol === 'https') {
+    return isHttpsTarball(value) && normalizeUrlVersion(packageName, value)
+      ? { kind: 'https-tarball' }
+      : { error: 'HTTPS download URL has no derivable package version' };
+  }
+  if (protocol === 'git' || protocol === 'git+ssh' || protocol === 'git+https' || protocol === 'ssh' || protocol === 'github' || protocol === 'gitlab' || protocol === 'bitbucket') {
+    return immutableGitCommit(value) ? { kind: 'immutable-git' } : { error: 'Git source is not pinned to an immutable commit' };
+  }
+  return { error: 'dependency source form is not supported' };
 }
 
 function parseNpmAlias(spec) {
@@ -325,6 +374,7 @@ function lockRecords(lock) {
       descriptorName: descriptor.name,
       rawVersion: descriptor.version,
       source: typeof value[1] === 'string' ? value[1] : undefined,
+      integrity: typeof value[3] === 'string' ? value[3] : undefined,
     });
   }
   return records;
@@ -334,10 +384,12 @@ function recordVersion(record, packageName, specInfo) {
   const candidates = [record.rawVersion, record.source];
   if (specInfo.kind === 'alias') candidates.push(specInfo.targetSpec);
   for (const candidate of candidates) {
-    if (isExactVersion(candidate)) return candidate.replace(/^v/, '');
+    const exact = normalizedVersion(candidate);
+    if (exact) return exact;
     if (isSourceForm(candidate)) {
       const urlVersion = normalizeUrlVersion(packageName, candidate);
-      if (urlVersion) return urlVersion.replace(/^v/, '');
+      const normalized = normalizedVersion(urlVersion);
+      if (normalized) return normalized;
     }
   }
   return undefined;
@@ -364,11 +416,21 @@ function recordsForDependency(records, workspaceKey, dependencyName, specInfo, w
         return names.has(tail) || sourceMatches.includes(record);
       })
     : [];
-  return { root, scoped };
+  const rootExact = records.filter(
+    (record) => !isWorkspaceScopedRecord(record, workspaceKeys) && record.key === dependencyName,
+  );
+  const scopedExact = workspaceKey
+    ? records.filter((record) => record.key === `${workspaceKey}/${dependencyName}` || record.key === `${workspaceKey}/node_modules/${dependencyName}`)
+    : [];
+  return { root, scoped, rootExact, scopedExact };
 }
 
 function expectedRecord(records, workspace, dependencyName, specInfo, workspaceKeys) {
-  const { root, scoped } = recordsForDependency(records, workspace.key, dependencyName, specInfo, workspaceKeys);
+  const { root, scoped, rootExact, scopedExact } = recordsForDependency(records, workspace.key, dependencyName, specInfo, workspaceKeys);
+  if (scopedExact.length > 1) return { error: 'multiple workspace-specific importer lock records' };
+  if (rootExact.length > 1) return { error: 'multiple root importer lock records' };
+  if (scopedExact.length === 1) return { record: scopedExact[0], location: 'workspace' };
+  if (rootExact.length === 1) return { record: rootExact[0], location: 'root' };
   if (scoped.length > 1) return { error: 'multiple workspace-specific lock records' };
   if (root.length > 1) return { error: 'multiple root lock records' };
   if (scoped.length === 1) return { record: scoped[0], location: 'workspace' };
@@ -474,12 +536,30 @@ function expectedSelection(workspace, dependencyName, spec, records, workspaces,
   if (record.record.rawVersion.startsWith('workspace:')) return { error: 'non-workspace dependency points to a workspace lock identity' };
   if (info.kind === 'alias') {
     if (record.record.descriptorName !== info.targetName) return { error: 'npm alias lock identity does not match its target' };
-    if (isExactVersion(info.targetSpec) && expectedVersion !== info.targetSpec.replace(/^v/, '')) {
-      return { error: 'npm alias target version does not match the lock resolution' };
+    if (typeof info.targetSpec !== 'string' || info.targetSpec.length === 0 || semver.validRange(info.targetSpec) === null) {
+      return { error: 'npm alias target is not a valid semver range' };
+    }
+    if (!expectedVersion) return { error: 'locked package version is opaque' };
+    if (!satisfiesVersionRange(expectedVersion, info.targetSpec)) {
+      return { error: 'npm alias target range does not satisfy the lock resolution' };
     }
   }
-  if (!expectedVersion && info.kind === 'version' && isExactVersion(info.requested)) {
-    return { error: 'locked package version is opaque' };
+  if (info.kind === 'version') {
+    if (semver.validRange(info.requested) === null) return { error: 'dependency spec is not a valid semver range' };
+    if (!expectedVersion) return { error: 'locked package version is opaque' };
+    if (!satisfiesVersionRange(expectedVersion, info.requested)) {
+      return { error: 'locked package version does not satisfy requested range' };
+    }
+  }
+  if (info.kind === 'source') {
+    const source = sourceKind(info.source, expectedName);
+    if (source.error) return { error: source.error };
+    if (record.record.rawVersion !== info.source && record.record.source !== info.source) {
+      return { error: 'dependency source lock identity is not bound to the importer source' };
+    }
+    if (source.kind === 'https-tarball' && !expectedVersion) {
+      return { error: 'HTTPS download URL lock identity has no derivable version' };
+    }
   }
   return { ...record, expectedName, expectedVersion };
 }

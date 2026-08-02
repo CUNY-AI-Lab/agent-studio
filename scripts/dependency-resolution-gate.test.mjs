@@ -145,7 +145,7 @@ async function makeNegativeGlobFixture() {
 
 async function makeAliasFixture() {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-alias-'));
-  const gitSpec = 'git+ssh://git@example.invalid/org/git-tool.git#v2.0.0';
+  const gitSpec = 'git+ssh://git@example.invalid/org/git-tool.git#0123456789abcdef0123456789abcdef01234567';
   await writeJson(path.join(rootDir, 'package.json'), {
     name: 'alias-fixture',
     private: true,
@@ -171,6 +171,39 @@ async function makeAliasFixture() {
   return rootDir;
 }
 
+async function makeAliasAndTargetFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-alias-target-'));
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'alias-target-fixture',
+    private: true,
+    workspaces: ['app'],
+  });
+  await writeJson(path.join(rootDir, 'app/package.json'), {
+    name: '@fixture/app',
+    dependencies: {
+      'alias-tool': 'npm:real-tool@^1.2.0',
+      'real-tool': '^1.2.0',
+    },
+  });
+  await writeInstalledPackage(rootDir, 'node_modules/alias-tool', 'real-tool', '1.2.3');
+  await writeInstalledPackage(rootDir, 'node_modules/real-tool', 'real-tool', '1.2.3');
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: {
+      '': { name: 'alias-target-fixture' },
+      app: {
+        name: '@fixture/app',
+        dependencies: { 'alias-tool': 'npm:real-tool@^1.2.0', 'real-tool': '^1.2.0' },
+      },
+    },
+    packages: {
+      'alias-tool': ['real-tool@1.2.3', '', {}, 'sha512-fixture'],
+      'real-tool': ['real-tool@1.2.3', '', {}, 'sha512-fixture'],
+    },
+  });
+  return rootDir;
+}
+
 async function makeAliasVersionMismatchFixture() {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-alias-version-mismatch-'));
   await writeJson(path.join(rootDir, 'package.json'), {
@@ -190,6 +223,44 @@ async function makeAliasVersionMismatchFixture() {
       app: { name: '@fixture/app', dependencies: { 'alias-tool': 'npm:real-tool@1.2.3' } },
     },
     packages: { 'alias-tool': ['real-tool@2.0.0', '', {}, 'sha512-fixture'] },
+  });
+  return rootDir;
+}
+
+async function makeVersionMismatchFixture({ dependencyName = 'versioned-tool', requested = '^1.2.0', locked = '2.0.0' } = {}) {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-version-mismatch-'));
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'version-mismatch-fixture',
+    private: true,
+    dependencies: { [dependencyName]: requested },
+  });
+  await writeInstalledPackage(rootDir, `node_modules/${dependencyName}`, dependencyName, locked);
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: { '': { name: 'version-mismatch-fixture', dependencies: { [dependencyName]: requested } } },
+    packages: { [dependencyName]: [`${dependencyName}@${locked}`, '', {}, 'sha512-fixture'] },
+  });
+  return rootDir;
+}
+
+async function makeOpaqueSourceFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-opaque-source-'));
+  const dependencies = {
+    'file-tool': 'file:../file-tool',
+    'link-tool': 'link:../link-tool',
+    'patch-tool': 'patch:../patch-tool#./patches/fix.patch',
+    'catalog-tool': 'catalog:default',
+    'git-tool': 'git+ssh://git@example.invalid/org/git-tool.git#main',
+    'https-tool': 'https://example.invalid/https-tool-1.0.0',
+  };
+  await writeJson(path.join(rootDir, 'package.json'), { name: 'opaque-source-fixture', private: true, dependencies });
+  for (const name of Object.keys(dependencies)) {
+    await writeInstalledPackage(rootDir, `node_modules/${name}`, name, '1.0.0');
+  }
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: { '': { name: 'opaque-source-fixture', dependencies } },
+    packages: Object.fromEntries(Object.keys(dependencies).map((name) => [name, [`${name}@${dependencies[name]}`, dependencies[name], {}, 'sha512-fixture']])),
   });
   return rootDir;
 }
@@ -241,6 +312,8 @@ async function makeInvalidDependencyNameFixture() {
     'foo\\bar': '1.0.0',
     'foo%2fbar': '1.0.0',
     'foo\u0000bar': '1.0.0',
+    node_modules: '1.0.0',
+    'favicon.ico': '1.0.0',
   };
   await writeJson(path.join(rootDir, 'package.json'), {
     name: 'invalid-dependency-name-fixture',
@@ -251,6 +324,27 @@ async function makeInvalidDependencyNameFixture() {
     lockfileVersion: 1,
     workspaces: { '': { name: 'invalid-dependency-name-fixture', dependencies } },
     packages: {},
+  });
+  return rootDir;
+}
+
+async function makeValidScopedNameFixture() {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-valid-scoped-name-'));
+  const dependencies = { '@scope/_foo': '1.2.3', '@scope/-foo': '^1.0.0' };
+  await writeJson(path.join(rootDir, 'package.json'), {
+    name: 'valid-scoped-name-fixture',
+    private: true,
+    dependencies,
+  });
+  await writeInstalledPackage(rootDir, 'node_modules/@scope/_foo', '@scope/_foo', '1.2.3');
+  await writeInstalledPackage(rootDir, 'node_modules/@scope/-foo', '@scope/-foo', '1.2.3');
+  await writeJson(path.join(rootDir, 'bun.lock'), {
+    lockfileVersion: 1,
+    workspaces: { '': { name: 'valid-scoped-name-fixture', dependencies } },
+    packages: {
+      '@scope/_foo': ['@scope/_foo@1.2.3', '', {}, 'sha512-fixture'],
+      '@scope/-foo': ['@scope/-foo@1.2.3', '', {}, 'sha512-fixture'],
+    },
   });
   return rootDir;
 }
@@ -383,12 +477,55 @@ test('binds npm aliases and Git aliases to importer-keyed lock records', async (
   }
 });
 
+test('prefers an importer alias lock record when its target is co-installed', async () => {
+  const rootDir = await makeAliasAndTargetFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, true, result.issues.join('\n'));
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
 test('rejects an npm alias when its lock target version differs from the requested target', async () => {
   const rootDir = await makeAliasVersionMismatchFixture();
   try {
     const result = verifyDependencyResolution({ rootDir });
     assert.equal(result.ok, false);
-    assert.match(result.issues.join('\n'), /npm alias target version/);
+    assert.match(result.issues.join('\n'), /npm alias target (?:version|range)/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects an exact version mismatch in the lock resolution', async () => {
+  const rootDir = await makeVersionMismatchFixture({ requested: '1.2.3', locked: '1.2.4' });
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /does not satisfy requested range/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects a semver range mismatch in the lock resolution', async () => {
+  const rootDir = await makeVersionMismatchFixture({ requested: '^1.2.0', locked: '2.0.0' });
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /does not satisfy requested range/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('rejects a scoped semver range mismatch in the lock resolution', async () => {
+  const rootDir = await makeVersionMismatchFixture({ dependencyName: '@scope/scoped-tool', requested: '^1.2.0', locked: '2.0.0' });
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, false);
+    assert.match(result.issues.join('\n'), /does not satisfy requested range/);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
@@ -404,6 +541,20 @@ test('derives a private tarball version from its URL path without printing the U
     assert.equal(mismatch.ok, false);
     assert.match(mismatch.issues.join('\n'), /3\.4\.4|3\.4\.5/);
     assert.doesNotMatch(mismatch.issues.join('\n'), /private\.example|do-not-print|https?:/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('fails closed on unsupported and mutable dependency source forms', async () => {
+  const rootDir = await makeOpaqueSourceFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    const diagnostics = result.issues.join('\n');
+    assert.equal(result.ok, false);
+    assert.equal(result.issues.length, 6);
+    assert.match(diagnostics, /dependency source form is not supported|Git source is not pinned to an immutable commit/);
+    assert.doesNotMatch(diagnostics, /file:|link:|patch:|catalog:|git\+ssh|example\.invalid/);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
@@ -456,7 +607,17 @@ test('rejects traversal and extra-segment dependency names before resolution', a
     const result = verifyDependencyResolution({ rootDir });
     assert.equal(result.ok, false);
     assert.equal(result.checked, 0);
-    assert.equal(result.issues.filter((issue) => issue.includes('invalid dependency name')).length, 12);
+    assert.equal(result.issues.filter((issue) => issue.includes('invalid dependency name')).length, 16);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('accepts canonical scoped package names beginning with underscore or hyphen', async () => {
+  const rootDir = await makeValidScopedNameFixture();
+  try {
+    const result = verifyDependencyResolution({ rootDir });
+    assert.equal(result.ok, true, result.issues.join('\n'));
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
   }
