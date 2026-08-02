@@ -4,10 +4,20 @@ import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import semver from 'semver';
 
+import { CAIL_PRIMITIVE_NAMES, CAIL_PRIMITIVE_RECEIPTS } from './cail-primitive-receipt.mjs';
+
+// Scope: validate this repository's lock/importer shape, direct dependency
+// selections, and the consumed CAIL application boundary. Peer/transitive
+// graph correctness and package bytes remain the clean frozen Bun install plus
+// typecheck/test/build/audit lane's authority.
 const DEPENDENCY_SECTIONS = ['dependencies', 'devDependencies', 'optionalDependencies'];
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 // Bun's text lockfile is JSON with trailing commas. Keep this parser deliberately
@@ -93,6 +103,34 @@ function readBunLock(rootDir) {
   const lockPath = path.join(rootDir, 'bun.lock');
   if (!fs.existsSync(lockPath)) throw new Error('bun.lock is missing');
   return parseBunLock(fs.readFileSync(lockPath, 'utf8'));
+}
+
+function validateLockShape(lock, issues) {
+  if (!isRecord(lock)) {
+    issues.push('bun.lock top level must be an object');
+    return false;
+  }
+  let valid = true;
+  if (lock.lockfileVersion !== 1) {
+    issues.push('bun.lock lockfileVersion must be 1');
+    valid = false;
+  }
+  if (lock.configVersion !== 1) {
+    issues.push('bun.lock configVersion must be 1 for this repository');
+    valid = false;
+  }
+  if (!isRecord(lock.workspaces)) {
+    issues.push('bun.lock workspaces must be an object');
+    valid = false;
+  } else if (!Object.prototype.hasOwnProperty.call(lock.workspaces, '')) {
+    issues.push('bun.lock is missing the root workspace importer ""');
+    valid = false;
+  }
+  if (!isRecord(lock.packages)) {
+    issues.push('bun.lock packages must be an object');
+    valid = false;
+  }
+  return valid;
 }
 
 function isValidPackageName(name) {
@@ -264,8 +302,19 @@ function discoverWorkspaces(rootDir, rootManifest, issues) {
 }
 
 function lockWorkspace(lock, key) {
-  const workspaces = lock.workspaces ?? {};
-  return workspaces[key] ?? workspaces[key ? `./${key}` : '.'] ?? undefined;
+  return isRecord(lock.workspaces) ? lock.workspaces[key] : undefined;
+}
+
+function compareWorkspaceImporterSet(lock, workspaces, issues) {
+  if (!isRecord(lock.workspaces)) return;
+  const expected = new Set(workspaces.map((workspace) => workspace.key));
+  const actual = new Set(Object.keys(lock.workspaces));
+  for (const key of [...expected].filter((value) => !actual.has(value)).sort()) {
+    issues.push(`bun.lock is missing workspace importer ${key || '""'}`);
+  }
+  for (const key of [...actual].filter((value) => !expected.has(value)).sort()) {
+    issues.push(`bun.lock has undeclared workspace importer ${key || '""'}`);
+  }
 }
 
 function descriptorNameVersion(descriptor) {
@@ -364,7 +413,7 @@ function relativePath(rootDir, filePath) {
 
 function lockRecords(lock) {
   const records = [];
-  for (const [key, value] of Object.entries(lock.packages ?? {})) {
+  for (const [key, value] of Object.entries(isRecord(lock.packages) ? lock.packages : {})) {
     if (!Array.isArray(value) || typeof value[0] !== 'string') continue;
     const descriptor = descriptorNameVersion(value[0]);
     if (!descriptor) continue;
@@ -498,6 +547,96 @@ function resolveInstalledPackage(rootDir, workspace, name) {
     (resolvedPath ? packageDirectoryFromResolved(rootDir, resolvedPath) : null) ??
     packageDirectoryFromWorkspaceNodeModules(rootDir, workspace.directory, name)
   );
+}
+
+function cailDependencyMap(workspaces) {
+  const direct = new Map();
+  for (const workspace of workspaces) {
+    const dependencies = dependencyMap(workspace.manifest);
+    for (const name of dependencies.keys()) {
+      if (CAIL_PRIMITIVE_NAMES.has(name)) direct.set(name, workspace);
+    }
+  }
+  return direct;
+}
+
+function cailBoundaryIsInUse(rootManifest, workspaces) {
+  return rootManifest?.name === 'agent-studio' || cailDependencyMap(workspaces).size > 0;
+}
+
+function sameStringSet(actual, expected) {
+  return actual.length === expected.length && expected.every((value) => actual.includes(value));
+}
+
+function checkCailPrimitiveReceipts(rootDir, rootManifest, records, workspaces, issues) {
+  const direct = cailDependencyMap(workspaces);
+  if (!cailBoundaryIsInUse(rootManifest, workspaces)) return;
+
+  for (const receipt of CAIL_PRIMITIVE_RECEIPTS) {
+    const consumer = direct.get(receipt.name);
+    if (!consumer) {
+      issues.push(`${receipt.name} is consumed by the Agent Studio CAIL boundary but is not a direct workspace dependency`);
+      continue;
+    }
+
+    const matchingRecords = records.filter((record) => record.key === receipt.name);
+    if (matchingRecords.length !== 1) {
+      issues.push(`${receipt.name} must have exactly one root bun.lock package record`);
+      continue;
+    }
+    const record = matchingRecords[0];
+    if (
+      record.descriptorName !== receipt.name
+      || record.rawVersion !== receipt.version
+      || record.source !== receipt.source
+      || record.integrity !== receipt.integrity
+    ) {
+      issues.push(`${receipt.name} bun.lock source, revision, integrity, or version differs from its application receipt`);
+    }
+
+    const resolved = resolveInstalledPackage(rootDir, consumer, receipt.name);
+    if (!resolved) {
+      issues.push(`${receipt.name} cannot be resolved from its consuming workspace`);
+      continue;
+    }
+    if (resolved.manifest.name !== receipt.name || resolved.manifest.version !== receipt.version) {
+      issues.push(`${receipt.name} installed manifest identity differs from its application receipt`);
+    }
+    const actualExports = isRecord(resolved.manifest.exports) ? Object.keys(resolved.manifest.exports) : [];
+    if (!sameStringSet(actualExports, receipt.exports)) {
+      issues.push(`${receipt.name} installed manifest exports differ from its application receipt`);
+    }
+  }
+}
+
+export async function verifyCailRuntimeEntrypoints({ rootDir = process.cwd() } = {}) {
+  const resolvedRoot = path.resolve(rootDir);
+  let rootManifest;
+  try {
+    rootManifest = readJson(path.join(resolvedRoot, 'package.json'));
+  } catch (error) {
+    return { ok: false, checked: 0, issues: [error instanceof Error ? error.message : String(error)] };
+  }
+
+  const discoveryIssues = [];
+  const workspaces = discoverWorkspaces(resolvedRoot, rootManifest, discoveryIssues);
+  if (!cailBoundaryIsInUse(rootManifest, workspaces)) {
+    return { ok: discoveryIssues.length === 0, checked: 0, issues: discoveryIssues };
+  }
+
+  const requireFromRoot = createRequire(path.join(resolvedRoot, 'package.json'));
+  const issues = [...discoveryIssues];
+  const entrypoints = CAIL_PRIMITIVE_RECEIPTS.flatMap((receipt) => receipt.entrypoints);
+  for (const specifier of entrypoints) {
+    try {
+      const resolved = requireFromRoot.resolve(specifier);
+      await import(pathToFileURL(resolved).href);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message.split('\n', 1)[0] : String(error);
+      issues.push(`${specifier} cannot resolve/import under the supported Node/Bun runtime (${reason})`);
+    }
+  }
+  return { ok: issues.length === 0, checked: entrypoints.length, issues };
 }
 
 function workspaceTarget(workspaces, dependencyName) {
@@ -670,8 +809,14 @@ export function verifyDependencyResolution({ rootDir = process.cwd() } = {}) {
     return { ok: false, issues: [error instanceof Error ? error.message : String(error)], checked: 0, workspaces: 0 };
   }
 
+  const lockShapeValid = validateLockShape(lock, issues);
   const workspaces = discoverWorkspaces(resolvedRoot, rootManifest, issues);
+  if (!lockShapeValid) {
+    return { ok: false, issues, checked: 0, workspaces: workspaces.length };
+  }
+  compareWorkspaceImporterSet(lock, workspaces, issues);
   const records = lockRecords(lock);
+  checkCailPrimitiveReceipts(resolvedRoot, rootManifest, records, workspaces, issues);
   const workspaceKeys = workspaces.map((workspace) => workspace.key);
   const workspaceDependencyChecks = [];
   for (const workspace of workspaces) {
@@ -693,11 +838,16 @@ export function verifyDependencyResolution({ rootDir = process.cwd() } = {}) {
 const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : '';
 if (invokedPath === import.meta.url) {
   const result = verifyDependencyResolution();
-  if (!result.ok) {
+  const runtime = result.ok ? await verifyCailRuntimeEntrypoints() : { ok: true, checked: 0, issues: [] };
+  const issues = [...result.issues, ...runtime.issues];
+  if (issues.length > 0) {
     console.error('Dependency resolution gate failed:');
-    for (const issue of result.issues) console.error(`- ${issue}`);
+    for (const issue of issues) console.error(`- ${issue}`);
     process.exitCode = 1;
   } else {
-    console.log(`Dependency resolution gate passed (${result.checked} direct dependencies across ${result.workspaces} workspaces).`);
+    console.log(
+      `Dependency resolution gate passed (${result.checked} direct dependencies across ${result.workspaces} workspaces; `
+      + `${runtime.checked} CAIL entrypoints imported).`,
+    );
   }
 }

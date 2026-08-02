@@ -18,6 +18,17 @@ The versions above are the resolved packages exercised by this repository.
 Historical source-repository review commits are not runtime compatibility
 claims and belong in version-control history, not this current-state contract.
 
+The dependency-resolution gate also checks the current Bun lock schema and the
+exact workspace-importer set, then compares these three CAIL records and their
+installed manifest exports with the application receipt in
+`scripts/cail-primitive-receipt.mjs`. It imports the production and test
+entrypoints under the supported Node/Bun runtime. This receipt is an
+application-boundary check, not a replacement package manager: peer and
+transitive graph selection, and package-byte provenance, are established by the
+authenticated clean-checkout `bun install --frozen-lockfile` followed by the
+typecheck, test, build, and audit lane. A dirty `node_modules` tree with a
+matching name and version is not treated as byte provenance.
+
 CI grants only read access to repository contents, pins third-party actions by
 commit, and disables checkout credential persistence. The private-package token
 exists only in each frozen dependency-install step; lint, tests, builds,

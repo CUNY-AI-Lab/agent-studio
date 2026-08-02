@@ -3,18 +3,70 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
-import { parseBunLock, verifyDependencyResolution } from './dependency-resolution-gate.mjs';
+import { parseBunLock, verifyCailRuntimeEntrypoints, verifyDependencyResolution } from './dependency-resolution-gate.mjs';
+import { CAIL_PRIMITIVE_RECEIPTS } from './cail-primitive-receipt.mjs';
 
 async function writeJson(filePath, value) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+async function writeLock(rootDir, value) {
+  await writeJson(path.join(rootDir, 'bun.lock'), { configVersion: 1, ...value });
+}
+
 async function writeInstalledPackage(rootDir, relativeDirectory, name, version) {
   const packageDirectory = path.join(rootDir, relativeDirectory);
   await writeJson(path.join(packageDirectory, 'package.json'), { name, version, main: 'index.js' });
   await fs.writeFile(path.join(packageDirectory, 'index.js'), 'module.exports = {};\n');
+}
+
+async function writeCailPackage(rootDir, receipt, { missingExport } = {}) {
+  const packageDirectory = path.join(rootDir, 'node_modules', ...receipt.name.split('/'));
+  const exportedNames = missingExport ? receipt.exports.filter((entry) => entry !== missingExport) : receipt.exports;
+  const exportsMap = Object.fromEntries(
+    exportedNames.map((entry) => [
+      entry,
+      entry === '.'
+        ? { import: './index.js', default: './index.js' }
+        : entry.endsWith('.json') || entry.endsWith('.lua')
+          ? entry
+          : { import: './index.js', default: './index.js' },
+    ]),
+  );
+  await writeJson(path.join(packageDirectory, 'package.json'), {
+    name: receipt.name,
+    version: receipt.version,
+    type: 'module',
+    exports: exportsMap,
+  });
+  await fs.writeFile(path.join(packageDirectory, 'index.js'), 'export const fixture = true;\n');
+}
+
+async function makeCailReceiptFixture({ evilSource = false, evilIntegrity = false, missingExport } = {}) {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-cail-receipt-'));
+  const dependencies = Object.fromEntries(
+    CAIL_PRIMITIVE_RECEIPTS.map((receipt) => [receipt.name, receipt.name.endsWith('identity') ? receipt.version : `^${receipt.version}`]),
+  );
+  await writeJson(path.join(rootDir, 'package.json'), { name: 'cail-receipt-fixture', private: true, dependencies });
+  const packages = {};
+  for (const receipt of CAIL_PRIMITIVE_RECEIPTS) {
+    await writeCailPackage(rootDir, receipt, { missingExport: missingExport === receipt.name ? receipt.exports[1] : undefined });
+    packages[receipt.name] = [
+      `${receipt.name}@${receipt.version}`,
+      evilSource && receipt.name === CAIL_PRIMITIVE_RECEIPTS[0].name ? 'https://evil.invalid/cail-identity-5.1.0.tgz' : receipt.source,
+      {},
+      evilIntegrity && receipt.name === CAIL_PRIMITIVE_RECEIPTS[0].name ? 'sha512-attacker' : receipt.integrity,
+    ];
+  }
+  await writeLock(rootDir, {
+    lockfileVersion: 1,
+    workspaces: { '': { name: 'cail-receipt-fixture', dependencies } },
+    packages,
+  });
+  return rootDir;
 }
 
 async function makeFixture({ conflictingDirectVersions = false, swappedConflict = false } = {}) {
@@ -51,6 +103,7 @@ async function makeFixture({ conflictingDirectVersions = false, swappedConflict 
     `${JSON.stringify(
       {
         lockfileVersion: 1,
+        configVersion: 1,
         workspaces: {
           '': importer('dependency-gate-fixture', { 'root-tool': '1.0.0' }),
           cloudflare: importer('@fixture/cloudflare', { 'shared-tool': '1.0.0' }),
@@ -101,7 +154,7 @@ async function makeWorkspaceProtocolFixture({ descriptorName = '@fixture/provide
     private: true,
     dependencies: { '@fixture/provider': 'workspace:*' },
   });
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: {
       '': { name: 'workspace-protocol-fixture' },
@@ -132,7 +185,7 @@ async function makeNegativeGlobFixture() {
   });
   await writeJson(path.join(outsideDir, 'package.json'), { name: '@fixture/outside', version: '1.0.0' });
   await writeSymlink(path.join(rootDir, 'packages/outside'), outsideDir);
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: {
       '': { name: 'negative-glob-fixture' },
@@ -157,7 +210,7 @@ async function makeAliasFixture() {
   });
   await writeInstalledPackage(rootDir, 'node_modules/alias-tool', 'real-tool', '1.2.3');
   await writeInstalledPackage(rootDir, 'node_modules/git-alias', 'git-tool', '2.0.0');
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: {
       '': { name: 'alias-fixture' },
@@ -187,7 +240,7 @@ async function makeAliasAndTargetFixture() {
   });
   await writeInstalledPackage(rootDir, 'node_modules/alias-tool', 'real-tool', '1.2.3');
   await writeInstalledPackage(rootDir, 'node_modules/real-tool', 'real-tool', '1.2.3');
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: {
       '': { name: 'alias-target-fixture' },
@@ -216,7 +269,7 @@ async function makeAliasVersionMismatchFixture() {
     dependencies: { 'alias-tool': 'npm:real-tool@1.2.3' },
   });
   await writeInstalledPackage(rootDir, 'node_modules/alias-tool', 'real-tool', '2.0.0');
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: {
       '': { name: 'alias-version-mismatch-fixture' },
@@ -235,7 +288,7 @@ async function makeVersionMismatchFixture({ dependencyName = 'versioned-tool', r
     dependencies: { [dependencyName]: requested },
   });
   await writeInstalledPackage(rootDir, `node_modules/${dependencyName}`, dependencyName, locked);
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: { '': { name: 'version-mismatch-fixture', dependencies: { [dependencyName]: requested } } },
     packages: { [dependencyName]: [`${dependencyName}@${locked}`, '', {}, 'sha512-fixture'] },
@@ -257,7 +310,7 @@ async function makeOpaqueSourceFixture() {
   for (const name of Object.keys(dependencies)) {
     await writeInstalledPackage(rootDir, `node_modules/${name}`, name, '1.0.0');
   }
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: { '': { name: 'opaque-source-fixture', dependencies } },
     packages: Object.fromEntries(Object.keys(dependencies).map((name) => [name, [`${name}@${dependencies[name]}`, dependencies[name], {}, 'sha512-fixture']])),
@@ -273,7 +326,7 @@ async function makePrivateUrlFixture({ url = 'https://private.example.invalid/np
     dependencies: { 'private-tool': url },
   });
   await writeInstalledPackage(rootDir, 'node_modules/private-tool', 'private-tool', '3.4.5');
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: {
       '': { name: 'private-url-fixture' },
@@ -294,7 +347,7 @@ async function makeOutsideSymlinkFixture() {
   });
   await writeInstalledPackage(outsideDir, '.', 'evil', '1.0.0');
   await writeSymlink(path.join(rootDir, 'node_modules/evil'), outsideDir);
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: { '': { name: 'outside-install-fixture', dependencies: { evil: '1.0.0' } } },
     packages: { evil: ['evil@1.0.0', '', {}, 'sha512-fixture'] },
@@ -319,7 +372,7 @@ async function makeInvalidDependencyNameFixture() {
     private: true,
     dependencies,
   });
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: { '': { name: 'invalid-dependency-name-fixture', dependencies } },
     packages: {},
@@ -337,7 +390,7 @@ async function makeValidScopedNameFixture() {
   });
   await writeInstalledPackage(rootDir, 'node_modules/@scope/_foo', '@scope/_foo', '1.2.3');
   await writeInstalledPackage(rootDir, 'node_modules/@scope/-foo', '@scope/-foo', '1.2.3');
-  await writeJson(path.join(rootDir, 'bun.lock'), {
+  await writeLock(rootDir, {
     lockfileVersion: 1,
     workspaces: { '': { name: 'valid-scoped-name-fixture', dependencies } },
     packages: {
@@ -351,6 +404,66 @@ async function makeValidScopedNameFixture() {
 test('parses Bun lock comments and trailing commas without evaluating package data', () => {
   const parsed = parseBunLock('{\n  // importer comment\n  "workspaces": {},\n  /* package comment */\n}\n');
   assert.deepEqual(parsed, { workspaces: {} });
+});
+
+test('fails closed on lock schema drift and an undeclared workspace importer', async () => {
+  const rootDir = await makeFixture();
+  try {
+    const lockPath = path.join(rootDir, 'bun.lock');
+    const lock = JSON.parse(await fs.readFile(lockPath, 'utf8'));
+    lock.configVersion = 99;
+    await writeJson(lockPath, lock);
+    const schemaMismatch = verifyDependencyResolution({ rootDir });
+    assert.equal(schemaMismatch.ok, false);
+    assert.match(schemaMismatch.issues.join('\n'), /configVersion must be 1/);
+
+    lock.configVersion = 1;
+    lock.lockfileVersion = 99;
+    await writeJson(lockPath, lock);
+    const lockfileMismatch = verifyDependencyResolution({ rootDir });
+    assert.equal(lockfileMismatch.ok, false);
+    assert.match(lockfileMismatch.issues.join('\n'), /lockfileVersion must be 1/);
+
+    lock.lockfileVersion = 1;
+    lock.workspaces.ghost = { name: '@fixture/ghost' };
+    await writeJson(lockPath, lock);
+    const importerMismatch = verifyDependencyResolution({ rootDir });
+    assert.equal(importerMismatch.ok, false);
+    assert.match(importerMismatch.issues.join('\n'), /undeclared workspace importer ghost/);
+
+    delete lock.workspaces.ghost;
+    delete lock.workspaces.frontend;
+    await writeJson(lockPath, lock);
+    const missingImporter = verifyDependencyResolution({ rootDir });
+    assert.equal(missingImporter.ok, false);
+    assert.match(missingImporter.issues.join('\n'), /missing workspace importer frontend/);
+  } finally {
+    await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('binds consumed CAIL primitives to exact lock receipts and installed exports', async () => {
+  for (const scenario of [
+    { option: { evilSource: true }, pattern: /source, revision, integrity, or version differs/ },
+    { option: { evilIntegrity: true }, pattern: /source, revision, integrity, or version differs/ },
+    { option: { missingExport: '@cuny-ai-lab/cail-identity' }, pattern: /installed manifest exports differ/ },
+  ]) {
+    const rootDir = await makeCailReceiptFixture(scenario.option);
+    try {
+      const result = verifyDependencyResolution({ rootDir });
+      assert.equal(result.ok, false);
+      assert.match(result.issues.join('\n'), scenario.pattern);
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
+  }
+});
+
+test('imports the recorded production and test CAIL entrypoints under Node/Bun', async () => {
+  const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const result = await verifyCailRuntimeEntrypoints({ rootDir });
+  assert.equal(result.ok, true, result.issues.join('\n'));
+  assert.equal(result.checked, 5);
 });
 
 test('passes when every workspace resolves the lock-selected root package', async () => {
@@ -602,7 +715,7 @@ test('redacts credential-bearing source forms from manifest-lock diagnostics', a
       dependencies: { 'credential-tool': manifestSource },
     });
     await writeInstalledPackage(rootDir, 'node_modules/credential-tool', 'credential-tool', '1.0.0');
-    await writeJson(path.join(rootDir, 'bun.lock'), {
+    await writeLock(rootDir, {
       lockfileVersion: 1,
       workspaces: {
         '': { name: 'redaction-fixture' },
