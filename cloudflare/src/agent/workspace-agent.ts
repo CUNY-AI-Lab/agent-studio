@@ -102,6 +102,7 @@ const MAX_OBSERVABILITY_REQUESTS = 20;
 const OBSERVABILITY_STALL_MS = 15_000;
 const HYDRATION_COMPLETE_KEY = 'runtimeWorkspaceHydrated:v1';
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
+const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -437,6 +438,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * implicitly the "verified state on the connection" the contract calls for.
    */
   async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
+    if (this.migrationFrozen) {
+      connection.close(1012, 'migration_in_progress');
+      return;
+    }
     if (!wsOriginAllowed(ctx.request, this.env.CAIL_CANONICAL_ORIGIN)) {
       connection.close(1008, 'csrf_origin_mismatch');
       return;
@@ -609,16 +614,35 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async freezeForMigration(): Promise<void> {
-    if (this.activeMutations > 0) {
-      throw new Error('workspace has an active mutation; retry migration');
-    }
-    this.migrationFrozen = true;
-    await this.ctx.storage.put(MIGRATION_FROZEN_KEY, true);
+    let failure: unknown = null;
+    // blockConcurrencyWhile queues later Durable Object events, including
+    // WebSocket tool-result/approval frames. waitUntilStable therefore drains
+    // only already-delivered turns/interactions; a frame needed after this
+    // admission waits behind the block and makes the freeze time out/retry.
+    await this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        const stable = await this.waitUntilStable({ timeout: MIGRATION_STABILITY_TIMEOUT_MS });
+        if (!stable) {
+          throw new Error('workspace did not become stable before migration freeze');
+        }
+        if (this.activeMutations > 0) {
+          throw new Error('workspace has an active mutation; retry migration');
+        }
+        this.migrationFrozen = true;
+        await this.ctx.storage.put(MIGRATION_FROZEN_KEY, true);
+      } catch (error) {
+        // Durable Object state resets if blockConcurrencyWhile's callback
+        // throws. Capture the failure and throw only after the block exits.
+        this.migrationFrozen = false;
+        failure = error;
+      }
+    });
+    if (failure) throw failure;
   }
 
   async unfreezeAfterMigration(): Promise<void> {
-    this.migrationFrozen = false;
     await this.ctx.storage.delete(MIGRATION_FROZEN_KEY);
+    this.migrationFrozen = false;
   }
 
   /** Internal destructive RPC used only after an authorized delete/migration. */
@@ -790,6 +814,25 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         { outcome: 'error', reason: 'application_failure' },
         'chat_response_failed',
       );
+    }
+  }
+
+  protected override resetTurnState(): void {
+    this.assertNotFrozen();
+    super.resetTurnState();
+  }
+
+  async persistMessages(
+    messages: UIMessage[],
+    excludeBroadcastIds?: string[],
+    options?: { _deleteStaleRows?: boolean },
+  ): Promise<void> {
+    this.assertNotFrozen();
+    this.activeMutations += 1;
+    try {
+      await super.persistMessages(messages, excludeBroadcastIds, options);
+    } finally {
+      this.activeMutations -= 1;
     }
   }
 

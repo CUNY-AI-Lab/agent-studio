@@ -24,8 +24,13 @@ import {
 } from '../src/lib/cail-identity.ts';
 import { MockR2 } from './helpers/env.mjs';
 
-const NOW = 1_800_000_000_000;
+const NOW = Date.now();
 const SESSION_SECRET = 'ab'.repeat(32);
+const OPEN_IMPORT_WINDOW = {
+  CAIL_REQUIRE_IDENTITY: 'true',
+  CAIL_SSO_SWITCHED_AT: new Date(NOW - 60_000).toISOString(),
+  CAIL_ACCOUNT_IMPORT_UNTIL: new Date(NOW + 24 * 60 * 60 * 1000).toISOString(),
+};
 
 // ---------------------------------------------------------------------------
 // In-memory doubles
@@ -214,7 +219,7 @@ async function seedGalleryItem(r2, id, authorId) {
 }
 
 function makeEnv(r2) {
-  return { WORKSPACE_FILES: r2, SESSION_SECRET };
+  return { WORKSPACE_FILES: r2, SESSION_SECRET, ...OPEN_IMPORT_WINDOW };
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +658,27 @@ test('expired import window refuses migration before claiming or reading legacy 
   assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
 });
 
+test('pre-cutover optional authentication cannot import a legacy namespace', async () => {
+  const r2 = new MockR2();
+  const pool = makeAgentPool();
+  const env = { ...makeEnv(r2), CAIL_REQUIRE_IDENTITY: 'false' };
+  await seedWorkspace(r2, pool, ANON, 'ws1', 'Legacy', { 'notes.md': 'stay put' });
+  const registry = new FakeRegistry();
+
+  const outcome = await maybeMigrateAnonymousSession({
+    env,
+    anonSessionId: ANON,
+    subjectSessionId: SUBJECT,
+    registry,
+    getAgent: pool.getAgent,
+  });
+
+  assert.equal(outcome, 'window-not-open');
+  assert.equal(registry.claimCalls, 0);
+  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
+  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
+});
+
 // ---------------------------------------------------------------------------
 // Middleware trigger (Hono integration): anonymous flow untouched, first
 // authenticated request with a legacy cookie migrates and drops the cookie.
@@ -687,6 +713,8 @@ async function makeMiddlewareApp() {
     CAIL_IDENTITY_JWKS: identityIssuer.jwksJson,
     CAIL_IDENTITY_ISSUER: identityIssuer.issuer,
     WORKSPACE_FILES: r2,
+    ...OPEN_IMPORT_WINDOW,
+    CAIL_REQUIRE_IDENTITY: 'false',
     MIGRATION_REGISTRY: {
       idFromName: (name) => name,
       get: () => registry,
@@ -742,6 +770,7 @@ test('middleware: first authenticated request with legacy cookie migrates once a
   await seedGalleryItem(r2, 'galM', anonSessionId);
 
   // Authenticate with the legacy cookie still present.
+  env.CAIL_REQUIRE_IDENTITY = 'true';
   const jwt = await mintJwt(TEST_SUBJECTS.bob);
   const authed = await app.request('/api/session', {
     headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },

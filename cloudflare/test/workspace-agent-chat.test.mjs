@@ -10,6 +10,83 @@ import { registerCloudflareStub } from './helpers/env.mjs';
 
 registerCloudflareStub();
 
+function makeAgentStorage(seed = []) {
+  const values = new Map(seed);
+  const writes = [];
+  return {
+    values,
+    writes,
+    async get(key) {
+      return values.get(key);
+    },
+    async put(key, value) {
+      values.set(key, value);
+      writes.push(['put', key, value]);
+    },
+    async delete(key) {
+      values.delete(key);
+      writes.push(['delete', key]);
+    },
+    setAlarm() {},
+    deleteAlarm() {},
+    sql: {
+      exec() {
+        return {
+          toArray: () => [],
+          [Symbol.iterator]: function* iterator() {},
+        };
+      },
+    },
+  };
+}
+
+async function makeRealWorkspaceAgent(WorkspaceAgent, storage = makeAgentStorage()) {
+  const agent = new WorkspaceAgent(
+    {
+      storage,
+      id: { toString: () => 'workspace-agent-chat-test' },
+      blockConcurrencyWhile: async (operation) => operation(),
+      getWebSockets: () => [],
+      acceptWebSocket: () => {},
+      waitUntil: () => {},
+    },
+    {},
+  );
+  await agent.setName(`${'a'.repeat(32)}-workspace-1`);
+  return agent;
+}
+
+function chatRequest(id = 'turn-1', messageId = 'user-1') {
+  return JSON.stringify({
+    type: 'cf_agent_use_chat_request',
+    id,
+    init: {
+      method: 'POST',
+      body: JSON.stringify({
+        messages: [{
+          id: messageId,
+          role: 'user',
+          parts: [{ type: 'text', text: 'hello' }],
+        }],
+      }),
+    },
+  });
+}
+
+function testConnection(id = 'connection-1') {
+  return {
+    id,
+    state: null,
+    tags: [],
+    binaryType: 'arraybuffer',
+    setState(next) {
+      this.state = next;
+    },
+    send() {},
+    close() {},
+  };
+}
+
 test('chat action success waits for the post-persistence onChatResponse hook', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const action = { actionTerminal: false };
@@ -72,9 +149,97 @@ test('deferred chat failures become terminal only in the post-persistence hook',
   ]);
 });
 
-test('chat persistence is framework-owned rather than overridden as an instrumentation seam', async () => {
+test('chat persistence counts an admitted write and rejects only after migration freeze', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  assert.equal(Object.hasOwn(WorkspaceAgent.prototype, 'persistMessages'), false);
+  const base = Object.getPrototypeOf(WorkspaceAgent.prototype);
+  const original = base.persistMessages;
+  let calls = 0;
+  base.persistMessages = async () => {
+    calls += 1;
+  };
+  try {
+    const agent = {
+      activeMutations: 0,
+      migrationFrozen: false,
+      assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
+    };
+    await WorkspaceAgent.prototype.persistMessages.call(agent, []);
+    assert.equal(calls, 1);
+    assert.equal(agent.activeMutations, 0);
+
+    agent.migrationFrozen = true;
+    await assert.rejects(
+      WorkspaceAgent.prototype.persistMessages.call(agent, []),
+      /workspace is frozen for migration/,
+    );
+    assert.equal(calls, 1);
+  } finally {
+    base.persistMessages = original;
+  }
+});
+
+test('migration freeze waits for framework chat stability and clears admission on failure', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  let resolveStable;
+  let resolveEntered;
+  const stable = new Promise((resolve) => { resolveStable = resolve; });
+  const entered = new Promise((resolve) => { resolveEntered = resolve; });
+  const writes = [];
+  const deletes = [];
+  const agent = {
+    activeMutations: 0,
+    migrationFrozen: false,
+    assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
+    waitUntilStable: async ({ timeout }) => {
+      assert.equal(timeout, 5_000);
+      resolveEntered();
+      return stable;
+    },
+    ctx: {
+      blockConcurrencyWhile: async (operation) => operation(),
+      storage: {
+        put: async (...args) => writes.push(args),
+        delete: async (...args) => deletes.push(args),
+      },
+    },
+  };
+
+  const freeze = WorkspaceAgent.prototype.freezeForMigration.call(agent);
+  await entered;
+  assert.equal(agent.migrationFrozen, false);
+  resolveStable(true);
+  await freeze;
+  assert.equal(agent.migrationFrozen, true);
+  assert.deepEqual(writes, [['migrationFrozen:v1', true]]);
+
+  await WorkspaceAgent.prototype.unfreezeAfterMigration.call(agent);
+  assert.equal(agent.migrationFrozen, false);
+  assert.deepEqual(deletes, [['migrationFrozen:v1']]);
+
+  agent.migrationFrozen = true;
+  agent.ctx.storage.delete = async () => {
+    throw new Error('marker delete failed');
+  };
+  await assert.rejects(
+    WorkspaceAgent.prototype.unfreezeAfterMigration.call(agent),
+    /marker delete failed/,
+  );
+  assert.equal(agent.migrationFrozen, true);
+
+  agent.waitUntilStable = async () => false;
+  await assert.rejects(
+    WorkspaceAgent.prototype.freezeForMigration.call(agent),
+    /did not become stable/,
+  );
+  assert.equal(agent.migrationFrozen, false);
+
+  agent.waitUntilStable = async () => true;
+  agent.activeMutations = 1;
+  await assert.rejects(
+    WorkspaceAgent.prototype.freezeForMigration.call(agent),
+    /active mutation/,
+  );
+  assert.equal(agent.migrationFrozen, false);
 });
 
 test('migration freeze refuses to race an active mutation', async () => {
@@ -83,7 +248,11 @@ test('migration freeze refuses to race an active mutation', async () => {
   const agent = {
     activeMutations: 1,
     migrationFrozen: false,
-    ctx: { storage: { put: async (...args) => writes.push(args) } },
+    waitUntilStable: async () => true,
+    ctx: {
+      blockConcurrencyWhile: async (operation) => operation(),
+      storage: { put: async (...args) => writes.push(args) },
+    },
   };
   await assert.rejects(
     WorkspaceAgent.prototype.freezeForMigration.call(agent),
@@ -91,6 +260,152 @@ test('migration freeze refuses to race an active mutation', async () => {
   );
   assert.equal(agent.migrationFrozen, false);
   assert.deepEqual(writes, []);
+});
+
+test('framework chat admitted before freeze drains its assistant persistence', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+  const base = Object.getPrototypeOf(WorkspaceAgent.prototype);
+  const originalPersist = base.persistMessages;
+  const persisted = [];
+  let resolveUserPersisted;
+  const userPersisted = new Promise((resolve) => { resolveUserPersisted = resolve; });
+  let streamController;
+  base.persistMessages = async function(messages) {
+    persisted.push({ ids: messages.map((message) => message.id), active: this.activeMutations });
+    this.messages = [...messages];
+    if (messages.some((message) => message.role === 'user')) resolveUserPersisted();
+  };
+  agent.onChatMessage = async () => new Response(new ReadableStream({
+    start(controller) {
+      streamController = controller;
+    },
+  }));
+
+  try {
+    const chat = agent.onMessage(testConnection(), chatRequest());
+    await userPersisted;
+    for (let attempt = 0; attempt < 100 && !streamController; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    assert.ok(streamController, 'framework chat stream should be active after user persistence');
+
+    const freeze = agent.freezeForMigration();
+    assert.equal(agent.migrationFrozen, false, 'freeze must drain the admitted turn first');
+    streamController.enqueue(new TextEncoder().encode('answer'));
+    streamController.close();
+
+    await chat;
+    await freeze;
+    assert.equal(agent.migrationFrozen, true);
+    assert.equal(persisted.length, 2);
+    assert.equal(persisted[0].ids.length, 1);
+    assert.equal(persisted[1].ids.length, 2);
+    assert.equal(persisted[1].active, 1);
+    assert.equal(agent.messages.at(-1)?.role, 'assistant');
+  } finally {
+    base.persistMessages = originalPersist;
+  }
+});
+
+test('an in-flight standalone messages write makes migration freeze retry', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+  const base = Object.getPrototypeOf(WorkspaceAgent.prototype);
+  const originalPersist = base.persistMessages;
+  let resolveEntered;
+  let resolveRelease;
+  const entered = new Promise((resolve) => { resolveEntered = resolve; });
+  const release = new Promise((resolve) => { resolveRelease = resolve; });
+  base.persistMessages = async function(messages) {
+    this.messages = [...messages];
+    resolveEntered();
+    await release;
+  };
+
+  try {
+    const persist = WorkspaceAgent.prototype.persistMessages.call(agent, [{
+      id: 'standalone-user',
+      role: 'user',
+      parts: [{ type: 'text', text: 'already delivered' }],
+    }]);
+    await entered;
+    assert.equal(agent.activeMutations, 1);
+    await assert.rejects(
+      agent.freezeForMigration(),
+      /active mutation/,
+    );
+    assert.equal(agent.migrationFrozen, false);
+
+    resolveRelease();
+    await persist;
+    assert.equal(agent.activeMutations, 0);
+    await agent.freezeForMigration();
+    assert.equal(agent.migrationFrozen, true);
+  } finally {
+    resolveRelease();
+    base.persistMessages = originalPersist;
+  }
+});
+
+test('frozen agents refuse new chat submits and reconnects', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+  agent.migrationFrozen = true;
+  let closeArgs;
+  const reconnect = testConnection('reconnect');
+  reconnect.close = (...args) => { closeArgs = args; };
+
+  await WorkspaceAgent.prototype.onConnect.call(agent, reconnect, {
+    request: new Request('https://agent.test/agents/ws'),
+  });
+  assert.deepEqual(closeArgs, [1012, 'migration_in_progress']);
+
+  await assert.rejects(
+    agent.onMessage(testConnection('new-chat'), chatRequest('turn-2', 'user-2')),
+    /workspace is frozen for migration/,
+  );
+});
+
+test('migration freeze closes direct persistence and clear/reset paths', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const base = Object.getPrototypeOf(WorkspaceAgent.prototype);
+  const originalPersist = base.persistMessages;
+  const originalReset = base.resetTurnState;
+  let persistCalls = 0;
+  let resetCalls = 0;
+  base.persistMessages = async () => {
+    persistCalls += 1;
+  };
+  base.resetTurnState = () => {
+    resetCalls += 1;
+  };
+  try {
+    const agent = {
+      migrationFrozen: true,
+      assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
+    };
+    await assert.rejects(
+      WorkspaceAgent.prototype.persistMessages.call(agent, [{
+        id: 'assistant-message',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'done' }],
+      }]),
+      /workspace is frozen for migration/,
+    );
+    assert.equal(persistCalls, 0);
+    assert.throws(
+      () => WorkspaceAgent.prototype.resetTurnState.call(agent),
+      /workspace is frozen for migration/,
+    );
+
+    agent.migrationFrozen = false;
+    WorkspaceAgent.prototype.resetTurnState.call(agent);
+    assert.equal(resetCalls, 1);
+  } finally {
+    base.persistMessages = originalPersist;
+    base.resetTurnState = originalReset;
+  }
 });
 
 test('destructive cleanup refuses to race an active mutation', async () => {
