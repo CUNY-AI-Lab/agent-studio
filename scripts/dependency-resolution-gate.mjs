@@ -293,7 +293,7 @@ function isSourceForm(value) {
 function normalizeUrlVersion(packageName, value) {
   if (typeof value !== 'string' || !/^(?:https?:|\/\/)/i.test(value)) return undefined;
   const packageBase = packageName.split('/').at(-1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|[/_-])${packageBase}[-@](v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\.tgz)?(?:$|[/?#])`, 'i').exec(value)?.[1];
+  return new RegExp(`(?:^|[/_-])${packageBase}[-@](v?\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?)(?:\\.tgz|\\.tar\\.gz)?(?:$|[/?#])`, 'i').exec(value)?.[1];
 }
 
 function isVersionForm(value) {

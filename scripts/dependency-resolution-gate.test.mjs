@@ -265,9 +265,8 @@ async function makeOpaqueSourceFixture() {
   return rootDir;
 }
 
-async function makePrivateUrlFixture() {
+async function makePrivateUrlFixture({ url = 'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tgz?token=do-not-print' } = {}) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-private-url-'));
-  const url = 'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tgz?token=do-not-print';
   await writeJson(path.join(rootDir, 'package.json'), { name: 'private-url-fixture', private: true, workspaces: ['app'] });
   await writeJson(path.join(rootDir, 'app/package.json'), {
     name: '@fixture/app',
@@ -543,6 +542,38 @@ test('derives a private tarball version from its URL path without printing the U
     assert.doesNotMatch(mismatch.issues.join('\n'), /private\.example|do-not-print|https?:/);
   } finally {
     await fs.rm(rootDir, { recursive: true, force: true });
+  }
+});
+
+test('accepts case-insensitive tar.gz URLs and query strings, but rejects double extensions', async () => {
+  const validUrls = [
+    'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tar.gz',
+    'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.TAR.GZ',
+    'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tar.gz?token=do-not-print',
+  ];
+  for (const url of validUrls) {
+    const { rootDir } = await makePrivateUrlFixture({ url });
+    try {
+      const result = verifyDependencyResolution({ rootDir });
+      assert.equal(result.ok, true, `${url}: ${result.issues.join('\n')}`);
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
+  }
+
+  const malformedUrls = [
+    'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tar.gz.tgz',
+    'https://private.example.invalid/npm/private-tool/-/private-tool-3.4.5.tgz.tar.gz',
+  ];
+  for (const url of malformedUrls) {
+    const { rootDir } = await makePrivateUrlFixture({ url });
+    try {
+      const result = verifyDependencyResolution({ rootDir });
+      assert.equal(result.ok, false);
+      assert.match(result.issues.join('\n'), /HTTPS download URL has no derivable package version/);
+    } finally {
+      await fs.rm(rootDir, { recursive: true, force: true });
+    }
   }
 });
 
