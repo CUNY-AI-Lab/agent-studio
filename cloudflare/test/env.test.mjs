@@ -41,6 +41,7 @@ const PRODUCTION = {
   GALLERY_OWNER_ACTIVE_KEY_ID: 'active',
   CAIL_SSO_SWITCHED_AT: SWITCHED_AT,
   CAIL_ACCOUNT_IMPORT_UNTIL: IMPORT_UNTIL,
+  GATEWAY: { fetch() {} },
 };
 
 test('required SESSION_SECRET configuration accepts a usable secret', () => {
@@ -165,6 +166,23 @@ test('telemetry readiness requires a classified environment and Worker version m
   }), { ok: false, errorCode: 'cail_fleet_events_invalid' });
 });
 
+test('environment classification is exact and never accepts drifted production labels', () => {
+  for (const value of ['', ' production', 'production ', 'Production', 'candidate']) {
+    assert.deepEqual(
+      validateAgentStudioConfig({ SESSION_SECRET: SECRET, CAIL_LOG_ENV: value }),
+      {
+        ok: false,
+        errorCode: value === '' ? 'cail_log_environment_missing' : 'cail_log_environment_invalid',
+      },
+      value,
+    );
+  }
+  assert.deepEqual(validateAgentStudioConfig({ SESSION_SECRET: SECRET }), {
+    ok: false,
+    errorCode: 'cail_log_environment_missing',
+  });
+});
+
 test('migration compatibility opens at the switch and closes at the deadline', () => {
   const env = {
     CAIL_REQUIRE_IDENTITY: 'true',
@@ -213,6 +231,7 @@ test('production fails closed unless identity, route, proxy, and rate boundaries
     ['GALLERY_OWNER_KEYS', undefined, 'production_gallery_owner_keys_missing'],
     ['GALLERY_OWNER_KEYS', '{}', 'production_gallery_owner_keys_invalid'],
     ['GALLERY_OWNER_ACTIVE_KEY_ID', 'missing', 'production_gallery_owner_active_key_missing'],
+    ['GATEWAY', undefined, 'production_gateway_binding_missing'],
   ];
   for (const [key, value, errorCode] of cases) {
     assert.deepEqual(

@@ -29,7 +29,23 @@ export function handleAuthRequired(status: number, payload: unknown): boolean {
   const loginUrl = nested?.cail?.login_url ?? (typeof payload === 'object' && payload !== null
     ? (payload as { login_url?: unknown }).login_url
     : undefined);
-  const base = typeof loginUrl === 'string' && loginUrl.startsWith('/') ? loginUrl : '/login';
+  // Accept only a same-origin path. Reject protocol-relative URLs (`//host`),
+  // absolute URLs, and query/hash-bearing values supplied by an upstream
+  // error envelope; the login route itself owns any state it needs.
+  let base = '/login';
+  if (typeof loginUrl === 'string' && loginUrl.startsWith('/') && !loginUrl.startsWith('//')) {
+    try {
+      const candidate = new URL(loginUrl, window.location.origin);
+      if (candidate.origin === window.location.origin) {
+        base = candidate.pathname || '/login';
+      }
+    } catch {
+      // Keep the fixed same-origin fallback.
+    }
+  }
+  // Do not bounce a login page back to itself when a stale session response is
+  // retried while the browser is already at the login route.
+  if (window.location.pathname === base) return false;
   const rt = `${window.location.pathname}${window.location.search}`;
   window.location.assign(`${base}?rt=${encodeURIComponent(rt)}`);
   return true;
@@ -73,6 +89,13 @@ async function requestCsrfToken(): Promise<string> {
   // cookie is the only delivery channel.
   const response = await fetch(appPath('/api/session'), { credentials: 'include' });
   if (!response.ok) {
+    // Consume the body once so the canonical CAIL authentication envelope can
+    // trigger the same safe redirect as every other JSON API response. Never
+    // include the upstream body in the thrown bootstrap error.
+    const { payload } = await readResponseError(response);
+    if (handleAuthRequired(response.status, payload)) {
+      throw new Error('Authentication required');
+    }
     throw new Error(`Session bootstrap failed with ${response.status}`);
   }
   const token = readCookie(CSRF_COOKIE_NAME);
@@ -99,6 +122,20 @@ export function ensureCsrfToken(): Promise<string> {
     });
   }
   return csrfTokenPromise;
+}
+
+/**
+ * Fetch a session-scoped route after the single-flight bootstrap has
+ * established the browser's session and CSRF cookie.
+ *
+ * Gallery listing/detail are safe reads and do not need the CSRF header, but
+ * they still traverse the worker's session middleware. Waiting here prevents
+ * a first gallery request from racing /api/session and minting a second
+ * anonymous session cookie.
+ */
+async function sessionFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  await ensureCsrfToken();
+  return fetch(appPath(input), { ...init, credentials: 'include' });
 }
 
 /** Synchronous cookie read of the CSRF token (null if the bootstrap has not run). */
@@ -377,7 +414,7 @@ export async function fetchGalleryItems(): Promise<GalleryItem[]> {
   do {
     const query = new URLSearchParams({ limit: '100' });
     if (cursor) query.set('cursor', cursor);
-    const response = await fetch(appPath(`/api/gallery?${query}`), { credentials: 'include' });
+    const response = await sessionFetch(`/api/gallery?${query}`);
     const payload = await parseJson<{ items: GalleryItem[]; nextCursor?: string }>(response);
     items.push(...payload.items);
     cursor = payload.nextCursor;
@@ -397,9 +434,7 @@ export async function cloneGalleryItem(galleryId: string): Promise<{ workspaceId
 }
 
 export async function fetchGalleryItem(galleryId: string): Promise<GalleryItemFull> {
-  const response = await fetch(appPath(`/api/gallery/${galleryId}`), {
-    credentials: 'include',
-  });
+  const response = await sessionFetch(`/api/gallery/${galleryId}`);
   const payload = await parseJson<{ item: GalleryItemFull }>(response);
   return payload.item;
 }

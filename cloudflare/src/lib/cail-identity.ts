@@ -39,7 +39,12 @@ type IdentityConfigErrorReason = string;
 const verifierCache = new Map<string, IdentityVerifierConfig>();
 import { canonicalError } from './error-envelope';
 
-export { verifyIdentityJwt, CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER };
+export {
+  verifyIdentityJwt,
+  CAIL_CANONICAL_ISSUER,
+  CAIL_STAGING_ISSUER,
+  CAIL_GATEWAY_AUDIENCE,
+};
 export type { CailIdentity, IdentityConfigErrorReason };
 
 export const CAIL_IDENTITY_HEADER = 'X-CAIL-Identity-JWT';
@@ -199,10 +204,13 @@ export async function getCailIdentityFromRequest(
   now?: number,
 ): Promise<VerifiedCailIdentity | CailIdentityConfigError | null> {
   const token = request.headers.get(CAIL_IDENTITY_HEADER);
-  if (!token) return null;
+  // Always classify verifier configuration, even for an anonymous request.
+  // A malformed/partial JWKS is an operator error (503), not an anonymous
+  // request (or a token-invalid 401); the verifier performs the absent-token
+  // check only after loading the configuration.
   const identity = await verifyCailIdentityToken(token, env, now);
   if (isCailIdentityConfigError(identity)) return identity;
-  if (!identity) return null;
+  if (!token || !identity) return null;
   return { token, identity };
 }
 
@@ -258,21 +266,46 @@ export function cailAuthRequiredResponse(loginPath = '/login'): Response {
  */
 async function loadGatewayLegConfig(
   env: CailIdentityEnv,
-): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError | null> {
-  const jwksConfigured = typeof env.CAIL_IDENTITY_JWKS === 'string' && env.CAIL_IDENTITY_JWKS.trim() !== '';
-  if (!jwksConfigured) return null;
+  now?: number,
+): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError> {
   const cacheKey = `gateway-leg\u0000${env.CAIL_IDENTITY_ISSUER ?? ''}\u0000${env.CAIL_IDENTITY_JWKS ?? ''}`;
-  const cached = verifierCache.get(cacheKey);
-  if (cached) return { ok: true, config: cached };
+  if (now === undefined) {
+    const cached = verifierCache.get(cacheKey);
+    if (cached) return { ok: true, config: cached };
+  }
   const loaded = await loadIdentityVerifierConfig({
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
     expectedAudience: CAIL_GATEWAY_AUDIENCE,
     supportedIssuers: CAIL_SUPPORTED_ISSUERS,
+    ...(now === undefined ? {} : { now }),
   });
   if (!loaded.ok) return { configError: loaded.reason };
-  verifierCache.set(cacheKey, loaded.config);
+  if (now === undefined) verifierCache.set(cacheKey, loaded.config);
   return { ok: true, config: loaded.config };
+}
+
+/**
+ * Verify the gateway-audience credential installed into a WorkspaceAgent and
+ * bind it to that Durable Object's session. This is intentionally separate
+ * from verifyCredentialForSession: application-leg validation remains closed
+ * to `cail:agent-studio`, while the internal server-to-DO RPC accepts only the
+ * already gateway-scoped `cail:gateway` leg.
+ */
+export async function verifyGatewayCredentialForSession(
+  token: string | null | undefined,
+  expectedSessionId: string,
+  env: CailIdentityEnv,
+  now?: number,
+): Promise<CailIdentity | CailIdentityConfigError | null> {
+  const config = await loadGatewayLegConfig(env, now);
+  if (isCailIdentityConfigError(config)) return config;
+  if (!token) return null;
+  const identity = await verifyIdentityJwt(token, config.config);
+  if (!identity) return null;
+  const derived = await sessionIdForSubject(identity.subject);
+  if (derived !== expectedSessionId) return null;
+  return identity;
 }
 
 /**
@@ -293,7 +326,7 @@ export async function resolveKeyringGatewayJwt(
   if (keyring === null) return 'invalid';
   if (keyring.gatewayJwt === undefined) return null;
   const config = await loadGatewayLegConfig(env);
-  if (config === null || !('ok' in config)) return 'invalid';
+  if (!('ok' in config)) return 'invalid';
   const identity = await verifyKeyringGatewayJwt(keyring, config.config, verifiedSubject);
   return identity === null ? 'invalid' : keyring.gatewayJwt;
 }

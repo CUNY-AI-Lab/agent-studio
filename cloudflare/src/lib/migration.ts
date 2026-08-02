@@ -32,7 +32,7 @@
 
 import type { UIMessage } from 'ai';
 import type { WorkspaceRecord, WorkspaceState } from '../domain/workspace';
-import { legacyAccountCompatibilityAllowed, type Env } from '../env';
+import { accountImportWindowState, type Env } from '../env';
 import { deleteByPrefix, getMimeType } from './files';
 import { reassignGalleryAuthor } from './gallery';
 import { getWorkspaceDownloads, putWorkspaceDownloads } from './downloads';
@@ -168,7 +168,7 @@ export async function migrateAnonymousSession(
   getAgent: AgentFactory,
   now = Date.now(),
 ): Promise<MigrationResult> {
-  if (!legacyAccountCompatibilityAllowed(env, now)) {
+  if (env.CAIL_REQUIRE_IDENTITY !== 'true' || accountImportWindowState(env, now) !== 'open') {
     throw new Error('migration: legacy account import window is not open');
   }
 
@@ -353,7 +353,7 @@ export async function maybeMigrateAnonymousSession(args: {
 }): Promise<MigrationOutcome> {
   const { env, anonSessionId, subjectSessionId, registry, getAgent, now = Date.now() } = args;
 
-  if (!legacyAccountCompatibilityAllowed(env, now)) {
+  if (env.CAIL_REQUIRE_IDENTITY !== 'true' || accountImportWindowState(env, now) !== 'open') {
     return 'window-not-open';
   }
 

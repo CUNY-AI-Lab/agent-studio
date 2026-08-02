@@ -45,6 +45,25 @@ function sessionResponse() {
   });
 }
 
+function authRequiredPayload(loginUrl = '/login') {
+  return {
+    error: {
+      message: 'Sign in to continue.',
+      type: 'authentication_error',
+      param: null,
+      code: 'authentication_required',
+      cail: { login_url: loginUrl, retryable: false },
+    },
+  };
+}
+
+function authRequiredResponse(loginUrl = '/login') {
+  return new Response(JSON.stringify(authRequiredPayload(loginUrl)), {
+    status: 401,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 describe('CSRF fetch helper (cookie delivery)', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -80,6 +99,93 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
+  it('redirects once on a canonical bootstrap auth challenge and retries after failure', async () => {
+    const { ensureCsrfToken } = await loadApi();
+    const cookie = stubCookie();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio.test',
+        pathname: '/gallery',
+        search: '?id=abc',
+        assign,
+      },
+    });
+    let attempts = 0;
+    const firstResponse = authRequiredResponse();
+    const jsonSpy = vi.spyOn(firstResponse, 'json');
+    const spy = mockFetch(() => {
+      attempts += 1;
+      if (attempts === 1) {
+        return firstResponse;
+      }
+      cookie.set(`${CSRF_COOKIE}=${'recovered'.padEnd(64, '0')}`);
+      return sessionResponse();
+    });
+
+    await expect(ensureCsrfToken()).rejects.toThrow('Authentication required');
+    expect(assign).toHaveBeenCalledOnce();
+    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+    expect(jsonSpy).toHaveBeenCalledOnce();
+
+    const token = await ensureCsrfToken();
+    expect(token).toBe('recovered'.padEnd(64, '0'));
+    expect(attempts).toBe(2);
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['malformed 401', new Response('secret malformed body', { status: 401 }), 401],
+    ['non-auth 401', new Response(JSON.stringify({ error: { code: 'invalid_token', message: 'secret details' } }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    }), 401],
+    ['server failure', new Response(JSON.stringify({ error: { code: 'internal_error', message: 'secret details' } }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    }), 503],
+  ])('does not redirect or leak the body for %s bootstrap failures', async (_label, response, status) => {
+    const { ensureCsrfToken } = await loadApi();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio.test',
+        pathname: '/gallery',
+        search: '?id=abc',
+        assign,
+      },
+    });
+    mockFetch(() => response);
+
+    const error = await ensureCsrfToken().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe(`Session bootstrap failed with ${status}`);
+    expect((error as Error).message).not.toContain('secret');
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsafe login paths and avoids redirecting the login route to itself', async () => {
+    const { handleAuthRequired } = await loadApi();
+    const assign = vi.fn();
+    const location = {
+      origin: 'https://studio.test',
+      pathname: '/gallery',
+      search: '?id=abc',
+      assign,
+    };
+    vi.stubGlobal('window', { location });
+
+    expect(handleAuthRequired(401, authRequiredPayload('//evil.test/login'))).toBe(true);
+    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+
+    assign.mockClear();
+    location.pathname = '/login';
+    expect(handleAuthRequired(401, {
+      error: { code: 'authentication_required', cail: { login_url: '/login' } },
+    })).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it('mutatingFetch attaches the X-CAIL-CSRF header with the cookie token', async () => {
     const { mutatingFetch, CSRF_HEADER } = await loadApi();
     const token = 'b'.repeat(64);
@@ -100,6 +206,53 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(headers.get(CSRF_HEADER)).toBe(token);
     // credentials:'include' is forced so the session cookie always rides along.
     expect(mutationCall![1]?.credentials).toBe('include');
+  });
+
+  it('serializes concurrent workspace and gallery reads behind one session bootstrap', async () => {
+    const { fetchGalleryItems, fetchWorkspaces } = await loadApi();
+    const token = 'a'.repeat(64);
+    const cookie = stubCookie();
+    let releaseBootstrap!: () => void;
+    const bootstrapBlocked = new Promise<void>((resolve) => {
+      releaseBootstrap = resolve;
+    });
+    // Model the browser cookie jar separately from document.cookie: the
+    // session cookie is HttpOnly, while the CSRF cookie is page-readable.
+    let sessionCookie: string | null = null;
+    const observed: Array<{ path: string; sessionCookie: string | null }> = [];
+    const spy = mockFetch(async (input) => {
+      const url = new URL(String(input), 'https://studio.test');
+      observed.push({ path: `${url.pathname}${url.search}`, sessionCookie });
+      if (url.pathname.endsWith('/api/session')) {
+        await bootstrapBlocked;
+        sessionCookie = 'agent-studio-session=session-a';
+        cookie.set(`${CSRF_COOKIE}=${token}`);
+        return sessionResponse();
+      }
+      if (url.pathname.endsWith('/api/workspaces')) {
+        return Response.json({ workspaces: [] });
+      }
+      if (url.pathname.endsWith('/api/gallery')) {
+        return Response.json({ items: [] });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+
+    const workspaces = fetchWorkspaces();
+    const gallery = fetchGalleryItems();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(observed).toEqual([{ path: '/api/session', sessionCookie: null }]);
+
+    releaseBootstrap();
+    await expect(Promise.all([workspaces, gallery])).resolves.toEqual([[], []]);
+
+    expect(observed.filter(({ path }) => path === '/api/session')).toHaveLength(1);
+    const reads = observed.filter(({ path }) => path.startsWith('/api/workspaces') || path.startsWith('/api/gallery'));
+    expect(reads).toHaveLength(2);
+    expect(reads.every(({ sessionCookie: value }) => value === 'agent-studio-session=session-a')).toBe(true);
   });
 
   it('mutatingFetch preserves caller-supplied headers alongside the token', async () => {

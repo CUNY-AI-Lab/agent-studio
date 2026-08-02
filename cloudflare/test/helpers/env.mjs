@@ -421,7 +421,9 @@ export function makeEnv() {
       fetch: async (request) => new Response(`asset:${new URL(request.url).pathname}`),
     },
     SESSION_SECRET: 'ab'.repeat(32), // 64 hex chars
-    CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+    // Leave identity entirely unconfigured for anonymous route fixtures.
+    // Supplying only an issuer is a partial verifier config and now fails
+    // closed before the absent-token path is considered.
     CAIL_LOG_ENV: 'test',
     CAIL_FLEET_EVENTS: { writeDataPoint() {} },
     CF_VERSION_METADATA: {

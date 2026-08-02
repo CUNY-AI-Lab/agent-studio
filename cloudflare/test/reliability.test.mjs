@@ -42,6 +42,7 @@ const ACTION_ORPHAN = '33333333-3333-4333-8333-333333333333';
 const CALL_1 = '44444444-4444-4444-8444-444444444444';
 const CALL_2 = '55555555-5555-4555-8555-555555555555';
 const CALL_ORPHAN = '66666666-6666-4666-8666-666666666666';
+const UUID_V7 = '019f8bdc-342a-76e1-ba71-005d69808f86';
 
 test('durable admin read reports exact recognized action and call lifecycle evidence', () => {
   const sql = new NodeSqlStorage();
@@ -120,4 +121,36 @@ test('durable lifecycle writers reject unrecognized routes, ids, outcomes, and w
     actionId: ACTION_1, route: STUDIO_ACTION_ROUTES.CHAT, atMs: 2, outcome: 'maybe',
   }), /outcome/);
   assert.throws(() => readStudioReliabilityAdmin(sql, { fromMs: 2, toMs: 1 }), /window/);
+});
+
+test('lifecycle event IDs remain strict UUIDv4 after request-ID widening', () => {
+  const sql = new NodeSqlStorage();
+  initializeStudioReliability(sql);
+
+  assert.throws(() => recordStudioActionAdmission(sql, {
+    actionId: UUID_V7, route: STUDIO_ACTION_ROUTES.CHAT, atMs: 1,
+  }), /action id/);
+  assert.throws(() => recordStudioActionTerminal(sql, {
+    actionId: UUID_V7, route: STUDIO_ACTION_ROUTES.CHAT, atMs: 2, outcome: 'ok',
+  }), /action id/);
+  assert.throws(() => recordStudioModelCallAdmission(sql, {
+    callId: UUID_V7, actionId: ACTION_1, atMs: 3,
+  }), /call id/);
+  assert.throws(() => recordStudioModelCallTerminal(sql, {
+    callId: UUID_V7, actionId: ACTION_1, atMs: 4, outcome: 'ok',
+  }), /call id/);
+
+  // Keep the valid v4 path covered explicitly alongside the adverse v7 cases.
+  recordStudioActionAdmission(sql, {
+    actionId: ACTION_1, route: STUDIO_ACTION_ROUTES.CHAT, atMs: 5,
+  });
+  recordStudioModelCallAdmission(sql, {
+    callId: CALL_1, actionId: ACTION_1, atMs: 6,
+  });
+  assert.equal(sql.database.prepare(
+    'SELECT COUNT(*) AS count FROM studio_action_lifecycle_events_v1',
+  ).get().count, 1);
+  assert.equal(sql.database.prepare(
+    'SELECT COUNT(*) AS count FROM studio_model_call_lifecycle_events_v1',
+  ).get().count, 1);
 });

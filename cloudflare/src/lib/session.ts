@@ -170,7 +170,7 @@ export const sessionMiddleware: MiddlewareHandler<{
       if (anonSessionId && anonSessionId !== sessionId) {
         const now = Date.now();
         const windowState = accountImportWindowState(c.env, now);
-        if (legacyAccountCompatibilityAllowed(c.env, now)) {
+        if (c.env.CAIL_REQUIRE_IDENTITY === 'true' && windowState === 'open') {
           const startedAt = now;
           try {
             const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId, now);

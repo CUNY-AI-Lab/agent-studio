@@ -96,10 +96,13 @@
   "services": [
     {
       // Same-account workers.dev fetches are blocked by Cloudflare; the
-      // gateway is reached through a service binding instead. Points at the
-      // candidate for staging; production points at cail-model-api.
+      // production-classified profile reaches the gateway through this
+      // service binding. The target is source-controlled here; this is not a
+      // claim that a production release has been deployed. A candidate
+      // rollout must be an explicit, separately reviewed configuration rather
+      // than an implicit target in this production profile.
       "binding": "GATEWAY",
-      "service": "cail-model-api-candidate"
+      "service": "cail-model-api"
     }
   ],
   "vars": {

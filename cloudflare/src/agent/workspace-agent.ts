@@ -34,7 +34,10 @@ import {
 import { accountImportWindowState, type Env } from '../env';
 import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
-import { isCailIdentityConfigError, verifyCredentialForSession } from '../lib/cail-identity';
+import {
+  isCailIdentityConfigError,
+  verifyGatewayCredentialForSession,
+} from '../lib/cail-identity';
 import { panelSchema } from '../lib/import';
 import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
@@ -99,6 +102,7 @@ const MAX_OBSERVABILITY_REQUESTS = 20;
 const OBSERVABILITY_STALL_MS = 15_000;
 const HYDRATION_COMPLETE_KEY = 'runtimeWorkspaceHydrated:v1';
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
+const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -299,6 +303,10 @@ interface PendingChatAction {
   deferredTerminal?: { terminal: CailTerminalFields; errorType?: string };
 }
 
+type CurrentGatewayCredentialCheck =
+  | { status: 'valid' | 'missing' | 'invalid' }
+  | { status: 'config' };
+
 export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   initialState: WorkspaceState = DEFAULT_WORKSPACE_STATE;
   private runtimeWorkspace?: RuntimeWorkspace;
@@ -337,21 +345,40 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (this.cailIdentityJwt === null) {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
       if (typeof stored === 'string') {
-        this.cailIdentityJwt = stored;
-      }
-    }
-    if (this.cailSubject === null) {
-      const storedSubject = await this.ctx.storage.get<string>(CAIL_SUBJECT_STORAGE_KEY);
-      if (typeof storedSubject === 'string') {
-        this.cailSubject = storedSubject;
-      }
-    }
-    if (this.cailOperationalSubject === null) {
-      const storedOperational = await this.ctx.storage.get<string>(
-        CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
-      );
-      if (typeof storedOperational === 'string') {
-        this.cailOperationalSubject = storedOperational;
+        const expectedSessionId = this.csrfSessionId();
+        if (expectedSessionId) {
+          // Re-verify credentials restored after hibernation/eviction. This
+          // also prevents a pre-F04 app-audience token from being revived by
+          // the new code after it was persisted by an older deployment.
+          const identity = await verifyGatewayCredentialForSession(
+            stored,
+            expectedSessionId,
+            this.env,
+          );
+          if (!isCailIdentityConfigError(identity) && identity) {
+            this.cailIdentityJwt = stored;
+            this.cailSubject = identity.subject;
+            this.cailOperationalSubject = identity.operationalSubject ?? null;
+            // Rewrite the derived fields from the verified token so a stale
+            // or hand-edited companion value cannot survive a restart.
+            await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
+            if (identity.operationalSubject === undefined) {
+              await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
+            } else {
+              await this.ctx.storage.put(
+                CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
+                identity.operationalSubject,
+              );
+            }
+          } else if (!isCailIdentityConfigError(identity)) {
+            // Invalid, expired, wrong-audience, or cross-session credentials
+            // must never remain available to a later model call. A config
+            // error is retained for a later retry after operator repair.
+            await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
+            await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
+            await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
+          }
+        }
       }
     }
     if (await this.ctx.storage.get(MIGRATION_FROZEN_KEY)) {
@@ -411,6 +438,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * implicitly the "verified state on the connection" the contract calls for.
    */
   async onConnect(connection: Connection, ctx: ConnectionContext): Promise<void> {
+    if (this.migrationFrozen) {
+      connection.close(1012, 'migration_in_progress');
+      return;
+    }
     if (!wsOriginAllowed(ctx.request, this.env.CAIL_CANONICAL_ORIGIN)) {
       connection.close(1008, 'csrf_origin_mismatch');
       return;
@@ -473,7 +504,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
       throw new Error('setCailCredential: session id unavailable for credential binding');
     }
-    const identity = await verifyCredentialForSession(
+    const identity = await verifyGatewayCredentialForSession(
       identityJwt,
       expectedSessionId,
       this.env,
@@ -489,7 +520,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: `identity_config_${identity.configError}`,
+        error_type: 'identity_config_unavailable',
       });
       throw new Error('setCailCredential: identity verification config could not be loaded');
     }
@@ -521,6 +552,48 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
+  /**
+   * Re-verify the in-memory Gateway leg before a warm WebSocket starts a model
+   * turn. Durable Object memory can outlive a short-lived JWT, so installation
+   * time verification alone is not enough. Invalid or expired credentials are
+   * removed from memory and storage; an unavailable verifier is kept for the
+   * operator to repair and is reported separately to the chat boundary.
+   */
+  protected async verifyCurrentGatewayCredential(
+    expectedSessionId: string,
+  ): Promise<CurrentGatewayCredentialCheck> {
+    const token = this.cailIdentityJwt;
+    if (!token) return { status: 'missing' };
+
+    // Pass the current clock explicitly so a warm DO never reuses an
+    // installation-time validity decision. The shared verifier still owns all
+    // JWT signature, issuer, audience, subject, exp, and nbf checks.
+    const identity = await verifyGatewayCredentialForSession(
+      token,
+      expectedSessionId,
+      this.env,
+      Math.floor(Date.now() / 1000),
+    );
+    if (isCailIdentityConfigError(identity)) {
+      return { status: 'config' };
+    }
+    if (!identity) {
+      this.cailIdentityJwt = null;
+      this.cailSubject = null;
+      this.cailOperationalSubject = null;
+      await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
+      await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
+      await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
+      return { status: 'invalid' };
+    }
+
+    // Keep the in-memory derived fields tied to the claims just verified. The
+    // token itself is unchanged, so the persisted credential remains intact.
+    this.cailSubject = identity.subject;
+    this.cailOperationalSubject = identity.operationalSubject ?? null;
+    return { status: 'valid' };
+  }
+
   async syncWorkspace(
     workspace: WorkspaceRecord,
     sessionId: string,
@@ -541,16 +614,41 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async freezeForMigration(): Promise<void> {
-    if (this.activeMutations > 0) {
-      throw new Error('workspace has an active mutation; retry migration');
+    let failure: unknown;
+    let failed = false;
+    // blockConcurrencyWhile queues later Durable Object events, including
+    // WebSocket tool-result/approval frames. waitUntilStable therefore drains
+    // only already-delivered turns/interactions; a frame needed after this
+    // admission waits behind the block and makes the freeze time out/retry.
+    await this.ctx.blockConcurrencyWhile(async () => {
+      try {
+        const stable = await this.waitUntilStable({ timeout: MIGRATION_STABILITY_TIMEOUT_MS });
+        if (!stable) {
+          throw new Error('workspace did not become stable before migration freeze');
+        }
+        if (this.activeMutations > 0) {
+          throw new Error('workspace has an active mutation; retry migration');
+        }
+        this.migrationFrozen = true;
+        await this.ctx.storage.put(MIGRATION_FROZEN_KEY, true);
+      } catch (error) {
+        // Durable Object state resets if blockConcurrencyWhile's callback
+        // throws. Capture the failure and throw only after the block exits.
+        this.migrationFrozen = false;
+        failure = error;
+        failed = true;
+      }
+    });
+    if (failed) {
+      throw failure instanceof Error
+        ? failure
+        : new Error('workspace migration freeze failed', { cause: failure });
     }
-    this.migrationFrozen = true;
-    await this.ctx.storage.put(MIGRATION_FROZEN_KEY, true);
   }
 
   async unfreezeAfterMigration(): Promise<void> {
-    this.migrationFrozen = false;
     await this.ctx.storage.delete(MIGRATION_FROZEN_KEY);
+    this.migrationFrozen = false;
   }
 
   /** Internal destructive RPC used only after an authorized delete/migration. */
@@ -725,6 +823,25 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
+  protected override resetTurnState(): void {
+    this.assertNotFrozen();
+    super.resetTurnState();
+  }
+
+  async persistMessages(
+    messages: UIMessage[],
+    excludeBroadcastIds?: string[],
+    options?: { _deleteStaleRows?: boolean },
+  ): Promise<void> {
+    this.assertNotFrozen();
+    this.activeMutations += 1;
+    try {
+      await super.persistMessages(messages, excludeBroadcastIds, options);
+    } finally {
+      this.activeMutations -= 1;
+    }
+  }
+
   async onChatMessage(_onFinish?: unknown, options?: OnChatMessageOptions) {
     this.assertNotFrozen();
     const workspace = this.requireWorkspace();
@@ -735,7 +852,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // short request label remains only in local observability.
     const correlation = mintCorrelation();
 
-    if (!this.cailIdentityJwt) {
+    const credentialCheck = await this.verifyCurrentGatewayCredential(sessionId);
+    const identityJwt = this.cailIdentityJwt;
+    if (credentialCheck.status !== 'valid' || !identityJwt) {
       // No verified CAIL credential reached this workspace: the model proxy
       // has no way to authenticate or attribute spend. Surface the CAIL
       // authentication_required envelope rather than calling out anonymously.
@@ -745,7 +864,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         principal: principalForOperationalSubject(this.cailOperationalSubject),
         trace: traceFromCorrelation(correlation),
         terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: 'authentication_required',
+        error_type: credentialCheck.status === 'config'
+          ? 'identity_config_unavailable'
+          : 'authentication_required',
       });
       this.finalizeObservabilityRequest(requestId, 'error', 'No CAIL identity credential for model call', {
         error: 'authentication_required',
@@ -834,7 +955,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
       const model = createCailModel({
         env: this.env,
-        identityJwt: this.cailIdentityJwt,
+        identityJwt,
         model: workspace.model,
         // Propagate this turn's correlation to the model proxy so gateway/
         // proxy logs join to this DO's wide events.
@@ -991,12 +1112,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   @callable()
   async executeCode(code: string): Promise<ExecuteResult> {
+    return this.withMutationFence(() => this.executeCodeFenced(code));
+  }
+
+  private async executeCodeFenced(code: string): Promise<ExecuteResult> {
     // One wide event per execution — metadata only (durations, outcome,
     // stable error code); the code and its output are content and never
     // logged. Control flow is unchanged: every failure still rethrows.
     const correlation = mintCorrelation();
     const principal = principalForOperationalSubject(this.cailOperationalSubject);
-    this.assertNotFrozen();
     this.assertAuthorizedRpc();
     code = runtimeCodeSchema.parse(code);
     const rateKey = this.csrfSessionId() ?? this.requireSessionId();
@@ -1035,9 +1159,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     try {
       const tools = this.buildHostTools(workspace, sessionId);
       const executor = this.createCodeExecutor();
-      result = await this.withMutationFence(
-        () => executor.execute(code, this.buildCodeProviders(tools)),
-      );
+      result = await executor.execute(code, this.buildCodeProviders(tools));
     } catch (error) {
       recordStudioActionTerminal(this.ctx.storage.sql, {
         actionId,

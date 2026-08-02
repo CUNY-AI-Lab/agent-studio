@@ -17,7 +17,7 @@ See [Security and operations](./docs/security-and-operations.md).
 
 ## Requirements
 
-- Bun 1.3.5
+- Bun 1.3.14
 - Node.js 22 for the backend test runner
 - Wrangler and Cloudflare authentication for remote development or an
   authorized deployment
