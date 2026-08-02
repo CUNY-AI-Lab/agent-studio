@@ -71,17 +71,23 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Write CI dev vars
-        # Identity is deliberately NOT configured here: the smoke lane tests the
-        # anonymous API surface (CAIL_REQUIRE_IDENTITY=false, no issuer, no
-        # JWKS). Setting the issuer with an empty JWKS is a PARTIAL identity
-        # config, which the session middleware now classifies as an operator
-        # error (typed 503 on every /api/* request) rather than anonymous mode.
+        # The smoke lane runs a COHERENT identity config with enforcement off:
+        # wrangler.jsonc's checked-in vars supply CAIL_IDENTITY_ISSUER (dotfile
+        # omission does not unset it — jsonc vars leak through, and an issuer
+        # without a JWKS is a PARTIAL config that env.ts classifies as an
+        # operator error, 503 on every route including /health). An empty-string
+        # override is also rejected (defined-but-invalid issuer). So we supply a
+        # syntactically valid throwaway PUBLIC JWKS — the private key was
+        # discarded at generation and never persisted — giving the worker the
+        # production config shape while the smoke exercises the anonymous API
+        # surface (CAIL_REQUIRE_IDENTITY=false, no token ever sent).
         run: |
           cat > cloudflare/.dev.vars <<'EOF'
           SESSION_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           CAIL_LOG_ENV=development
           CAIL_API_BASE=https://cail-model-proxy.invalid
           CAIL_MODEL=@cf/zai-org/glm-5.2
+          CAIL_IDENTITY_JWKS={"keys":[{"alg":"RS256","e":"AQAB","ext":true,"key_ops":["verify"],"kty":"RSA","n":"tgwConORyAewb7KiTKn9oPOkR3lSOjREoomSdaNhwwKjoxTVBA8xHZqe3KJ0_T7erVL3zjQ_Rd3CgsNgfJshfQvOhP06gGoRXA1QpqAz6p-N5j6N5nf5-b0vYQncAWKPi6w7fgUzLpsoBBpiNUnp1rDPW4VYDwkYOsYg1_VH_zjFNi7IQk0ccUSa9JfCbUxmmeWhRJCPEvXm4AWSQms4C4Wg4sgTNrV9j8GNEq2YKk4wDwvQLrtG6h8EeKkJW_ZCaRY-o8mLtW66rwfSCiBzwp0D2J1mdYrYzDbFjIYMwue9E44sD7-zd5liqPUVmxDqgRfOrd0r9OSZKMNPuKjIXQ","kid":"ci-smoke-throwaway","use":"sig"}]}
           CAIL_REQUIRE_IDENTITY=false
           CAIL_BASE_PATH=/agent-studio
           EOF

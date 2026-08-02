@@ -124,7 +124,12 @@ export class SessionClient {
     const response = await this.fetch(path, init);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(payload.error || `Request failed with ${response.status}`);
+      const detail = typeof payload.error === 'string'
+        ? payload.error
+        : payload.error
+          ? JSON.stringify(payload.error)
+          : '';
+      throw new Error(`Request failed with ${response.status}${detail ? `: ${detail}` : ''}`);
     }
     return payload;
   }
