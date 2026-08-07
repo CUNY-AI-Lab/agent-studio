@@ -8,9 +8,9 @@ remain outside the repository.
 
 | Primitive | Consumer boundary | Installed version |
 | --- | --- | --- |
-| `cail-identity` | Direct identity verification dependency | `5.1.0` |
+| `cail-identity` | Direct identity verification dependency | `5.1.2` |
 | `cail-log` | Direct event/correlation dependency and the single transitive instance used by `cail-client` | `0.6.0` |
-| `cail-client` | Direct model and catalog transport dependency | `3.0.0` |
+| `cail-client` | Direct model and catalog transport dependency | `3.0.1` |
 | `cail-sandbox-client` | Not installed; Agent Studio uses Cloudflare Dynamic Workers instead | Not installed |
 
 `cloudflare/package.json` and `bun.lock` are the executable pin authorities.

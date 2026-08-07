@@ -33,9 +33,10 @@ cp cloudflare/.dev.vars.example cloudflare/.dev.vars
 
 At minimum, replace `SESSION_SECRET` and keep
 `CAIL_LOG_ENV=development`. `CAIL_API_BASE` is required for model calls; the
-example value is deliberately invalid. Local anonymous mode may leave the JWKS
-and gallery-owner keyring values unset. `CAIL_IDENTITY_ISSUER` still names one
-exact environment issuer; it is never a combined production/staging allowlist.
+example value is deliberately invalid. Local anonymous mode leaves all
+identity fields unset; when identity is configured, provide the one exact
+environment issuer and its JWKS together. The issuer is never a combined
+production/staging allowlist.
 
 Agent Studio holds no model-provider key. It forwards a locally verified
 `X-CAIL-Identity-JWT` to the CAIL model proxy with

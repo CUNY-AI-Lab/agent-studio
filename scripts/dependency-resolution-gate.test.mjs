@@ -56,7 +56,7 @@ async function makeCailReceiptFixture({ evilSource = false, evilIntegrity = fals
     await writeCailPackage(rootDir, receipt, { missingExport: missingExport === receipt.name ? receipt.exports[1] : undefined });
     packages[receipt.name] = [
       `${receipt.name}@${receipt.version}`,
-      evilSource && receipt.name === CAIL_PRIMITIVE_RECEIPTS[0].name ? 'https://evil.invalid/cail-identity-5.1.0.tgz' : receipt.source,
+      evilSource && receipt.name === CAIL_PRIMITIVE_RECEIPTS[0].name ? 'https://evil.invalid/cail-identity-5.1.2.tgz' : receipt.source,
       {},
       evilIntegrity && receipt.name === CAIL_PRIMITIVE_RECEIPTS[0].name ? 'sha512-attacker' : receipt.integrity,
     ];

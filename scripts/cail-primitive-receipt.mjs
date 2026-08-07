@@ -5,9 +5,9 @@
 export const CAIL_PRIMITIVE_RECEIPTS = Object.freeze([
   {
     name: '@cuny-ai-lab/cail-identity',
-    version: '5.1.0',
-    source: 'https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.1.0/27675a38c797795d11c3e99b8f7d2e519731faf2',
-    integrity: 'sha512-L4XnjVlefEctstO7OKCPnQV0yv/WQyIuowx6aBe1Tq603iANuDCTp16n5llwmVEOC2tRh1CDnRQuD06kJZASFQ==',
+    version: '5.1.2',
+    source: 'https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.1.2/457eb418b1ea36b26bd9e6dd1650cfb8cb264878',
+    integrity: 'sha512-FQej5lWjeOfZreEObYd92NzNEe5DxHFCCn6qWXIxqDRAfUoEtYJmZn8ittJlzs7y4BGFwNZjTaBX/qn6wHAQuQ==',
     exports: [
       '.',
       './testing',
@@ -20,9 +20,9 @@ export const CAIL_PRIMITIVE_RECEIPTS = Object.freeze([
   },
   {
     name: '@cuny-ai-lab/cail-client',
-    version: '3.0.0',
-    source: 'https://npm.pkg.github.com/download/@cuny-ai-lab/cail-client/3.0.0/8bd43f0ee8e218a40c34b21a116112a727901b5d',
-    integrity: 'sha512-HnKVCH+6PQedqD6WryxXMEi5mGzSqOo/wkOVFo9FMjGNaPqLLXMf5njcIJLjdA1pbKiASIM886wjep16f7lV5w==',
+    version: '3.0.1',
+    source: 'https://npm.pkg.github.com/download/@cuny-ai-lab/cail-client/3.0.1/08719b1978a95c1bb9b5b19c5773dbbe6bfbffbd',
+    integrity: 'sha512-fS8p50xk5aU+omY7+wVEQD+GNHIQBHwvilliJSe43m8Wxc7HeMbMxVhokNVE3Sfn3r+RvhewXaZ0e5SHoR24CQ==',
     exports: ['.', './testing', './contract/model-gateway-v1.json'],
     entrypoints: ['@cuny-ai-lab/cail-client', '@cuny-ai-lab/cail-client/testing'],
   },
