@@ -47,5 +47,51 @@ Package checks:
 ```bash
 bun run --cwd cloudflare typecheck
 bun run --cwd cloudflare test
-(cd cloudflare && bunx wrangler deploy --dry-run)
+(cd cloudflare && bunx wrangler deploy --env staging --strict --dry-run)
 ```
+
+## Reviewed staging deployment
+
+`wrangler.jsonc` has an explicit `staging` environment. It targets the
+`cail-model-api-staging` service binding and staging workers.dev URL, requires
+the staging issuer, classifies logs as `staging`, and keeps identity required.
+The named environment deploys as `agent-studio-staging`, leaving the live
+`agent-studio` Worker untouched until a separate, authorized promotion.
+The environment repeats the Worker Loader, Durable Object, R2, rate-limit,
+Analytics Engine, version-metadata, and migration declarations because
+Wrangler does not inherit those bindings into named environments. Its R2
+binding uses the established `agent-studio-preview` bucket, not production
+`agent-studio`. The default `deploy` script selects this profile, enables
+strict conflict checks, and applies source-controlled variables
+authoritatively; stale dashboard variables cannot silently survive and the
+candidate service cannot be selected.
+The wrapper accepts no live-deploy overrides; only `--dry-run` and `--outdir`
+are allowed for local checks, so identity, gateway, routes, and strictness stay
+reviewed.
+
+After reviewing the release commit, provide a private secrets file containing
+the approved staging `SESSION_SECRET` and `CAIL_IDENTITY_JWKS` (and any other
+secrets being rotated) without printing its contents. The profile declares
+those two names as required, so a first deploy cannot create an identity-gated
+Worker without them. Then run:
+
+```bash
+RELEASE_TAG='<reviewed full 40-character Git SHA>'
+RELEASE_MESSAGE='Agent Studio staging: cail-model-api-staging'
+bun run --cwd cloudflare deploy -- \
+  --tag "$RELEASE_TAG" \
+  --message "$RELEASE_MESSAGE" \
+  --secrets-file "$CAIL_STAGING_SECRETS_FILE"
+```
+
+`wrangler` is resolved from the exact `4.115.0` workspace dependency. The
+script's `--strict` flag prevents a conflicting remote upload and the source
+configuration owns every staging variable. Wrangler never deletes secrets
+during a deployment; keep `CAIL_STAGING_SECRETS_FILE` outside the repository
+and remove it through the approved secret-handling process after the release.
+
+Probe `/agent-studio/health`, an authenticated workspace, and one model call
+after activation. For an incident, route traffic back to the previously
+verified Worker version through Cloudflare's version rollback mechanism, then
+repeat the health and workspace smoke checks. A rollback is not a reason to
+reintroduce the candidate binding in source.

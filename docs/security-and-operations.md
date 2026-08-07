@@ -292,6 +292,52 @@ can choose. See [Observability](./observability.md).
 
 ## Deployment and recovery checklist
 
+### Reviewed staging release
+
+The checked-in `staging` Wrangler environment is the only normal Agent Studio
+deploy path while the staging gateway is under review. It points both the
+`GATEWAY` service binding and `CAIL_API_BASE` at `cail-model-api-staging`, sets
+the staging issuer and log classification, and sets `CAIL_REQUIRE_IDENTITY` to
+`true`. It deploys as the isolated `agent-studio-staging` Worker, leaving the
+live `agent-studio` Worker untouched until a separate authorized promotion. Its
+binding and migration declarations are explicit because Wrangler
+does not inherit those declarations into named environments; the existing
+Durable Object classes, migration tags, rate limits, Analytics Engine dataset,
+Worker Loader, and version metadata remain unchanged. Its R2 binding uses the
+established `agent-studio-preview` bucket rather than production `agent-studio`,
+so staging validation cannot mutate live workspace objects.
+The source-owned identity compatibility window is explicitly
+`2026-08-07T00:00:00Z` through the exclusive `2026-09-06T00:00:00Z` deadline
+(exactly 30 days); it is a new staging window, not a copied older deployment
+window. The wrapper permits only `--dry-run` and `--outdir` pass-through flags,
+so identity, gateway, routes, and strictness cannot be overridden at deploy
+time.
+
+Run the full check first. Then set `CAIL_STAGING_SECRETS_FILE` to a private
+JSON or `.env`-format file containing the approved staging `SESSION_SECRET`,
+`CAIL_IDENTITY_JWKS`, and any intentionally rotated secrets. The staging
+profile declares both identity-bound names as required, so a first deploy
+cannot create a Worker without them. Do not print or commit the file:
+
+```bash
+RELEASE_TAG='<reviewed full 40-character Git SHA>'
+RELEASE_MESSAGE='Agent Studio staging: cail-model-api-staging'
+bun run --cwd cloudflare deploy -- \
+  --tag "$RELEASE_TAG" \
+  --message "$RELEASE_MESSAGE" \
+  --secrets-file "$CAIL_STAGING_SECRETS_FILE"
+```
+
+The pinned Wrangler script supplies `--env staging --strict` and source config
+is authoritative for every staging variable, so stale dashboard variables are
+removed rather than retained. Wrangler does not delete omitted secrets. This
+command uploads and activates one reviewed version; it never uses the
+candidate service. Probe `/agent-studio/health`, one authenticated workspace,
+and one model call before considering the release ready. If it fails, roll back
+to the previously verified version with Cloudflare's version rollback mechanism
+and repeat those smoke checks. Do not change the Durable Object namespaces or
+migration tags during this cutover.
+
 Before an authorized production release:
 
 1. Provision distinct production and preview R2 buckets, Worker Loader,

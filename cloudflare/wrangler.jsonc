@@ -126,6 +126,100 @@
     "CAIL_BASE_PATH": "/agent-studio",
     "CAIL_REQUIRE_IDENTITY": "false"
   },
+  // The reviewed staging deploy uses this explicit profile. Keep the
+  // production-classified defaults above unchanged: they remain intentionally
+  // fail-closed until an authorized production release supplies its policy
+  // inputs. This profile changes only the model-api target and staging
+  // classification. Durable Object and migration declarations stay aligned
+  // with the shared configuration above; its R2 binding is intentionally
+  // redirected to the established preview bucket.
+  "env": {
+    "staging": {
+      "name": "agent-studio-staging",
+      "secrets": {
+        "required": ["SESSION_SECRET", "CAIL_IDENTITY_JWKS"]
+      },
+      "worker_loaders": [
+        {
+          "binding": "LOADER"
+        }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "WorkspaceAgent",
+            "class_name": "WorkspaceAgent"
+          },
+          {
+            "name": "MIGRATION_REGISTRY",
+            "class_name": "MigrationRegistry"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": ["WorkspaceAgent"]
+        },
+        {
+          "tag": "v2",
+          "new_sqlite_classes": ["MigrationRegistry"]
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "WORKSPACE_FILES",
+          "bucket_name": "agent-studio-preview"
+        }
+      ],
+      "analytics_engine_datasets": [
+        {
+          "binding": "CAIL_FLEET_EVENTS",
+          "dataset": "cail_fleet_events_v1"
+        }
+      ],
+      "unsafe": {
+        "bindings": [
+          {
+            "name": "API_RATE_LIMIT",
+            "type": "ratelimit",
+            "namespace_id": "4001",
+            "simple": { "limit": 300, "period": 60 }
+          },
+          {
+            "name": "HEAVY_RATE_LIMIT",
+            "type": "ratelimit",
+            "namespace_id": "4002",
+            "simple": { "limit": 20, "period": 60 }
+          }
+        ]
+      },
+      "tail_consumers": [],
+      "streaming_tail_consumers": [],
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
+      "services": [
+        {
+          "binding": "GATEWAY",
+          "service": "cail-model-api-staging"
+        }
+      ],
+      "vars": {
+        "CAIL_API_BASE": "https://cail-model-api-staging.ailab-452.workers.dev",
+        "CAIL_MODEL": "@cf/zai-org/glm-5.2",
+        "CAIL_IDENTITY_ISSUER": "https://tools.cuny.qzz.io/cail-sso",
+        "CAIL_LOG_ENV": "staging",
+        "CAIL_BASE_PATH": "/agent-studio",
+        "CAIL_REQUIRE_IDENTITY": "true",
+        // New staging identity boundary reviewed on 2026-08-07. Keep this
+        // compatibility window explicit and no longer than the 30-day source
+        // contract; it is not inherited from another deployment.
+        "CAIL_SSO_SWITCHED_AT": "2026-08-07T00:00:00Z",
+        "CAIL_ACCOUNT_IMPORT_UNTIL": "2026-09-06T00:00:00Z"
+      }
+    }
+  },
   // Secrets (never in this file; set via `wrangler secret put`):
   //   SESSION_SECRET             - random 32-byte hex for the signed session cookie.
   //   CAIL_IDENTITY_JWKS         - static public JWKS JSON used to VERIFY the
