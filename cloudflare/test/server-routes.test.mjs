@@ -89,7 +89,42 @@ test('health check is public and needs no session', async () => {
   const { env } = makeEnv();
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { ok: true, service: 'agent-studio' });
+  assert.deepEqual(await res.json(), {
+    ok: true,
+    service: 'agent-studio',
+    version_id: '11111111-1111-4111-8111-111111111111',
+    version_tag: null,
+  });
+});
+
+test('health exposes canonical Worker version metadata', async () => {
+  const { env } = makeEnv();
+  env.CF_VERSION_METADATA = {
+    id: '22222222-2222-4222-8222-222222222222',
+    tag: 'a'.repeat(40),
+    timestamp: '2026-07-13T14:00:00Z',
+  };
+  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    ok: true,
+    service: 'agent-studio',
+    version_id: '22222222-2222-4222-8222-222222222222',
+    version_tag: 'a'.repeat(40),
+  });
+});
+
+test('health omits noncanonical local version metadata', async () => {
+  const { env } = makeEnv();
+  env.CF_VERSION_METADATA = { id: 'local-version', tag: 'A'.repeat(40), timestamp: '' };
+  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    ok: true,
+    service: 'agent-studio',
+    version_id: null,
+    version_tag: null,
+  });
 });
 
 test('configured base path mounts assets, API, health, and sockets under one prefix', async () => {

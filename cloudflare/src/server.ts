@@ -342,7 +342,15 @@ app.get('/health', (c) => {
       503
     );
   }
-  return c.json({ ok: true, service: 'agent-studio' });
+  const metadata = c.env.CF_VERSION_METADATA;
+  const versionId = typeof metadata?.id === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(metadata.id)
+    ? metadata.id
+    : null;
+  const versionTag = typeof metadata?.tag === 'string' && /^[0-9a-f]{40}$/.test(metadata.tag)
+    ? metadata.tag
+    : null;
+  return c.json({ ok: true, service: 'agent-studio', version_id: versionId, version_tag: versionTag });
 });
 
 // The session bootstrap the frontend hits first also delivers the per-session

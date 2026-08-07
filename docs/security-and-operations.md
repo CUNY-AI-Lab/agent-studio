@@ -57,6 +57,12 @@ traffic. `/health` remains reachable and returns 503. The checked-in Wrangler
 variables intentionally fail this gate because identity enforcement is
 `false`; an authorized deployment must inject the final values atomically.
 
+The health payload exposes `version_id` only for a canonical Cloudflare UUID.
+`version_tag` is non-null only for a lowercase, full 40-character Git SHA;
+local or noncanonical metadata is reported as `null` and is not source
+provenance. An authorized guarded release should set the exact Git SHA as the
+Cloudflare version tag before relying on that field.
+
 Local and test environments may omit rate bindings, use `/`, run anonymously,
 and use `SESSION_SECRET` as the gallery-owner compatibility key. Those
 allowances are not production defaults.
