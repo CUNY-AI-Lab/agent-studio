@@ -15,13 +15,15 @@ CAIL_API_BASE=https://REPLACE-WITH-CAIL-MODEL-PROXY.invalid
 CAIL_MODEL=@cf/zai-org/glm-5.2
 # Static public JWKS JSON used to verify the canonical X-CAIL-Identity-JWT
 # header with RS256 for audience cail:agent-studio. Multiple distinct kid
-# values support signing-key rotation overlap. Leave blank locally to run
-# anonymous (identity disabled).
+# values support signing-key rotation overlap. Leave both identity values
+# blank locally to run anonymous (identity disabled); partial configuration is
+# rejected before the request reaches the runtime verifier.
 CAIL_IDENTITY_JWKS=
 # Exact issuer for this environment. Identity 3.0 accepts one value, never a
 # combined production/staging allowlist. Use the staging issuer only with a
-# staging JWKS and staging deployment classification.
-CAIL_IDENTITY_ISSUER=https://tools.ailab.gc.cuny.edu/cail-sso
+# staging JWKS and staging deployment classification. Leave blank when the
+# JWKS is blank.
+CAIL_IDENTITY_ISSUER=
 # Fail closed: reject anonymous model calls with 401. Set "true" when
 # CAIL_SSO_MODE=enforce lands on the gateway. If the JWKS is not configured or
 # cannot verify a presented token, all requests fail.

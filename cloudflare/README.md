@@ -14,9 +14,11 @@ bun run dev
 
 Local development requires a unique `SESSION_SECRET` and
 `CAIL_LOG_ENV=development`. Model calls also require an approved
-`CAIL_API_BASE`. Anonymous local mode may omit the identity JWKS and dedicated
-gallery-owner keyring; production may not. `CAIL_IDENTITY_ISSUER` selects one
-exact issuer for the environment; staging must use the staging issuer.
+`CAIL_API_BASE`. Anonymous local mode leaves the identity issuer and JWKS
+unset, along with the dedicated gallery-owner keyring; production may not.
+When identity is configured, `CAIL_IDENTITY_ISSUER` and its JWKS must be
+provided together. The issuer selects one exact environment value; staging
+must use the staging issuer.
 
 The production build uses `/agent-studio` for Vite assets, API calls, the
 Agents WebSocket path, Worker routing, and CSRF-cookie scope. Wrangler routes

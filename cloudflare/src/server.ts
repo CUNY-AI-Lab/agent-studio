@@ -334,8 +334,8 @@ app.use('/api/workspaces/:id/*', requireWorkspace);
 app.use('/api/gallery/:id', validateGalleryIdParam);
 app.use('/api/gallery/:id/*', validateGalleryIdParam);
 
-app.get('/health', (c) => {
-  const config = validateAgentStudioConfig(c.env);
+app.get('/health', async (c) => {
+  const config = await validateAgentStudioConfig(c.env);
   if (!config.ok) {
     return c.json(
       { ok: false, service: 'agent-studio', error: 'configuration_invalid', errorCode: config.errorCode },
@@ -1101,7 +1101,7 @@ export default {
     }
     request = mountedRequest;
     const pathname = new URL(request.url).pathname;
-    const config = validateAgentStudioConfig(env);
+    const config = await validateAgentStudioConfig(env);
     checkCailConfigOnce(env, config);
     if (!config.ok && pathname !== '/health') {
       return Response.json(

@@ -1,8 +1,13 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
 import type { MigrationRegistry } from './migration-registry';
 import type { CailAnalyticsEngineDataset, CailLogEnvironment } from '@cuny-ai-lab/cail-log';
-import { CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER } from '@cuny-ai-lab/cail-identity';
+import {
+  CAIL_CANONICAL_ISSUER,
+  CAIL_STAGING_ISSUER,
+  loadIdentityVerifierConfig,
+} from '@cuny-ai-lab/cail-identity';
 import { isValidBasePath, normalizeBasePath } from './lib/base-path';
+import { CAIL_IDENTITY_AUDIENCE } from './lib/cail-identity';
 import { isAllowedCailModelId } from './lib/workspace-validation';
 
 export interface Env {
@@ -94,6 +99,33 @@ export interface Env {
 export const MIN_REQUIRED_SESSION_SECRET_LENGTH = 32;
 export const MAX_ACCOUNT_IMPORT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
+// A Worker isolate can serve many requests with one immutable deployment
+// configuration. Reuse the shared loader's async key-import result instead of
+// re-importing every RSA key on every startup check. The key includes the full
+// raw configuration so a test or a new deployment cannot reuse an old result.
+let identityConfigValidationCache: {
+  key: string;
+  result: ReturnType<typeof loadIdentityVerifierConfig>;
+} | null = null;
+
+function loadSharedIdentityConfig(jwks: string | undefined, issuer: string | undefined) {
+  const cacheKey = `${issuer ?? ''}\u0000${jwks ?? ''}`;
+  if (identityConfigValidationCache?.key === cacheKey) {
+    return identityConfigValidationCache.result;
+  }
+  // cail-identity 5.1.0 can throw while recursively freezing deeply nested
+  // non-key JWKS metadata. Treat that as the same malformed-config result as
+  // the loader's normal validation path; never leak the input or exception.
+  const result = loadIdentityVerifierConfig({
+    jwks,
+    issuer,
+    expectedAudience: CAIL_IDENTITY_AUDIENCE,
+    supportedIssuers: [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
+  }).catch(() => ({ ok: false as const, reason: 'jwks_malformed' as const }));
+  identityConfigValidationCache = { key: cacheKey, result };
+  return result;
+}
+
 export type AccountImportWindowState =
   | 'pre-enforcement'
   | 'not-started'
@@ -121,6 +153,8 @@ export type AgentStudioConfigErrorCode =
   | 'cail_account_import_until_before_switch'
   | 'cail_account_import_window_too_long'
   | 'production_identity_required'
+  | 'cail_identity_jwks_missing'
+  | 'cail_identity_jwks_invalid'
   | 'production_identity_jwks_missing'
   | 'production_identity_jwks_invalid'
   | 'cail_model_invalid'
@@ -252,7 +286,7 @@ export function legacyAccountCompatibilityAllowed(
 }
 
 /** Validate required runtime configuration before any application traffic. */
-export function validateAgentStudioConfig(
+export async function validateAgentStudioConfig(
   env: {
     SESSION_SECRET?: unknown;
     CAIL_LOG_ENV?: unknown;
@@ -273,7 +307,7 @@ export function validateAgentStudioConfig(
     GALLERY_OWNER_KEYS?: string;
     GALLERY_OWNER_ACTIVE_KEY_ID?: string;
   }
-): AgentStudioConfigValidation {
+): Promise<AgentStudioConfigValidation> {
   if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
     return { ok: false, errorCode: 'session_secret_missing' };
   }
@@ -309,11 +343,16 @@ export function validateAgentStudioConfig(
   }
 
   const identityIssuer = env.CAIL_IDENTITY_ISSUER;
-  if (env.CAIL_REQUIRE_IDENTITY === 'true' && !identityIssuer) {
+  const identityRequired = env.CAIL_REQUIRE_IDENTITY === 'true';
+  const identityIssuerConfigured =
+    typeof identityIssuer === 'string' && identityIssuer !== '';
+  const identityJwksConfigured =
+    typeof env.CAIL_IDENTITY_JWKS === 'string' && env.CAIL_IDENTITY_JWKS.trim() !== '';
+  if (identityRequired && !identityIssuerConfigured) {
     return { ok: false, errorCode: 'cail_identity_issuer_missing' };
   }
   if (
-    identityIssuer !== undefined
+    identityIssuerConfigured
     && identityIssuer !== CAIL_CANONICAL_ISSUER
     && identityIssuer !== CAIL_STAGING_ISSUER
   ) {
@@ -328,38 +367,45 @@ export function validateAgentStudioConfig(
   if (env.CAIL_MODEL !== undefined && !isAllowedCailModelId(env.CAIL_MODEL)) {
     return { ok: false, errorCode: 'cail_model_invalid' };
   }
+  const identityConfigured =
+    identityRequired || identityIssuerConfigured || identityJwksConfigured;
+  // Production has a stronger profile-specific requirement. Keep its error
+  // code and precedence before validating optional identity configuration in
+  // other environments.
+  if (env.CAIL_LOG_ENV === 'production' && !identityRequired && !identityConfigured) {
+    return { ok: false, errorCode: 'production_identity_required' };
+  }
+  // Non-production identity validation is new; preserve the established
+  // migration-window error precedence before loading its JWKS.
+  const accountImportValidation =
+    env.CAIL_LOG_ENV === 'production' ? null : validateAccountImportWindow(env);
+  if (accountImportValidation && !accountImportValidation.ok) {
+    return accountImportValidation;
+  }
+  if (identityConfigured) {
+    const identityConfig = await loadSharedIdentityConfig(env.CAIL_IDENTITY_JWKS, identityIssuer);
+    if (!identityConfig.ok) {
+      if (identityConfig.reason === 'issuer_missing') {
+        return { ok: false, errorCode: 'cail_identity_issuer_missing' };
+      }
+      return {
+        ok: false,
+        errorCode:
+          identityConfig.reason === 'jwks_missing'
+            ? env.CAIL_LOG_ENV === 'production'
+              ? 'production_identity_jwks_missing'
+              : 'cail_identity_jwks_missing'
+            : env.CAIL_LOG_ENV === 'production'
+              ? 'production_identity_jwks_invalid'
+              : 'cail_identity_jwks_invalid',
+      };
+    }
+  }
+  if (env.CAIL_LOG_ENV === 'production' && !identityRequired) {
+    return { ok: false, errorCode: 'production_identity_required' };
+  }
 
   if (env.CAIL_LOG_ENV === 'production') {
-    if (env.CAIL_REQUIRE_IDENTITY !== 'true') {
-      return { ok: false, errorCode: 'production_identity_required' };
-    }
-    if (!env.CAIL_IDENTITY_JWKS?.trim()) {
-      return { ok: false, errorCode: 'production_identity_jwks_missing' };
-    }
-    try {
-      const jwks = JSON.parse(env.CAIL_IDENTITY_JWKS) as { keys?: unknown };
-      if (
-        !Array.isArray(jwks.keys)
-        || jwks.keys.length === 0
-        || jwks.keys.some((key) => {
-          if (!key || typeof key !== 'object' || Array.isArray(key)) return true;
-          const candidate = key as Record<string, unknown>;
-          return candidate.kty !== 'RSA'
-            || candidate.alg !== 'RS256'
-            || candidate.use !== 'sig'
-            || typeof candidate.kid !== 'string'
-            || candidate.kid.length === 0
-            || typeof candidate.n !== 'string'
-            || candidate.n.length === 0
-            || typeof candidate.e !== 'string'
-            || candidate.e.length === 0;
-        })
-      ) {
-        return { ok: false, errorCode: 'production_identity_jwks_invalid' };
-      }
-    } catch {
-      return { ok: false, errorCode: 'production_identity_jwks_invalid' };
-    }
     try {
       const apiBase = new URL(env.CAIL_API_BASE ?? '');
       if (
@@ -437,5 +483,5 @@ export function validateAgentStudioConfig(
       return { ok: false, errorCode: 'production_gateway_binding_missing' };
     }
   }
-  return validateAccountImportWindow(env);
+  return accountImportValidation ?? validateAccountImportWindow(env);
 }

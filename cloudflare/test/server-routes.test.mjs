@@ -33,6 +33,7 @@ import {
   CAIL_IDENTITY_AUDIENCE,
   CAIL_IDENTITY_HEADER,
   CAIL_CANONICAL_ISSUER,
+  CAIL_STAGING_ISSUER,
 } from '../src/lib/cail-identity.ts';
 import { resetCailModelsCache } from '../src/lib/cail-models.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
@@ -176,6 +177,49 @@ test('health check reports unhealthy when fleet projection dataset is unavailabl
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
   assert.equal(res.status, 503);
   assert.equal((await readError(res)).code, 'cail_fleet_events_missing');
+});
+
+test('production health rejects a JWKS shape the shared identity loader cannot import', async () => {
+  const { env } = makeEnv();
+  const issuer = await createTestIdentityIssuer({ kid: 'runtime-invalid-key' });
+  const jwks = JSON.parse(issuer.jwksJson);
+  jwks.keys[0].n = 'AQ';
+  Object.assign(env, {
+    CAIL_LOG_ENV: 'production',
+    CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+    CAIL_IDENTITY_JWKS: JSON.stringify(jwks),
+    CAIL_SSO_SWITCHED_AT: '2026-07-13T14:00:00Z',
+    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-08-12T14:00:00Z',
+    CAIL_API_BASE: 'https://cail-model-api.ailab-452.workers.dev',
+    CAIL_CANONICAL_ORIGIN: 'https://tools.example',
+    CAIL_BASE_PATH: '/agent-studio',
+    API_RATE_LIMIT: { limit() {} },
+    HEAVY_RATE_LIMIT: { limit() {} },
+    GALLERY_OWNER_KEYS: JSON.stringify({ active: 'g'.repeat(32) }),
+    GALLERY_OWNER_ACTIVE_KEY_ID: 'active',
+    GATEWAY: { fetch() {} },
+  });
+
+  const res = await app.fetch(new Request('https://studio.test/agent-studio/health'), env, {});
+  assert.equal(res.status, 503);
+  assert.equal((await readError(res)).code, 'production_identity_jwks_invalid');
+});
+
+test('identity-required staging health rejects malformed JWKS before runtime requests', async () => {
+  const { env } = makeEnv();
+  Object.assign(env, {
+    CAIL_LOG_ENV: 'staging',
+    CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_IDENTITY_ISSUER: CAIL_STAGING_ISSUER,
+    CAIL_IDENTITY_JWKS: '{not-json',
+    CAIL_SSO_SWITCHED_AT: '2026-07-13T14:00:00Z',
+    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-08-12T14:00:00Z',
+  });
+
+  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
+  assert.equal(res.status, 503);
+  assert.equal((await readError(res)).code, 'cail_identity_jwks_invalid');
 });
 
 test('startup guard refuses application traffic when SESSION_SECRET is missing', async () => {
