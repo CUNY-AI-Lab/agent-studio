@@ -153,6 +153,20 @@ export function currentGitSha(cwd) {
   }
 }
 
+export function assertCleanGitTree(cwd) {
+  let status;
+  try {
+    status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    fail('the reviewed Git working tree could not be verified');
+  }
+  if (status !== '') fail('the reviewed Git working tree must be clean before staging deploy');
+}
+
 export function assertReviewedRelease({ tag, message }, reviewedSha) {
   if (tag !== reviewedSha) fail('--tag must equal the current reviewed Git HEAD');
   if (message !== REVIEWED_MESSAGE) {
@@ -187,6 +201,7 @@ export async function main(rawArgs = process.argv.slice(2)) {
   const cloudflareDir = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
   const config = parseDeployArgs(rawArgs);
   assertReviewedRelease(config, currentGitSha(cloudflareDir));
+  assertCleanGitTree(cloudflareDir);
   await validateSecretsFile(config.secretsFile);
 
   const paths = wranglerPaths(cloudflareDir);

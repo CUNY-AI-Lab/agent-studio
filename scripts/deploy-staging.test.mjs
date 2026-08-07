@@ -1,5 +1,6 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -7,6 +8,7 @@ import assert from 'node:assert/strict';
 import {
   parseDeployArgs,
   assertReviewedRelease,
+  assertCleanGitTree,
   currentGitSha,
   REVIEWED_MESSAGE,
   validateSecretsFile,
@@ -81,6 +83,41 @@ test('staging deploy requires the current HEAD and exact approved message', () =
     /message must exactly equal/,
   );
   assert.match(currentGitSha(process.cwd()), /^[0-9a-f]{40}$/);
+});
+
+test('staging deploy refuses modified and untracked working trees', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'agent-studio-staging-tree-'));
+  const trackedPath = path.join(directory, 'tracked.txt');
+  try {
+    await writeFile(trackedPath, 'baseline\n');
+    execFileSync('git', ['init', '--quiet'], { cwd: directory });
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: directory });
+    execFileSync(
+      'git',
+      [
+        '-c', 'user.name=Agent Studio Test',
+        '-c', 'user.email=agent-studio-test@example.invalid',
+        'commit', '--quiet', '-m', 'baseline',
+      ],
+      { cwd: directory },
+    );
+    assert.doesNotThrow(() => assertCleanGitTree(directory));
+
+    await writeFile(trackedPath, 'modified\n');
+    assert.throws(
+      () => assertCleanGitTree(directory),
+      /working tree must be clean before staging deploy/,
+    );
+
+    await writeFile(trackedPath, 'baseline\n');
+    await writeFile(path.join(directory, 'untracked.txt'), 'untracked\n');
+    assert.throws(
+      () => assertCleanGitTree(directory),
+      /working tree must be clean before staging deploy/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('staging Wrangler arguments pin the environment and strict mode without keep-vars', () => {
