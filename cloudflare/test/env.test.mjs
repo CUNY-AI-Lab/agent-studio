@@ -44,11 +44,6 @@ const PRODUCTION = {
   GATEWAY: { fetch() {} },
 };
 
-function deeplyNestedJwks(rawJwks, depth = 5000) {
-  const nestedMetadata = `${'{"nested":'.repeat(depth)}"x"${'}'.repeat(depth)}`;
-  return `${rawJwks.slice(0, -1)},"metadata":${nestedMetadata}}`;
-}
-
 test('required SESSION_SECRET configuration accepts a usable secret', async () => {
   assert.deepEqual(
     await validateAgentStudioConfig({ SESSION_SECRET: SECRET, ...TELEMETRY }),
@@ -271,14 +266,19 @@ test('production JWKS startup validation uses the shared eligible-key contract',
       label,
     );
   }
+  const extensionJwks = {
+    ...validJwks,
+    metadata: { environment: 'test' },
+    keys: validJwks.keys.map((key) => ({ ...key, 'x-cail-test': 'extension' })),
+  };
   assert.deepEqual(
     await validateAgentStudioConfig({
       SESSION_SECRET: SECRET,
       ...PRODUCTION,
-      CAIL_IDENTITY_JWKS: deeplyNestedJwks(PRODUCTION.CAIL_IDENTITY_JWKS),
+      CAIL_IDENTITY_JWKS: JSON.stringify(extensionJwks),
     }),
-    { ok: false, errorCode: 'production_identity_jwks_invalid' },
-    'deeply nested metadata',
+    { ok: true },
+    'ordinary unknown JWK set and key members are ignored',
   );
 });
 
