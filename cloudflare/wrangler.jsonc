@@ -106,9 +106,9 @@
     }
   ],
   "vars": {
-    // Institutional CAIL model proxy base URL (serves /v1/... and /keys).
+    // Canonical institutional CAIL Model API base URL (serves /v1/... and /keys).
     // No trailing slash.
-    "CAIL_API_BASE": "https://cail-model-proxy.ailab-452.workers.dev",
+    "CAIL_API_BASE": "https://cail-model-api.ailab-452.workers.dev",
     // Optional model override; the proxy/AI Gateway resolves this slug.
     // CAIL policy: Workers AI catalog (@cf/...) ids only. Defaults to
     // @cf/zai-org/glm-5.2 when unset (see src/lib/cail-model.ts).
