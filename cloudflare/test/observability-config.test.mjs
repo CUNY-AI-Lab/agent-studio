@@ -65,7 +65,13 @@ test('Wrangler source defaults suppress content-bearing invocation logs and bind
     CAIL_LOG_ENV: 'staging',
     CAIL_BASE_PATH: '/agent-studio',
     CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_SSO_SWITCHED_AT: '2026-08-07T00:00:00Z',
+    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-09-06T00:00:00Z',
   });
+  assert.equal(
+    Date.parse(staging.vars.CAIL_ACCOUNT_IMPORT_UNTIL) - Date.parse(staging.vars.CAIL_SSO_SWITCHED_AT),
+    30 * 24 * 60 * 60 * 1000,
+  );
   assert.deepEqual(staging.worker_loaders, wrangler.worker_loaders);
   assert.deepEqual(staging.durable_objects, wrangler.durable_objects);
   assert.deepEqual(staging.migrations, wrangler.migrations);
@@ -80,7 +86,7 @@ test('Wrangler source defaults suppress content-bearing invocation logs and bind
   assert.deepEqual(staging.streaming_tail_consumers, wrangler.streaming_tail_consumers);
   assert.deepEqual(staging.version_metadata, wrangler.version_metadata);
   const pkg = await readPackage();
-  assert.equal(pkg.scripts.deploy, 'wrangler deploy --env staging --strict --keep-vars');
+  assert.equal(pkg.scripts.deploy, 'node scripts/deploy-staging.mjs');
   assert.deepEqual(wrangler.analytics_engine_datasets, [{
     binding: 'CAIL_FLEET_EVENTS',
     dataset: CAIL_ANALYTICS_ENGINE_DATASET,

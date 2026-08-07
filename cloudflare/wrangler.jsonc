@@ -211,7 +211,12 @@
         "CAIL_IDENTITY_ISSUER": "https://tools.cuny.qzz.io/cail-sso",
         "CAIL_LOG_ENV": "staging",
         "CAIL_BASE_PATH": "/agent-studio",
-        "CAIL_REQUIRE_IDENTITY": "true"
+        "CAIL_REQUIRE_IDENTITY": "true",
+        // New staging identity boundary reviewed on 2026-08-07. Keep this
+        // compatibility window explicit and no longer than the 30-day source
+        // contract; it is not inherited from another deployment.
+        "CAIL_SSO_SWITCHED_AT": "2026-08-07T00:00:00Z",
+        "CAIL_ACCOUNT_IMPORT_UNTIL": "2026-09-06T00:00:00Z"
       }
     }
   },

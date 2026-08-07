@@ -47,7 +47,7 @@ Package checks:
 ```bash
 bun run --cwd cloudflare typecheck
 bun run --cwd cloudflare test
-(cd cloudflare && bunx wrangler deploy --env staging --strict --keep-vars --dry-run)
+(cd cloudflare && bunx wrangler deploy --env staging --strict --dry-run)
 ```
 
 ## Reviewed staging deployment
@@ -62,8 +62,12 @@ Analytics Engine, version-metadata, and migration declarations because
 Wrangler does not inherit those bindings into named environments. Its R2
 binding uses the established `agent-studio-preview` bucket, not production
 `agent-studio`. The default `deploy` script selects this profile, enables
-strict conflict checks, and keeps undeclared remote variables; it cannot
-silently select the candidate service.
+strict conflict checks, and applies source-controlled variables
+authoritatively; stale dashboard variables cannot silently survive and the
+candidate service cannot be selected.
+The wrapper accepts no live-deploy overrides; only `--dry-run` and `--outdir`
+are allowed for local checks, so identity, gateway, routes, and strictness stay
+reviewed.
 
 After reviewing the release commit, provide a private secrets file containing
 the approved staging `SESSION_SECRET` and `CAIL_IDENTITY_JWKS` (and any other
@@ -81,10 +85,10 @@ bun run --cwd cloudflare deploy -- \
 ```
 
 `wrangler` is resolved from the exact `4.115.0` workspace dependency. The
-script's `--strict --keep-vars` flags prevent a conflicting remote upload and
-preserve existing cutover variables; Wrangler never deletes secrets during a
-deployment. Keep `CAIL_STAGING_SECRETS_FILE` outside the repository and remove
-it through the approved secret-handling process after the release.
+script's `--strict` flag prevents a conflicting remote upload and the source
+configuration owns every staging variable. Wrangler never deletes secrets
+during a deployment; keep `CAIL_STAGING_SECRETS_FILE` outside the repository
+and remove it through the approved secret-handling process after the release.
 
 Probe `/agent-studio/health`, an authenticated workspace, and one model call
 after activation. For an incident, route traffic back to the previously

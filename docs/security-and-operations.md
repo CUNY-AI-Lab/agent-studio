@@ -306,6 +306,12 @@ Durable Object classes, migration tags, rate limits, Analytics Engine dataset,
 Worker Loader, and version metadata remain unchanged. Its R2 binding uses the
 established `agent-studio-preview` bucket rather than production `agent-studio`,
 so staging validation cannot mutate live workspace objects.
+The source-owned identity compatibility window is explicitly
+`2026-08-07T00:00:00Z` through the exclusive `2026-09-06T00:00:00Z` deadline
+(exactly 30 days); it is a new staging window, not a copied older deployment
+window. The wrapper permits only `--dry-run` and `--outdir` pass-through flags,
+so identity, gateway, routes, and strictness cannot be overridden at deploy
+time.
 
 Run the full check first. Then set `CAIL_STAGING_SECRETS_FILE` to a private
 JSON or `.env`-format file containing the approved staging `SESSION_SECRET`,
@@ -322,14 +328,15 @@ bun run --cwd cloudflare deploy -- \
   --secrets-file "$CAIL_STAGING_SECRETS_FILE"
 ```
 
-The pinned Wrangler script supplies `--env staging --strict --keep-vars`.
-`--keep-vars` retains existing remote cutover variables, and Wrangler does not
-delete omitted secrets. This command uploads and activates one reviewed
-version; it never uses the candidate service. Probe `/agent-studio/health`, one
-authenticated workspace, and one model call before considering the release
-ready. If it fails, roll back to the previously verified version with
-Cloudflare's version rollback mechanism and repeat those smoke checks. Do not
-change the Durable Object namespaces or migration tags during this cutover.
+The pinned Wrangler script supplies `--env staging --strict` and source config
+is authoritative for every staging variable, so stale dashboard variables are
+removed rather than retained. Wrangler does not delete omitted secrets. This
+command uploads and activates one reviewed version; it never uses the
+candidate service. Probe `/agent-studio/health`, one authenticated workspace,
+and one model call before considering the release ready. If it fails, roll back
+to the previously verified version with Cloudflare's version rollback mechanism
+and repeat those smoke checks. Do not change the Durable Object namespaces or
+migration tags during this cutover.
 
 Before an authorized production release:
 
