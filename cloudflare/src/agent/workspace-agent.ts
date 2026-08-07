@@ -5,7 +5,12 @@ import {
 } from '@cloudflare/ai-chat';
 import { callable, type Connection, type ConnectionContext } from 'agents';
 import { DynamicWorkerExecutor, type ExecuteResult } from '@cloudflare/codemode';
-import { createCodeTool, resolveProvider, aiTools } from '@cloudflare/codemode/ai';
+import {
+  createCodeTool,
+  resolveProvider,
+  aiTools,
+  type CodeOutput,
+} from '@cloudflare/codemode/ai';
 import { Workspace as RuntimeWorkspace } from '@cloudflare/shell';
 import { gitTools } from '@cloudflare/shell/git';
 import { stateTools } from '@cloudflare/shell/workers';
@@ -1590,7 +1595,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   private createCodeModeTool(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
     const codeModeTools = this.buildCodeModeHostTools(tools);
-    return createCodeTool({
+    const codemode = createCodeTool({
       tools: [
         aiTools(codeModeTools),
         stateTools(this.getRuntimeWorkspace()),
@@ -1602,6 +1607,20 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       executor: this.createCodeExecutor(),
       description: CODEMODE_DESCRIPTION,
     });
+
+    // `state.*` and `git.*` providers can mutate the Durable Object's runtime
+    // workspace from inside the sandbox. Hold the same fence used by direct
+    // mutation RPCs across the entire sandbox run so migration cleanup cannot
+    // interleave with a code-mode write at an async boundary.
+    const execute = codemode.execute;
+    if (!execute) {
+      throw new Error('codemode tool is missing its executor');
+    }
+    codemode.execute = (input, options) => this.withMutationFence(async () => {
+      const output = await execute(input, options);
+      return output as CodeOutput;
+    });
+    return codemode;
   }
 
   private buildCodeProviders(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {

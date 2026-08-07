@@ -633,6 +633,40 @@ test('code RPC fence spans rate-limit admission and rejects queued work before s
   assert.equal(sqlWrites.length, beforeQueuedCall.sqlWrites);
 });
 
+test('codemode execution is held inside the migration mutation fence', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const events = [];
+  const agent = {
+    env: { LOADER: {} },
+    buildCodeModeHostTools: WorkspaceAgent.prototype.buildCodeModeHostTools,
+    getRuntimeWorkspace() {
+      return {};
+    },
+    createCodeExecutor() {
+      return {
+        execute: async () => {
+          events.push('execute');
+          return { result: { ok: true } };
+        },
+      };
+    },
+    withMutationFence(operation) {
+      events.push('enter');
+      return Promise.resolve(operation()).finally(() => events.push('exit'));
+    },
+  };
+
+  const codeTool = WorkspaceAgent.prototype.createCodeModeTool.call(agent, {});
+  assert.equal(typeof codeTool.execute, 'function');
+  const result = await codeTool.execute(
+    { code: 'return { ok: true };' },
+    { toolCallId: 'tool-call-1', messages: [] },
+  );
+
+  assert.deepEqual(result, { result: { ok: true } });
+  assert.deepEqual(events, ['enter', 'execute', 'exit']);
+});
+
 test('anonymous chat streams an authentication error instead of assistant JSON', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
