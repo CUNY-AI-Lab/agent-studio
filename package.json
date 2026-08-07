@@ -34,6 +34,7 @@
     "test:tools": "node --test scripts/**/*.test.mjs",
     "preview": "bun run --cwd frontend preview",
     "smoke": "bun ./scripts/smoke-worker.mjs",
+    "smoke:staging": "bun ./scripts/smoke-staging.mjs --with-chat=true --quiet=true",
     "deploy": "bun run --cwd cloudflare deploy",
     "chat:debug": "bun ./scripts/workspace-chat-debug.mjs",
     "trace": "bun ./scripts/workspace-observability.mjs"

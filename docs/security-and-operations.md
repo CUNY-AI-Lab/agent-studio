@@ -313,6 +313,25 @@ window. The wrapper permits only `--dry-run` and `--outdir` pass-through flags,
 so identity, gateway, routes, and strictness cannot be overridden at deploy
 time.
 
+After an authorized staging deployment, run the authenticated smoke with the
+two keyring legs already exported by the secret-handling environment. Keep the
+JWTs out of command arguments and output:
+
+```bash
+export AGENT_STUDIO_STAGING_URL
+export AGENT_STUDIO_APP_IDENTITY_JWT
+export AGENT_STUDIO_GATEWAY_IDENTITY_JWT
+bun run smoke:staging
+```
+
+`smoke:staging` enables `--with-chat=true --quiet=true`; the smoke refuses a
+partial keyring and emits boolean receipts while deleting its synthetic
+workspace in `finally`. The staging wrapper validates both JWT environment
+variables before starting the worker (and accepts `--with-chat=false` for an
+app-only API smoke), takes the base URL from `AGENT_STUDIO_STAGING_URL`, and
+keeps the deployment URL and JWTs out of the user's command arguments. A
+missing leg never reaches `/health`.
+
 Run the full check first. Then set `CAIL_STAGING_SECRETS_FILE` to a private
 JSON or `.env`-format file containing the approved staging `SESSION_SECRET`,
 `CAIL_IDENTITY_JWKS`, and any intentionally rotated secrets. The staging
