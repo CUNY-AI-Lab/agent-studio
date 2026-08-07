@@ -48,7 +48,7 @@ async function writeCailPackage(rootDir, receipt, { missingExport } = {}) {
 async function makeCailReceiptFixture({ evilSource = false, evilIntegrity = false, missingExport } = {}) {
   const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-studio-cail-receipt-'));
   const dependencies = Object.fromEntries(
-    CAIL_PRIMITIVE_RECEIPTS.map((receipt) => [receipt.name, receipt.name.endsWith('identity') ? receipt.version : `^${receipt.version}`]),
+    CAIL_PRIMITIVE_RECEIPTS.map((receipt) => [receipt.name, receipt.version]),
   );
   await writeJson(path.join(rootDir, 'package.json'), { name: 'cail-receipt-fixture', private: true, dependencies });
   const packages = {};
