@@ -27,6 +27,7 @@
     "typecheck": "bun run --cwd cloudflare typecheck && bun run --cwd frontend typecheck",
     "lint": "biome lint .",
     "check:dependencies": "node ./scripts/dependency-resolution-gate.mjs",
+    "check": "bun run check:dependencies && bun run lint && bun run typecheck && bun run test && bun run build && (cd cloudflare && bunx wrangler deploy --dry-run --outdir /tmp/agent-studio-wrangler-dry-run)",
     "test": "bun run test:backend && bun run test:frontend && bun run test:tools",
     "test:backend": "bun run --cwd cloudflare test",
     "test:frontend": "bun run --cwd frontend test",

@@ -9,8 +9,8 @@ remain outside the repository.
 | Primitive | Consumer boundary | Installed version |
 | --- | --- | --- |
 | `cail-identity` | Direct identity verification dependency | `5.1.0` |
-| `cail-log` | Direct event/correlation dependency and the single transitive instance used by `cail-client` | `0.4.0` |
-| `cail-client` | Direct model and catalog transport dependency | `1.3.0` |
+| `cail-log` | Direct event/correlation dependency and the single transitive instance used by `cail-client` | `0.6.0` |
+| `cail-client` | Direct model and catalog transport dependency | `3.0.0` |
 | `cail-sandbox-client` | Not installed; Agent Studio uses Cloudflare Dynamic Workers instead | Not installed |
 
 `cloudflare/package.json` and `bun.lock` are the executable pin authorities.
@@ -113,7 +113,7 @@ redirect handling, omitted ambient credentials, and no SDK-adapter retries.
 Gateway-declared non-retryable responses and ambiguous network failures surface
 as typed errors before an SDK can replay them. Correlation forwarding preserves
 the W3C sampled flag and tracestate, replaces the correlation headers as one
-unit, and requires lowercase UUID-v4 request IDs.
+unit, and requires lowercase UUID-v4 or UUID-v7 request IDs.
 
 Local configuration, workspace overrides, and model-catalog responses accept
 only bounded Cloudflare Workers AI `@cf/...` identifiers. A drifted catalog
