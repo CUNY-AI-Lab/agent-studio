@@ -95,9 +95,10 @@ test('the versioned product reliability contract fixes access, windows, and coll
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-log'], '0.6.0');
   // Exact pin: 5.x carries the v2 subject derivation, whose ownership
   // subjects differ from every 4.x value; a caret range could move it silently.
-  // 5.1.0 adds the identity keyring transport (contract/identity-keyring-v1).
-  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-identity'], '5.1.0');
-  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-client'], '3.0.0');
+  // The pinned identity and client primitives supply the keyring and model
+  // transport contracts consumed by this Worker.
+  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-identity'], '5.1.2');
+  assert.equal(pkg.dependencies['@cuny-ai-lab/cail-client'], '3.0.1');
   assert.equal(pkg.dependencies['@cuny-ai-lab/cail-sandbox-client'], undefined);
 });
 

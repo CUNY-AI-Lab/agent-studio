@@ -113,9 +113,8 @@ function loadSharedIdentityConfig(jwks: string | undefined, issuer: string | und
   if (identityConfigValidationCache?.key === cacheKey) {
     return identityConfigValidationCache.result;
   }
-  // cail-identity 5.1.0 can throw while recursively freezing deeply nested
-  // non-key JWKS metadata. Treat that as the same malformed-config result as
-  // the loader's normal validation path; never leak the input or exception.
+  // Treat an unexpected loader rejection as the same malformed-config result
+  // as its normal validation path; never leak the input or exception.
   const result = loadIdentityVerifierConfig({
     jwks,
     issuer,
