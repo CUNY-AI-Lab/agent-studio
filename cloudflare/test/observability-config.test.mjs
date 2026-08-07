@@ -46,6 +46,7 @@ test('Wrangler source defaults suppress content-bearing invocation logs and bind
   const gateway = wrangler.services?.find((service) => service.binding === 'GATEWAY');
   assert.deepEqual(gateway, { binding: 'GATEWAY', service: 'cail-model-api' });
   assert.notEqual(gateway?.service, 'cail-model-api-candidate');
+  assert.equal(new URL(wrangler.vars.CAIL_API_BASE).origin, 'https://cail-model-api.ailab-452.workers.dev');
   assert.equal(
     wrangler.vars.CAIL_IDENTITY_ISSUER,
     'https://tools.ailab.gc.cuny.edu/cail-sso',
