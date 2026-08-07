@@ -130,6 +130,27 @@ inputs, and complete the activation checklist in the operations guide. Do not
 infer permission to create buckets, secrets, domains, OAuth grants, or
 deployments from the presence of repository scripts.
 
+For an authorized staging model smoke, provide both identity-keyring legs only
+through the environment and keep output redacted. The command names the
+variables without placing JWT values in shell arguments or logs:
+
+```bash
+export AGENT_STUDIO_STAGING_URL
+export AGENT_STUDIO_APP_IDENTITY_JWT
+export AGENT_STUDIO_GATEWAY_IDENTITY_JWT
+bun run smoke:staging
+```
+
+The app-audience JWT authorizes Agent Studio; the same-subject gateway-audience
+JWT is installed for the model call. The staging wrapper's `--with-chat=true`
+fails closed when either leg is missing. `--quiet=true` (also accepted as
+`--redacted=true`)
+prints only boolean step receipts and still deletes the synthetic workspace.
+The staging wrapper performs that keyring check before the health request;
+it also takes the staging URL from `AGENT_STUDIO_STAGING_URL` so the command
+line contains no deployment URL. Passing `--with-chat=false` runs an app-only
+API smoke.
+
 `bun run deploy` is the reviewed staging path. It selects the checked-in
 `staging` Wrangler environment, uses strict conflict checks, applies the
 source-controlled variables authoritatively, and targets the isolated

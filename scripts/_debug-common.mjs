@@ -7,6 +7,74 @@ const CHAT_MESSAGE_TYPE = {
   CANCEL: 'cf_agent_chat_request_cancel',
 };
 
+// Identity keyring transport (identity-keyring-v1). The app leg authorizes
+// Agent Studio; the gateway leg is the same subject scoped to model traffic.
+// Keep these values in the environment so a shell history or process argument
+// list never receives a JWT.
+export const APP_IDENTITY_JWT_ENV = 'AGENT_STUDIO_APP_IDENTITY_JWT';
+export const GATEWAY_IDENTITY_JWT_ENV = 'AGENT_STUDIO_GATEWAY_IDENTITY_JWT';
+export const APP_IDENTITY_JWT_HEADER = 'X-CAIL-Identity-JWT';
+export const GATEWAY_IDENTITY_JWT_HEADER = 'X-CAIL-Gateway-Identity-JWT';
+
+function normalizeIdentityJwt(value) {
+  if (typeof value !== 'string') return undefined;
+  const token = value.trim();
+  return token || undefined;
+}
+
+/**
+ * Read the two identity-keyring legs from environment variables. This helper
+ * deliberately returns only the values needed by the request clients; callers
+ * must never print the returned object.
+ */
+export function identityCredentialsFromEnv(env = process.env) {
+  return {
+    appIdentityJwt: normalizeIdentityJwt(env[APP_IDENTITY_JWT_ENV]),
+    gatewayIdentityJwt: normalizeIdentityJwt(env[GATEWAY_IDENTITY_JWT_ENV]),
+  };
+}
+
+/**
+ * Return canonical keyring headers for a Studio request. The app leg is safe
+ * for all Studio ingress; callers opt into the gateway leg only on a route
+ * that primes or exercises model access.
+ */
+export function identityHeaders(credentials = {}, { includeGateway = false } = {}) {
+  const headers = {};
+  const appIdentityJwt = normalizeIdentityJwt(credentials.appIdentityJwt);
+  const gatewayIdentityJwt = normalizeIdentityJwt(credentials.gatewayIdentityJwt);
+  if (appIdentityJwt) headers[APP_IDENTITY_JWT_HEADER] = appIdentityJwt;
+  if (includeGateway && gatewayIdentityJwt) headers[GATEWAY_IDENTITY_JWT_HEADER] = gatewayIdentityJwt;
+  return headers;
+}
+
+/** Remove supplied JWT values from diagnostic text before it reaches a log. */
+export function redactSensitiveText(value, credentials = {}) {
+  let text = String(value);
+  for (const token of [credentials.appIdentityJwt, credentials.gatewayIdentityJwt]) {
+    const normalized = normalizeIdentityJwt(token);
+    if (normalized) text = text.replaceAll(normalized, '[redacted]');
+  }
+  return text;
+}
+
+/**
+ * Credentialed chat requires both keyring legs: the app leg authorizes Studio
+ * and the gateway leg is installed into the workspace agent before a model
+ * call. Anonymous smoke and app-only API smoke remain valid for local
+ * development.
+ */
+export function assertIdentityCredentials(credentials = {}, { withChat = false } = {}) {
+  const appIdentityJwt = normalizeIdentityJwt(credentials.appIdentityJwt);
+  const gatewayIdentityJwt = normalizeIdentityJwt(credentials.gatewayIdentityJwt);
+  if (withChat && Boolean(appIdentityJwt) !== Boolean(gatewayIdentityJwt)) {
+    throw new Error(
+      `--with-chat=true requires both ${APP_IDENTITY_JWT_ENV} and ${GATEWAY_IDENTITY_JWT_ENV}`,
+    );
+  }
+  return { appIdentityJwt, gatewayIdentityJwt };
+}
+
 function parseSetCookie(setCookie) {
   if (!setCookie) return null;
   const first = setCookie.split(';')[0]?.trim();
@@ -33,6 +101,12 @@ export function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (!token.startsWith('--')) continue;
+    const inlineValueIndex = token.indexOf('=', 2);
+    if (inlineValueIndex !== -1) {
+      const key = token.slice(2, inlineValueIndex);
+      args[key] = token.slice(inlineValueIndex + 1) || 'true';
+      continue;
+    }
     const key = token.slice(2);
     const next = argv[index + 1];
     if (!next || next.startsWith('--')) {
@@ -80,10 +154,11 @@ export function agentSocketBasePath(baseUrl, agentClass, agentName) {
 const CSRF_HEADER = 'X-CAIL-CSRF';
 
 export class SessionClient {
-  constructor(baseUrl, initialCookie) {
+  constructor(baseUrl, initialCookie, credentials = {}) {
     this.baseUrl = new URL(baseUrl);
     this.cookie = initialCookie || '';
     this.csrfToken = '';
+    this.identity = assertIdentityCredentials(credentials);
   }
 
   updateCookie(response) {
@@ -100,9 +175,18 @@ export class SessionClient {
     }
   }
 
-  async fetch(path, init = {}) {
+  async fetch(path, init = {}, { includeGateway = false } = {}) {
     const url = applicationUrl(path, this.baseUrl);
     const headers = new Headers(init.headers || {});
+    const keyringHeaders = identityHeaders(this.identity, { includeGateway });
+    for (const headerName of [APP_IDENTITY_JWT_HEADER, GATEWAY_IDENTITY_JWT_HEADER]) {
+      const value = keyringHeaders[headerName];
+      if (value) {
+        headers.set(headerName, value);
+      } else {
+        headers.delete(headerName);
+      }
+    }
     if (this.cookie) {
       headers.set('Cookie', this.cookie);
     }
@@ -120,8 +204,8 @@ export class SessionClient {
     return response;
   }
 
-  async json(path, init = {}) {
-    const response = await this.fetch(path, init);
+  async json(path, init = {}, options = {}) {
+    const response = await this.fetch(path, init, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = typeof payload.error === 'string'
@@ -129,7 +213,8 @@ export class SessionClient {
         : payload.error
           ? JSON.stringify(payload.error)
           : '';
-      throw new Error(`Request failed with ${response.status}${detail ? `: ${detail}` : ''}`);
+      const message = `Request failed with ${response.status}${detail ? `: ${detail}` : ''}`;
+      throw new Error(redactSensitiveText(message, this.identity));
     }
     return payload;
   }
@@ -147,12 +232,12 @@ export async function createWorkspace(session, name = 'CLI Debug Workspace') {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
-  });
+  }, { includeGateway: true });
   return payload.workspace;
 }
 
-export async function fetchWorkspace(session, workspaceId) {
-  return session.json(`/api/workspaces/${workspaceId}`);
+export async function fetchWorkspace(session, workspaceId, options = {}) {
+  return session.json(`/api/workspaces/${workspaceId}`, {}, options);
 }
 
 export async function fetchObservability(session, workspaceId) {
@@ -208,7 +293,9 @@ export async function connectAgent(session, workspacePayload, { timeoutMs = 1000
     host: url.host,
     secure: url.protocol === 'https:',
     basePath: agentSocketBasePath(url, agent.className, agent.name),
-    headers: session.cookie ? { Cookie: session.cookie } : undefined,
+    // The Agent/DO contract authenticates this upgrade with origin + CSRF
+    // query only. Identity-keyring legs are delivered on the preceding HTTP
+    // route that primes the DO and are not accepted by this WebSocket path.
     // Per-connection CSRF token on the WS upgrade (fleet contract §3¾ rule 4).
     // The DO closes the socket at accept without it, so smoke exercises the
     // protected handshake rather than bypassing it.
