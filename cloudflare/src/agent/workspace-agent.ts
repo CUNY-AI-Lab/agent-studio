@@ -679,7 +679,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     ]) {
       this.ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     }
-    await this.destroy();
+    // `destroy()` aborts the Durable Object isolate after clearing storage.
+    // This method is reached through an RPC during workspace deletion, so an
+    // inline abort turns a successful cleanup into a 500 at the caller. The
+    // Agents SDK's deferred primitive persists a destruction marker and lets
+    // the next alarm perform the abort in its own invocation.
+    await this._cf_scheduleDestroy();
   }
 
   async replaceWorkspaceState(state: WorkspaceState, workspace: WorkspaceRecord, sessionId: string): Promise<void> {

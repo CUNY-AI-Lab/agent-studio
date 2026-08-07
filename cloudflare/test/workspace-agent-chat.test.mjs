@@ -444,6 +444,46 @@ test('destructive cleanup refuses to race an active mutation', async () => {
   assert.equal(agent.migrationFrozen, false);
 });
 
+test('destructive cleanup defers Durable Object destruction for RPC callers', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  let clearRuntimeCalls = 0;
+  let deferredDestroyCalls = 0;
+  let directDestroyCalls = 0;
+  const agent = {
+    activeMutations: 0,
+    migrationFrozen: true,
+    cailIdentityJwt: 'credential',
+    cailSubject: 'subject',
+    cailOperationalSubject: 'operational-subject',
+    messages: [{ id: 'message' }],
+    clearRuntimeFilesUnchecked: async () => {
+      clearRuntimeCalls += 1;
+    },
+    ctx: {
+      storage: {
+        sql: { exec: () => undefined },
+      },
+    },
+    destroy: async () => {
+      directDestroyCalls += 1;
+      throw new Error('inline destroy must not run through RPC');
+    },
+    _cf_scheduleDestroy: async () => {
+      deferredDestroyCalls += 1;
+    },
+  };
+
+  await WorkspaceAgent.prototype.destroyWorkspaceState.call(agent);
+
+  assert.equal(clearRuntimeCalls, 1);
+  assert.equal(deferredDestroyCalls, 1);
+  assert.equal(directDestroyCalls, 0);
+  assert.equal(agent.cailIdentityJwt, null);
+  assert.equal(agent.cailSubject, null);
+  assert.equal(agent.cailOperationalSubject, null);
+  assert.deepEqual(agent.messages, []);
+});
+
 test('identity enforcement rejects mutation RPCs on an anonymous pre-cutover socket', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
