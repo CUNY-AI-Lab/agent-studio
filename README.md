@@ -120,7 +120,7 @@ bun run typecheck
 bun run test
 bun run build
 bun audit
-(cd cloudflare && bunx wrangler deploy --dry-run --outdir /tmp/agent-studio-wrangler-dry-run)
+(cd cloudflare && bunx wrangler deploy --env staging --strict --keep-vars --dry-run --outdir /tmp/agent-studio-wrangler-dry-run)
 ```
 
 The smoke client accepts a mounted base URL and verifies the protected Agents
@@ -129,3 +129,12 @@ verify the mounted asset paths, probe `/agent-studio/health` with deployment
 inputs, and complete the activation checklist in the operations guide. Do not
 infer permission to create buckets, secrets, domains, OAuth grants, or
 deployments from the presence of repository scripts.
+
+`bun run deploy` is the reviewed staging path. It selects the checked-in
+`staging` Wrangler environment, uses strict conflict checks, preserves remote
+variables, and targets the isolated `agent-studio-staging` Worker at
+`cail-model-api-staging`; see the Worker
+[deployment notes](./cloudflare/README.md#reviewed-staging-deployment) for the
+private JWKS file and reviewed tag/message command. The top-level production
+profile remains intentionally fail-closed until its separate identity and
+policy inputs are authorized.

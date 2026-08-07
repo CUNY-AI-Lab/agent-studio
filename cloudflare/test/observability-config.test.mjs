@@ -51,6 +51,36 @@ test('Wrangler source defaults suppress content-bearing invocation logs and bind
     wrangler.vars.CAIL_IDENTITY_ISSUER,
     'https://tools.ailab.gc.cuny.edu/cail-sso',
   );
+  const staging = wrangler.env?.staging;
+  assert.ok(staging, 'the reviewed staging environment must be explicit');
+  assert.equal(staging.name, 'agent-studio-staging');
+  assert.deepEqual(staging.secrets, { required: ['SESSION_SECRET', 'CAIL_IDENTITY_JWKS'] });
+  assert.deepEqual(staging.services, [{ binding: 'GATEWAY', service: 'cail-model-api-staging' }]);
+  assert.notEqual(staging.services[0].service, 'cail-model-api-candidate');
+  assert.equal(new URL(staging.vars.CAIL_API_BASE).origin, 'https://cail-model-api-staging.ailab-452.workers.dev');
+  assert.deepEqual(staging.vars, {
+    CAIL_API_BASE: 'https://cail-model-api-staging.ailab-452.workers.dev',
+    CAIL_MODEL: '@cf/zai-org/glm-5.2',
+    CAIL_IDENTITY_ISSUER: 'https://tools.cuny.qzz.io/cail-sso',
+    CAIL_LOG_ENV: 'staging',
+    CAIL_BASE_PATH: '/agent-studio',
+    CAIL_REQUIRE_IDENTITY: 'true',
+  });
+  assert.deepEqual(staging.worker_loaders, wrangler.worker_loaders);
+  assert.deepEqual(staging.durable_objects, wrangler.durable_objects);
+  assert.deepEqual(staging.migrations, wrangler.migrations);
+  assert.deepEqual(staging.r2_buckets, [{
+    binding: 'WORKSPACE_FILES',
+    bucket_name: 'agent-studio-preview',
+  }]);
+  assert.notEqual(staging.r2_buckets[0].bucket_name, wrangler.r2_buckets[0].bucket_name);
+  assert.deepEqual(staging.analytics_engine_datasets, wrangler.analytics_engine_datasets);
+  assert.deepEqual(staging.unsafe, wrangler.unsafe);
+  assert.deepEqual(staging.tail_consumers, wrangler.tail_consumers);
+  assert.deepEqual(staging.streaming_tail_consumers, wrangler.streaming_tail_consumers);
+  assert.deepEqual(staging.version_metadata, wrangler.version_metadata);
+  const pkg = await readPackage();
+  assert.equal(pkg.scripts.deploy, 'wrangler deploy --env staging --strict --keep-vars');
   assert.deepEqual(wrangler.analytics_engine_datasets, [{
     binding: 'CAIL_FLEET_EVENTS',
     dataset: CAIL_ANALYTICS_ENGINE_DATASET,
