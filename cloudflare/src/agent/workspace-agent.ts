@@ -37,7 +37,6 @@ import {
   type WorkspaceState,
 } from '../domain/workspace';
 import { accountImportWindowState, type Env } from '../env';
-import { CailError } from '@cuny-ai-lab/cail-client';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import {
   isCailIdentityConfigError,
@@ -95,7 +94,10 @@ import { updateWorkspaceWithRetry } from '../lib/workspaces';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
-import { quotaSignalFromError } from '../lib/quota-error';
+import {
+  extractCanonicalCailError,
+  quotaSignalFromError,
+} from '../lib/quota-error';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
 
 const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
@@ -276,23 +278,23 @@ const CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY = 'cail:operational-subject';
 const CAIL_SUBJECT_STORAGE_KEY = 'cail:subject';
 
 /**
- * Stable error-code slug for a DO-op failure. A CailError carries the
- * gateway's stable envelope code (`quota_exceeded`, `authentication_required`,
- * …) plus an HTTP status; anything else is an opaque internal failure — the
- * error MESSAGE is never logged (it can interpolate user content).
+ * Stable error-code slug for a DO-op failure. A canonical CAIL envelope carries
+ * the gateway's stable code (`quota_exceeded`, `authentication_required`, …)
+ * plus an HTTP status; anything else is an opaque internal failure — the error
+ * MESSAGE is never logged (it can interpolate user content).
  */
-function logErrorType(error: unknown): string {
-  if (error instanceof CailError) {
-    return error.code;
-  }
-  return 'internal_error';
+function logErrorType(error: unknown, cail = extractCanonicalCailError(error)): string {
+  return cail?.code ?? 'internal_error';
 }
 
-function terminalForModelError(error: unknown): CailTerminalFields {
-  if (error instanceof CailError) {
-    if (error.code === 'quota_exceeded') return { outcome: 'denied', reason: 'quota_blocked' };
-    if (error.status === 401 || error.status === 403) return { outcome: 'denied', reason: 'denied' };
-    if (error.status === 429) return { outcome: 'denied', reason: 'rate_limited' };
+function terminalForModelError(
+  error: unknown,
+  cail = extractCanonicalCailError(error),
+): CailTerminalFields {
+  if (cail) {
+    if (cail.code === 'quota_exceeded') return { outcome: 'denied', reason: 'quota_blocked' };
+    if (cail.status === 401 || cail.status === 403) return { outcome: 'denied', reason: 'denied' };
+    if (cail.status === 429) return { outcome: 'denied', reason: 'rate_limited' };
   }
   return { outcome: 'error', reason: 'upstream_failure' };
 }
@@ -1048,8 +1050,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           }, 'error');
           // Structured replacement for the old console.error: stable code +
           // status only, never the error message (it can carry user content).
-          const errorType = logErrorType(error.error);
-          const terminal = terminalForModelError(error.error);
+          const cail = extractCanonicalCailError(error.error);
+          const errorType = logErrorType(error.error, cail);
+          const terminal = terminalForModelError(error.error, cail);
           this.finishModelCall(action!, terminal, errorType);
           this.deferChatTerminal(action!, terminal, errorType);
         },
@@ -1060,11 +1063,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           this.finalizeObservabilityRequest(requestId, 'error', 'UI message stream failed', {
             error: summarizeError(error),
           }, 'error');
-          const errorType = logErrorType(error);
-          const terminal = terminalForModelError(error);
+          const cail = extractCanonicalCailError(error);
+          const errorType = logErrorType(error, cail);
+          const terminal = terminalForModelError(error, cail);
           this.finishModelCall(action!, terminal, errorType);
           this.deferChatTerminal(action!, terminal, errorType);
-          const quota = quotaSignalFromError(error);
+          const quota = quotaSignalFromError(error, cail);
           return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
       });
@@ -1073,9 +1077,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         error: summarizeError(error),
       }, 'error');
       if (action) {
-        const errorType = logErrorType(error);
-        this.finishModelCall(action, { outcome: 'error', reason: 'application_failure' }, errorType);
-        this.finishChatAction(action, { outcome: 'error', reason: 'application_failure' }, errorType);
+        const cail = extractCanonicalCailError(error);
+        const errorType = logErrorType(error, cail);
+        const terminal = cail
+          ? terminalForModelError(error, cail)
+          : { outcome: 'error', reason: 'application_failure' } as const;
+        this.finishModelCall(action, terminal, errorType);
+        this.finishChatAction(action, terminal, errorType);
       }
       return new Response('Agent Studio could not start this response.', { status: 500 });
     }

@@ -1,24 +1,77 @@
-import { extractCailError } from '@cuny-ai-lab/cail-client';
+import { CailError, extractCailError } from '@cuny-ai-lab/cail-client';
 import { canonicalError } from './error-envelope';
 
 /**
- * If `error` is (or wraps) the CailError the shared client's chatFetch()
- * throws on a gateway 429 quota_exceeded envelope, return a compact JSON
+ * The AI SDK exposes provider failures as APICallError objects whose
+ * `responseBody` is already consumed. Keep quota surfacing bounded to the
+ * canonical CAIL envelope (`error.cail`) or a typed CailError; an ordinary
+ * provider body that happens to use `code: "quota_exceeded"` is not enough.
+ */
+function hasCanonicalCailEvidence(value: unknown): boolean {
+  const queue: unknown[] = [value];
+  const seen = new Set<object>();
+  let visited = 0;
+
+  while (queue.length > 0 && visited < 256) {
+    let layer = queue.shift();
+    if (typeof layer === 'string') {
+      if (layer.length > 64 * 1024) continue;
+      try {
+        layer = JSON.parse(layer);
+      } catch {
+        continue;
+      }
+    }
+    if (layer === null || (typeof layer !== 'object' && typeof layer !== 'function')) {
+      continue;
+    }
+    if (layer instanceof CailError) return true;
+    if (seen.has(layer)) continue;
+    seen.add(layer);
+    visited += 1;
+
+    const record = layer as Record<string, unknown>;
+    const nestedError = record.error;
+    if (
+      nestedError !== null
+      && typeof nestedError === 'object'
+      && Object.prototype.hasOwnProperty.call(nestedError, 'cail')
+    ) {
+      return true;
+    }
+
+    for (const nested of [
+      record.responseBody,
+      record.cause,
+      nestedError,
+      record.data,
+      record.lastError,
+    ]) {
+      if (nested !== undefined) queue.push(nested);
+    }
+    if (Array.isArray(record.errors)) queue.push(...record.errors);
+  }
+  return false;
+}
+
+/**
+ * If `error` is (or wraps) a typed CAIL quota failure, return a compact JSON
  * signal string the frontend detects (see frontend/src/lib/quotaError.ts);
  * otherwise null.
  *
- * cail-client throws the parsed envelope on the first quota failure instead
- * of returning the 429 Response, so the AI SDK normally never retries it and
- * never buries it inside a RetryError. Extraction is delegated to the shared
- * `extractCailError`, which digs a typed CAIL envelope out of SDK wrappers
- * when one IS buried — but never sniffs bare 429 shapes or message text, so
- * a plain rate-limit error is still not a CAIL quota signal. The envelope
- * message is user-safe verbatim under the institutional CAIL error contract,
- * so it is forwarded as-is, along with `retry_after_seconds` when present.
+ * The bounded shared extractor digs the envelope out of AI SDK wrappers and
+ * response-body strings. Canonical `error.cail` evidence keeps a plain
+ * OpenAI-compatible provider error from being mistaken for a CAIL quota.
  */
-export function quotaSignalFromError(error: unknown): string | null {
-  const cail = extractCailError(error);
-  if (cail === null || cail.code !== 'quota_exceeded') {
+export function quotaSignalFromError(
+  error: unknown,
+  extracted?: CailError | null,
+): string | null {
+  const cail = extracted === undefined ? extractCanonicalCailError(error) : extracted;
+  if (
+    cail === null
+    || cail.code !== 'quota_exceeded'
+  ) {
     return null;
   }
   const retryAfter = cail.extras['retry_after_seconds'];
@@ -35,4 +88,15 @@ export function quotaSignalFromError(error: unknown): string | null {
       } } }
       : {}),
   });
+}
+
+/**
+ * Extract only a canonical CAIL envelope. The shared extractor intentionally
+ * accepts any OpenAI-compatible `{error:{message,type,code}}` body; the
+ * `error.cail`/typed-error check keeps ordinary provider failures out of CAIL
+ * observability and quota handling.
+ */
+export function extractCanonicalCailError(error: unknown): CailError | null {
+  const cail = extractCailError(error);
+  return cail !== null && hasCanonicalCailEvidence(error) ? cail : null;
 }

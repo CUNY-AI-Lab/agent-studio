@@ -211,9 +211,9 @@ function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
 }
 
 /**
- * Push the caller's verified CAIL identity JWT into the workspace DO so its
- * model calls (which run over the client WebSocket, where the gateway header
- * is unavailable) can authenticate to the model proxy. No-op when anonymous.
+ * Push the caller's verified gateway JWT into the workspace DO so its model
+ * calls (which run over the client WebSocket, where request headers are
+ * unavailable) can authenticate to the model proxy. No-op when anonymous.
  */
 async function primeAgentCredential(
   c: AppContext,

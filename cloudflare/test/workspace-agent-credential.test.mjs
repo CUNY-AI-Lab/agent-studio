@@ -245,8 +245,11 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     const headers = new Headers(init?.headers);
     wire.push({
       method: init?.method,
+      authorization: headers.get('authorization'),
       identityJwt: headers.get('X-CAIL-Identity-JWT'),
       app: headers.get('X-CAIL-App'),
+      credentials: init?.credentials,
+      redirect: init?.redirect,
     });
     return cailErrorResponse(
       401,
@@ -300,8 +303,11 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   );
   assert.deepEqual(wire[0], {
     method: 'POST',
-    identityJwt: gatewayToken,
+    authorization: `Bearer ${gatewayToken}`,
+    identityJwt: null,
     app: 'agent-studio',
+    credentials: 'omit',
+    redirect: 'error',
   });
 });
 

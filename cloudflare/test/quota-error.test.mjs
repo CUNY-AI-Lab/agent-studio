@@ -73,3 +73,42 @@ test('quotaSignalFromError unwraps a quota CailError buried in a RetryError', ()
   assert.equal(parsed.error.message, QUOTA_MESSAGE);
   assert.equal(parsed.error.cail.retry_after_seconds, 1800);
 });
+
+test('quotaSignalFromError extracts the canonical envelope from an AI SDK APICallError shape', () => {
+  const signal = quotaSignalFromError({
+    name: 'AI_APICallError',
+    statusCode: 429,
+    responseHeaders: { 'x-should-retry': 'false' },
+    responseBody: JSON.stringify({
+      error: {
+        message: QUOTA_MESSAGE,
+        type: 'rate_limit_error',
+        param: null,
+        code: 'quota_exceeded',
+        cail: { retry_after_seconds: 1800 },
+      },
+    }),
+  });
+  const parsed = JSON.parse(signal);
+  assert.equal(parsed.error.code, 'quota_exceeded');
+  assert.equal(parsed.error.message, QUOTA_MESSAGE);
+  assert.equal(parsed.error.cail.retry_after_seconds, 1800);
+});
+
+test('quotaSignalFromError ignores an ordinary provider quota-shaped error without CAIL evidence', () => {
+  assert.equal(
+    quotaSignalFromError({
+      name: 'AI_APICallError',
+      statusCode: 429,
+      responseBody: JSON.stringify({
+        error: {
+          message: 'Provider quota reached.',
+          type: 'rate_limit_error',
+          param: null,
+          code: 'quota_exceeded',
+        },
+      }),
+    }),
+    null,
+  );
+});

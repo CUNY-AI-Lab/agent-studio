@@ -767,8 +767,9 @@ test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
 
 // Behavioral pin for the fleet's quota-surfacing bug (S5/A7): a gateway 429
 // quota_exceeded envelope must reach the chat user as the VERBATIM envelope
-// message, not a generic failure — and on the FIRST wire call (the shared
-// client's chatFetch throws the parsed CailError, which no AI SDK retries).
+// message, not a generic failure — and on the FIRST wire call (the direct AI
+// SDK provider gets maxRetries: 0, while the bounded CAIL extractor preserves
+// the canonical envelope).
 test('gateway 429 quota_exceeded streams the verbatim quota message to the user', async (t) => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const { tool } = await import('ai');
@@ -778,8 +779,8 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
   let wireCalls = 0;
   const originalFetch = globalThis.fetch;
-  // createCailModel builds the shared client per request, which captures
-  // globalThis.fetch — so this stub IS the gateway for the model call.
+  // createCailModel captures globalThis.fetch at construction — so this stub
+  // IS the gateway for the model call.
   globalThis.fetch = async () => {
     wireCalls += 1;
     return cailErrorResponse(
@@ -872,6 +873,12 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   assert.equal(payload.error.code, 'quota_exceeded');
   assert.equal(payload.error.message, quotaMessage);
   assert.equal(payload.error.cail.retry_after_seconds, 1800);
-  // The thrown CailError must not be SDK-retried: one wire call, no retry storm.
+  // Direct providers surface APICallError; observability still uses the
+  // canonical envelope for quota terminal fields and error_type.
+  assert.deepEqual(agent.pendingChatAction.deferredTerminal, {
+    terminal: { outcome: 'denied', reason: 'quota_blocked' },
+    errorType: 'quota_exceeded',
+  });
+  // The APICallError must not be SDK-retried: one wire call, no retry storm.
   assert.equal(wireCalls, 1);
 });

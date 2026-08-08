@@ -39,9 +39,10 @@ environment issuer and its JWKS together. The issuer is never a combined
 production/staging allowlist.
 
 Agent Studio holds no model-provider key. It forwards a locally verified
-`X-CAIL-Identity-JWT` to the CAIL model proxy with
-`X-CAIL-App: agent-studio`. The proxy owns the model catalog, accounting, and
-authoritative quota. Local model validation accepts only `@cf/...` identifiers.
+gateway-audience JWT as one `Authorization: Bearer …` credential to the CAIL
+model proxy with `X-CAIL-App: agent-studio`. The proxy owns the model catalog,
+accounting, and authoritative quota. Local model validation accepts only
+`@cf/...` identifiers.
 
 The root `.env.example` is only a pointer. Worker variables belong in
 `cloudflare/.dev.vars`; split frontend development uses

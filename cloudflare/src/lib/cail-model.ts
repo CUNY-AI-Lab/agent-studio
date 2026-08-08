@@ -8,24 +8,25 @@
  * quota/auth failures into the CAIL error envelope (see
  * the institutional CAIL tool integration contract).
  *
- * Transport: the shared `@cuny-ai-lab/cail-client` owns the wire discipline.
- * Its `chatFetch()` adapter plugs into the Vercel AI SDK's
- * `createOpenAICompatible({ fetch })`: it strips the dummy Authorization,
- * sends the caller's verified `X-CAIL-Identity-JWT` plus `X-CAIL-App`, and
- * never retries and throws gateway-declared non-retryable failures before an
- * SDK can replay them. The workspace agent surfaces typed quota failures with
- * the gateway's safe message (see lib/quota-error.ts).
+ * Transport: the Vercel AI SDK's OpenAI-compatible provider talks directly to
+ * the gateway. The verified gateway JWT is the provider API key, so exactly
+ * one `Authorization: Bearer …` credential reaches the wire. A final fetch
+ * sanitizer keeps only ordinary JSON/content-negotiation headers, then stamps
+ * the server-owned credential, app, and correlation headers. The seam selects
+ * the service binding when configured (or global fetch otherwise) and keeps
+ * ambient credentials and redirects out of the model boundary. The workspace
+ * agent disables SDK retries for each turn and surfaces typed quota failures
+ * with the gateway's safe message (see lib/quota-error.ts).
  *
  * Credential: this is a browser tool behind the SSO gate, so we forward the
- * requesting user's verified identity JWT. No personal `sk-cail-…` key is
- * ever used by this tool.
+ * requesting user's verified gateway-audience JWT. No personal `sk-cail-…`
+ * key is ever used by this tool.
  */
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
-import { createCailClient } from '@cuny-ai-lab/cail-client';
 import type { LanguageModel } from 'ai';
 import { CAIL_APP_SLUG } from './cail-identity';
-import type { CailCorrelation } from './logging';
+import { outboundCorrelationHeaders, type CailCorrelation } from './logging';
 import { isAllowedCailModelId } from './workspace-validation';
 
 /**
@@ -41,7 +42,7 @@ export interface CailModelEnv {
   /**
    * Public base URL of the CAIL model proxy (serves /v1/… and /keys). Set at
    * launch against the institutional Cloudflare account — see
-   * the authorized deployment configuration. No trailing slash.
+   * the authorized deployment configuration. Trailing slashes are normalized.
    */
   CAIL_API_BASE?: string;
   /** Optional model override; defaults to DEFAULT_CAIL_MODEL. */
@@ -56,7 +57,7 @@ export function resolveCailModelName(env: CailModelEnv): string {
 
 export interface CreateCailModelOptions {
   env: CailModelEnv;
-  /** The caller's verified X-CAIL-Identity-JWT, forwarded as the credential. */
+  /** The caller's verified gateway JWT, forwarded as the Bearer credential. */
   identityJwt: string;
   /** Optional per-call model override (falls back to env / default). */
   model?: string;
@@ -68,9 +69,38 @@ export interface CreateCailModelOptions {
   correlation?: CailCorrelation;
 }
 
+function canonicalCailApiBase(apiBase: string): string {
+  if (
+    apiBase.trim() !== apiBase
+    || /[\u0000-\u001f\u007f\s\\]/.test(apiBase)
+  ) {
+    throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(apiBase);
+  } catch {
+    throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username !== ''
+    || parsed.password !== ''
+    || apiBase.includes('?')
+    || apiBase.includes('#')
+  ) {
+    throw new Error(
+      'CAIL_API_BASE must use HTTPS and cannot contain credentials, a query, or a fragment.',
+    );
+  }
+
+  return apiBase.replace(/\/+$/, '');
+}
+
 /**
  * Construct a LanguageModel that routes every request through the CAIL
- * gateway's `/v1/chat/completions` with the caller's identity JWT and the
+ * gateway's `/v1/chat/completions` with the caller's gateway JWT and the
  * agent-studio app header. Throws if CAIL_API_BASE or the identity JWT is
  * missing — the tool has no other path to model access, so this fails loud
  * rather than silently.
@@ -88,30 +118,54 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     throw new Error('Model id is outside the Cloudflare Workers AI catalog namespace.');
   }
 
-  // The client trims trailing slashes from its baseUrl; mirror that here so
-  // the SDK-derived URL matches chatFetch()'s single served target exactly:
-  // `${base}/v1` + `/chat/completions`.
-  const base = apiBase.replace(/\/+$/, '');
-  const cail = createCailClient({
-    baseUrl: base,
-    app: CAIL_APP_SLUG,
-    // Same-account workers.dev fetches are blocked; prefer the service binding.
-    ...(env.GATEWAY ? { fetchImpl: env.GATEWAY.fetch.bind(env.GATEWAY) as typeof fetch } : {}),
-  });
+  // Trim all trailing slashes once so the provider's `/chat/completions`
+  // suffix resolves to the one canonical gateway endpoint.
+  const canonicalBase = canonicalCailApiBase(apiBase);
+  const headers: Record<string, string> = {
+    'X-CAIL-App': CAIL_APP_SLUG,
+    ...(options.correlation ? outboundCorrelationHeaders(options.correlation) : {}),
+  };
+  const upstreamFetch = env.GATEWAY
+    ? (env.GATEWAY.fetch.bind(env.GATEWAY) as typeof globalThis.fetch)
+    : globalThis.fetch;
+  const safeFetch: typeof globalThis.fetch = (input, init) => upstreamFetch(input, {
+    ...init,
+    headers: (() => {
+      const sdkHeaders = new Headers(init?.headers);
+      const safeHeaders = new Headers();
 
-  const chatFetch = cail.chatFetch(
-    { kind: 'jwt', token: identityJwt },
-    options.correlation ? { correlation: options.correlation } : undefined,
-  );
+      // OpenAI-compatible chat is always a JSON POST. Keep ordinary content
+      // negotiation and the SDK's telemetry, but do not trust any caller
+      // value for the body type or authority/routing headers.
+      safeHeaders.set('content-type', 'application/json');
+      for (const name of ['accept', 'user-agent']) {
+        const value = sdkHeaders.get(name);
+        if (value !== null) safeHeaders.set(name, value);
+      }
+
+      // The provider merges per-call headers after its static configuration;
+      // stamp these last so options.headers cannot replace or add authority.
+      safeHeaders.set('authorization', `Bearer ${identityJwt}`);
+      safeHeaders.set('x-cail-app', CAIL_APP_SLUG);
+      for (const [name, value] of Object.entries(headers)) {
+        safeHeaders.set(name, value);
+      }
+      return safeHeaders;
+    })(),
+    // Model requests never need browser cookies or other ambient credentials.
+    credentials: 'omit',
+    // A gateway redirect is an invalid model response; never follow it with a
+    // bearer credential attached.
+    redirect: 'error',
+  });
 
   const provider = createOpenAICompatible({
     name: 'cail',
-    baseURL: `${base}/v1`,
-    // Dummy key: the adapter strips Authorization and sends the identity JWT.
-    apiKey: 'cail-proxy',
-    // chatFetch accepts string | URL inputs; the AI SDK always calls with a
-    // string URL, and the adapter throws loudly on anything unexpected.
-    fetch: chatFetch as typeof fetch,
+    baseURL: `${canonicalBase}/v1`,
+    // The gateway accepts a trusted Doorway JWT as a normal Bearer credential.
+    apiKey: identityJwt,
+    headers,
+    fetch: safeFetch,
   });
 
   return provider(options.model ?? resolveCailModelName(env));

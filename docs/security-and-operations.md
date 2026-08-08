@@ -10,7 +10,7 @@ remain outside the repository.
 | --- | --- | --- |
 | `cail-identity` | Direct identity verification dependency | `5.1.2` |
 | `cail-log` | Direct event/correlation dependency and the single transitive instance used by `cail-client` | `0.6.0` |
-| `cail-client` | Direct model and catalog transport dependency | `3.0.1` |
+| `cail-client` | Catalog transport and bounded CAIL error/quota parsing | `3.0.1` |
 | `cail-sandbox-client` | Not installed; Agent Studio uses Cloudflare Dynamic Workers instead | Not installed |
 
 `cloudflare/package.json` and `bun.lock` are the executable pin authorities.
@@ -114,12 +114,13 @@ Agent Studio stores no provider API key. Model calls go to
 policy, token and cost accounting, and user quota. Studio does not emit
 `cail.quota.charged` or maintain a remaining-budget ledger.
 
-The model transport uses `cail-client` with an HTTPS configured base, manual
-redirect handling, omitted ambient credentials, and no SDK-adapter retries.
-Gateway-declared non-retryable responses and ambiguous network failures surface
-as typed errors before an SDK can replay them. Correlation forwarding preserves
-the W3C sampled flag and tracestate, replaces the correlation headers as one
-unit, and requires lowercase UUID-v4 or UUID-v7 request IDs.
+The model transport uses the Vercel AI SDK's OpenAI-compatible provider with an
+HTTPS configured base, one Bearer JWT, redirect rejection, omitted ambient
+credentials, and no SDK retries (`streamText({ maxRetries: 0 })`). Correlation
+forwarding preserves the W3C sampled flag and tracestate, replaces the
+correlation headers as one unit, and requires lowercase UUID-v4 or UUID-v7
+request IDs. The shared `cail-client` remains for the bounded catalog and CAIL
+error/quota extensions used elsewhere in the Worker.
 
 Local configuration, workspace overrides, and model-catalog responses accept
 only bounded Cloudflare Workers AI `@cf/...` identifiers. A drifted catalog

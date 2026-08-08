@@ -428,7 +428,7 @@ test('resolveCailModelName honors the override and default', () => {
   assert.equal(resolveCailModelName({ CAIL_MODEL: 'cail/gpt-4.1-nano' }), DEFAULT_CAIL_MODEL);
 });
 
-test('createCailModel forwards the JWT + app header and sets no provider key', async () => {
+test('createCailModel sends the verified gateway JWT as one Bearer credential', async () => {
   const captured = [];
   const capturedCredentials = [];
   const originalFetch = globalThis.fetch;
@@ -464,13 +464,14 @@ test('createCailModel forwards the JWT + app header and sets no provider key', a
   assert.equal(captured.length >= 1, true, 'provider should have issued a request');
   const request = captured[0];
   assert.equal(new URL(request.url).pathname, '/v1/chat/completions');
-  assert.equal(request.headers.get(CAIL_IDENTITY_HEADER), 'jwt-token-value');
+  assert.equal(request.headers.get('authorization'), 'Bearer jwt-token-value');
+  assert.equal(request.headers.get(CAIL_IDENTITY_HEADER), null);
   assert.equal(request.headers.get('X-CAIL-App'), CAIL_APP_SLUG);
-  assert.equal(request.headers.get('authorization'), null);
   assert.equal(request.headers.get('traceparent'), `00-${'a'.repeat(32)}-${'b'.repeat(16)}-00`);
   assert.equal(request.headers.get('tracestate'), 'cail=studio');
   assert.equal(request.headers.get('x-cail-request-id'), '11111111-1111-4111-8111-111111111111');
   assert.equal(capturedCredentials[0], 'omit');
+  assert.equal(request.redirect, 'error');
 });
 
 test('createCailModel throws without CAIL_API_BASE', () => {
