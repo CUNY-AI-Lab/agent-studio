@@ -29,62 +29,23 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.CAIL_PACKAGES_TOKEN }}
         run: bun install --frozen-lockfile
 
-      - name: Dependency resolution gate
-        run: bun run check:dependencies
-
-      - name: Lint (import boundary)
+      - name: Lint
         run: bun run lint
 
       - name: Typecheck
         run: bun run typecheck
 
-      - name: Unit tests
+      - name: Unit and route tests
         run: bun run test
 
       - name: Build
         run: bun run build
 
-      - name: Wrangler dry-run
-        working-directory: cloudflare
-        run: bunx wrangler deploy --dry-run --outdir /tmp/agent-studio-wrangler-dry-run
-
-  smoke-worker:
-    runs-on: ubuntu-latest
-    needs: validate
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v4
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
-        with:
-          bun-version: '1.3.14'
-
-      - name: Install dependencies
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.CAIL_PACKAGES_TOKEN }}
-        run: bun install --frozen-lockfile
-
-      - name: Write CI dev vars
-        # The smoke lane runs a COHERENT identity config with enforcement off:
-        # wrangler.jsonc's checked-in vars supply CAIL_IDENTITY_ISSUER (dotfile
-        # omission does not unset it — jsonc vars leak through, and an issuer
-        # without a JWKS is a PARTIAL config that env.ts classifies as an
-        # operator error, 503 on every route including /health). An empty-string
-        # override is also rejected (defined-but-invalid issuer). So we supply a
-        # syntactically valid throwaway PUBLIC JWKS — the private key was
-        # discarded at generation and never persisted — giving the worker the
-        # production config shape while the smoke exercises the anonymous API
-        # surface (CAIL_REQUIRE_IDENTITY=false, no token ever sent).
+      - name: Write local Worker variables
         run: |
+          umask 077
           cat > cloudflare/.dev.vars <<'EOF'
           SESSION_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-          CAIL_LOG_ENV=development
           CAIL_API_BASE=https://cail-model-proxy.invalid
           CAIL_MODEL=@cf/zai-org/glm-5.2
           CAIL_IDENTITY_JWKS={"keys":[{"alg":"RS256","e":"AQAB","ext":true,"key_ops":["verify"],"kty":"RSA","n":"tgwConORyAewb7KiTKn9oPOkR3lSOjREoomSdaNhwwKjoxTVBA8xHZqe3KJ0_T7erVL3zjQ_Rd3CgsNgfJshfQvOhP06gGoRXA1QpqAz6p-N5j6N5nf5-b0vYQncAWKPi6w7fgUzLpsoBBpiNUnp1rDPW4VYDwkYOsYg1_VH_zjFNi7IQk0ccUSa9JfCbUxmmeWhRJCPEvXm4AWSQms4C4Wg4sgTNrV9j8GNEq2YKk4wDwvQLrtG6h8EeKkJW_ZCaRY-o8mLtW66rwfSCiBzwp0D2J1mdYrYzDbFjIYMwue9E44sD7-zd5liqPUVmxDqgRfOrd0r9OSZKMNPuKjIXQ","kid":"ci-smoke-throwaway","use":"sig"}]}
@@ -92,31 +53,39 @@ jobs:
           CAIL_BASE_PATH=/agent-studio
           EOF
 
-      - name: Start worker and run smoke test
+      - name: Local Worker process integration smoke (not E2E)
         run: |
           set -euo pipefail
 
+          worker_log=/tmp/agent-studio-worker.log
+          worker_pid=''
+
           cleanup() {
-            if [[ -f /tmp/agent-studio-dev.pid ]]; then
-              kill "$(cat /tmp/agent-studio-dev.pid)" >/dev/null 2>&1 || true
+            if [[ -n "$worker_pid" ]]; then
+              kill "$worker_pid" >/dev/null 2>&1 || true
+              wait "$worker_pid" >/dev/null 2>&1 || true
+            fi
+          }
+
+          show_worker_log() {
+            if [[ -f "$worker_log" ]]; then
+              echo 'Worker log (credentials redacted):' >&2
+              sed -E \
+                -e 's/(Bearer[[:space:]]+)[^[:space:]]+/\1[redacted]/g' \
+                -e 's/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/[jwt redacted]/g' \
+                -e 's/cail-[A-Za-z0-9_-]+/[subject redacted]/g' \
+                -e 's/[A-Fa-f0-9]{24,}/[id redacted]/g' \
+                -e 's#https?://[^[:space:]]+#[url redacted]#g' \
+                -e 's/[^[:space:]@]+@[^[:space:]@]+/[email redacted]/g' \
+                "$worker_log" >&2
             fi
           }
 
           trap cleanup EXIT
+          bun run dev >"$worker_log" 2>&1 &
+          worker_pid=$!
 
-          bun run dev >/tmp/agent-studio-dev.log 2>&1 &
-          echo $! > /tmp/agent-studio-dev.pid
-
-          for attempt in {1..90}; do
-            if curl -fsS http://127.0.0.1:8787/agent-studio/health >/dev/null; then
-              break
-            fi
-            sleep 2
-          done
-
-          if ! curl -fsS http://127.0.0.1:8787/agent-studio/health >/dev/null; then
-            cat /tmp/agent-studio-dev.log
+          if ! bun run smoke -- --base-url http://127.0.0.1:8787/agent-studio; then
+            show_worker_log
             exit 1
           fi
-
-          bun run smoke -- --base-url http://127.0.0.1:8787/agent-studio

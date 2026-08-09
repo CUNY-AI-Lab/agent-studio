@@ -48,17 +48,21 @@ test('staging chat rejects a missing keyring leg before network startup', () => 
     ),
     /must be supplied through the environment/,
   );
+  assert.throws(
+    () => assertStagingCredentials(['--with-chat=false'], { AGENT_STUDIO_STAGING_URL: 'http://localhost:8787' }),
+    /absolute HTTPS URL/,
+  );
 
   const documentedEnv = envWithoutIdentity();
   documentedEnv.AGENT_STUDIO_STAGING_URL = STAGING_URL;
   documentedEnv.AGENT_STUDIO_APP_IDENTITY_JWT = 'app-secret-value';
   const result = spawnSync(
-    'bun',
-    ['run', 'smoke:staging'],
+    process.execPath,
+    ['scripts/smoke-staging.mjs', '--with-chat=true'],
     { cwd: REPO_ROOT, env: documentedEnv, encoding: 'utf8', timeout: 5000 },
   );
   const output = `${result.stdout}${result.stderr}`;
   assert.equal(result.status, 1);
-  assert.match(output, /\[smoke\] failed: false/);
-  assert.doesNotMatch(output, /health|https:\/\/staging\.example\.test|app-secret-value|workspace|prompt|response|raw error/i);
+  assert.match(output, /\[smoke\] staging validation failed/);
+  assert.doesNotMatch(output, /health|https:\/\/staging\.example\.test|app-secret-value|workspace|prompt|response|raw error|true|false/i);
 });

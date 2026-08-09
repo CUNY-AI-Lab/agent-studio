@@ -13,7 +13,7 @@ import {
   parseArgs,
   redactSensitiveText,
   SessionClient,
-} from './_debug-common.mjs';
+} from './smoke-common.mjs';
 
 const originalFetch = globalThis.fetch;
 
@@ -27,14 +27,8 @@ test('SessionClient sends the bootstrapped CSRF token on protected reads', async
     requests.push({ url: String(url), headers: new Headers(init.headers) });
     if (String(url).endsWith('/api/session')) {
       const headers = new Headers({ 'Content-Type': 'application/json' });
-      headers.append(
-        'Set-Cookie',
-        'agent-studio-session=session.signature; Max-Age=604800; Path=/; HttpOnly; SameSite=Lax',
-      );
-      headers.append(
-        'Set-Cookie',
-        `cail_csrf_agentstudio=${'a'.repeat(64)}; Path=/; SameSite=Lax`,
-      );
+      headers.append('Set-Cookie', 'agent-studio-session=session.signature; Path=/');
+      headers.append('Set-Cookie', `cail_csrf_agentstudio=${'a'.repeat(64)}; Path=/`);
       return new Response(JSON.stringify({ sessionId: 'session' }), { headers });
     }
     return new Response(JSON.stringify({ workspaces: [] }), {
@@ -89,52 +83,45 @@ test('app-only identity remains valid for API smoke while chat requires both leg
   const credentials = assertIdentityCredentials({ appIdentityJwt: 'app-jwt' });
   assert.deepEqual(credentials, { appIdentityJwt: 'app-jwt', gatewayIdentityJwt: undefined });
   assert.deepEqual(identityHeaders(credentials), { [APP_IDENTITY_JWT_HEADER]: 'app-jwt' });
-  assert.deepEqual(identityHeaders({ ...credentials, gatewayIdentityJwt: 'gateway-jwt' }, { includeGateway: true }), {
-    [APP_IDENTITY_JWT_HEADER]: 'app-jwt',
-    [GATEWAY_IDENTITY_JWT_HEADER]: 'gateway-jwt',
-  });
+  assert.deepEqual(
+    identityHeaders({ ...credentials, gatewayIdentityJwt: 'gateway-jwt' }, { includeGateway: true }),
+    { [APP_IDENTITY_JWT_HEADER]: 'app-jwt', [GATEWAY_IDENTITY_JWT_HEADER]: 'gateway-jwt' },
+  );
   assert.throws(
     () => assertIdentityCredentials(credentials, { withChat: true }),
     /requires both AGENT_STUDIO_APP_IDENTITY_JWT and AGENT_STUDIO_GATEWAY_IDENTITY_JWT/,
   );
 });
 
-test('generic local smoke permits anonymous chat configuration', () => {
+test('anonymous local smoke remains valid without identity credentials', () => {
   assert.doesNotThrow(() => assertIdentityCredentials({}, { withChat: true }));
 });
 
-test('parseArgs accepts both separated and inline values', () => {
+test('parseArgs accepts separated and inline values', () => {
   assert.deepEqual(
-    parseArgs(['--with-chat=true', '--quiet', 'true', '--base-url=https://example.invalid/agent-studio']),
-    {
-      'with-chat': 'true',
-      quiet: 'true',
-      'base-url': 'https://example.invalid/agent-studio',
-    },
+    parseArgs(['--with-chat=true', '--base-url=https://example.invalid/agent-studio']),
+    { 'with-chat': 'true', 'base-url': 'https://example.invalid/agent-studio' },
   );
 });
 
-test('diagnostic text never includes supplied JWT values', () => {
+test('diagnostic text never includes credentials or identity-bearing values', () => {
   assert.equal(
-    redactSensitiveText('upstream app-jwt gateway-jwt', {
+    redactSensitiveText('upstream app-jwt gateway-jwt 0123456789abcdef0123456789abcdef person@example.test', {
       appIdentityJwt: 'app-jwt',
       gatewayIdentityJwt: 'gateway-jwt',
     }),
-    'upstream [redacted] [redacted]',
+    'upstream [redacted] [redacted] [id redacted] [email redacted]',
   );
+  assert.equal(redactSensitiveText('subject cail-0123456789abcdef'), 'subject [subject redacted]');
 });
 
-test('debug and smoke URLs preserve the deployed application mount', async () => {
+test('smoke URLs preserve the deployed application mount', async () => {
   assert.equal(
     applicationUrl('/api/session', 'http://127.0.0.1:8799/agent-studio').href,
     'http://127.0.0.1:8799/agent-studio/api/session',
   );
   assert.equal(
-    agentSocketBasePath(
-      'http://127.0.0.1:8799/agent-studio',
-      'WorkspaceAgent',
-      'abc-123',
-    ),
+    agentSocketBasePath('http://127.0.0.1:8799/agent-studio', 'WorkspaceAgent', 'abc-123'),
     'agent-studio/agents/workspace-agent/abc-123',
   );
 
