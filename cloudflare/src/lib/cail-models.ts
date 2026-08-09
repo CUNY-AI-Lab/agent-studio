@@ -105,7 +105,9 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
       'x-cail-app': CAIL_APP_SLUG,
     },
     credentials: 'omit',
-    redirect: 'error',
+    // Cloudflare service bindings reject `redirect:'error'`; manual handling
+    // keeps redirect responses fail-closed without forwarding credentials.
+    redirect: 'manual',
   });
   if (response.status === 401 || response.status === 403) {
     throw new ModelCatalogAuthError('Model catalog authentication failed.');

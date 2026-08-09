@@ -463,7 +463,7 @@ test('createCailModel sends the verified gateway JWT as one Bearer credential', 
   assert.equal(request.headers.get('tracestate'), null);
   assert.equal(request.headers.get('x-cail-request-id'), null);
   assert.equal(capturedCredentials[0], 'omit');
-  assert.equal(request.redirect, 'error');
+  assert.equal(request.redirect, 'manual');
 });
 
 test('createCailModel throws without CAIL_API_BASE', () => {

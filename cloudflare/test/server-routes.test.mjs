@@ -1173,6 +1173,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
   });
   assert.equal(calls.length, 1);
   assert.equal(new Headers(calls[0].init.headers).get('authorization'), `Bearer ${gatewayToken}`);
+  assert.equal(calls[0].init.redirect, 'manual');
 });
 
 test('/api/models surfaces direct catalog auth and quota failures without fallback', async () => {

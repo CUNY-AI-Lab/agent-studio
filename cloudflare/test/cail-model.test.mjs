@@ -161,8 +161,33 @@ test('buffered calls use one Bearer credential and only safe server-owned header
   assert.equal(headers.get('cf-aig-provider'), null);
   assert.equal(headers.get('x-openwebui-model'), null);
   assert.equal(init.credentials, 'omit');
-  assert.equal(init.redirect, 'error');
+  assert.equal(init.redirect, 'manual');
   assert.equal(JSON.parse(init.body).model, '@cf/zai-org/glm-5.2');
+});
+
+test('chat service bindings accept manual redirects and fail closed on 3xx', async () => {
+  const { createCailModel } = await import('../src/lib/cail-model.ts');
+  const calls = [];
+  const gateway = {
+    async fetch(input, init) {
+      calls.push({ input: String(input), init });
+      assert.equal(init.redirect, 'manual');
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://outside.example/chat' },
+      });
+    },
+  };
+  const model = createCailModel({
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
+    identityJwt: 'gateway-jwt',
+  });
+  const error = await generateText({ model, prompt: 'hello', maxRetries: 0 })
+    .catch((nextError) => nextError);
+
+  assert.equal(error.name, 'AI_APICallError');
+  assert.equal(error.statusCode, 302);
+  assert.equal(calls.length, 1);
 });
 
 test('streaming calls use the same direct endpoint and one attempt', async () => {

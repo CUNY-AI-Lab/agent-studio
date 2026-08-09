@@ -53,11 +53,24 @@ test('catalog makes one direct authenticated service-binding request', async (t)
   assert.equal(headers.get('authorization'), `Bearer ${JWT}`);
   assert.equal(headers.get('x-cail-app'), 'agent-studio');
   assert.equal(capture.calls[0].init.credentials, 'omit');
-  assert.equal(capture.calls[0].init.redirect, 'error');
+  assert.equal(capture.calls[0].init.redirect, 'manual');
   assert.deepEqual(result.models.map(({ id, recommended }) => ({ id, recommended })), [
     { id: '@cf/zai-org/glm-5.2', recommended: true },
     { id: '@cf/openai/gpt-oss-120b', recommended: false },
   ]);
+});
+
+test('catalog service bindings accept manual redirects and fail closed on 3xx', async () => {
+  const capture = captureGateway(() => new Response(null, {
+    status: 302,
+    headers: { location: 'https://outside.example/v1/models' },
+  }));
+  await assert.rejects(fetchCailModels({
+    env: { CAIL_API_BASE: BASE, GATEWAY: capture.gateway },
+    identityJwt: JWT,
+  }), /status 302/);
+  assert.equal(capture.calls.length, 1);
+  assert.equal(capture.calls[0].init.redirect, 'manual');
 });
 
 test('catalog requires verified authentication, base URL, and service binding', async () => {

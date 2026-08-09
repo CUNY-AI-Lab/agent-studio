@@ -142,9 +142,10 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     })(),
     // Model requests never need browser cookies or other ambient credentials.
     credentials: 'omit',
-    // A gateway redirect is an invalid model response; never follow it with a
-    // bearer credential attached.
-    redirect: 'error',
+    // Service bindings support manual redirect handling, not `redirect:'error'`.
+    // A gateway redirect is still an invalid model response; never follow it
+    // with a bearer credential attached.
+    redirect: 'manual',
   });
 
   const provider = createOpenAICompatible({

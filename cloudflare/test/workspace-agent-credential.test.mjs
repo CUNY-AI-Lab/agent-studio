@@ -295,7 +295,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     identityJwt: null,
     app: 'agent-studio',
     credentials: 'omit',
-    redirect: 'error',
+    redirect: 'manual',
   });
 });
 
