@@ -512,7 +512,7 @@ export function csrfCookieFrom(response) {
   return null;
 }
 
-const CSRF_HEADER = 'X-CAIL-CSRF';
+const CSRF_HEADER = 'X-CSRF-Token';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
@@ -522,7 +522,7 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  *
  * It also mirrors a first-party page's CSRF behavior (fleet contract §3¾): it
  * captures the per-session token from the /api/session bootstrap's Set-Cookie
- * header (the delivery channel; never the body) and attaches it as X-CAIL-CSRF
+ * header (the delivery channel; never the body) and attaches it as X-CSRF-Token
  * on every state-changing request and GET/HEAD read. With neither Sec-Fetch-Site
  * nor Origin set, the worker falls back to that token — so ordinary route tests
  * pass through the enforced path rather than around it. A test exercising the

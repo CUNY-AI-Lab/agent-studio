@@ -299,7 +299,7 @@ app.get('/health', async (c) => {
 // delivered ONLY via a path-scoped Set-Cookie (cail_csrf_agentstudio) — never
 // in the response body, because a same-origin sibling / user-content script
 // could `fetch()` this endpoint and read a body-delivered token. The page reads
-// the cookie (scoped to our path) and echoes it in X-CAIL-CSRF on every mutation
+// the cookie (scoped to our path) and echoes it in X-CSRF-Token on every mutation
 // and as the WebSocket connect token. The body carries only the session id.
 app.get('/api/session', async (c) => {
   const sessionId = requireSession(c);

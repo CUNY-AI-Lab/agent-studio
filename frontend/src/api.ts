@@ -66,12 +66,12 @@ export function handleAuthRequired(status: number, payload: unknown): boolean {
  * script that `fetch()`es our endpoints can't read it). Browser JavaScript
  * cannot read the Set-Cookie response header. The cookie itself is deliberately
  * non-HttpOnly; its Path scopes document.cookie visibility to our own pages.
- * We read it here and echo it in X-CAIL-CSRF on every mutation,
+ * We read it here and echo it in X-CSRF-Token on every mutation,
  * sensitive workspace read, and as the WebSocket connect token. A sibling tool
  * is same-origin but, being outside our path prefix, never sees the cookie —
  * which is what isolates siblings (the origin check alone cannot).
  */
-export const CSRF_HEADER = 'X-CAIL-CSRF';
+export const CSRF_HEADER = 'X-CSRF-Token';
 
 /** Cookie the worker delivers the token in (must match cloudflare/src/lib/csrf.ts). */
 export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
@@ -173,7 +173,7 @@ async function protectedFetch(input: string, init: RequestInit): Promise<Respons
 
 /**
  * fetch() wrapper for state-changing calls: ensures the CSRF token and attaches
- * it as X-CAIL-CSRF (merged with any caller-supplied headers). All mutating API
+ * it as X-CSRF-Token (merged with any caller-supplied headers). All mutating API
  * helpers below route through this so no mutation can forget the header.
  */
 export async function mutatingFetch(input: string, init: RequestInit = {}): Promise<Response> {

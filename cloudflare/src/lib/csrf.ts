@@ -12,7 +12,7 @@
 //     registrable domain) is rejected — the 2026-07-05 clarification makes this
 //     required, not extra.
 //   * Rule 3 — per-session token: an HMAC-derived, per-session token the tool
-//     issues to its own first-party pages and requires echoed in X-CAIL-CSRF on
+//     issues to its own first-party pages and requires echoed in X-CSRF-Token on
 //     every mutation and sensitive workspace read. A sibling tool can't read
 //     it; a cross-site page can't set the custom header without a CORS preflight
 //     we never approve. This — not the origin check — is what isolates sibling
@@ -30,7 +30,7 @@ import type { SessionVariables } from './session';
 import { canonicalError } from './error-envelope';
 
 /** Custom header the frontend echoes the per-session token in (fleet convention). */
-export const CSRF_HEADER = 'X-CAIL-CSRF';
+export const CSRF_HEADER = 'X-CSRF-Token';
 
 /**
  * Name of the path-scoped, script-readable cookie the token is delivered in
@@ -41,13 +41,13 @@ export const CSRF_HEADER = 'X-CAIL-CSRF';
  * and read a JSON/HTML body, but cannot read our Set-Cookie. `document.cookie`
  * exposes the value only to documents under the cookie's Path prefix, which is
  * what isolates siblings. NOT HttpOnly: our own page JS must read it to echo it
- * in X-CAIL-CSRF. The value is a stateless, short-lived signed capability.
+ * in X-CSRF-Token. The value is a stateless, short-lived signed capability.
  */
 export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
 
 /**
  * Query-param name carrying the per-session token on WebSocket upgrades. The
- * browser WebSocket API cannot set X-CAIL-CSRF, so the edge and DO verify this
+ * browser WebSocket API cannot set X-CSRF-Token, so the edge and DO verify this
  * value at accept. Sensitive HTTP reads use the header and blob URLs instead.
  */
 export const CSRF_WS_QUERY_PARAM = 'csrfToken';

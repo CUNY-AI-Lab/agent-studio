@@ -47,7 +47,7 @@ than treated as anonymous.
 
 The session cookie is signed with `SESSION_SECRET`. A session bootstrap also
 sets a short-lived CSRF cookie scoped to `CAIL_BASE_PATH`; protected reads and
-mutations echo it in `X-CAIL-CSRF`. The browser WebSocket API cannot set a
+mutations echo it in `X-CSRF-Token`. The browser WebSocket API cannot set a
 custom header, so the same capability is carried in the upgrade query and
 checked by both the Worker and Durable Object. The exact configured origin is
 used for the origin check.

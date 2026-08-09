@@ -34,6 +34,10 @@ function jsonInit(method, body) {
   return { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
 }
 
+test('CSRF header stays outside the Doorway-owned X-CAIL namespace', () => {
+  assert.equal(CSRF_HEADER, 'X-CSRF-Token');
+});
+
 // ---------------------------------------------------------------------------
 // Rule 2 — origin classification (pure)
 // ---------------------------------------------------------------------------

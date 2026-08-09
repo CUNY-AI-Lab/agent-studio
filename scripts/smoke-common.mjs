@@ -113,7 +113,7 @@ export function agentSocketBasePath(baseUrl, agentClass, agentName) {
 }
 
 const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
-const CSRF_HEADER = 'X-CAIL-CSRF';
+const CSRF_HEADER = 'X-CSRF-Token';
 
 function parseSetCookie(setCookie) {
   if (!setCookie) return null;

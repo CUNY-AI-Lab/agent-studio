@@ -65,6 +65,11 @@ function authRequiredResponse(loginUrl = '/login') {
 }
 
 describe('CSRF fetch helper (cookie delivery)', () => {
+  it('uses an app-owned header that Doorway can forward', async () => {
+    const { CSRF_HEADER } = await loadApi();
+    expect(CSRF_HEADER).toBe('X-CSRF-Token');
+  });
+
   beforeEach(() => {
     vi.unstubAllGlobals();
   });
@@ -206,7 +211,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
   });
 
-  it('mutatingFetch attaches the X-CAIL-CSRF header with the cookie token', async () => {
+  it('mutatingFetch attaches the X-CSRF-Token header with the cookie token', async () => {
     const { mutatingFetch, CSRF_HEADER } = await loadApi();
     const token = 'b'.repeat(64);
     const cookie = stubCookie();
@@ -298,7 +303,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(headers.get(CSRF_HEADER)).toBeTruthy();
   });
 
-  it('readingFetch attaches the X-CAIL-CSRF header with the cookie token', async () => {
+  it('readingFetch attaches the X-CSRF-Token header with the cookie token', async () => {
     const { readingFetch, CSRF_HEADER } = await loadApi();
     const token = 'e'.repeat(64);
     stubCookie(`${CSRF_COOKIE}=${token}`);

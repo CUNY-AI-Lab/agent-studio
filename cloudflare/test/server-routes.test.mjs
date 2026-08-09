@@ -224,7 +224,7 @@ test('concurrent anonymous reads issue independent cookies and reject a mixed CS
     new Request('https://studio.test/api/workspaces', {
       headers: {
         Cookie: galleryCookie,
-        'X-CAIL-CSRF': bootstrapCsrf,
+        'X-CSRF-Token': bootstrapCsrf,
       },
     }),
     env,

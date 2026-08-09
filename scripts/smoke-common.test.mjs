@@ -40,7 +40,7 @@ test('SessionClient sends the bootstrapped CSRF token on protected reads', async
   await client.ensureSession();
   await client.json('/api/workspaces');
 
-  assert.equal(requests[1].headers.get('X-CAIL-CSRF'), 'a'.repeat(64));
+  assert.equal(requests[1].headers.get('X-CSRF-Token'), 'a'.repeat(64));
   assert.equal(requests[1].headers.get('Cookie'), 'agent-studio-session=session.signature');
 });
 
