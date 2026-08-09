@@ -27,6 +27,8 @@ const IMPORT_MARKER_PREFIX = 'agent-studio/account-import/v1/';
 
 export type MigratableAgent = {
   syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void>;
+  freezeForMigration(): Promise<void>;
+  unfreezeAfterMigration(): Promise<void>;
   getSnapshot(): Promise<WorkspaceState>;
   getMessages(): Promise<UIMessage[]>;
   getWorkspaceFiles(): Promise<Array<{ path: string; isDirectory: boolean }>>;
@@ -40,50 +42,49 @@ export type MigratableAgent = {
     data: string | ArrayBuffer | Uint8Array,
     contentType?: string,
   ): Promise<{ ok: true; filePath: string }>;
+  clearWorkspaceFiles(): Promise<void>;
   replaceWorkspaceState(
     state: WorkspaceState,
     workspace: WorkspaceRecord,
     sessionId: string,
   ): Promise<void>;
-  persistMessages(messages: UIMessage[]): Promise<void>;
+  persistMessages(
+    messages: UIMessage[],
+    excludeBroadcastIds?: string[],
+    options?: { _deleteStaleRows?: boolean },
+  ): Promise<void>;
 };
 
 type AgentFactory = (sessionId: string, workspaceId: string) => Promise<MigratableAgent>;
 
-export type MigrationOutcome = 'migrated' | 'already-done';
+export type MigrationOutcome = 'migrated' | 'already-done' | 'claimed-by-other';
 
-// Kept for the checked-in Durable Object class until that obsolete binding is
-// removed from the deployment manifest. No application path calls this claim
-// state machine; the first-login importer uses its per-subject completion key.
-export type ClaimAction = 'run' | 'already-done' | 'in-progress' | 'claimed-by-other' | 'anonymous-active';
-export interface MigrationClaim {
-  subjectSessionId: string;
-  status: 'in-progress' | 'done' | 'failed';
-  startedAt: number;
-  completedAt?: number;
-}
-export function decideClaim(
-  existing: MigrationClaim | undefined,
-  subjectSessionId: string,
-  now: number,
-): { action: ClaimAction; record?: MigrationClaim } {
-  if (!existing) return { action: 'run', record: { subjectSessionId, status: 'in-progress', startedAt: now } };
-  if (existing.subjectSessionId !== subjectSessionId) return { action: 'claimed-by-other' };
-  if (existing.status === 'done') return { action: 'already-done' };
-  return { action: 'run', record: { ...existing, status: 'in-progress', startedAt: now } };
+function migrationRegistry(env: Env, anonSessionId: string) {
+  return env.MIGRATION_REGISTRY.get(env.MIGRATION_REGISTRY.idFromName(anonSessionId));
 }
 
-// Requests sharing one warm isolate serialize the copy. The completion marker
-// remains authoritative across isolates; this small lock only prevents two
-// first-login requests from appending the same messages/downloads locally.
-const importLocks = new Map<string, Promise<void>>();
+export function beginAnonymousSessionRequest(
+  env: Env,
+  anonSessionId: string,
+  requestId: string,
+): Promise<boolean> {
+  return migrationRegistry(env, anonSessionId).beginAnonymousRequest(requestId);
+}
+
+export function endAnonymousSessionRequest(
+  env: Env,
+  anonSessionId: string,
+  requestId: string,
+): Promise<void> {
+  return migrationRegistry(env, anonSessionId).endAnonymousRequest(requestId);
+}
 
 function markerKey(subjectSessionId: string): string {
   return `${IMPORT_MARKER_PREFIX}${subjectSessionId}.json`;
 }
 
 async function completed(env: Env, subjectSessionId: string): Promise<boolean> {
-  return Boolean(await env.WORKSPACE_FILES.get(markerKey(subjectSessionId)));
+  return Boolean(await env.WORKSPACE_FILES.head(markerKey(subjectSessionId)));
 }
 
 async function readLegacyDownloads(
@@ -104,18 +105,26 @@ async function copyWorkspace(
   subjectSessionId: string,
   workspace: WorkspaceRecord,
   getAgent: AgentFactory,
-): Promise<void> {
-  // A target record is the durable workspace commit marker. Existing target
-  // records are never overwritten, so retries and pre-existing subject data
-  // remain deterministic.
-  if (await getWorkspace(env, subjectSessionId, workspace.id)) return;
-
+): Promise<MigratableAgent> {
   const source = await getAgent(anonSessionId, workspace.id);
-  const target = await getAgent(subjectSessionId, workspace.id);
+  // A target record is the durable workspace commit marker. Existing target
+  // records are never overwritten. On retry we freeze an older source again
+  // without trying to sync the already-retired Durable Object first.
+  if (await getWorkspace(env, subjectSessionId, workspace.id)) {
+    await source.freezeForMigration();
+    return source;
+  }
+
   await source.syncWorkspace(workspace, anonSessionId);
-  await target.syncWorkspace(workspace, subjectSessionId);
+  await source.freezeForMigration();
 
   try {
+    const target = await getAgent(subjectSessionId, workspace.id);
+    await target.syncWorkspace(workspace, subjectSessionId);
+    // A previous failed attempt can have written a subset of runtime files.
+    // No target workspace record exists yet, so this namespace is still an
+    // import staging area and must exactly mirror the current frozen source.
+    await target.clearWorkspaceFiles();
     const [state, messages, runtimeFiles, legacyFiles] = await Promise.all([
       source.getSnapshot(),
       source.getMessages(),
@@ -141,10 +150,14 @@ async function copyWorkspace(
     }
 
     await target.replaceWorkspaceState(state, workspace, subjectSessionId);
+    // The target is an invisible import staging namespace until the R2 record
+    // commits. AIChatAgent only deletes stale rows when every incoming id is
+    // already known, so clear first and then write the exact frozen source.
+    await target.persistMessages([], undefined, { _deleteStaleRows: true });
     await target.persistMessages(messages);
 
     const downloads = [
-      ...(await getWorkspaceDownloads(env, anonSessionId, workspace.id)),
+      ...(await getWorkspaceDownloads(env, anonSessionId, workspace.id, { onCorrupt: 'throw' })),
       ...(await readLegacyDownloads(env, anonSessionId, workspace.id)),
     ];
     await putWorkspaceDownloads(env, subjectSessionId, workspace.id, downloads);
@@ -152,10 +165,13 @@ async function copyWorkspace(
     // Presence of the R2 workspace record makes the copied workspace visible
     // to normal list/get routes only after all content has succeeded.
     await putWorkspace(env, subjectSessionId, workspace);
+    return source;
   } catch (error) {
     // The source remains available for a retry. The target workspace record is
     // still absent, so partial target objects are not visible to normal list
-    // or get routes; deterministic file/download keys make a retry idempotent.
+    // or get routes. A retry clears the staging runtime files before copying
+    // the then-current frozen source again.
+    await source.unfreezeAfterMigration().catch(() => undefined);
     throw error;
   }
 }
@@ -170,7 +186,13 @@ export async function migrateAnonymousSession(
 
   const workspaces = await listWorkspaces(env, anonSessionId);
   for (const workspace of workspaces) {
-    await copyWorkspace(env, anonSessionId, subjectSessionId, workspace, getAgent);
+    await copyWorkspace(
+      env,
+      anonSessionId,
+      subjectSessionId,
+      workspace,
+      getAgent,
+    );
   }
 
   // Gallery records are global, but private ownership tags are derived from
@@ -181,6 +203,9 @@ export async function migrateAnonymousSession(
   await env.WORKSPACE_FILES.put(markerKey(subjectSessionId), '1', {
     httpMetadata: { contentType: 'text/plain; charset=utf-8' },
   });
+  // Each source stays frozen once its target workspace record commits, even if
+  // a later workspace or the account marker fails. A retry skips that completed
+  // target, and an old anonymous request cannot make the frozen source diverge.
 }
 
 export async function runFirstLoginMigration(
@@ -188,13 +213,19 @@ export async function runFirstLoginMigration(
   anonSessionId: string,
   subjectSessionId: string,
 ): Promise<MigrationOutcome> {
-  const existing = importLocks.get(subjectSessionId);
-  if (existing) {
-    await existing;
-    return 'already-done';
+  const registry = migrationRegistry(env, anonSessionId);
+  const claim = await registry.claim(subjectSessionId);
+  if (claim === 'claimed-by-other') return 'claimed-by-other';
+  if (claim === 'already-done') return 'already-done';
+  if (claim === 'anonymous-active' || claim === 'in-progress') {
+    throw new Error('account import is waiting for an active legacy request');
   }
-  const run = (async () => {
-    if (await completed(env, subjectSessionId)) return;
+
+  try {
+    if (await completed(env, subjectSessionId)) {
+      await registry.markDone(subjectSessionId);
+      return 'already-done';
+    }
     const { getAgentByName } = await import('agents');
     const { createWorkspaceAgentName } = await import('./ids');
     const getWorkspaceByName = getAgentByName as unknown as (
@@ -206,12 +237,10 @@ export async function runFirstLoginMigration(
       createWorkspaceAgentName(sessionId, workspaceId),
     );
     await migrateAnonymousSession(env, anonSessionId, subjectSessionId, getAgent);
-  })();
-  importLocks.set(subjectSessionId, run);
-  try {
-    await run;
+    await registry.markDone(subjectSessionId);
     return 'migrated';
-  } finally {
-    importLocks.delete(subjectSessionId);
+  } catch (error) {
+    await registry.markFailed(subjectSessionId).catch(() => undefined);
+    throw error;
   }
 }

@@ -25,37 +25,15 @@ interface StoredDownload {
 }
 
 export interface ReadDownloadsOptions {
-  /**
-   * What to do when a download object EXISTS in R2 but cannot be parsed (or
-   * fails the shape check). A missing object is always treated as "no
-   * downloads" — that is the only case that genuinely means absence.
-   *
-   * - 'skip' (default): log the corrupt key and omit that entry, so one bad
-   *   object cannot take down the whole listing. Used by the read/serve
-   *   routes, where partial results beat a 500 for content the user can
-   *   regenerate.
-   * - 'throw': log and propagate an error. Used by the first-login migration,
-   *   where a corrupt record must NOT be read as "nothing to migrate": the
-   *   anonymous namespace is deleted after migration, so silently equating
-   *   corruption with absence would permanently drop queued deliverables.
-   *   Throwing routes into the migration's fail-and-retry path instead.
-   */
+  /** Import uses `throw` so corrupt legacy content remains retryable. */
   onCorrupt?: 'skip' | 'throw';
-}
-
-export const MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ = 20;
-
-interface CorruptEventBudget {
-  remaining: number;
 }
 
 function reportCorruptDownloadObject(
   key: string,
   error: unknown,
   onCorrupt: 'skip' | 'throw',
-  eventBudget: CorruptEventBudget,
 ): void {
-  eventBudget.remaining = Math.max(0, eventBudget.remaining - 1);
   if (onCorrupt === 'throw') {
     throw new Error(`downloads: corrupt stored download object at ${key}`, { cause: error });
   }
@@ -91,7 +69,6 @@ export async function getWorkspaceDownloads(
   options: ReadDownloadsOptions = {}
 ): Promise<DownloadRequest[]> {
   const onCorrupt = options.onCorrupt ?? 'skip';
-  const eventBudget: CorruptEventBudget = { remaining: MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ };
   const prefix = getDownloadsPrefix(sessionId, workspaceId);
   const stored: StoredDownload[] = [];
 
@@ -108,7 +85,7 @@ export async function getWorkspaceDownloads(
         try {
           parsed = await body.json<StoredDownload>();
         } catch (error) {
-          reportCorruptDownloadObject(object.key, error, onCorrupt, eventBudget);
+          reportCorruptDownloadObject(object.key, error, onCorrupt);
           return null;
         }
         if (!(parsed && typeof parsed === 'object' && parsed.download)) {
@@ -116,7 +93,6 @@ export async function getWorkspaceDownloads(
             object.key,
             new Error('missing download payload'),
             onCorrupt,
-            eventBudget
           );
           return null;
         }
@@ -170,6 +146,10 @@ export async function putWorkspaceDownloads(
   downloads: DownloadRequest[],
 ): Promise<void> {
   const prefix = getDownloadsPrefix(sessionId, workspaceId);
+  // This is used only for an invisible first-login import staging namespace.
+  // Replace, rather than append, so a failed attempt cannot leave trailing
+  // objects when the source queue is shorter on retry.
+  await deleteByPrefix(env, prefix);
   for (const [index, download] of downloads.entries()) {
     const stored: StoredDownload = {
       seq: index,

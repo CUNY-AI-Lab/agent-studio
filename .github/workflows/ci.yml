@@ -46,11 +46,11 @@ jobs:
           umask 077
           cat > cloudflare/.dev.vars <<'EOF'
           SESSION_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-          CAIL_API_BASE=https://cail-model-proxy.invalid
           CAIL_MODEL=@cf/zai-org/glm-5.2
-          CAIL_IDENTITY_JWKS={"keys":[{"alg":"RS256","e":"AQAB","ext":true,"key_ops":["verify"],"kty":"RSA","n":"tgwConORyAewb7KiTKn9oPOkR3lSOjREoomSdaNhwwKjoxTVBA8xHZqe3KJ0_T7erVL3zjQ_Rd3CgsNgfJshfQvOhP06gGoRXA1QpqAz6p-N5j6N5nf5-b0vYQncAWKPi6w7fgUzLpsoBBpiNUnp1rDPW4VYDwkYOsYg1_VH_zjFNi7IQk0ccUSa9JfCbUxmmeWhRJCPEvXm4AWSQms4C4Wg4sgTNrV9j8GNEq2YKk4wDwvQLrtG6h8EeKkJW_ZCaRY-o8mLtW66rwfSCiBzwp0D2J1mdYrYzDbFjIYMwue9E44sD7-zd5liqPUVmxDqgRfOrd0r9OSZKMNPuKjIXQ","kid":"ci-smoke-throwaway","use":"sig"}]}
           CAIL_REQUIRE_IDENTITY=false
           CAIL_BASE_PATH=/agent-studio
+          CAIL_IDENTITY_JWKS=
+          CAIL_IDENTITY_ISSUER=
           EOF
 
       - name: Local Worker process integration smoke (not E2E)

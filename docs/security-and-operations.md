@@ -74,12 +74,12 @@ incomplete.
 
 Gallery publication writes private ownership and state before the public
 manifest and uses a client operation identifier to make a repeated request
-safe. Public records do not contain owner identifiers. Gallery owner keys are
-provided through the secret store and are never logged.
+safe. Public records do not contain owner identifiers. The private owner tag is
+keyed by `SESSION_SECRET` and is never logged.
 
 The only compatibility bridge is the [one-time first-login
 import](./legacy-account-import.md). A verified current identity and a verified
-signed legacy Agent Studio session mapping are required. The complete content
+signed legacy Agent Studio session cookie are required. The complete content
 and relationships are copied privately, one per-user completion marker is
 written only after success, and the new subject namespace becomes authoritative
 then. A failed attempt remains retryable; there is no alias, dual read,
@@ -158,7 +158,7 @@ bucket. Do not override those bindings, identity settings, routes, or bucket
 names on the command line. Run the authenticated smoke after activation and
 confirm that the synthetic workspace was deleted.
 
-Keep secrets such as `SESSION_SECRET`, `CAIL_IDENTITY_JWKS`,
-`CAIL_CANONICAL_ORIGIN`, gallery owner keys, and optional tool credentials in
-the authorized secret store. They do not belong in this repository or in
-command arguments.
+Keep `SESSION_SECRET`, `CAIL_IDENTITY_JWKS`, and optional tool credentials in
+the authorized secret store. Gallery ownership uses a private tag keyed by the
+stable session secret. The public canonical origins are reviewed source
+configuration, not secrets.

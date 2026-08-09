@@ -387,7 +387,7 @@ test('csrfCookiePath: defaults to / and honors CAIL_BASE_PATH (normalized)', () 
 test('route: CSRF cookie Path follows CAIL_BASE_PATH when set', async () => {
   const { env } = makeEnv();
   env.CAIL_BASE_PATH = '/agent-studio';
-  const res = await new Session(env).request(app, '/agent-studio/api/session');
+  const res = await new Session(env).request(app, '/api/session');
   const lines =
     typeof res.headers.getSetCookie === 'function'
       ? res.headers.getSetCookie()

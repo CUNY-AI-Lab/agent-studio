@@ -93,8 +93,12 @@ test('app-only identity remains valid for API smoke while chat requires both leg
   );
 });
 
-test('anonymous local smoke remains valid without identity credentials', () => {
-  assert.doesNotThrow(() => assertIdentityCredentials({}, { withChat: true }));
+test('anonymous local smoke remains valid only when paid chat is disabled', () => {
+  assert.doesNotThrow(() => assertIdentityCredentials({}, { withChat: false }));
+  assert.throws(
+    () => assertIdentityCredentials({}, { withChat: true }),
+    /requires both AGENT_STUDIO_APP_IDENTITY_JWT and AGENT_STUDIO_GATEWAY_IDENTITY_JWT/,
+  );
 });
 
 test('parseArgs accepts separated and inline values', () => {

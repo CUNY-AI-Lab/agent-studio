@@ -45,8 +45,7 @@ test('quotaSignalFromError ignores non-quota CailErrors', () => {
   assert.equal(quotaSignalFromError({ error: { code: 'network_error', message: 'fetch failed' } }), null);
 });
 
-// Extraction is delegated to cail-client's extractCailError, which digs a
-// TYPED CAIL envelope out of SDK wrappers but never sniffs bare statuses or
+// Extraction digs a typed CAIL envelope out of SDK wrappers but never sniffs bare statuses or
 // message text: a bare 429 shape or an envelope-free RetryError is NOT a
 // CAIL quota signal.
 test('quotaSignalFromError does not sniff envelope-free SDK error shapes', () => {

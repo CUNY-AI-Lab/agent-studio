@@ -57,8 +57,6 @@ export interface CreateCailModelOptions {
   identityJwt: string;
   /** Optional per-call model override (falls back to env / default). */
   model?: string;
-  /** Ignored compatibility field; correlation is no longer transported. */
-  correlation?: unknown;
 }
 
 function canonicalCailApiBase(apiBase: string): string {

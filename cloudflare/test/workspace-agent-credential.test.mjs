@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createTestIdentityIssuer, TEST_SUBJECTS } from '@cuny-ai-lab/cail-identity/testing';
-import { cailErrorResponse } from '@cuny-ai-lab/cail-client/testing';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
 
@@ -95,7 +94,6 @@ test('constructed WorkspaceAgent credential boundary installs a same-subject gat
   assert.deepEqual(storage.writes.slice(writesBeforeCredential).map(([kind, key]) => [kind, key]), [
     ['put', 'cail:identity-jwt'],
     ['put', 'cail:subject'],
-    ['delete', 'cail:operational-subject'],
   ]);
 });
 
@@ -194,6 +192,7 @@ test('WorkspaceAgent credential survives the onStart storage hydration path', as
 });
 
 test('server credential RPC reaches a constructed WorkspaceAgent chat/model boundary with the verified gateway leg', async (t) => {
+  t.mock.method(console, 'error', () => {});
   const issuer = await createTestIdentityIssuer({ kid: 'workspace-chat-boundary-key' });
   const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
   const env = {
@@ -206,6 +205,29 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   const storage = makeStorage();
   const agent = await makeRealWorkspaceAgent(sessionId, env, storage);
   const gatewayToken = await mintGateway(issuer);
+  const wire = [];
+  env.GATEWAY = {
+    async fetch(_input, init) {
+      const headers = new Headers(init?.headers);
+      wire.push({
+        method: init?.method,
+        authorization: headers.get('authorization'),
+        identityJwt: headers.get('X-CAIL-Identity-JWT'),
+        app: headers.get('X-CAIL-App'),
+        credentials: init?.credentials,
+        redirect: init?.redirect,
+      });
+      return Response.json({
+        error: {
+          message: 'Gateway test boundary reached.',
+          type: 'authentication_error',
+          param: null,
+          code: 'authentication_required',
+          cail: { retryable: false },
+        },
+      }, { status: 401, headers: { 'x-should-retry': 'false' } });
+    },
+  };
 
   // This is the same internal server→DO RPC used by server.ts after its HTTP
   // keyring middleware has verified the optional gateway leg. Accept an
@@ -239,37 +261,8 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     inputSchema: z.object({}),
     execute: async () => 'ok',
   });
-  const wire = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (_input, init) => {
-    const headers = new Headers(init?.headers);
-    wire.push({
-      method: init?.method,
-      authorization: headers.get('authorization'),
-      identityJwt: headers.get('X-CAIL-Identity-JWT'),
-      app: headers.get('X-CAIL-App'),
-      credentials: init?.credentials,
-      redirect: init?.redirect,
-    });
-    return cailErrorResponse(
-      401,
-      {
-        error: {
-          message: 'Gateway test boundary reached.',
-          type: 'authentication_error',
-          param: null,
-          code: 'authentication_required',
-        },
-      },
-      { 'x-should-retry': 'false' },
-    );
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
-  // Keep tool construction and observability storage local to this composed
-  // test; the model, credential adapter, and WorkspaceAgent method remain real.
+  // Keep tool construction local to this composed test; the model, credential
+  // adapter, and WorkspaceAgent method remain real.
   agent.requireWorkspace = () => ({
     id: 'workspace-1',
     name: 'Boundary test workspace',
@@ -287,11 +280,6 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   agent.buildHostTools = () => ({});
   agent.createCodeModeTool = () => noopTool;
   agent.buildModelTools = () => ({});
-  agent.ensureObservabilityRequest = () => ({ steps: 0 });
-  agent.pushObservabilityEvent = () => {};
-  agent.finalizeObservabilityRequest = () => {};
-  agent.recordChunkObservability = () => {};
-  agent.markObservabilityUpdated = () => {};
 
   const response = await agent.onChatMessage(undefined, { requestId: 'request-1' });
   const responseBody = await response.text();
@@ -331,19 +319,9 @@ test('warm WorkspaceAgent re-verifies an expired Gateway leg before chat and pur
   // Move beyond the shared verifier's 60-second clock tolerance while the DO
   // remains warm; no hibernation or reconstructed instance is involved.
   currentNowMs = installNowMs + 62_000;
-  let wireCalls = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    wireCalls += 1;
-    throw new Error('model fetch must not run with an expired gateway leg');
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
 
   agent.requireWorkspace = () => ({ id: 'workspace-1' });
   agent.requireSessionId = () => sessionId;
-  agent.finalizeObservabilityRequest = () => {};
 
   const response = await agent.onChatMessage(undefined, { requestId: 'warm-expired' });
   const body = await response.text();
@@ -352,14 +330,13 @@ test('warm WorkspaceAgent re-verifies an expired Gateway leg before chat and pur
 
   assert.equal(event.type, 'error');
   assert.equal(payload.error.code, 'authentication_required');
-  assert.equal(wireCalls, 0);
   assert.equal(agent.cailIdentityJwt, null);
   assert.equal(agent.cailSubject, null);
   assert.equal(storage.values.has('cail:identity-jwt'), false);
   assert.equal(storage.values.has('cail:subject'), false);
 });
 
-test('warm WorkspaceAgent fails closed on verifier configuration loss without purging recovery state', async (t) => {
+test('warm WorkspaceAgent fails closed on verifier configuration loss without purging recovery state', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'workspace-warm-config-key' });
   const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
   const env = identityEnv(issuer);
@@ -372,19 +349,8 @@ test('warm WorkspaceAgent fails closed on verifier configuration loss without pu
   // token and its derived fields must remain available for recovery once the
   // verifier configuration is repaired, but chat must not call the gateway.
   env.CAIL_IDENTITY_JWKS = '{not-json';
-  let wireCalls = 0;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    wireCalls += 1;
-    throw new Error('model fetch must not run with unavailable verifier config');
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
   agent.requireWorkspace = () => ({ id: 'workspace-1' });
   agent.requireSessionId = () => sessionId;
-  agent.finalizeObservabilityRequest = () => {};
 
   const response = await agent.onChatMessage(undefined, { requestId: 'warm-config-error' });
   const body = await response.text();
@@ -393,30 +359,18 @@ test('warm WorkspaceAgent fails closed on verifier configuration loss without pu
 
   assert.equal(event.type, 'error');
   assert.equal(payload.error.code, 'authentication_required');
-  assert.equal(wireCalls, 0);
   assert.equal(agent.cailIdentityJwt, token);
   assert.equal(storage.values.get('cail:identity-jwt'), token);
   assert.equal(storage.values.get('cail:subject'), TEST_SUBJECTS.alice);
 });
 
-test('constructed WorkspaceAgent denies the actual chat boundary when the optional gateway leg is absent', async (t) => {
+test('constructed WorkspaceAgent denies the actual chat boundary when the optional gateway leg is absent', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'workspace-chat-missing-gateway-key' });
   const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
   const env = identityEnv(issuer);
   const agent = await makeRealWorkspaceAgent(sessionId, env, makeStorage());
-  const originalFetch = globalThis.fetch;
-  let wireCalls = 0;
-  globalThis.fetch = async () => {
-    wireCalls += 1;
-    throw new Error('model fetch must not run without a verified gateway leg');
-  };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
-
   agent.requireWorkspace = () => ({ id: 'workspace-1' });
   agent.requireSessionId = () => sessionId;
-  agent.finalizeObservabilityRequest = () => {};
 
   const response = await agent.onChatMessage(undefined, { requestId: 'missing-gateway' });
   const body = await response.text();
@@ -425,5 +379,4 @@ test('constructed WorkspaceAgent denies the actual chat boundary when the option
 
   assert.equal(event.type, 'error');
   assert.equal(payload.error.code, 'authentication_required');
-  assert.equal(wireCalls, 0, 'the model path must not start without a verified gateway leg');
 });

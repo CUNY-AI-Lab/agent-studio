@@ -2,8 +2,9 @@ import { getAgentByName, routeAgentRequest } from 'agents';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { WorkspaceAgent } from './agent/workspace-agent';
+import { MigrationRegistry } from './migration-registry';
 import type { WorkspaceFileInfo, WorkspacePanel, WorkspaceRecord } from './domain/workspace';
-import { validateAgentStudioConfig, type AgentStudioConfigValidation, type Env } from './env';
+import { validateAgentStudioConfig, type Env } from './env';
 import {
   cloneGalleryItem,
   GalleryError,
@@ -58,14 +59,6 @@ import {
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { stripBasePath } from './lib/base-path';
 import { canonicalError } from './lib/error-envelope';
-import {
-  correlationFromHeaders,
-  LOG_PRODUCT,
-  logBoundaryEvent,
-  STUDIO_EVENTS,
-  studioLogger,
-  type CailCorrelation,
-} from './lib/logging';
 import { isAllowedUpload } from './lib/upload-validation';
 import { fileServingHeaders, previewServingHeaders } from './lib/file-serving';
 import {
@@ -102,13 +95,7 @@ const app = new Hono<{
   Variables: AppVariables;
 }>();
 
-type AppVariables = SessionVariables & {
-  workspace?: WorkspaceRecord;
-  /** Correlation adopted (or minted) at the request boundary — see the boundary-log middleware. */
-  logCorrelation?: CailCorrelation;
-  /** Epoch ms when the boundary-log middleware first saw this request. */
-  logStartedAt?: number;
-};
+type AppVariables = SessionVariables & { workspace?: WorkspaceRecord };
 
 type AppContext = Context<{
   Bindings: Env;
@@ -125,40 +112,6 @@ function jsonError(
   options: Parameters<typeof canonicalError>[2] = {},
 ) {
   return c.json(canonicalError(code, message, options), status);
-}
-
-/**
- * The CLASSIFIED route label for the boundary log event: the matched route
- * PATTERN (e.g. `/api/workspaces/:id/files/*`), never the raw path — raw
- * paths carry workspace ids and filenames, which are content, not metadata.
- * Middleware registrations match with method 'ALL'; the final handler's
- * registration carries the real method, so scan from the end.
- */
-function classifiedRoute(c: AppContext): string {
-  const matched = c.req.matchedRoutes;
-  for (let i = matched.length - 1; i >= 0; i -= 1) {
-    const route = matched[i];
-    if (route.method !== 'ALL' && route.path !== '*' && route.path !== '/*') {
-      return route.path;
-    }
-  }
-  return 'unmatched';
-}
-
-/** Emit the one wide boundary event for this request (fleet logging standard). */
-function emitBoundaryEvent(c: AppContext, status: number, errorType?: string): void {
-  const log = studioLogger(c.env);
-  if (!log) return;
-  logBoundaryEvent(log, {
-    correlation: c.get('logCorrelation') ?? correlationFromHeaders(c.req.raw),
-    method: c.req.method,
-    route: classifiedRoute(c),
-    status,
-    durationMs: Date.now() - (c.get('logStartedAt') ?? Date.now()),
-    // The verified log_sub, never the ownership subject.
-    operationalSubject: c.get('cailIdentity')?.operationalSubject,
-    ...(errorType ? { errorType } : {}),
-  });
 }
 
 // Validation failures are client errors: routes validate with zod .parse and
@@ -292,27 +245,9 @@ function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFi
     });
 }
 
-// ONE wide event per unit of work at the HTTP boundary (fleet logging
-// standard, 2026-07-11). Registered before every other middleware so the
-// timer covers the whole request and the correlation ids exist for the rest
-// of the chain. Correlation is adopted from the gateway's `traceparent` /
-// `X-CAIL-Request-Id` when present, minted otherwise ("adopt, never
-// regenerate"). Runs on '*' so /health and unmatched routes are covered too.
-// Hono maps thrown errors before `next()` resolves, so success and error paths
-// both emit exactly once here.
 app.use('*', async (c, next) => {
-  c.set('logCorrelation', correlationFromHeaders(c.req.raw));
-  c.set('logStartedAt', Date.now());
   await next();
   c.header('Referrer-Policy', 'no-referrer');
-  let errorType: string | undefined;
-  if (c.res.status >= 400 && c.res.headers.get('Content-Type')?.includes('application/json')) {
-    const payload = await c.res.clone().json().catch(() => null) as {
-      error?: { code?: unknown };
-    } | null;
-    if (typeof payload?.error?.code === 'string') errorType = payload.error.code;
-  }
-  emitBoundaryEvent(c, c.res.status, errorType);
 });
 
 app.use('/api/*', sessionMiddleware);
@@ -344,19 +279,19 @@ app.get('/health', async (c) => {
   const config = await validateAgentStudioConfig(c.env);
   if (!config.ok) {
     return c.json(
-      { ok: false, service: 'agent-studio', error: 'configuration_invalid', errorCode: config.errorCode },
+      {
+        ok: false,
+        service: 'agent-studio',
+        ...canonicalError(
+          config.errorCode,
+          'Service unavailable: invalid configuration',
+          { type: 'api_error', retryable: false },
+        ),
+      },
       503
     );
   }
-  const metadata = c.env.CF_VERSION_METADATA;
-  const versionId = typeof metadata?.id === 'string'
-    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(metadata.id)
-    ? metadata.id
-    : null;
-  const versionTag = typeof metadata?.tag === 'string' && /^[0-9a-f]{40}$/.test(metadata.tag)
-    ? metadata.tag
-    : null;
-  return c.json({ ok: true, service: 'agent-studio', version_id: versionId, version_tag: versionTag });
+  return c.json({ ok: true, service: 'agent-studio' });
 });
 
 // The session bootstrap the frontend hits first also delivers the per-session
@@ -638,7 +573,7 @@ app.post('/api/workspaces/import', async (c) => {
     await agent.persistMessages(bundle.messages);
     // The R2 record is the visibility/commit marker for list/get routes.
     await putWorkspace(c.env, sessionId, workspace);
-  } catch (error) {
+  } catch {
     if (agent) {
       await agent.destroyWorkspaceState().catch(() => undefined);
     }
@@ -646,9 +581,7 @@ app.post('/api/workspaces/import', async (c) => {
     await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId))
       .catch(() => undefined);
     await deleteWorkspace(c.env, sessionId, workspaceId).catch(() => undefined);
-    return c.json({
-      error: error instanceof Error ? error.message : 'Failed to import workspace',
-    }, 400);
+    return jsonError(c, 400, 'import_failed', 'Workspace import failed');
   }
 
   return c.json({ workspaceId, workspace }, 201);
@@ -719,14 +652,6 @@ app.get('/api/workspaces/:id/runtime', async (c) => {
   const runtime = await agent.getRuntimeInfo();
 
   return c.json({ runtime });
-});
-
-app.get('/api/workspaces/:id/observability', async (c) => {
-  const workspace = loadedWorkspace(c);
-  const { agent } = await syncedWorkspaceAgent(c, workspace);
-  const observability = await agent.getObservability();
-
-  return c.json({ observability });
 });
 
 app.post('/api/workspaces/:id/runtime/execute', async (c) => {
@@ -861,10 +786,8 @@ app.delete('/api/workspaces/:id', async (c) => {
   const workspace = loadedWorkspace(c);
   const workspaceId = workspace.id;
 
-  // Delete must not depend on hydration: syncWorkspace would run legacy
-  // hydration, so a workspace with an unreadable legacy file could never be
-  // deleted. The destructive RPC fences writers and fails loud before the R2
-  // records are removed.
+  // The destructive RPC fences writers and fails loud before the R2 records
+  // are removed.
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.destroyWorkspaceState();
   await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
@@ -1057,42 +980,7 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
   return c.json({ success: true, state });
 });
 
-export { WorkspaceAgent };
-export { MigrationRegistry } from './migration-registry';
-
-// AS-3-10 deploy-footgun guard. Several intentionally permissive local-dev
-// defaults are unsafe on the shared production host. Warn loudly once so a
-// deploy that missed its injected model proxy, identity gate, or cookie base
-// path is obvious in logs. Those optional settings remain warnings; the
-// required health configuration is validated separately and fails startup traffic.
-let cailConfigChecked = false;
-function checkCailConfigOnce(env: Env, config: AgentStudioConfigValidation): void {
-  if (cailConfigChecked) return;
-  cailConfigChecked = true;
-  const base = env.CAIL_API_BASE ?? '';
-  const logConfigInvalid = (errorType: string) => {
-    const log = studioLogger(env);
-    if (!log) return;
-    log.emit(STUDIO_EVENTS.STARTUP_CONFIG_INVALID, {
-      product_id: LOG_PRODUCT,
-      terminal: { outcome: 'denied', reason: 'denied' },
-      error_type: errorType,
-    });
-  };
-  if (!config.ok) {
-    logConfigInvalid(config.errorCode);
-  }
-  if (base.includes('REPLACE') || base.includes('.invalid')) {
-    logConfigInvalid('cail_api_base_placeholder');
-  }
-  if (env.CAIL_REQUIRE_IDENTITY !== 'true') {
-    logConfigInvalid('identity_not_required');
-  }
-  if (!env.CAIL_BASE_PATH || !env.CAIL_BASE_PATH.trim()) {
-    const sharedHost = Boolean(env.CAIL_CANONICAL_ORIGIN);
-    logConfigInvalid(sharedHost ? 'shared_host_base_path_missing' : 'base_path_missing');
-  }
-}
+export { MigrationRegistry, WorkspaceAgent };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -1103,7 +991,6 @@ export default {
     request = mountedRequest;
     const pathname = new URL(request.url).pathname;
     const config = await validateAgentStudioConfig(env);
-    checkCailConfigOnce(env, config);
     if (!config.ok && pathname !== '/health') {
       return Response.json(
         canonicalError(config.errorCode, 'Service unavailable: invalid configuration', {
@@ -1133,22 +1020,8 @@ export default {
     // is rejected here; the per-connection CSRF token gate then runs inside the
     // Durable Object on connect (see WorkspaceAgent.onConnect).
     if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
-      // These 403s never reach the Hono boundary middleware, so they emit
-      // their own auth.denied wide event (route label, never the raw path).
-      const denyUpgrade = (errorCode: string, body: string): Response => {
-        const log = studioLogger(env);
-        if (log) logBoundaryEvent(log, {
-          correlation: correlationFromHeaders(request),
-          method: request.method,
-          route: 'agents/ws-upgrade',
-          status: 403,
-          durationMs: 0,
-          errorType: errorCode,
-        });
-        return new Response(body, { status: 403 });
-      };
       if (!wsOriginAllowed(request, env.CAIL_CANONICAL_ORIGIN)) {
-        return denyUpgrade('ws_origin_mismatch', 'Forbidden: cross-origin WebSocket upgrade');
+        return new Response('Forbidden: cross-origin WebSocket upgrade', { status: 403 });
       }
       // Reject an unauthenticated /agents/* socket at the edge, before routeAgentRequest
       // instantiates the DO — the SDK sends the full persisted state on connect BEFORE the
@@ -1158,7 +1031,7 @@ export default {
         wsAgentSessionIdFromPath(wsPath)
         && !(await wsAgentCsrfValid(request, env.SESSION_SECRET, env.CAIL_REQUIRE_IDENTITY === 'true'))
       ) {
-        return denyUpgrade('ws_csrf_invalid', 'Forbidden: missing or invalid connection token');
+        return new Response('Forbidden: missing or invalid connection token', { status: 403 });
       }
     }
     const routeRequest = routeAgentRequest as unknown as (

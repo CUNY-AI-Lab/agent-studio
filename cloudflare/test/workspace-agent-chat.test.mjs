@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TEST_SUBJECTS } from '@cuny-ai-lab/cail-identity/testing';
-import {
-  cailErrorResponse,
-  quotaExceededEnvelope,
-} from '@cuny-ai-lab/cail-client/testing';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
 
@@ -508,11 +504,6 @@ test('code RPC fence spans rate-limit admission and rejects queued work before s
     activeMutations: 0,
     cailSubject: TEST_SUBJECTS.alice,
     env: {
-      CAIL_LOG_ENV: 'test',
-      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-      CF_VERSION_METADATA: {
-        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
-      },
       HEAVY_RATE_LIMIT: {
         limit: async () => {
           limitCalls += 1;
@@ -632,7 +623,6 @@ test('anonymous chat streams an authentication error instead of assistant JSON',
     verifyCurrentGatewayCredential() {
       return { status: 'missing' };
     },
-    finalizeObservabilityRequest() {},
   };
 
   const response = await WorkspaceAgent.prototype.onChatMessage.call(
@@ -674,12 +664,10 @@ test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
   assert.equal(payload.error.cail.retryable, true);
 });
 
-// Behavioral pin for the fleet's quota-surfacing bug (S5/A7): a gateway 429
-// quota_exceeded envelope must reach the chat user as the VERBATIM envelope
-// message, not a generic failure — and on the FIRST wire call (the direct AI
-// SDK provider gets maxRetries: 0, while the bounded CAIL extractor preserves
-// the canonical envelope).
+// A gateway quota envelope reaches the chat user on the first wire call. The
+// direct AI SDK provider has retries disabled and preserves the typed message.
 test('gateway 429 quota_exceeded streams the verbatim quota message to the user', async (t) => {
+  t.mock.method(console, 'error', () => {});
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const { tool } = await import('ai');
   const { z } = await import('zod');
@@ -687,24 +675,24 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   const quotaMessage =
     'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
   let wireCalls = 0;
-  const originalFetch = globalThis.fetch;
-  // createCailModel captures globalThis.fetch at construction — so this stub
-  // IS the gateway for the model call.
-  globalThis.fetch = async () => {
-    wireCalls += 1;
-    return cailErrorResponse(
-      429,
-      quotaExceededEnvelope({ message: quotaMessage, retryAfterSeconds: 1800 }),
-      {
+  const gateway = {
+    async fetch() {
+      wireCalls += 1;
+      return Response.json({
+        error: {
+          message: quotaMessage,
+          type: 'rate_limit_error',
+          param: null,
+          code: 'quota_exceeded',
+          cail: { retry_after_seconds: 1800, retryable: false },
+        },
+      }, { status: 429, headers: {
         'retry-after': '1800',
         'x-request-id': 'req-agent-quota-1',
         'x-should-retry': 'false',
-      },
-    );
+      } });
+    },
   };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
 
   const noopTool = tool({
     description: 'noop',
@@ -721,12 +709,12 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
       return 'session-1';
     },
     cailIdentityJwt: 'header.payload.signature',
-    // Explicit isolated seam: this test pins quota error surfacing after the
+    // Explicit isolated seam: this test checks quota error surfacing after the
     // credential boundary has already been admitted.
     verifyCurrentGatewayCredential() {
       return { status: 'valid' };
     },
-    env: { CAIL_API_BASE: 'https://cail.test' },
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
     state: { panels: [] },
     messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
     buildHostTools() {

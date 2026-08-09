@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "node scripts/deploy-staging.mjs",
+    "deploy": "wrangler deploy --env staging --strict",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.mjs"
   },
@@ -15,7 +15,6 @@
     "@cloudflare/codemode": "0.5.1",
     "@cloudflare/shell": "0.4.1",
     "@cuny-ai-lab/cail-identity": "5.1.2",
-    "@cuny-ai-lab/cail-log": "0.6.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "agents": "0.20.1",
     "ai": "6.0.225",

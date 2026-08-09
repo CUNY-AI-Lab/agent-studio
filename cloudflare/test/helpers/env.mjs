@@ -106,6 +106,19 @@ export class MockR2 {
     };
   }
 
+  async head(key) {
+    const entry = this.store.get(key);
+    if (!entry) return null;
+    return {
+      key,
+      size: entry.value.byteLength,
+      etag: entry.etag,
+      uploaded: entry.uploaded,
+      httpMetadata: entry.httpMetadata,
+      customMetadata: entry.customMetadata,
+    };
+  }
+
   async put(key, value, opts = {}) {
     const expectedEtag = opts.onlyIf?.etagMatches;
     if (expectedEtag !== undefined && this.store.get(key)?.etag !== expectedEtag) {
@@ -259,10 +272,6 @@ export class FakeWorkspaceAgent {
     return this.messages;
   }
 
-  async getObservability() {
-    return { requests: [], events: [] };
-  }
-
   async getRuntimeInfo() {
     return { provider: 'dynamic-workers', codemode: true, git: true, timeoutMs: 30000, outbound: 'tool-only' };
   }
@@ -397,6 +406,57 @@ export function makeWorkspaceAgentNamespace() {
   };
 }
 
+export function makeMigrationRegistryNamespace() {
+  const registries = new Map();
+  const ensure = (name) => {
+    if (!registries.has(name)) {
+      const active = new Set();
+      let claim = null;
+      registries.set(name, {
+        active,
+        get claim() { return claim; },
+        async beginAnonymousRequest(requestId) {
+          if (claim) return false;
+          active.add(requestId);
+          return true;
+        },
+        async endAnonymousRequest(requestId) {
+          active.delete(requestId);
+        },
+        async claim(subjectSessionId) {
+          if (active.size > 0) return 'anonymous-active';
+          if (!claim) {
+            claim = { subjectSessionId, status: 'in-progress', startedAt: Date.now() };
+            return 'run';
+          }
+          if (claim.subjectSessionId !== subjectSessionId) return 'claimed-by-other';
+          if (claim.status === 'done') return 'already-done';
+          if (claim.status === 'in-progress') return 'in-progress';
+          claim = { subjectSessionId, status: 'in-progress', startedAt: Date.now() };
+          return 'run';
+        },
+        async markDone(subjectSessionId) {
+          if (claim?.subjectSessionId === subjectSessionId) claim = { ...claim, status: 'done' };
+        },
+        async markFailed(subjectSessionId) {
+          if (claim?.subjectSessionId === subjectSessionId && claim.status !== 'done') {
+            claim = { ...claim, status: 'failed' };
+          }
+        },
+      });
+    }
+    return registries.get(name);
+  };
+  return {
+    registries,
+    ensure,
+    namespace: {
+      idFromName: (name) => ({ name, toString: () => name }),
+      get: (id) => ensure(id.name),
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Env double + session cookie helper
 // ---------------------------------------------------------------------------
@@ -408,14 +468,7 @@ export function makeWorkspaceAgentNamespace() {
 export function makeEnv() {
   const r2 = new MockR2();
   const workspaceAgent = makeWorkspaceAgentNamespace();
-  const migrationRegistry = {
-    idFromName: (name) => name,
-    get: () => ({
-      claim: async () => 'run',
-      markDone: async () => undefined,
-      markFailed: async () => undefined,
-    }),
-  };
+  const migrationRegistry = makeMigrationRegistryNamespace();
   const env = {
     ASSETS: {
       fetch: async (request) => new Response(`asset:${new URL(request.url).pathname}`),
@@ -424,16 +477,9 @@ export function makeEnv() {
     // Leave identity entirely unconfigured for anonymous route fixtures.
     // Supplying only an issuer is a partial verifier config and now fails
     // closed before the absent-token path is considered.
-    CAIL_LOG_ENV: 'test',
-    CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-    CF_VERSION_METADATA: {
-      id: '11111111-1111-4111-8111-111111111111',
-      tag: '',
-      timestamp: '2026-07-13T14:00:00Z',
-    },
     WORKSPACE_FILES: r2,
     WorkspaceAgent: workspaceAgent.namespace,
-    MIGRATION_REGISTRY: migrationRegistry,
+    MIGRATION_REGISTRY: migrationRegistry.namespace,
   };
   return { env, r2, agents: workspaceAgent.agents, ensureAgent: workspaceAgent.ensure };
 }
@@ -511,7 +557,10 @@ export class Session {
     }
 
     const response = await app.fetch(
-      new Request(`https://studio.test${appPath}`, { ...fetchInit, headers }),
+      new Request(
+        `https://studio.test${this.env.CAIL_BASE_PATH ?? ''}${appPath}`,
+        { ...fetchInit, headers },
+      ),
       this.env,
       {},
     );

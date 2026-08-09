@@ -1,4 +1,5 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
+import type { MigrationRegistry } from './migration-registry';
 import {
   CAIL_CANONICAL_ISSUER,
   CAIL_STAGING_ISSUER,
@@ -13,18 +14,11 @@ export interface Env {
   ASSETS: Fetcher;
   LOADER: WorkerLoader;
   WorkspaceAgent: DurableObjectNamespace<WorkspaceAgent>;
+  MIGRATION_REGISTRY: DurableObjectNamespace<MigrationRegistry>;
   WORKSPACE_FILES: R2Bucket;
   /** Required by deployed model and model-catalog requests. */
   GATEWAY?: Fetcher;
   SESSION_SECRET: string;
-  // Retained for the current gallery owner keyring and legacy lifecycle code;
-  // they are not part of model transport or request throttling.
-  GALLERY_OWNER_KEYS?: string;
-  GALLERY_OWNER_ACTIVE_KEY_ID?: string;
-  CAIL_LOG_ENV?: string;
-  CAIL_FLEET_EVENTS?: unknown;
-  CF_VERSION_METADATA?: WorkerVersionMetadata;
-  API_RATE_LIMIT?: RateLimit;
   HEAVY_RATE_LIMIT?: RateLimit;
   CAIL_API_BASE?: string;
   CAIL_MODEL?: string;
@@ -50,17 +44,6 @@ export interface Env {
 }
 
 export const MIN_REQUIRED_SESSION_SECRET_LENGTH = 32;
-
-// Legacy hydration imports are no longer part of normal request handling. The
-// names remain only while older Durable Object code is retired; first-login
-// import uses lib/migration.ts directly and does not consult a time window.
-export type AccountImportWindowState = 'pre-enforcement' | 'not-started' | 'expired';
-export function accountImportWindowState(..._args: unknown[]): AccountImportWindowState {
-  return 'not-started';
-}
-export function legacyAccountCompatibilityAllowed(..._args: unknown[]): false {
-  return false;
-}
 
 // The verifier loader caches imported keys by its complete input. Keeping one
 // small local cache avoids re-importing the same JWKS on every health request.
@@ -91,17 +74,13 @@ export type AgentStudioConfigErrorCode =
   | 'cail_identity_issuer_invalid'
   | 'cail_identity_jwks_missing'
   | 'cail_identity_jwks_invalid'
-  | 'production_identity_required'
   | 'production_gateway_binding_missing'
   | 'cail_model_invalid'
   | 'cail_api_base_invalid'
   | 'production_canonical_origin_invalid'
   | 'production_base_path_missing'
   | 'production_base_path_invalid'
-  | 'production_base_path_root'
-  | 'production_gallery_owner_keys_missing'
-  | 'production_gallery_owner_keys_invalid'
-  | 'production_gallery_owner_active_key_missing';
+  | 'production_base_path_root';
 
 export type AgentStudioConfigValidation =
   | { ok: true }
@@ -149,8 +128,6 @@ export async function validateAgentStudioConfig(env: {
   GATEWAY?: { fetch?: unknown };
   CAIL_CANONICAL_ORIGIN?: string;
   CAIL_BASE_PATH?: string;
-  GALLERY_OWNER_KEYS?: string;
-  GALLERY_OWNER_ACTIVE_KEY_ID?: string;
 }): Promise<AgentStudioConfigValidation> {
   if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
     return { ok: false, errorCode: 'session_secret_missing' };
@@ -214,30 +191,6 @@ export async function validateAgentStudioConfig(env: {
     }
     if (normalizeBasePath(env.CAIL_BASE_PATH) === '/') {
       return { ok: false, errorCode: 'production_base_path_root' };
-    }
-    if (!env.GALLERY_OWNER_KEYS?.trim()) {
-      return { ok: false, errorCode: 'production_gallery_owner_keys_missing' };
-    }
-    let ownerKeys: Record<string, unknown>;
-    try {
-      ownerKeys = JSON.parse(env.GALLERY_OWNER_KEYS) as Record<string, unknown>;
-    } catch {
-      return { ok: false, errorCode: 'production_gallery_owner_keys_invalid' };
-    }
-    if (
-      !ownerKeys
-      || Array.isArray(ownerKeys)
-      || Object.keys(ownerKeys).length === 0
-      || Object.entries(ownerKeys).some(([id, secret]) =>
-        !/^[A-Za-z0-9_-]{1,32}$/.test(id)
-        || typeof secret !== 'string'
-        || secret.length < MIN_REQUIRED_SESSION_SECRET_LENGTH)
-    ) {
-      return { ok: false, errorCode: 'production_gallery_owner_keys_invalid' };
-    }
-    if (!env.GALLERY_OWNER_ACTIVE_KEY_ID
-      || typeof ownerKeys[env.GALLERY_OWNER_ACTIVE_KEY_ID] !== 'string') {
-      return { ok: false, errorCode: 'production_gallery_owner_active_key_missing' };
     }
   }
 

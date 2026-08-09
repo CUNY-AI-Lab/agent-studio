@@ -26,12 +26,10 @@ const STATE = {
   connections: [],
 };
 
-function env(r2, active = 'old', keys = { old: 'o'.repeat(32) }) {
+function env(r2) {
   return {
     WORKSPACE_FILES: r2,
     SESSION_SECRET: 's'.repeat(32),
-    GALLERY_OWNER_KEYS: JSON.stringify(keys),
-    GALLERY_OWNER_ACTIVE_KEY_ID: active,
   };
 }
 
@@ -84,11 +82,11 @@ test('a committed publish retry does not read files or delete the existing item'
   assert.ok(await r2.get(`agent-studio/gallery/items/${first.id}/manifest.json`));
 });
 
-test('retained gallery owner keys authorize old records after active-key rotation', async () => {
+test('private owner records authorize unpublish without exposing an owner publicly', async () => {
   const r2 = new MockR2();
-  const item = await publish(env(r2), 'rotation');
-  const rotated = env(r2, 'new', { old: 'o'.repeat(32), new: 'n'.repeat(32) });
-  await unpublishGalleryItem(rotated, item.id, SESSION);
+  const targetEnv = env(r2);
+  const item = await publish(targetEnv, 'private-owner');
+  await unpublishGalleryItem(targetEnv, item.id, SESSION);
   assert.equal(await r2.get(`agent-studio/gallery/items/${item.id}/manifest.json`), null);
 });
 

@@ -6,6 +6,7 @@ import {
   fetchWorkspace,
   identityCredentialsFromEnv,
   parseArgs,
+  redactSensitiveText,
   sendChatTurn,
 } from './smoke-common.mjs';
 
@@ -97,7 +98,7 @@ async function main() {
     assert(patched.workspace.name === `${workspaceName} Updated`, 'Workspace patch did not update the name');
     log('workspace update persisted');
 
-    // AS-0-1: active-type uploads (e.g. text/html) are now rejected at the PUT door.
+    // Active document types are rejected at the upload boundary.
     const evilHtmlResponse = await session.fetch(`/api/workspaces/${workspaceId}/files/index.html`, {
       method: 'PUT',
       headers: { 'Content-Type': 'text/html; charset=utf-8' },
@@ -128,8 +129,8 @@ async function main() {
     assert(fileText.includes('smoke ok'), 'Fetched file content is incorrect');
     assert((fileResponse.headers.get('content-type') || '').includes('text/markdown'), 'File content type is not text/markdown');
     assert(fileResponse.headers.get('cache-control') === 'no-store', 'Workspace file cache-control should be no-store');
-    // AS-0-1: every served file must carry the sandbox CSP + nosniff. Markdown is
-    // a safe inline type, so it must NOT be forced to download.
+    // Every served file carries the sandbox CSP and nosniff. Markdown is a safe
+    // inline type, so it must not be forced to download.
     assert(fileResponse.headers.get('x-content-type-options') === 'nosniff', 'Served file missing nosniff');
     assert(
       fileResponse.headers.get('content-security-policy') === "default-src 'none'; sandbox",
@@ -222,9 +223,8 @@ async function main() {
   log(withChat ? 'staging API and chat smoke passed' : 'staging API smoke passed');
 }
 
-main().catch(() => {
-  // Details stay in the local worker log; this client output is safe for CI
-  // and staging consoles, where identity and workspace values do not belong.
-  console.error('[smoke] validation failed');
+main().catch((error) => {
+  const detail = error instanceof Error ? error.message : String(error);
+  console.error(`[smoke] validation failed: ${redactSensitiveText(detail)}`);
   process.exitCode = 1;
 });

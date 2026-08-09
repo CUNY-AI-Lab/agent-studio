@@ -52,7 +52,7 @@ export function redactSensitiveText(value, credentials = {}) {
 export function assertIdentityCredentials(credentials = {}, { withChat = false } = {}) {
   const appIdentityJwt = normalizeIdentityJwt(credentials.appIdentityJwt);
   const gatewayIdentityJwt = normalizeIdentityJwt(credentials.gatewayIdentityJwt);
-  if (withChat && Boolean(appIdentityJwt) !== Boolean(gatewayIdentityJwt)) {
+  if (withChat && (!appIdentityJwt || !gatewayIdentityJwt)) {
     throw new Error(
       `--with-chat=true requires both ${APP_IDENTITY_JWT_ENV} and ${GATEWAY_IDENTITY_JWT_ENV}`,
     );

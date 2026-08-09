@@ -31,7 +31,7 @@ import {
   type WorkspaceRecord,
   type WorkspaceState,
 } from '../domain/workspace';
-import { accountImportWindowState, type Env } from '../env';
+import type { Env } from '../env';
 import { createCailModel } from '../lib/cail-model';
 import {
   isCailIdentityConfigError,
@@ -60,7 +60,6 @@ import {
 } from '../lib/files';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { updateWorkspaceWithRetry } from '../lib/workspaces';
-import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
@@ -72,7 +71,6 @@ import { checkHeavyRpcLimit } from '../lib/rate-limit';
 
 const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
-const HYDRATION_COMPLETE_KEY = 'runtimeWorkspaceHydrated:v1';
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
 const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // Keep a finite stop for the AI SDK tool loop so a malformed or non-terminating
@@ -182,8 +180,6 @@ type CurrentGatewayCredentialCheck =
 export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   initialState: WorkspaceState = DEFAULT_WORKSPACE_STATE;
   private runtimeWorkspace?: RuntimeWorkspace;
-  private hydrationComplete = false;
-  private hydrationPromise: Promise<void> | null = null;
   private migrationFrozen = false;
   private activeMutations = 0;
   /**
@@ -399,13 +395,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return { status: 'valid' };
   }
 
-  async syncWorkspace(
-    workspace: WorkspaceRecord,
-    sessionId: string,
-    legacyCompatibilityNow?: number,
-  ): Promise<void> {
+  async syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void> {
     this.assertNotFrozen();
-    await this.ensureRuntimeWorkspaceHydrated(workspace, sessionId, legacyCompatibilityNow);
     const nextState: WorkspaceState = {
       ...this.state,
       sessionId,
@@ -536,15 +527,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
 
     if (!(await checkHeavyRpcLimit(this.env, sessionId))) {
-      const errorText = JSON.stringify({
-        error: {
-          message: 'Too many agent turns — try again shortly.',
-          type: 'rate_limit_error',
-          param: null,
-          code: 'rate_limited',
-          cail: { retryable: true },
-        },
-      });
+      const errorText = JSON.stringify(canonicalError(
+        'rate_limited',
+        'Too many agent turns — try again shortly.',
+        { type: 'rate_limit_error', retryable: true },
+      ));
       return createUIMessageStreamResponse({
         stream: createUIMessageStream({
           execute: ({ writer }) => writer.write({ type: 'error', errorText }),
@@ -610,8 +597,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
       });
-    } catch (error) {
-      return new Response('Agent Studio could not start this response.', { status: 500 });
+    } catch {
+      const errorText = JSON.stringify(canonicalError(
+        'internal_error',
+        'Agent Studio could not start this response.',
+        { type: 'api_error', retryable: true },
+      ));
+      return createUIMessageStreamResponse({
+        stream: createUIMessageStream({
+          execute: ({ writer }) => writer.write({ type: 'error', errorText }),
+        }),
+      });
     }
   }
 
@@ -1292,43 +1288,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
     }
     return this.runtimeWorkspace;
-  }
-
-  private async ensureRuntimeWorkspaceHydrated(
-    workspace: WorkspaceRecord,
-    sessionId: string,
-    legacyCompatibilityNow = Date.now(),
-  ): Promise<void> {
-    if (this.hydrationComplete) return;
-    if (await this.ctx.storage.get(HYDRATION_COMPLETE_KEY)) {
-      this.hydrationComplete = true;
-      return;
-    }
-    if (this.hydrationPromise) {
-      await this.hydrationPromise;
-      return;
-    }
-    // Do not persist the hydration marker before the configured switch. That
-    // lets a workspace first touched during rollout preparation hydrate once
-    // the temporary compatibility window actually opens.
-    if (accountImportWindowState(this.env, legacyCompatibilityNow) === 'not-started') return;
-    const runtime = this.getRuntimeWorkspace();
-    this.hydrationPromise = (async () => {
-      await hydrateLegacyWorkspaceFiles(
-        this.env,
-        sessionId,
-        workspace.id,
-        runtime,
-        legacyCompatibilityNow,
-      );
-      await this.ctx.storage.put(HYDRATION_COMPLETE_KEY, true);
-      this.hydrationComplete = true;
-    })();
-    try {
-      await this.hydrationPromise;
-    } finally {
-      this.hydrationPromise = null;
-    }
   }
 
   private async listRuntimeFiles(): Promise<Array<{

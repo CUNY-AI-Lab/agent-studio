@@ -34,11 +34,14 @@ with its matching JWKS.
 Workspace state and chat messages live in the Durable Object. Workspace
 records and files live in R2. Dynamic Workers isolate code execution. Staging
 binds `WORKSPACE_FILES` to `agent-studio-preview`; production uses
-`agent-studio`. Keep the buckets separate.
+`agent-studio`. Keep the buckets separate. Wrangler's declarative `exports`
+map identifies the live SQLite workspace class and the small first-login lock
+class without retaining a deployment-history ledger. Both create instances
+only on use; the lock stores no user content.
 
 The one-time first-login import is described in
 [the current import guide](../docs/legacy-account-import.md). It requires a
-verified current identity and a verified signed legacy session mapping, copies
+verified current identity and a valid signed legacy session cookie, copies
 complete content and relationships, writes a per-user completion marker only
 after success, and then uses the subject namespace as authority.
 

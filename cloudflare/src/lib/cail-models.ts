@@ -57,7 +57,12 @@ function canonicalBase(value: string): string {
   if (value.trim() !== value || /[\u0000-\u001f\u007f\\\s]/.test(value)) {
     throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
   }
-  const parsed = new URL(value);
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
+  }
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error('CAIL_API_BASE must use HTTPS and cannot contain credentials, a query, or a fragment.');
   }

@@ -69,11 +69,13 @@ model path.
 
 The first successful login may perform the one-time lazy import described in
 [One-time first-login import](./docs/legacy-account-import.md). It requires a
-currently verified identity and a verified signed legacy session mapping,
+currently verified identity and a valid signed legacy session cookie,
 copies the complete content and relationships, writes one per-user completion
 marker only after success, and then uses the new subject namespace as the
 authority. There is no dual read, background job, alias, or synchronization
-path.
+path. A tiny `MigrationRegistry` lock object is created lazily per legacy
+cookie namespace so an already-admitted anonymous write cannot race the copy;
+it stores no user content and is not a second agent runtime.
 
 ## Validation
 
@@ -93,6 +95,8 @@ deletes the workspace before it exits. It prints only safe step labels; it
 never prints JWTs, subjects, emails, workspace identifiers, or user content.
 
 ```bash
+bun run dev
+# In another terminal:
 bun run smoke
 ```
 

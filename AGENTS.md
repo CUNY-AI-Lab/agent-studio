@@ -28,11 +28,12 @@
   smoke is an integration smoke, not an end-to-end claim.
 - The only legacy bridge is one-time lazy import on first successful login:
   require the verified current identity and a verified signed legacy Agent
-  Studio session mapping, copy complete content and relationships privately,
+  Studio session cookie, copy complete content and relationships privately,
   write one per-user completion marker only after success, then make the new
   subject namespace authoritative. A failed copy is retryable; do not add
   dual reads, aliases, synchronization, framework jobs, or a broad time
-  window.
+  window. Keep the narrow per-legacy-session lock that fences already-admitted
+  anonymous writes; it contains claim/lease state only, never user content.
 - Run `bun run lint`, `bun run typecheck`, `bun run test`, `bun run build`, and
   the local smoke before claiming a change is ready. Review source and checks
   before the direct staging command:

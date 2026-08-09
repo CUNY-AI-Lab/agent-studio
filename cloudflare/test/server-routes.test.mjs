@@ -13,11 +13,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createTestIdentityIssuer } from '@cuny-ai-lab/cail-identity/testing';
-import {
-  cailErrorEnvelope,
-  cailErrorResponse,
-  quotaExceededResponse,
-} from '@cuny-ai-lab/cail-client/testing';
 
 import {
   importServer,
@@ -35,7 +30,6 @@ import {
   CAIL_CANONICAL_ISSUER,
   CAIL_STAGING_ISSUER,
 } from '../src/lib/cail-identity.ts';
-import { resetCailModelsCache } from '../src/lib/cail-models.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
 
 const app = await importServer();
@@ -82,6 +76,18 @@ function keyringHeaders(token, gatewayToken) {
   };
 }
 
+function configureRequiredIdentity(env, jwks, issuer = CAIL_CANONICAL_ISSUER) {
+  Object.assign(env, {
+    CAIL_REQUIRE_IDENTITY: 'true',
+    CAIL_IDENTITY_ISSUER: issuer,
+    CAIL_IDENTITY_JWKS: jwks,
+    CAIL_API_BASE: 'https://model-api.example.edu',
+    CAIL_CANONICAL_ORIGIN: 'https://studio.test',
+    CAIL_BASE_PATH: '/agent-studio',
+    GATEWAY: { fetch: async () => new Response('not configured for this test', { status: 500 }) },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Session / middleware at the route level
 // ---------------------------------------------------------------------------
@@ -93,38 +99,6 @@ test('health check is public and needs no session', async () => {
   assert.deepEqual(await res.json(), {
     ok: true,
     service: 'agent-studio',
-    version_id: '11111111-1111-4111-8111-111111111111',
-    version_tag: null,
-  });
-});
-
-test('health exposes canonical Worker version metadata', async () => {
-  const { env } = makeEnv();
-  env.CF_VERSION_METADATA = {
-    id: '22222222-2222-4222-8222-222222222222',
-    tag: 'a'.repeat(40),
-    timestamp: '2026-07-13T14:00:00Z',
-  };
-  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), {
-    ok: true,
-    service: 'agent-studio',
-    version_id: '22222222-2222-4222-8222-222222222222',
-    version_tag: 'a'.repeat(40),
-  });
-});
-
-test('health omits noncanonical local version metadata', async () => {
-  const { env } = makeEnv();
-  env.CF_VERSION_METADATA = { id: 'local-version', tag: 'A'.repeat(40), timestamp: '' };
-  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), {
-    ok: true,
-    service: 'agent-studio',
-    version_id: null,
-    version_tag: null,
   });
 });
 
@@ -155,66 +129,25 @@ test('health check reports unhealthy when SESSION_SECRET is missing', async () =
   assert.equal((await readError(res)).code, 'session_secret_missing');
 });
 
-test('health check reports unhealthy when telemetry environment is unclassified', async () => {
-  const { env } = makeEnv();
-  delete env.CAIL_LOG_ENV;
-  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
-  assert.equal(res.status, 503);
-  assert.equal((await readError(res)).code, 'cail_log_environment_missing');
-});
-
-test('health check reports unhealthy when Worker version metadata is unavailable', async () => {
-  const { env } = makeEnv();
-  delete env.CF_VERSION_METADATA;
-  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
-  assert.equal(res.status, 503);
-  assert.equal((await readError(res)).code, 'worker_version_metadata_missing');
-});
-
-test('health check reports unhealthy when fleet projection dataset is unavailable', async () => {
-  const { env } = makeEnv();
-  delete env.CAIL_FLEET_EVENTS;
-  const res = await app.fetch(new Request('https://studio.test/health'), env, {});
-  assert.equal(res.status, 503);
-  assert.equal((await readError(res)).code, 'cail_fleet_events_missing');
-});
 
 test('production health rejects a JWKS shape the shared identity loader cannot import', async () => {
   const { env } = makeEnv();
   const issuer = await createTestIdentityIssuer({ kid: 'runtime-invalid-key' });
   const jwks = JSON.parse(issuer.jwksJson);
   jwks.keys[0].n = 'AQ';
-  Object.assign(env, {
-    CAIL_LOG_ENV: 'production',
-    CAIL_REQUIRE_IDENTITY: 'true',
-    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
-    CAIL_IDENTITY_JWKS: JSON.stringify(jwks),
-    CAIL_SSO_SWITCHED_AT: '2026-07-13T14:00:00Z',
-    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-08-12T14:00:00Z',
-    CAIL_API_BASE: 'https://cail-model-api.ailab-452.workers.dev',
-    CAIL_CANONICAL_ORIGIN: 'https://tools.example',
-    CAIL_BASE_PATH: '/agent-studio',
-    API_RATE_LIMIT: { limit() {} },
-    HEAVY_RATE_LIMIT: { limit() {} },
-    GALLERY_OWNER_KEYS: JSON.stringify({ active: 'g'.repeat(32) }),
-    GALLERY_OWNER_ACTIVE_KEY_ID: 'active',
-    GATEWAY: { fetch() {} },
-  });
+  configureRequiredIdentity(env, JSON.stringify(jwks));
 
   const res = await app.fetch(new Request('https://studio.test/agent-studio/health'), env, {});
   assert.equal(res.status, 503);
-  assert.equal((await readError(res)).code, 'production_identity_jwks_invalid');
+  assert.equal((await readError(res)).code, 'cail_identity_jwks_invalid');
 });
 
 test('identity-required staging health rejects malformed JWKS before runtime requests', async () => {
   const { env } = makeEnv();
   Object.assign(env, {
-    CAIL_LOG_ENV: 'staging',
     CAIL_REQUIRE_IDENTITY: 'true',
     CAIL_IDENTITY_ISSUER: CAIL_STAGING_ISSUER,
     CAIL_IDENTITY_JWKS: '{not-json',
-    CAIL_SSO_SWITCHED_AT: '2026-07-13T14:00:00Z',
-    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-08-12T14:00:00Z',
   });
 
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
@@ -230,25 +163,20 @@ test('startup guard refuses application traffic when SESSION_SECRET is missing',
   assert.equal((await readError(res)).code, 'session_secret_missing');
 });
 
-test('startup guard refuses enforced identity without migration-window configuration', async () => {
+test('startup guard refuses enforced identity without verifier configuration', async () => {
   const { env } = makeEnv();
   env.CAIL_REQUIRE_IDENTITY = 'true';
-  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
   const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
   assert.equal(res.status, 503);
-  assert.equal((await readError(res)).code, 'cail_sso_switched_at_missing');
+  assert.equal((await readError(res)).code, 'cail_identity_issuer_missing');
 });
 
 test('identity-required session bootstrap returns the canonical login challenge', async () => {
   const { env } = makeEnv();
   const issuer = await createTestIdentityIssuer({ kid: 'auth-required-key' });
-  env.CAIL_IDENTITY_JWKS = issuer.jwksJson;
-  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
-  env.CAIL_REQUIRE_IDENTITY = 'true';
-  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
-  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
+  configureRequiredIdentity(env, issuer.jwksJson);
 
-  const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
+  const res = await app.fetch(new Request('https://studio.test/agent-studio/api/session'), env, {});
   assert.equal(res.status, 401);
   const body = await res.json();
   assert.equal(body.error.code, 'authentication_required');
@@ -323,11 +251,7 @@ test('garbage cookie -> fresh session, never a 500', async () => {
 test('verified canonical token is stored and forwarded to the workspace agent', async () => {
   const { env, agents } = makeEnv();
   const { token, gatewayToken, jwks } = await makeRouteCredential();
-  env.CAIL_IDENTITY_JWKS = jwks;
-  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
-  env.CAIL_REQUIRE_IDENTITY = 'true';
-  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
-  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
+  configureRequiredIdentity(env, jwks);
   const headers = keyringHeaders(token, gatewayToken);
   const session = new Session(env);
 
@@ -358,11 +282,7 @@ test('a keyring gateway leg for a different person fails the request closed', as
     audience: 'cail:gateway',
     subject: TEST_SUBJECTS.bob,
   });
-  env.CAIL_IDENTITY_JWKS = issuer.jwksJson;
-  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
-  env.CAIL_REQUIRE_IDENTITY = 'true';
-  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
-  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
+  configureRequiredIdentity(env, issuer.jwksJson);
   const session = new Session(env);
   const res = await session.request(app, '/api/session', {
     headers: keyringHeaders(token, bobGateway),
@@ -376,11 +296,10 @@ test('required identity rejects an invalid canonical credential', async () => {
   // failure (503), so a 401-for-bad-token test needs a config that loads.
   const { createTestIdentityIssuer } = await import('@cuny-ai-lab/cail-identity/testing');
   const loadableIssuer = await createTestIdentityIssuer({ kid: 'routes-test-key' });
-  env.CAIL_IDENTITY_JWKS = loadableIssuer.jwksJson ?? JSON.stringify(loadableIssuer.jwks);
-  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
-  env.CAIL_REQUIRE_IDENTITY = 'true';
-  env.CAIL_SSO_SWITCHED_AT = new Date(Date.now() - 60_000).toISOString();
-  env.CAIL_ACCOUNT_IMPORT_UNTIL = new Date(Date.now() + 60_000).toISOString();
+  configureRequiredIdentity(
+    env,
+    loadableIssuer.jwksJson ?? JSON.stringify(loadableIssuer.jwks),
+  );
   const session = new Session(env);
   const res = await session.request(app, '/api/session', {
     headers: { [CAIL_IDENTITY_HEADER]: 'invalid-token' },
@@ -527,7 +446,7 @@ test('GET malformed workspace id -> 400 (AS-3-6 boundary check)', async () => {
   for (const bad of ['nope', '../secret', 'DEADBEEFDEADBEEFDEADBEEFDEADBEEF', 'deadbeef']) {
     const res = await session.request(app, `/api/workspaces/${encodeURIComponent(bad)}`);
     assert.equal(res.status, 400, `expected 400 for id "${bad}"`);
-    assert.equal((await readError(res)).code, 'invalid_request');
+    assert.equal((await readError(res)).code, 'invalid_workspace_id');
   }
 });
 
@@ -587,19 +506,6 @@ test('create with invalid body returns 400 (ZodError mapped by onError)', async 
   // name must be a non-empty trimmed string; empty string fails min(1).
   const res = await session.request(app, '/api/workspaces', jsonInit('POST', { name: '' }));
   assert.equal(res.status, 400);
-});
-
-test('a thrown route error emits one request boundary event', async (t) => {
-  const records = [];
-  t.mock.method(console, 'warn', (record) => records.push(record));
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const res = await session.request(app, '/api/workspaces', jsonInit('POST', { name: '' }));
-  assert.equal(res.status, 400);
-  assert.equal(
-    records.filter((record) => record?.['event.name'] === 'cail.request.completed').length,
-    1,
-  );
 });
 
 // ---------------------------------------------------------------------------
@@ -691,25 +597,6 @@ test('files on a missing workspace -> 404', async () => {
   const { session } = await openSession(app, env);
   const res = await session.request(app, '/api/workspaces/deadbeefdeadbeefdeadbeefdeadbeef/files');
   assert.equal(res.status, 404);
-});
-
-test('observability: missing workspace 404s and created workspace returns snapshot shape', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-
-  const missing = await session.request(app, '/api/workspaces/deadbeefdeadbeefdeadbeefdeadbeef/observability');
-  assert.equal(missing.status, 404);
-  assert.equal((await readError(missing)).code, 'not_found');
-
-  const workspace = await createWorkspace(session);
-  const res = await session.request(app, `/api/workspaces/${workspace.id}/observability`);
-  assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), {
-    observability: {
-      requests: [],
-      events: [],
-    },
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1241,74 +1128,68 @@ test('gallery: publish with invalid body returns 400 (ZodError mapped by onError
   assert.equal(res.status, 400);
 });
 
-test('/api/models returns fallback catalog in anonymous no-proxy env', async () => {
-  resetCailModelsCache();
+test('/api/models has no anonymous fallback catalog', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
 
   const res = await session.request(app, '/api/models');
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.deepEqual(Object.keys(body).sort(), ['default', 'models', 'source']);
-  assert.equal(body.source, 'fallback');
-  assert.equal(body.models.length, 1);
-  assert.equal(body.default, body.models[0].id);
-  assert.equal(body.models[0].recommended, true);
-  resetCailModelsCache();
+  assert.equal(res.status, 502);
+  assert.equal((await readError(res)).code, 'authentication_required');
 });
 
-test('/api/models surfaces proxy auth failure as 502', async () => {
-  resetCailModelsCache();
+test('/api/models uses the verified gateway leg and direct service binding', async () => {
   const { env } = makeEnv();
-  env.CAIL_API_BASE = 'https://proxy.example';
-  const { token, jwks } = await makeRouteCredential();
-  env.CAIL_IDENTITY_JWKS = jwks;
-  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
-  const session = new Session(env);
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    cailErrorResponse(401, cailErrorEnvelope({
-      message: 'bad gateway auth',
-      type: 'authentication_error',
-      code: 'authentication_required',
-      cail: { login_url: '/login' },
-    }));
-
-  try {
-    const res = await session.request(app, '/api/models', {
-      headers: { [CAIL_IDENTITY_HEADER]: token },
-    });
-    assert.equal(res.status, 502);
-    assert.equal((await readError(res)).code, 'upstream_error');
-  } finally {
-    globalThis.fetch = originalFetch;
-    resetCailModelsCache();
-  }
-});
-
-test('/api/models surfaces proxy quota exhaustion as 429', async () => {
-  resetCailModelsCache();
-  const { env } = makeEnv();
-  env.CAIL_API_BASE = 'https://proxy.example';
   const { token, gatewayToken, jwks } = await makeRouteCredential();
-  env.CAIL_IDENTITY_JWKS = jwks;
-  env.CAIL_IDENTITY_ISSUER = CAIL_CANONICAL_ISSUER;
+  configureRequiredIdentity(env, jwks);
+  const calls = [];
+  env.GATEWAY = {
+    async fetch(input, init) {
+      calls.push({ input: String(input), init });
+      return Response.json({
+        object: 'list',
+        data: [{ id: '@cf/zai-org/glm-5.2', object: 'model' }],
+      });
+    },
+  };
   const session = new Session(env);
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () =>
-    quotaExceededResponse({ message: 'quota exhausted', retryAfterSeconds: 1800 });
+  const res = await session.request(app, '/api/models', {
+    headers: keyringHeaders(token, gatewayToken),
+  });
+  assert.equal(res.status, 200);
+  assert.deepEqual(await res.json(), {
+    models: [{
+      id: '@cf/zai-org/glm-5.2',
+      recommended: true,
+      tier: 'recommended',
+      status: 'active',
+      sunset: null,
+      capabilities: [],
+      contextLength: null,
+      registryUrl: null,
+      name: null,
+      description: null,
+    }],
+    default: '@cf/zai-org/glm-5.2',
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(new Headers(calls[0].init.headers).get('authorization'), `Bearer ${gatewayToken}`);
+});
 
-  try {
+test('/api/models surfaces direct catalog auth and quota failures without fallback', async () => {
+  const { env } = makeEnv();
+  const { token, gatewayToken, jwks } = await makeRouteCredential();
+  configureRequiredIdentity(env, jwks);
+  const session = new Session(env);
+  for (const [status, expectedStatus, code] of [
+    [401, 502, 'authentication_required'],
+    [429, 429, 'quota_exceeded'],
+  ]) {
+    env.GATEWAY = { fetch: async () => new Response('failure', { status }) };
     const res = await session.request(app, '/api/models', {
       headers: keyringHeaders(token, gatewayToken),
     });
-    assert.equal(res.status, 429);
-    const error = await readError(res);
-    assert.equal(error.code, 'quota_exceeded');
-    assert.equal(error.message, 'quota exhausted');
-  } finally {
-    globalThis.fetch = originalFetch;
-    resetCailModelsCache();
+    assert.equal(res.status, expectedStatus);
+    assert.equal((await readError(res)).code, code);
   }
 });
 
@@ -1457,6 +1338,44 @@ test('import: a malformed bundle -> 400 and no orphan workspace', async () => {
   // No workspace was left behind by the failed import.
   const list = await (await session.request(app, '/api/workspaces')).json();
   assert.equal(list.workspaces.length, 0);
+});
+
+test('import: runtime failures use the private canonical error envelope', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const realGet = env.WorkspaceAgent.get.bind(env.WorkspaceAgent);
+  env.WorkspaceAgent.get = (id) => {
+    const agent = realGet(id);
+    agent.writeWorkspaceFileContent = async () => {
+      throw new Error('private runtime path detail');
+    };
+    return agent;
+  };
+  const form = new FormData();
+  form.append('bundle', new File([JSON.stringify(makeImportBundle({
+    workspace: {
+      id: 'ignored',
+      name: 'Failure',
+      description: '',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    },
+    files: [{
+      path: 'failure.md',
+      contentType: 'text/markdown',
+      encoding: 'utf8',
+      content: 'synthetic',
+    }],
+  }))], 'failure.json', { type: 'application/json' }));
+
+  const response = await session.request(app, '/api/workspaces/import', {
+    method: 'POST',
+    body: form,
+  });
+  assert.equal(response.status, 400);
+  const payload = await response.json();
+  assert.equal(payload.error.code, 'import_failed');
+  assert.equal(JSON.stringify(payload).includes('private runtime path detail'), false);
 });
 
 // ---------------------------------------------------------------------------

@@ -1,16 +1,16 @@
 import type { MiddlewareHandler } from 'hono';
 import type { Env } from '../env';
 import type { SessionVariables } from './session';
+import { canonicalError } from './error-envelope';
 
 /**
- * Workers-native rate limiting for the HTTP `/api/*` surface.
+ * Workers-native rate limiting for expensive operations.
  *
  * Mechanism: Cloudflare's Rate Limiting binding (wrangler.jsonc `unsafe.bindings`,
  * type "ratelimit"). Counting is per-colo and zero-latency — acceptable for
- * launch scale. Two namespaces:
- *   - API_RATE_LIMIT  {limit: 300, period: 60} — general /api/* requests.
- *   - HEAVY_RATE_LIMIT {limit: 20, period: 60} — expensive operations
- *     (runtime/execute, upload, import, publish).
+ * launch scale. The one HEAVY_RATE_LIMIT namespace protects paid chat,
+ * sandbox execution, upload, import, and publish. Ordinary API reads and
+ * writes have no arbitrary application cap.
  *
  * Keying: by session id (c.get('sessionId')), which is stable across SSO
  * subjects and anonymous cookies — never by IP.
@@ -52,8 +52,8 @@ export const rateLimitMiddleware: MiddlewareHandler<{
   Bindings: Env;
   Variables: SessionVariables;
 }> = async (c, next) => {
-  const heavy = isHeavyRequest(c.req.method, c.req.path);
-  const limiter = heavy ? c.env.HEAVY_RATE_LIMIT : c.env.API_RATE_LIMIT;
+  if (!isHeavyRequest(c.req.method, c.req.path)) return next();
+  const limiter = c.env.HEAVY_RATE_LIMIT;
 
   // Fail open: no binding -> no limiting. Keeps local dev, tests, and CI smoke
   // working without the unsafe binding configured.
@@ -65,9 +65,12 @@ export const rateLimitMiddleware: MiddlewareHandler<{
   const { success } = await limiter.limit({ key });
   if (!success) {
     return c.json(
-      { error: 'rate_limited', message: 'Too many requests — try again shortly.' },
+      canonicalError(
+        'rate_limited',
+        'Too many expensive operations — try again shortly.',
+        { type: 'rate_limit_error', retryable: true },
+      ),
       429,
-      { 'Retry-After': '30' }
     );
   }
 

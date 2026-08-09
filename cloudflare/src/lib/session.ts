@@ -12,7 +12,11 @@ import {
   type CailIdentity,
   resolveKeyringGatewayJwt,
 } from './cail-identity';
-import { runFirstLoginMigration } from './migration';
+import {
+  beginAnonymousSessionRequest,
+  endAnonymousSessionRequest,
+  runFirstLoginMigration,
+} from './migration';
 import { canonicalError } from './error-envelope';
 
 const SESSION_COOKIE_NAME = 'agent-studio-session';
@@ -151,7 +155,11 @@ export const sessionMiddleware: MiddlewareHandler<{
       } else {
         try {
           const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId);
-          if (outcome === 'migrated' || outcome === 'already-done') {
+          if (
+            outcome === 'migrated'
+            || outcome === 'already-done'
+            || outcome === 'claimed-by-other'
+          ) {
             deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
           }
         } catch {
@@ -189,7 +197,35 @@ export const sessionMiddleware: MiddlewareHandler<{
 
   c.set('sessionId', sessionId);
 
-  await next();
+  // A deployment that still admits anonymous requests must serialize those
+  // writes with the first-login claim. Production identity enforcement rejects
+  // anonymous traffic before this point; this also coordinates a direct
+  // cutover with an already-admitted request from the prior version.
+  const shouldFenceAnonymous = !verified && Boolean(c.env.CAIL_IDENTITY_JWKS?.trim());
+  if (!shouldFenceAnonymous) {
+    await next();
+    return;
+  }
+
+  const requestId = crypto.randomUUID();
+  const admitted = await beginAnonymousSessionRequest(c.env, sessionId, requestId);
+  if (!admitted) {
+    return c.json(
+      canonicalError(
+        'legacy_session_claimed',
+        'This previous session is being moved to the signed-in account. Sign in and retry.',
+        { type: 'conflict_error', retryable: true },
+      ),
+      409,
+    );
+  }
+  try {
+    await next();
+  } finally {
+    // A release error must not replace an otherwise unambiguous response. The
+    // durable lock discards stale leases before a later claim attempt.
+    await endAnonymousSessionRequest(c.env, sessionId, requestId).catch(() => undefined);
+  }
 };
 
 export function requireSession(c: SessionContext): string {
