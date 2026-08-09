@@ -87,68 +87,6 @@ function testConnection(id = 'connection-1') {
   };
 }
 
-test('chat action success waits for the post-persistence onChatResponse hook', async () => {
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const action = { actionTerminal: false };
-  const calls = [];
-  const agent = {
-    ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
-    pendingChatAction: action,
-    finishModelCall(seenAction, terminal, errorType) {
-      calls.push(['model', seenAction, terminal, errorType]);
-    },
-    finishChatAction(seenAction, terminal, errorType) {
-      calls.push(['action', seenAction, terminal, errorType]);
-    },
-  };
-
-  WorkspaceAgent.prototype.onChatResponse.call(agent, {
-    message: { id: 'assistant-1', role: 'assistant', parts: [] },
-    requestId: 'request-1',
-    continuation: false,
-    status: 'completed',
-  });
-
-  assert.deepEqual(calls, [
-    ['model', action, { outcome: 'ok', reason: 'completed' }, undefined],
-    ['action', action, { outcome: 'ok', reason: 'completed' }, undefined],
-  ]);
-});
-
-test('deferred chat failures become terminal only in the post-persistence hook', async () => {
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const action = {
-    actionTerminal: false,
-    deferredTerminal: {
-      terminal: { outcome: 'denied', reason: 'quota_blocked' },
-      errorType: 'quota_exceeded',
-    },
-  };
-  const calls = [];
-  const agent = {
-    ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
-    pendingChatAction: action,
-    finishModelCall(seenAction, terminal, errorType) {
-      calls.push(['model', seenAction, terminal, errorType]);
-    },
-    finishChatAction(seenAction, terminal, errorType) {
-      calls.push(['action', seenAction, terminal, errorType]);
-    },
-  };
-
-  WorkspaceAgent.prototype.onChatResponse.call(agent, {
-    message: { id: 'assistant-1', role: 'assistant', parts: [] },
-    requestId: 'request-1',
-    continuation: false,
-    status: 'failed',
-  });
-
-  assert.deepEqual(calls, [
-    ['model', action, { outcome: 'denied', reason: 'quota_blocked' }, 'quota_exceeded'],
-    ['action', action, { outcome: 'denied', reason: 'quota_blocked' }, 'quota_exceeded'],
-  ]);
-});
-
 test('chat persistence counts an admitted write and rejects only after migration freeze', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const base = Object.getPrototypeOf(WorkspaceAgent.prototype);
@@ -454,7 +392,6 @@ test('destructive cleanup defers Durable Object destruction for RPC callers', as
     migrationFrozen: true,
     cailIdentityJwt: 'credential',
     cailSubject: 'subject',
-    cailOperationalSubject: 'operational-subject',
     messages: [{ id: 'message' }],
     clearRuntimeFilesUnchecked: async () => {
       clearRuntimeCalls += 1;
@@ -480,7 +417,6 @@ test('destructive cleanup defers Durable Object destruction for RPC callers', as
   assert.equal(directDestroyCalls, 0);
   assert.equal(agent.cailIdentityJwt, null);
   assert.equal(agent.cailSubject, null);
-  assert.equal(agent.cailOperationalSubject, null);
   assert.deepEqual(agent.messages, []);
 });
 
@@ -500,17 +436,10 @@ test('identity enforcement rejects mutation RPCs on an anonymous pre-cutover soc
   );
 });
 
-test('code rate-limit denial does not emit an orphan canonical action terminal', async (t) => {
+test('code rate-limit denial rejects before sandbox execution', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const records = [];
-  t.mock.method(console, 'warn', (record) => records.push(record));
   const agent = {
     env: {
-      CAIL_LOG_ENV: 'test',
-      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-      CF_VERSION_METADATA: {
-        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
-      },
       HEAVY_RATE_LIMIT: { limit: async () => ({ success: false }) },
     },
     cailSubject: TEST_SUBJECTS.alice,
@@ -526,16 +455,11 @@ test('code rate-limit denial does not emit an orphan canonical action terminal',
     WorkspaceAgent.prototype.executeCode.call(agent, 'return 1'),
     /rate_limited/,
   );
-  assert.deepEqual(records.map((record) => record['event.name']), ['agent_studio.code.denied']);
-  assert.equal(records[0]['url.template'], '/api/workspaces/{id}/runtime/execute');
-  assert.equal(records[0]['cail.outcome.reason'], 'rate_limited');
 });
 
-test('successful code execution emits one paired canonical action lifecycle', async (t) => {
+test('successful code execution runs the sandbox once without lifecycle writes', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const records = [];
   const sqlWrites = [];
-  t.mock.method(console, 'log', (record) => records.push(record));
   const agent = {
     ctx: {
       storage: {
@@ -548,11 +472,7 @@ test('successful code execution emits one paired canonical action lifecycle', as
       },
     },
     env: {
-      CAIL_LOG_ENV: 'test',
-      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-      CF_VERSION_METADATA: {
-        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
-      },
+      HEAVY_RATE_LIMIT: { limit: async () => ({ success: true }) },
     },
     cailSubject: TEST_SUBJECTS.alice,
     assertNotFrozen() {},
@@ -571,17 +491,7 @@ test('successful code execution emits one paired canonical action lifecycle', as
 
   const result = await WorkspaceAgent.prototype.executeCode.call(agent, 'return 1');
   assert.equal(result.ok, true);
-  assert.deepEqual(records.map((record) => record['event.name']), [
-    'cail.action.admitted',
-    'cail.action.terminal',
-  ]);
-  assert.equal(records[0]['cail.action.id'], records[1]['cail.action.id']);
-  assert.equal(records[0]['url.template'], '/api/workspaces/{id}/runtime/execute');
-  assert.equal(records[1]['cail.outcome'], 'ok');
-  assert.equal(sqlWrites.length, 2);
-  assert.match(sqlWrites[0].query, /studio_action_lifecycle_events_v1/);
-  assert.equal(sqlWrites[0].bindings[1], '/api/workspaces/{id}/runtime/execute');
-  assert.equal(sqlWrites[1].bindings[3], 'ok');
+  assert.equal(sqlWrites.length, 0);
 });
 
 test('code RPC fence spans rate-limit admission and rejects queued work before side effects', async () => {
@@ -597,7 +507,6 @@ test('code RPC fence spans rate-limit admission and rejects queued work before s
     migrationFrozen: false,
     activeMutations: 0,
     cailSubject: TEST_SUBJECTS.alice,
-    cailOperationalSubject: null,
     env: {
       CAIL_LOG_ENV: 'test',
       CAIL_FLEET_EVENTS: { writeDataPoint() {} },
@@ -829,25 +738,6 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     buildModelTools() {
       return {};
     },
-    ensureObservabilityRequest() {
-      return { steps: 0 };
-    },
-    pushObservabilityEvent() {},
-    finalizeObservabilityRequest() {},
-    recordChunkObservability() {},
-    markObservabilityUpdated() {},
-    admitModelCall(action) {
-      return WorkspaceAgent.prototype.admitModelCall.call(this, action);
-    },
-    finishModelCall(action, terminal, errorType) {
-      return WorkspaceAgent.prototype.finishModelCall.call(this, action, terminal, errorType);
-    },
-    finishChatAction(action, terminal, errorType) {
-      return WorkspaceAgent.prototype.finishChatAction.call(this, action, terminal, errorType);
-    },
-    deferChatTerminal(action, terminal, errorType) {
-      return WorkspaceAgent.prototype.deferChatTerminal.call(this, action, terminal, errorType);
-    },
   };
 
   const response = await WorkspaceAgent.prototype.onChatMessage.call(
@@ -873,12 +763,6 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   assert.equal(payload.error.code, 'quota_exceeded');
   assert.equal(payload.error.message, quotaMessage);
   assert.equal(payload.error.cail.retry_after_seconds, 1800);
-  // Direct providers surface APICallError; observability still uses the
-  // canonical envelope for quota terminal fields and error_type.
-  assert.deepEqual(agent.pendingChatAction.deferredTerminal, {
-    terminal: { outcome: 'denied', reason: 'quota_blocked' },
-    errorType: 'quota_exceeded',
-  });
   // The APICallError must not be SDK-retried: one wire call, no retry storm.
   assert.equal(wireCalls, 1);
 });

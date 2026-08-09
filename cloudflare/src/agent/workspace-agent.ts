@@ -1,6 +1,5 @@
 import {
   AIChatAgent,
-  type ChatResponseResult,
   type OnChatMessageOptions,
 } from '@cloudflare/ai-chat';
 import { callable, type Connection, type ConnectionContext } from 'agents';
@@ -28,16 +27,12 @@ import { z } from 'zod';
 import {
   DEFAULT_WORKSPACE_STATE,
   type LayoutPatch,
-  type WorkspaceObservabilityEvent,
-  type WorkspaceObservabilityRequest,
-  type WorkspaceObservabilitySnapshot,
-  type WorkspaceObservabilityToolCall,
   type WorkspacePanel,
   type WorkspaceRecord,
   type WorkspaceState,
 } from '../domain/workspace';
 import { accountImportWindowState, type Env } from '../env';
-import { createCailModel, resolveCailModelName } from '../lib/cail-model';
+import { createCailModel } from '../lib/cail-model';
 import {
   isCailIdentityConfigError,
   verifyGatewayCredentialForSession,
@@ -45,31 +40,6 @@ import {
 import { panelSchema } from '../lib/import';
 import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
-import {
-  CAIL_EVENTS,
-  LOG_PRODUCT,
-  LOG_PROVIDER,
-  STUDIO_MAX_MODEL_STEPS,
-  STUDIO_ACTION_ROUTES,
-  STUDIO_EVENTS,
-  mintCorrelation,
-  principalForOperationalSubject,
-  studioLogger,
-  traceFromCorrelation,
-  type CailCorrelation,
-  type CailPrincipalFields,
-  type CailTerminalFields,
-} from '../lib/logging';
-import {
-  STUDIO_RELIABILITY_WINDOW_MS,
-  initializeStudioReliability,
-  readStudioReliabilityAdmin,
-  recordStudioActionAdmission,
-  recordStudioActionTerminal,
-  recordStudioModelCallAdmission,
-  recordStudioModelCallTerminal,
-  type StudioReliabilityAdminRead,
-} from '../lib/reliability';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
 import {
   extractPdfText,
@@ -102,14 +72,13 @@ import { checkHeavyRpcLimit } from '../lib/rate-limit';
 
 const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
-const MAX_TOOL_TEXT_CHARS = 2000;
-const MAX_INLINE_MARKDOWN_CHARS = 3000;
-const MAX_OBSERVABILITY_EVENTS = 400;
-const MAX_OBSERVABILITY_REQUESTS = 20;
-const OBSERVABILITY_STALL_MS = 15_000;
 const HYDRATION_COMPLETE_KEY = 'runtimeWorkspaceHydrated:v1';
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
 const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
+// Keep a finite stop for the AI SDK tool loop so a malformed or non-terminating
+// tool plan cannot spend indefinitely. This is a loop safety boundary, not an
+// output/token cap.
+const MODEL_TOOL_LOOP_STEPS = 12;
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -203,112 +172,8 @@ function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePan
   }
 }
 
-function clipPreview(value: string, maxChars = 180): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-  return `${value.slice(0, maxChars - 1)}...`;
-}
-
-function summarizeError(error: unknown): string {
-  if (error instanceof Error) {
-    return `${error.name}: ${error.message}`;
-  }
-  if (typeof error === 'string') {
-    return error;
-  }
-  try {
-    return clipPreview(JSON.stringify(error));
-  } catch {
-    return String(error);
-  }
-}
-
-function summarizeUnknown(value: unknown): string | undefined {
-  if (value == null) return undefined;
-  if (typeof value === 'string') return clipPreview(value);
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return clipPreview(JSON.stringify(value));
-  } catch {
-    return undefined;
-  }
-}
-
-function summarizeChunkData(chunk: { type: string } & Record<string, unknown>): Record<string, unknown> | undefined {
-  switch (chunk.type) {
-    case 'text-delta':
-    case 'reasoning-delta':
-      return { chars: typeof chunk.text === 'string' ? chunk.text.length : 0 };
-    case 'tool-input-start':
-      return {
-        toolCallId: typeof chunk.id === 'string' ? chunk.id : undefined,
-        toolName: typeof chunk.toolName === 'string' ? chunk.toolName : undefined,
-      };
-    case 'tool-input-delta':
-      return {
-        toolCallId: typeof chunk.id === 'string' ? chunk.id : undefined,
-        chars: typeof chunk.delta === 'string' ? chunk.delta.length : 0,
-        preview: typeof chunk.delta === 'string' ? clipPreview(chunk.delta) : undefined,
-      };
-    case 'tool-call':
-      return {
-        toolCallId: typeof chunk.toolCallId === 'string' ? chunk.toolCallId : undefined,
-        toolName: typeof chunk.toolName === 'string' ? chunk.toolName : undefined,
-        invalid: Boolean(chunk.invalid),
-        inputPreview: summarizeUnknown(chunk.input),
-      };
-    case 'tool-result':
-      return {
-        toolCallId: typeof chunk.toolCallId === 'string' ? chunk.toolCallId : undefined,
-        toolName: typeof chunk.toolName === 'string' ? chunk.toolName : undefined,
-        outputPreview: summarizeUnknown(chunk.output),
-      };
-    case 'raw':
-      return {
-        preview: summarizeUnknown(chunk.rawValue),
-      };
-    default:
-      return undefined;
-  }
-}
-
 const CAIL_CREDENTIAL_STORAGE_KEY = 'cail:identity-jwt';
-const CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY = 'cail:operational-subject';
 const CAIL_SUBJECT_STORAGE_KEY = 'cail:subject';
-
-/**
- * Stable error-code slug for a DO-op failure. A canonical CAIL envelope carries
- * the gateway's stable code (`quota_exceeded`, `authentication_required`, …)
- * plus an HTTP status; anything else is an opaque internal failure — the error
- * MESSAGE is never logged (it can interpolate user content).
- */
-function logErrorType(error: unknown, cail = extractCanonicalCailError(error)): string {
-  return cail?.code ?? 'internal_error';
-}
-
-function terminalForModelError(
-  error: unknown,
-  cail = extractCanonicalCailError(error),
-): CailTerminalFields {
-  if (cail) {
-    if (cail.code === 'quota_exceeded') return { outcome: 'denied', reason: 'quota_blocked' };
-    if (cail.status === 401 || cail.status === 403) return { outcome: 'denied', reason: 'denied' };
-    if (cail.status === 429) return { outcome: 'denied', reason: 'rate_limited' };
-  }
-  return { outcome: 'error', reason: 'upstream_failure' };
-}
-
-interface PendingChatAction {
-  actionId: string;
-  correlation: CailCorrelation;
-  principal: CailPrincipalFields;
-  requestModel: string;
-  startedAt: number;
-  actionTerminal: boolean;
-  modelCall?: { callId: string; startedAt: number };
-  deferredTerminal?: { terminal: CailTerminalFields; errorType?: string };
-}
 
 type CurrentGatewayCredentialCheck =
   | { status: 'valid' | 'missing' | 'invalid' }
@@ -317,9 +182,6 @@ type CurrentGatewayCredentialCheck =
 export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   initialState: WorkspaceState = DEFAULT_WORKSPACE_STATE;
   private runtimeWorkspace?: RuntimeWorkspace;
-  private observabilityEvents: WorkspaceObservabilityEvent[] = [];
-  private observabilityRequests = new Map<string, WorkspaceObservabilityRequest>();
-  private observabilitySequence = 0;
   private hydrationComplete = false;
   private hydrationPromise: Promise<void> | null = null;
   private migrationFrozen = false;
@@ -331,21 +193,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * kept in DO storage so it survives hibernation. Never broadcast in state.
    */
   private cailIdentityJwt: string | null = null;
-  /**
-   * The pseudonymous X-CAIL-Subject of the verified credential above, stored
-   * ONLY for structured log events (the fleet keys logs by subject, never
-   * email or session cookie). Set alongside the credential and persisted so
-   * it survives hibernation with it.
-   */
   private cailSubject: string | null = null;
-  /** Verified `log_sub`; separate salt, never derived from cailSubject. */
-  private cailOperationalSubject: string | null = null;
-  private pendingChatAction: PendingChatAction | null = null;
 
   async onStart() {
-    // Cloudflare Agents officially supports synchronous SQLite initialization
-    // in onStart. These tables contain bounded machine lifecycle facts only.
-    initializeStudioReliability(this.ctx.storage.sql);
     if (!this.state.workspace) {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
@@ -365,25 +215,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           if (!isCailIdentityConfigError(identity) && identity) {
             this.cailIdentityJwt = stored;
             this.cailSubject = identity.subject;
-            this.cailOperationalSubject = identity.operationalSubject ?? null;
             // Rewrite the derived fields from the verified token so a stale
             // or hand-edited companion value cannot survive a restart.
             await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
-            if (identity.operationalSubject === undefined) {
-              await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
-            } else {
-              await this.ctx.storage.put(
-                CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
-                identity.operationalSubject,
-              );
-            }
           } else if (!isCailIdentityConfigError(identity)) {
             // Invalid, expired, wrong-audience, or cross-session credentials
             // must never remain available to a later model call. A config
             // error is retained for a later retry after operator repair.
             await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
             await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
-            await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
           }
         }
       }
@@ -500,15 +340,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       // No session id derivable yet (DO opened before first sync and the name
       // is not in the expected `${sessionId}-${wid}` shape): refuse rather than
       // store an unbindable credential.
-      const correlation = mintCorrelation();
-      studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal: principalForOperationalSubject(this.cailOperationalSubject),
-        trace: traceFromCorrelation(correlation),
-        terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: 'session_unbound',
-      });
       throw new Error('setCailCredential: session id unavailable for credential binding');
     }
     const identity = await verifyGatewayCredentialForSession(
@@ -517,46 +348,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.env,
     );
     if (isCailIdentityConfigError(identity)) {
-      // The worker's own verification config failed to load — operator error,
-      // logged distinctly from a rejected credential. There is no HTTP status
-      // to carry a 503 on this internal RPC, so throw a distinct error.
-      const correlation = mintCorrelation();
-      studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal: principalForOperationalSubject(this.cailOperationalSubject),
-        trace: traceFromCorrelation(correlation),
-        terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: 'identity_config_unavailable',
-      });
       throw new Error('setCailCredential: identity verification config could not be loaded');
     }
     if (!identity) {
-      const correlation = mintCorrelation();
-      studioLogger(this.env)?.emit(STUDIO_EVENTS.CREDENTIAL_REJECTED, {
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal: principalForOperationalSubject(this.cailOperationalSubject),
-        trace: traceFromCorrelation(correlation),
-        terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: 'invalid_credential',
-      });
       throw new Error('setCailCredential: rejected unverified or non-matching identity JWT');
     }
 
     this.cailIdentityJwt = identityJwt;
     this.cailSubject = identity.subject;
-    this.cailOperationalSubject = identity.operationalSubject ?? null;
     await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
     await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
-    if (identity.operationalSubject === undefined) {
-      await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
-    } else {
-      await this.ctx.storage.put(
-        CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY,
-        identity.operationalSubject,
-      );
-    }
   }
 
   /**
@@ -587,17 +388,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (!identity) {
       this.cailIdentityJwt = null;
       this.cailSubject = null;
-      this.cailOperationalSubject = null;
       await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
       await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
-      await this.ctx.storage.delete(CAIL_OPERATIONAL_SUBJECT_STORAGE_KEY);
       return { status: 'invalid' };
     }
 
     // Keep the in-memory derived fields tied to the claims just verified. The
     // token itself is unchanged, so the persisted credential remains intact.
     this.cailSubject = identity.subject;
-    this.cailOperationalSubject = identity.operationalSubject ?? null;
     return { status: 'valid' };
   }
 
@@ -669,15 +467,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     await this.clearRuntimeFilesUnchecked();
     this.cailIdentityJwt = null;
     this.cailSubject = null;
-    this.cailOperationalSubject = null;
     this.messages = [];
     for (const table of [
       'cf_ai_chat_agent_messages',
       'cf_ai_chat_request_context',
       'cf_ai_chat_agent_tool_runs',
       'cf_ai_chat_agent_tool_milestones',
-      'studio_action_lifecycle_events_v1',
-      'studio_model_call_lifecycle_events_v1',
     ]) {
       this.ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     }
@@ -699,140 +494,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       groups: state.groups || [],
       connections: state.connections || [],
     });
-  }
-
-  private admitModelCall(action: PendingChatAction): void {
-    if (action.modelCall) {
-      this.finishModelCall(action, { outcome: 'outcome_unknown', reason: 'unknown' }, 'model_call_overlap');
-    }
-    const modelCall = { callId: crypto.randomUUID(), startedAt: Date.now() };
-    recordStudioModelCallAdmission(this.ctx.storage.sql, {
-      callId: modelCall.callId,
-      actionId: action.actionId,
-      atMs: modelCall.startedAt,
-    });
-    action.modelCall = modelCall;
-    studioLogger(this.env)?.emit(CAIL_EVENTS.MODEL_CALL_ADMITTED, {
-      call_id: modelCall.callId,
-      action_id: action.actionId,
-      request_id: action.correlation.request_id,
-      product_id: LOG_PRODUCT,
-      principal: action.principal,
-      provider: LOG_PROVIDER,
-      request_model: action.requestModel,
-      trace: traceFromCorrelation(action.correlation),
-    });
-  }
-
-  private finishModelCall(
-    action: PendingChatAction,
-    terminal: CailTerminalFields,
-    errorType?: string,
-  ): void {
-    const modelCall = action.modelCall;
-    if (!modelCall) return;
-    recordStudioModelCallTerminal(this.ctx.storage.sql, {
-      callId: modelCall.callId,
-      actionId: action.actionId,
-      atMs: Date.now(),
-      outcome: terminal.outcome,
-    });
-    action.modelCall = undefined;
-    const fields = {
-      call_id: modelCall.callId,
-      action_id: action.actionId,
-      request_id: action.correlation.request_id,
-      product_id: LOG_PRODUCT,
-      principal: action.principal,
-      provider: LOG_PROVIDER,
-      request_model: action.requestModel,
-      terminal,
-      duration_ms: Date.now() - modelCall.startedAt,
-      trace: traceFromCorrelation(action.correlation),
-    };
-    if (terminal.outcome === 'ok') {
-      studioLogger(this.env)?.emit(CAIL_EVENTS.MODEL_CALL_TERMINAL, { ...fields, terminal });
-    } else {
-      studioLogger(this.env)?.emit(CAIL_EVENTS.MODEL_CALL_TERMINAL, {
-        ...fields,
-        terminal,
-        ...(errorType ? { error_type: errorType } : {}),
-      });
-    }
-  }
-
-  private finishChatAction(
-    action: PendingChatAction,
-    terminal: CailTerminalFields,
-    errorType?: string,
-  ): void {
-    if (action.actionTerminal) return;
-    recordStudioActionTerminal(this.ctx.storage.sql, {
-      actionId: action.actionId,
-      route: STUDIO_ACTION_ROUTES.CHAT,
-      atMs: Date.now(),
-      outcome: terminal.outcome,
-    });
-    action.actionTerminal = true;
-    const fields = {
-      action_id: action.actionId,
-      request_id: action.correlation.request_id,
-      product_id: LOG_PRODUCT,
-      principal: action.principal,
-      route: STUDIO_ACTION_ROUTES.CHAT,
-      terminal,
-      duration_ms: Date.now() - action.startedAt,
-      trace: traceFromCorrelation(action.correlation),
-    };
-    if (terminal.outcome === 'ok') {
-      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, { ...fields, terminal });
-    } else {
-      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
-        ...fields,
-        terminal,
-        ...(errorType ? { error_type: errorType } : {}),
-      });
-    }
-    if (this.pendingChatAction === action) this.pendingChatAction = null;
-  }
-
-  private deferChatTerminal(
-    action: PendingChatAction,
-    terminal: CailTerminalFields,
-    errorType?: string,
-  ): void {
-    action.deferredTerminal ??= { terminal, ...(errorType ? { errorType } : {}) };
-  }
-
-  protected override onChatResponse(result: ChatResponseResult): void {
-    const action = this.pendingChatAction;
-    if (!action || action.actionTerminal) return;
-
-    // AIChatAgent 0.9 calls this hook only after the assistant message is
-    // durably persisted. This is the canonical Studio success boundary; the
-    // earlier streamText.onFinish callback closes model work, not the action.
-    if (action.deferredTerminal) {
-      const { terminal, errorType } = action.deferredTerminal;
-      this.finishModelCall(action, terminal, errorType);
-      this.finishChatAction(action, terminal, errorType);
-    } else if (result.status === 'completed') {
-      this.finishModelCall(action, { outcome: 'ok', reason: 'completed' });
-      this.finishChatAction(action, { outcome: 'ok', reason: 'completed' });
-    } else if (result.status === 'aborted') {
-      this.finishModelCall(action, { outcome: 'cancelled', reason: 'cancelled' });
-      this.finishChatAction(action, { outcome: 'cancelled', reason: 'cancelled' });
-    } else {
-      this.finishModelCall(
-        action,
-        { outcome: 'error', reason: 'application_failure' },
-        'chat_response_failed',
-      );
-      this.finishChatAction(
-        action,
-        { outcome: 'error', reason: 'application_failure' },
-        'chat_response_failed',
-      );
-    }
   }
 
   protected override resetTurnState(): void {
@@ -858,31 +519,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.assertNotFrozen();
     const workspace = this.requireWorkspace();
     const sessionId = this.requireSessionId();
-    const requestId = options?.requestId ?? 'unknown';
-    // A chat turn arrives over the client WebSocket without trusted inbound
-    // correlation headers. Mint fleet UUID/trace identifiers; the AI SDK's
-    // short request label remains only in local observability.
-    const correlation = mintCorrelation();
 
     const credentialCheck = await this.verifyCurrentGatewayCredential(sessionId);
     const identityJwt = this.cailIdentityJwt;
     if (credentialCheck.status !== 'valid' || !identityJwt) {
-      // No verified CAIL credential reached this workspace: the model proxy
-      // has no way to authenticate or attribute spend. Surface the CAIL
-      // authentication_required envelope rather than calling out anonymously.
-      studioLogger(this.env)?.emit(STUDIO_EVENTS.CHAT_DENIED, {
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal: principalForOperationalSubject(this.cailOperationalSubject),
-        trace: traceFromCorrelation(correlation),
-        terminal: { outcome: 'denied', reason: 'denied' },
-        error_type: credentialCheck.status === 'config'
-          ? 'identity_config_unavailable'
-          : 'authentication_required',
-      });
-      this.finalizeObservabilityRequest(requestId, 'error', 'No CAIL identity credential for model call', {
-        error: 'authentication_required',
-      }, 'error');
       const errorText = JSON.stringify(canonicalError(
         'authentication_required',
         'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
@@ -912,7 +552,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
     }
 
-    let action: PendingChatAction | null = null;
     try {
       const scopedPanelIds = Array.isArray(options?.body?.scopePanelIds)
         ? options.body.scopePanelIds.filter((value): value is string => typeof value === 'string')
@@ -940,47 +579,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels);
       const codemode = this.createCodeModeTool(hostTools);
       const modelTools = this.buildModelTools(hostTools);
-      // Per-workspace override wins; otherwise the env default. The same name
-      // feeds observability so traces reflect the model actually called.
-      const modelName = workspace.model || resolveCailModelName(this.env);
-      action = {
-        actionId: crypto.randomUUID(),
-        correlation,
-        principal: principalForOperationalSubject(this.cailOperationalSubject),
-        requestModel: modelName,
-        startedAt: Date.now(),
-        actionTerminal: false,
-      };
-      recordStudioActionAdmission(this.ctx.storage.sql, {
-        actionId: action.actionId,
-        route: STUDIO_ACTION_ROUTES.CHAT,
-        atMs: action.startedAt,
-      });
-      this.pendingChatAction = action;
-      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_ADMITTED, {
-        action_id: action.actionId,
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal: action.principal,
-        route: STUDIO_ACTION_ROUTES.CHAT,
-        trace: traceFromCorrelation(correlation),
-      });
       const model = createCailModel({
         env: this.env,
         identityJwt,
         model: workspace.model,
-        // Propagate this turn's correlation to the model proxy so gateway/
-        // proxy logs join to this DO's wide events.
-        correlation,
-      });
-      const scopedPanelTraceIds = scopedPanels.map((panel) => panel.id);
-
-      this.ensureObservabilityRequest(requestId, modelName, scopedPanelTraceIds);
-      this.pushObservabilityEvent(requestId, 'request-start', 'Chat request started', 'info', {
-        workspaceId: workspace.id,
-        sessionId,
-        model: modelName,
-        scopedPanelIds: scopedPanelTraceIds,
       });
 
       const result = streamText({
@@ -998,93 +600,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           ...modelTools,
           codemode,
         },
-        stopWhen: stepCountIs(STUDIO_MAX_MODEL_STEPS),
-        includeRawChunks: true,
-        experimental_onStepStart: () => {
-          this.admitModelCall(action!);
-          const request = this.ensureObservabilityRequest(requestId, modelName, scopedPanelTraceIds);
-          request.steps += 1;
-          this.markObservabilityUpdated(request, false);
-          this.pushObservabilityEvent(requestId, 'step-start', `Model step ${request.steps} started`, 'info');
-        },
-        onStepFinish: ({ finishReason }) => {
-          if (finishReason === 'error') {
-            this.finishModelCall(
-              action!,
-              { outcome: 'error', reason: 'upstream_failure' },
-              'model_step_failed',
-            );
-          } else {
-            this.finishModelCall(action!, { outcome: 'ok', reason: 'completed' });
-          }
-        },
-        onChunk: ({ chunk }) => {
-          this.recordChunkObservability(
-            requestId,
-            modelName,
-            scopedPanelTraceIds,
-            chunk as { type: string } & Record<string, unknown>
-          );
-        },
-        onFinish: ({ finishReason, rawFinishReason, totalUsage, response }) => {
-          // A provider step normally closes in onStepFinish. This guards SDK
-          // drift without claiming action completion before SQLite persistence.
-          this.finishModelCall(action!, { outcome: 'ok', reason: 'completed' });
-          this.finalizeObservabilityRequest(requestId, 'finished', 'Chat request finished', {
-            finishReason,
-            rawFinishReason,
-            totalUsage,
-            responseId: response?.id,
-          });
-        },
-        onAbort: ({ steps }) => {
-          this.finishModelCall(action!, { outcome: 'cancelled', reason: 'cancelled' });
-          this.deferChatTerminal(action!, { outcome: 'cancelled', reason: 'cancelled' });
-          this.finalizeObservabilityRequest(requestId, 'aborted', 'Chat request aborted', {
-            steps: steps.length,
-          }, 'warn');
-        },
-        onError: (error) => {
-          this.finalizeObservabilityRequest(requestId, 'error', 'streamText reported an error', {
-            error: summarizeError(error.error),
-          }, 'error');
-          // Structured replacement for the old console.error: stable code +
-          // status only, never the error message (it can carry user content).
-          const cail = extractCanonicalCailError(error.error);
-          const errorType = logErrorType(error.error, cail);
-          const terminal = terminalForModelError(error.error, cail);
-          this.finishModelCall(action!, terminal, errorType);
-          this.deferChatTerminal(action!, terminal, errorType);
-        },
+        stopWhen: stepCountIs(MODEL_TOOL_LOOP_STEPS),
       });
 
       return result.toUIMessageStreamResponse({
         onError: (error) => {
-          this.finalizeObservabilityRequest(requestId, 'error', 'UI message stream failed', {
-            error: summarizeError(error),
-          }, 'error');
           const cail = extractCanonicalCailError(error);
-          const errorType = logErrorType(error, cail);
-          const terminal = terminalForModelError(error, cail);
-          this.finishModelCall(action!, terminal, errorType);
-          this.deferChatTerminal(action!, terminal, errorType);
           const quota = quotaSignalFromError(error, cail);
           return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
       });
     } catch (error) {
-      this.finalizeObservabilityRequest(requestId, 'error', 'Chat failed before streaming began', {
-        error: summarizeError(error),
-      }, 'error');
-      if (action) {
-        const cail = extractCanonicalCailError(error);
-        const errorType = logErrorType(error, cail);
-        const terminal = cail
-          ? terminalForModelError(error, cail)
-          : { outcome: 'error', reason: 'application_failure' } as const;
-        this.finishModelCall(action, terminal, errorType);
-        this.finishChatAction(action, terminal, errorType);
-      }
       return new Response('Agent Studio could not start this response.', { status: 500 });
     }
   }
@@ -1095,21 +621,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   async getMessages(): Promise<UIMessage[]> {
     return this.messages;
-  }
-
-  async getObservability(): Promise<WorkspaceObservabilitySnapshot> {
-    return this.snapshotObservability();
-  }
-
-  /**
-   * Internal Durable Object RPC for an authorized admin collector. Deliberately
-   * lacks @callable(), so browser/WebSocket clients cannot invoke it.
-   */
-  async getProductReliabilityAdminRead(toMs = Date.now()): Promise<StudioReliabilityAdminRead> {
-    return readStudioReliabilityAdmin(this.ctx.storage.sql, {
-      fromMs: toMs - STUDIO_RELIABILITY_WINDOW_MS,
-      toMs,
-    });
   }
 
   async getRuntimeInfo(): Promise<{
@@ -1134,89 +645,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   private async executeCodeFenced(code: string): Promise<ExecuteResult> {
-    // One wide event per execution — metadata only (durations, outcome,
-    // stable error code); the code and its output are content and never
-    // logged. Control flow is unchanged: every failure still rethrows.
-    const correlation = mintCorrelation();
-    const principal = principalForOperationalSubject(this.cailOperationalSubject);
     this.assertAuthorizedRpc();
     code = runtimeCodeSchema.parse(code);
     const rateKey = this.csrfSessionId() ?? this.requireSessionId();
     if (!(await checkHeavyRpcLimit(this.env, rateKey))) {
-      studioLogger(this.env)?.emit(STUDIO_EVENTS.CODE_DENIED, {
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal,
-        http_method: 'POST',
-        route: STUDIO_ACTION_ROUTES.CODE,
-        terminal: { outcome: 'denied', reason: 'rate_limited' },
-        trace: traceFromCorrelation(correlation),
-        error_type: 'rate_limited',
-      });
       throw new Error('rate_limited: too many code executions — try again shortly.');
     }
     const workspace = this.requireWorkspace();
     const sessionId = this.requireSessionId();
-    const startedAt = Date.now();
-    const actionId = crypto.randomUUID();
-    recordStudioActionAdmission(this.ctx.storage.sql, {
-      actionId,
-      route: STUDIO_ACTION_ROUTES.CODE,
-      atMs: startedAt,
-    });
-    studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_ADMITTED, {
-      action_id: actionId,
-      request_id: correlation.request_id,
-      product_id: LOG_PRODUCT,
-      principal,
-      http_method: 'POST',
-      route: STUDIO_ACTION_ROUTES.CODE,
-      trace: traceFromCorrelation(correlation),
-    });
-    let result: ExecuteResult;
-    try {
-      const tools = this.buildHostTools(workspace, sessionId);
-      const executor = this.createCodeExecutor();
-      result = await executor.execute(code, this.buildCodeProviders(tools));
-    } catch (error) {
-      recordStudioActionTerminal(this.ctx.storage.sql, {
-        actionId,
-        route: STUDIO_ACTION_ROUTES.CODE,
-        atMs: Date.now(),
-        outcome: 'error',
-      });
-      studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
-        action_id: actionId,
-        request_id: correlation.request_id,
-        product_id: LOG_PRODUCT,
-        principal,
-        http_method: 'POST',
-        route: STUDIO_ACTION_ROUTES.CODE,
-        terminal: { outcome: 'error', reason: 'application_failure' },
-        duration_ms: Date.now() - startedAt,
-        trace: traceFromCorrelation(correlation),
-        error_type: logErrorType(error),
-      });
-      throw error;
-    }
-    recordStudioActionTerminal(this.ctx.storage.sql, {
-      actionId,
-      route: STUDIO_ACTION_ROUTES.CODE,
-      atMs: Date.now(),
-      outcome: 'ok',
-    });
-    studioLogger(this.env)?.emit(CAIL_EVENTS.ACTION_TERMINAL, {
-      action_id: actionId,
-      request_id: correlation.request_id,
-      product_id: LOG_PRODUCT,
-      principal,
-      http_method: 'POST',
-      route: STUDIO_ACTION_ROUTES.CODE,
-      terminal: { outcome: 'ok', reason: 'completed' },
-      duration_ms: Date.now() - startedAt,
-      trace: traceFromCorrelation(correlation),
-    });
-    return result;
+    const tools = this.buildHostTools(workspace, sessionId);
+    const executor = this.createCodeExecutor();
+    return executor.execute(code, this.buildCodeProviders(tools));
   }
 
   async getWorkspaceFiles(): Promise<Array<{
@@ -1361,243 +800,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.state;
   }
 
-  private snapshotObservability(now = Date.now()): WorkspaceObservabilitySnapshot {
-    const requests = [...this.observabilityRequests.values()]
-      .slice(-MAX_OBSERVABILITY_REQUESTS)
-      .map((request) => {
-        const updatedAtMs = Date.parse(request.updatedAt);
-        const idleMs = Number.isFinite(updatedAtMs) ? Math.max(0, now - updatedAtMs) : 0;
-        return {
-          ...request,
-          idleMs,
-          suspectedStall: request.status === 'streaming' && idleMs >= OBSERVABILITY_STALL_MS,
-          tools: request.tools.map((toolCall) => ({ ...toolCall })),
-          errors: [...request.errors],
-        };
-      })
-      .sort((left, right) => right.startedAt.localeCompare(left.startedAt));
-
-    return {
-      generatedAt: new Date(now).toISOString(),
-      requests,
-      events: [...this.observabilityEvents],
-    };
-  }
-
-  private ensureObservabilityRequest(
-    requestId: string,
-    model: string,
-    scopedPanelIds: string[]
-  ): WorkspaceObservabilityRequest {
-    const existing = this.observabilityRequests.get(requestId);
-    if (existing) {
-      return existing;
-    }
-
-    const now = new Date().toISOString();
-    const request: WorkspaceObservabilityRequest = {
-      requestId,
-      status: 'streaming',
-      model,
-      startedAt: now,
-      updatedAt: now,
-      lastChunkAt: undefined,
-      idleMs: 0,
-      suspectedStall: false,
-      scopedPanelIds: [...scopedPanelIds],
-      steps: 0,
-      chunkCounts: {
-        text: 0,
-        reasoning: 0,
-        toolInput: 0,
-        toolResult: 0,
-        raw: 0,
-      },
-      errors: [],
-      tools: [],
-    };
-    this.observabilityRequests.set(requestId, request);
-    while (this.observabilityRequests.size > MAX_OBSERVABILITY_REQUESTS) {
-      const oldestKey = this.observabilityRequests.keys().next().value as string | undefined;
-      if (!oldestKey) break;
-      this.observabilityRequests.delete(oldestKey);
-    }
-    return request;
-  }
-
-  private pushObservabilityEvent(
-    requestId: string,
-    type: WorkspaceObservabilityEvent['type'],
-    detail: string,
-    level: WorkspaceObservabilityEvent['level'] = 'info',
-    data?: Record<string, unknown>
-  ) {
-    const event: WorkspaceObservabilityEvent = {
-      id: `${Date.now()}-${this.observabilitySequence += 1}`,
-      requestId,
-      at: new Date().toISOString(),
-      level,
-      type,
-      detail,
-      ...(data ? { data } : {}),
-    };
-    this.observabilityEvents.push(event);
-    if (this.observabilityEvents.length > MAX_OBSERVABILITY_EVENTS) {
-      this.observabilityEvents.splice(0, this.observabilityEvents.length - MAX_OBSERVABILITY_EVENTS);
-    }
-  }
-
-  private markObservabilityUpdated(request: WorkspaceObservabilityRequest, chunk = false) {
-    const now = new Date().toISOString();
-    request.updatedAt = now;
-    if (chunk) {
-      request.lastChunkAt = now;
-    }
-  }
-
-  private getOrCreateToolTrace(
-    request: WorkspaceObservabilityRequest,
-    toolCallId: string,
-    toolName: string
-  ): WorkspaceObservabilityToolCall {
-    const existing = request.tools.find((toolCall) => toolCall.toolCallId === toolCallId);
-    if (existing) {
-      if (!existing.toolName && toolName) {
-        existing.toolName = toolName;
-      }
-      return existing;
-    }
-
-    const now = new Date().toISOString();
-    const toolTrace: WorkspaceObservabilityToolCall = {
-      toolCallId,
-      toolName,
-      state: 'input-streaming',
-      inputChars: 0,
-      deltaCount: 0,
-      startedAt: now,
-      updatedAt: now,
-    };
-    request.tools.push(toolTrace);
-    return toolTrace;
-  }
-
-  private recordChunkObservability(
-    requestId: string,
-    model: string,
-    scopedPanelIds: string[],
-    chunk: { type: string } & Record<string, unknown>
-  ) {
-    const request = this.ensureObservabilityRequest(requestId, model, scopedPanelIds);
-    this.markObservabilityUpdated(request, true);
-
-    switch (chunk.type) {
-      case 'text-delta':
-        request.chunkCounts.text += 1;
-        if (request.chunkCounts.text <= 3 || request.chunkCounts.text % 50 === 0) {
-          this.pushObservabilityEvent(requestId, 'chunk', 'Text delta received', 'info', summarizeChunkData(chunk));
-        }
-        break;
-      case 'reasoning-delta':
-        request.chunkCounts.reasoning += 1;
-        if (request.chunkCounts.reasoning <= 2 || request.chunkCounts.reasoning % 25 === 0) {
-          this.pushObservabilityEvent(requestId, 'chunk', 'Reasoning delta received', 'info', summarizeChunkData(chunk));
-        }
-        break;
-      case 'tool-input-start': {
-        const toolCallId = typeof chunk.id === 'string' ? chunk.id : crypto.randomUUID();
-        const toolName = typeof chunk.toolName === 'string' ? chunk.toolName : 'unknown';
-        const toolTrace = this.getOrCreateToolTrace(request, toolCallId, toolName);
-        toolTrace.state = 'input-streaming';
-        toolTrace.updatedAt = new Date().toISOString();
-        this.pushObservabilityEvent(requestId, 'tool-call', `Tool input started: ${toolName}`, 'info', summarizeChunkData(chunk));
-        break;
-      }
-      case 'tool-input-delta': {
-        request.chunkCounts.toolInput += 1;
-        const toolCallId = typeof chunk.id === 'string' ? chunk.id : 'unknown';
-        const toolTrace = this.getOrCreateToolTrace(request, toolCallId, 'unknown');
-        const delta = typeof chunk.delta === 'string' ? chunk.delta : '';
-        toolTrace.inputChars += delta.length;
-        toolTrace.deltaCount += 1;
-        toolTrace.updatedAt = new Date().toISOString();
-        toolTrace.lastPreview = clipPreview(delta);
-        const shouldLogProgress = toolTrace.deltaCount <= 3
-          || toolTrace.deltaCount % 10 === 0
-          || toolTrace.inputChars % 1000 < delta.length;
-        if (shouldLogProgress) {
-          this.pushObservabilityEvent(
-            requestId,
-            'chunk',
-            `Tool input delta for ${toolTrace.toolName}`,
-            'info',
-            {
-              toolCallId,
-              deltaChars: delta.length,
-              inputChars: toolTrace.inputChars,
-              deltaCount: toolTrace.deltaCount,
-              preview: toolTrace.lastPreview,
-            }
-          );
-        }
-        break;
-      }
-      case 'tool-call': {
-        const toolCallId = typeof chunk.toolCallId === 'string' ? chunk.toolCallId : 'unknown';
-        const toolName = typeof chunk.toolName === 'string' ? chunk.toolName : 'unknown';
-        const toolTrace = this.getOrCreateToolTrace(request, toolCallId, toolName);
-        toolTrace.state = 'input-available';
-        toolTrace.updatedAt = new Date().toISOString();
-        toolTrace.lastPreview = summarizeUnknown(chunk.input);
-        this.pushObservabilityEvent(requestId, 'tool-call', `Tool call ready: ${toolName}`, 'info', summarizeChunkData(chunk));
-        break;
-      }
-      case 'tool-result': {
-        request.chunkCounts.toolResult += 1;
-        const toolCallId = typeof chunk.toolCallId === 'string' ? chunk.toolCallId : 'unknown';
-        const toolName = typeof chunk.toolName === 'string' ? chunk.toolName : 'unknown';
-        const toolTrace = this.getOrCreateToolTrace(request, toolCallId, toolName);
-        toolTrace.state = 'output-available';
-        toolTrace.updatedAt = new Date().toISOString();
-        toolTrace.lastPreview = summarizeUnknown(chunk.output);
-        this.pushObservabilityEvent(requestId, 'tool-result', `Tool result available: ${toolName}`, 'info', summarizeChunkData(chunk));
-        break;
-      }
-      case 'raw':
-        request.chunkCounts.raw += 1;
-        if (request.chunkCounts.raw <= 3 || request.chunkCounts.raw % 20 === 0) {
-          this.pushObservabilityEvent(requestId, 'chunk', 'Raw provider chunk received', 'info', summarizeChunkData(chunk));
-        }
-        break;
-      default:
-        break;
-    }
-  }
-
-  private finalizeObservabilityRequest(
-    requestId: string,
-    status: WorkspaceObservabilityRequest['status'],
-    detail: string,
-    data?: Record<string, unknown>,
-    level: WorkspaceObservabilityEvent['level'] = 'info'
-  ) {
-    const request = this.observabilityRequests.get(requestId);
-    if (request) {
-      request.status = status;
-      this.markObservabilityUpdated(request, false);
-      if (status === 'error' && data?.error) {
-        request.errors.push(String(data.error));
-      }
-      if (typeof data?.finishReason === 'string') {
-        request.finishReason = data.finishReason;
-      }
-      if (typeof data?.rawFinishReason === 'string') {
-        request.rawFinishReason = data.rawFinishReason;
-      }
-    }
-    this.pushObservabilityEvent(requestId, status === 'finished' ? 'finish' : status === 'aborted' ? 'abort' : 'error', detail, level, data);
-  }
-
   private createCodeExecutor(): DynamicWorkerExecutor {
     return new DynamicWorkerExecutor({
       loader: this.env.LOADER,
@@ -1702,12 +904,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         description: [
           'Write a UTF-8 text file into the current workspace.',
           'Use this for durable artifacts that will be shown as file-backed tiles.',
-          `Keep each call under ${MAX_TOOL_TEXT_CHARS} characters.`,
-          'For larger files, make multiple calls with mode="append" or use codemode.',
+          'Use mode="append" when adding to an existing file.',
         ].join(' '),
         inputSchema: z.object({
           filePath: z.string(),
-          content: z.string().max(MAX_TOOL_TEXT_CHARS),
+          content: z.string(),
           contentType: z.string().optional(),
           mode: z.enum(['replace', 'append']).default('replace'),
         }),
@@ -1838,13 +1039,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       ui_markdown: tool({
         description: [
           'Create or update a concise markdown panel on the canvas.',
-          `Keep inline markdown under ${MAX_INLINE_MARKDOWN_CHARS} characters.`,
           'Use file-backed panels for durable long-form documents.',
         ].join(' '),
         inputSchema: z.object({
           id: z.string().optional(),
           title: z.string(),
-          content: z.string().max(MAX_INLINE_MARKDOWN_CHARS),
+          content: z.string(),
         }),
         strict: true,
         execute: async ({ id, title, content }) => {
