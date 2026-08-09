@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --env-file \"$(if [ -f .dev.vars ]; then printf .dev.vars; else printf .dev.vars.example; fi)\"",
     "deploy": "wrangler deploy --env staging --strict",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.mjs"

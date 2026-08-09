@@ -1,7 +1,6 @@
-# Any string of 32+ characters works; generate with `openssl rand -hex 32`.
-# This placeholder is intentionally too short so an uncustomized copy fails
-# loud at request time instead of running with a known secret.
-SESSION_SECRET=replace-me-openssl-rand-hex-32
+# Committed local-only value so `bun run dev` works from a clean checkout.
+# Deployed Workers use their environment secret instead.
+SESSION_SECRET=agent-studio-local-development-session-secret
 
 # CAIL Model API base URL. Leave it unset for anonymous local work. A local
 # authenticated model path also needs a real GATEWAY-compatible binding.
