@@ -145,7 +145,6 @@ export interface WorkspaceRuntimeInfo {
   provider: 'dynamic-workers';
   codemode: boolean;
   git: boolean;
-  timeoutMs: number;
   outbound: 'tool-only';
 }
 

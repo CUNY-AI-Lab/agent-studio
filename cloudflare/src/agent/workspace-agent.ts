@@ -69,7 +69,6 @@ import {
 } from '../lib/quota-error';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
 
-const DYNAMIC_WORKER_TIMEOUT_MS = 30_000;
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
 const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
@@ -623,14 +622,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     provider: 'dynamic-workers';
     codemode: true;
     git: true;
-    timeoutMs: number;
     outbound: 'tool-only';
   }> {
     return {
       provider: 'dynamic-workers',
       codemode: true,
       git: true,
-      timeoutMs: DYNAMIC_WORKER_TIMEOUT_MS,
       outbound: 'tool-only',
     };
   }
@@ -799,7 +796,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private createCodeExecutor(): DynamicWorkerExecutor {
     return new DynamicWorkerExecutor({
       loader: this.env.LOADER,
-      timeout: DYNAMIC_WORKER_TIMEOUT_MS,
       globalOutbound: null,
     });
   }

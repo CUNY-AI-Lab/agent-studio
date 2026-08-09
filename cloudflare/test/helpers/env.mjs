@@ -273,7 +273,7 @@ export class FakeWorkspaceAgent {
   }
 
   async getRuntimeInfo() {
-    return { provider: 'dynamic-workers', codemode: true, git: true, timeoutMs: 30000, outbound: 'tool-only' };
+    return { provider: 'dynamic-workers', codemode: true, git: true, outbound: 'tool-only' };
   }
 
   async executeCode(code) {
