@@ -245,7 +245,8 @@ test('enforceCsrfRead: GET/HEAD require a valid token in the header', async () =
 
   const missing = await enforceCsrfRead(fakeContext({ method: 'GET', sessionId }));
   assert.equal(missing.status, 403);
-  assert.deepEqual(missing.__json, { error: 'csrf_token_missing' });
+  assert.equal(missing.__json.error.code, 'csrf_token_missing');
+  assert.equal(missing.__json.error.type, 'authentication_error');
 
   const invalid = await enforceCsrfRead(fakeContext({
     method: 'GET',
@@ -253,7 +254,8 @@ test('enforceCsrfRead: GET/HEAD require a valid token in the header', async () =
     headers: { [CSRF_HEADER]: 'wrong' },
   }));
   assert.equal(invalid.status, 403);
-  assert.deepEqual(invalid.__json, { error: 'csrf_token_invalid' });
+  assert.equal(invalid.__json.error.code, 'csrf_token_invalid');
+  assert.equal(invalid.__json.error.type, 'authentication_error');
   assert.equal(await enforceCsrfRead(fakeContext({ method: 'POST', sessionId })), null);
 });
 
@@ -262,7 +264,8 @@ test('enforceCsrf: POST with Sec-Fetch-Site same-origin and no token is rejected
     fakeContext({ method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } }),
   );
   assert.equal(rejection.status, 403);
-  assert.deepEqual(rejection.__json, { error: 'csrf_token_missing' });
+  assert.equal(rejection.__json.error.code, 'csrf_token_missing');
+  assert.equal(rejection.__json.error.type, 'authentication_error');
 });
 
 test('enforceCsrf: POST with Sec-Fetch-Site same-origin requires a valid token', async () => {
@@ -278,7 +281,8 @@ test('enforceCsrf: POST with Sec-Fetch-Site same-origin requires a valid token',
     fakeContext({ method: 'POST', sessionId, headers: { 'Sec-Fetch-Site': 'same-origin', [CSRF_HEADER]: 'nope' } }),
   );
   assert.equal(wrong.status, 403);
-  assert.deepEqual(wrong.__json, { error: 'csrf_token_invalid' });
+  assert.equal(wrong.__json.error.code, 'csrf_token_invalid');
+  assert.equal(wrong.__json.error.type, 'authentication_error');
 });
 
 test('enforceCsrf: POST with Sec-Fetch-Site same-site is rejected 403', async () => {
