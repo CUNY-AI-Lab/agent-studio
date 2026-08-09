@@ -1,121 +1,32 @@
 /**
- * First-login migration of anonymous-session data into the CAIL
- * subject-keyed namespace.
+ * One-time import of the anonymous cookie namespace into the verified CAIL
+ * subject namespace.
  *
- * Before SSO enforcement, users work under a signed opaque cookie session.
- * Once they authenticate, their session id becomes a digest of the CAIL
- * subject (see session.ts) and anything they made anonymously would be
- * stranded. When an authenticated request also carries a valid legacy
- * anonymous cookie, we copy that anonymous namespace's data into the subject
- * namespace, exactly once.
- *
- * Mechanism: COPY, not an alias map. The subject namespace may already hold
- * its own data (fresh post-SSO usage, or another device), so reads under an
- * alias would have to merge two namespaces forever; and Durable Object names
- * embed the session id, so an alias would add a resolution read to every
- * request. Copying reuses the machinery the workspace import/export flow
- * already exercises, and leaves one canonical namespace. DO content moves via
- * the WorkspaceAgent RPC surface because DO names cannot be renamed.
- *
- * Claim-once: a MigrationRegistry Durable Object named by the ANONYMOUS
- * session id serializes all claims for that namespace. The first verified
- * subject to claim wins and is recorded; the same anonymous namespace can
- * never migrate into a second subject. Re-runs after success are no-ops;
- * concurrent requests see 'in-progress' and skip; a crashed run retries
- * (same subject only) after a staleness window or an explicit failure mark.
- *
- * Merge safety: a workspace id already present in the subject namespace is
- * never overwritten (skipped entirely, DO state included). Workspace ids are
- * 32-hex random ids, so a cross-namespace collision can only be a workspace
- * this migration already copied.
+ * The import is a copy, not a read-through alias. A completion marker is
+ * written only after every workspace, Durable Object state, message, runtime
+ * file, download, and gallery ownership record has been copied. The legacy
+ * namespace is intentionally left inaccessible after success rather than
+ * destructively deleting user data; the authenticated cookie is cleared and
+ * all normal reads use only the subject namespace.
  */
 
 import type { UIMessage } from 'ai';
 import type { WorkspaceRecord, WorkspaceState } from '../domain/workspace';
-import { accountImportWindowState, type Env } from '../env';
-import { deleteByPrefix, getMimeType } from './files';
+import type { Env } from '../env';
+import {
+  getMimeType,
+  getWorkspacePrefix,
+  listWorkspaceFilesRecursive,
+  readWorkspaceFile,
+} from './files';
+import { getWorkspaceDownloads, putWorkspaceDownloads, type DownloadRequest } from './downloads';
 import { reassignGalleryAuthor } from './gallery';
-import { getWorkspaceDownloads, putWorkspaceDownloads } from './downloads';
 import { getWorkspace, listWorkspaces, putWorkspace } from './workspaces';
 
-// ---------------------------------------------------------------------------
-// Claim state machine (pure; executed inside the MigrationRegistry DO)
-// ---------------------------------------------------------------------------
+const IMPORT_MARKER_PREFIX = 'agent-studio/account-import/v1/';
 
-/** Retry a crashed in-progress run after this long (same subject only). */
-export const CLAIM_STALE_MS = 10 * 60 * 1000;
-
-export interface MigrationClaim {
-  /** The subject-derived session id that claimed this anonymous namespace. */
-  subjectSessionId: string;
-  status: 'in-progress' | 'done' | 'failed';
-  startedAt: number;
-  completedAt?: number;
-}
-
-export type ClaimAction =
-  | 'run'
-  | 'already-done'
-  | 'in-progress'
-  | 'claimed-by-other'
-  | 'anonymous-active';
-
-export interface ClaimDecision {
-  action: ClaimAction;
-  /** New claim record to persist, when the decision changes state. */
-  record?: MigrationClaim;
-}
-
-/**
- * Decide what a claim attempt by `subjectSessionId` should do given the
- * existing claim record. First verified claim wins and is sticky: once an
- * anonymous namespace is claimed by one subject, no other subject can ever
- * run it — even after a failure — so a namespace can never be split across
- * two subjects.
- */
-export function decideClaim(
-  existing: MigrationClaim | undefined,
-  subjectSessionId: string,
-  now: number,
-): ClaimDecision {
-  if (!existing) {
-    return {
-      action: 'run',
-      record: { subjectSessionId, status: 'in-progress', startedAt: now },
-    };
-  }
-  if (existing.subjectSessionId !== subjectSessionId) {
-    return { action: 'claimed-by-other' };
-  }
-  if (existing.status === 'done') {
-    return { action: 'already-done' };
-  }
-  if (existing.status === 'failed' || now - existing.startedAt >= CLAIM_STALE_MS) {
-    return {
-      action: 'run',
-      record: { subjectSessionId, status: 'in-progress', startedAt: now },
-    };
-  }
-  return { action: 'in-progress' };
-}
-
-// ---------------------------------------------------------------------------
-// Data copy
-// ---------------------------------------------------------------------------
-
-/**
- * The slice of the WorkspaceAgent RPC surface the migration uses — the same
- * methods the workspace import/export flow already relies on.
- */
-export interface MigratableAgent {
-  syncWorkspace(
-    workspace: WorkspaceRecord,
-    sessionId: string,
-    legacyCompatibilityNow?: number,
-  ): Promise<void>;
-  freezeForMigration(): Promise<void>;
-  unfreezeAfterMigration(): Promise<void>;
-  destroyWorkspaceState(): Promise<void>;
+export type MigratableAgent = {
+  syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void>;
   getSnapshot(): Promise<WorkspaceState>;
   getMessages(): Promise<UIMessage[]>;
   getWorkspaceFiles(): Promise<Array<{ path: string; isDirectory: boolean }>>;
@@ -127,286 +38,180 @@ export interface MigratableAgent {
   writeWorkspaceFileContent(
     filePath: string,
     data: string | ArrayBuffer | Uint8Array,
-    contentType?: string
+    contentType?: string,
   ): Promise<{ ok: true; filePath: string }>;
   replaceWorkspaceState(
     state: WorkspaceState,
     workspace: WorkspaceRecord,
-    sessionId: string
+    sessionId: string,
   ): Promise<void>;
   persistMessages(messages: UIMessage[]): Promise<void>;
+};
+
+type AgentFactory = (sessionId: string, workspaceId: string) => Promise<MigratableAgent>;
+
+export type MigrationOutcome = 'migrated' | 'already-done';
+
+// Kept for the checked-in Durable Object class until that obsolete binding is
+// removed from the deployment manifest. No application path calls this claim
+// state machine; the first-login importer uses its per-subject completion key.
+export type ClaimAction = 'run' | 'already-done' | 'in-progress' | 'claimed-by-other' | 'anonymous-active';
+export interface MigrationClaim {
+  subjectSessionId: string;
+  status: 'in-progress' | 'done' | 'failed';
+  startedAt: number;
+  completedAt?: number;
+}
+export function decideClaim(
+  existing: MigrationClaim | undefined,
+  subjectSessionId: string,
+  now: number,
+): { action: ClaimAction; record?: MigrationClaim } {
+  if (!existing) return { action: 'run', record: { subjectSessionId, status: 'in-progress', startedAt: now } };
+  if (existing.subjectSessionId !== subjectSessionId) return { action: 'claimed-by-other' };
+  if (existing.status === 'done') return { action: 'already-done' };
+  return { action: 'run', record: { ...existing, status: 'in-progress', startedAt: now } };
 }
 
-export type AgentFactory = (
+// Requests sharing one warm isolate serialize the copy. The completion marker
+// remains authoritative across isolates; this small lock only prevents two
+// first-login requests from appending the same messages/downloads locally.
+const importLocks = new Map<string, Promise<void>>();
+
+function markerKey(subjectSessionId: string): string {
+  return `${IMPORT_MARKER_PREFIX}${subjectSessionId}.json`;
+}
+
+async function completed(env: Env, subjectSessionId: string): Promise<boolean> {
+  return Boolean(await env.WORKSPACE_FILES.get(markerKey(subjectSessionId)));
+}
+
+async function readLegacyDownloads(
+  env: Env,
   sessionId: string,
-  workspaceId: string
-) => Promise<MigratableAgent>;
-
-export interface MigrationResult {
-  migratedWorkspaceIds: string[];
-  skippedWorkspaceIds: string[];
-  galleryItemsReassigned: number;
+  workspaceId: string,
+): Promise<DownloadRequest[]> {
+  const object = await env.WORKSPACE_FILES.get(`${getWorkspacePrefix(sessionId, workspaceId)}downloads.json`);
+  if (!object) return [];
+  const value = await object.json<unknown>();
+  if (!Array.isArray(value)) throw new Error('account import found an invalid download queue');
+  return value as DownloadRequest[];
 }
 
-function sessionPrefix(sessionId: string): string {
-  return `agent-studio/sessions/${sessionId}/`;
+async function copyWorkspace(
+  env: Env,
+  anonSessionId: string,
+  subjectSessionId: string,
+  workspace: WorkspaceRecord,
+  getAgent: AgentFactory,
+): Promise<void> {
+  // A target record is the durable workspace commit marker. Existing target
+  // records are never overwritten, so retries and pre-existing subject data
+  // remain deterministic.
+  if (await getWorkspace(env, subjectSessionId, workspace.id)) return;
+
+  const source = await getAgent(anonSessionId, workspace.id);
+  const target = await getAgent(subjectSessionId, workspace.id);
+  await source.syncWorkspace(workspace, anonSessionId);
+  await target.syncWorkspace(workspace, subjectSessionId);
+
+  try {
+    const [state, messages, runtimeFiles, legacyFiles] = await Promise.all([
+      source.getSnapshot(),
+      source.getMessages(),
+      source.getWorkspaceFiles(),
+      listWorkspaceFilesRecursive(env, anonSessionId, workspace.id),
+    ]);
+    const filePaths = new Set<string>([
+      ...runtimeFiles.filter((file) => !file.isDirectory).map((file) => file.path),
+      ...legacyFiles.filter((file) => !file.isDirectory).map((file) => file.path),
+    ]);
+    for (const filePath of filePaths) {
+      const content = await source.readWorkspaceFileContent(filePath)
+        ?? await (async () => {
+          const object = await readWorkspaceFile(env, anonSessionId, workspace.id, filePath);
+          if (!object) return null;
+          return {
+            contentType: object.httpMetadata?.contentType || getMimeType(filePath),
+            data: await object.arrayBuffer(),
+          };
+        })();
+      if (!content) throw new Error('account import could not read a workspace file');
+      await target.writeWorkspaceFileContent(filePath, content.data, content.contentType);
+    }
+
+    await target.replaceWorkspaceState(state, workspace, subjectSessionId);
+    await target.persistMessages(messages);
+
+    const downloads = [
+      ...(await getWorkspaceDownloads(env, anonSessionId, workspace.id)),
+      ...(await readLegacyDownloads(env, anonSessionId, workspace.id)),
+    ];
+    await putWorkspaceDownloads(env, subjectSessionId, workspace.id, downloads);
+
+    // Presence of the R2 workspace record makes the copied workspace visible
+    // to normal list/get routes only after all content has succeeded.
+    await putWorkspace(env, subjectSessionId, workspace);
+  } catch (error) {
+    // The source remains available for a retry. The target workspace record is
+    // still absent, so partial target objects are not visible to normal list
+    // or get routes; deterministic file/download keys make a retry idempotent.
+    throw error;
+  }
 }
 
-/**
- * Copy every workspace (records, DO state, chat history, runtime files,
- * queued downloads) plus gallery authorship from the anonymous namespace into
- * the subject namespace, then remove source runtime and R2 data. Source Durable
- * Object state is destroyed after commit. Existing target workspace records are
- * skipped, and the subject record is written last as the per-workspace completion
- * marker. A failed copy destroys its partial target and unfreezes every source;
- * a retry therefore starts from a readable source and a clean target.
- */
 export async function migrateAnonymousSession(
   env: Env,
   anonSessionId: string,
   subjectSessionId: string,
   getAgent: AgentFactory,
-  now = Date.now(),
-): Promise<MigrationResult> {
-  if (env.CAIL_REQUIRE_IDENTITY !== 'true' || accountImportWindowState(env, now) !== 'open') {
-    throw new Error('migration: legacy account import window is not open');
-  }
-
-  const result: MigrationResult = {
-    migratedWorkspaceIds: [],
-    skippedWorkspaceIds: [],
-    galleryItemsReassigned: 0,
-  };
-
-  const anonWorkspaces = await listWorkspaces(env, anonSessionId);
-  const frozenSources = new Set<MigratableAgent>();
-
-  try {
-    for (const workspace of anonWorkspaces) {
-    // Never overwrite subject-owned data: a workspace id already in the
-    // target namespace stays exactly as the subject has it.
-    const existing = await getWorkspace(env, subjectSessionId, workspace.id);
-    if (existing) {
-      result.skippedWorkspaceIds.push(workspace.id);
-      continue;
-    }
-
-    const oldAgent = await getAgent(anonSessionId, workspace.id);
-    const newAgent = await getAgent(subjectSessionId, workspace.id);
-
-    // Normalize the source: syncWorkspace hydrates any legacy R2 files into
-    // the old DO's runtime, so the runtime file listing below is complete.
-    await oldAgent.syncWorkspace(workspace, anonSessionId, now);
-    await newAgent.syncWorkspace(workspace, subjectSessionId, now);
-    await oldAgent.freezeForMigration();
-    frozenSources.add(oldAgent);
-
-    try {
-      const [state, messages, files] = await Promise.all([
-      oldAgent.getSnapshot(),
-      oldAgent.getMessages(),
-      oldAgent.getWorkspaceFiles(),
-    ]);
-
-      for (const file of files) {
-      if (file.isDirectory) continue;
-      const content = await oldAgent.readWorkspaceFileContent(file.path);
-      if (!content) {
-        throw new Error(
-          `migration: listed file ${file.path} could not be read from workspace ${workspace.id}`
-        );
-      }
-      await newAgent.writeWorkspaceFileContent(
-        file.path,
-        content.data,
-        content.contentType || getMimeType(file.path)
-      );
-      }
-
-      await newAgent.replaceWorkspaceState(state, workspace, subjectSessionId);
-      await newAgent.persistMessages(messages);
-
-    // Queued downloads are transient; carry them over only when the target
-    // has none, so nothing subject-owned is clobbered. Both reads use
-    // onCorrupt: 'throw' — this branch DECIDES based on emptiness, and the
-    // anonymous namespace is deleted below, so a corrupt record read as
-    // "empty" would either silently drop the user's queued deliverables
-    // (anon side) or clobber subject-owned ones (target side). Failing here
-    // routes into the migration's fail-and-retry path instead.
-      const anonDownloads = await getWorkspaceDownloads(env, anonSessionId, workspace.id, {
-      onCorrupt: 'throw',
-      now,
-    });
-      if (anonDownloads.length > 0) {
-      const targetDownloads = await getWorkspaceDownloads(env, subjectSessionId, workspace.id, {
-        onCorrupt: 'throw',
-        now,
-      });
-      if (targetDownloads.length === 0) {
-        await putWorkspaceDownloads(env, subjectSessionId, workspace.id, anonDownloads);
-      }
-      }
-
-    // Written last: presence of the record marks this workspace migrated.
-      await putWorkspace(env, subjectSessionId, workspace);
-      result.migratedWorkspaceIds.push(workspace.id);
-    } catch (error) {
-      await Promise.allSettled([
-        newAgent.destroyWorkspaceState(),
-        deleteByPrefix(
-          env,
-          `${sessionPrefix(subjectSessionId)}workspaces/${workspace.id}/`,
-        ),
-      ]);
-      throw error;
-    }
-    }
-
-  // Gallery items are global; their private owner records move to the subject
-  // so unpublish rights survive the migration.
-    result.galleryItemsReassigned = await reassignGalleryAuthor(
-    env,
-    anonSessionId,
-    subjectSessionId
-  );
-
-  // Cleanup only after everything copied: clear every source workspace's old
-  // DO runtime (frees its separate R2 runtime prefix), including workspaces
-  // skipped because an earlier attempt already wrote their completion marker.
-  // These are anonymous-named agents, so subject-owned runtime data is untouched.
-    for (const workspace of anonWorkspaces) {
-      const oldAgent = await getAgent(anonSessionId, workspace.id);
-      await oldAgent.destroyWorkspaceState();
-      frozenSources.delete(oldAgent);
-    }
-    await deleteByPrefix(env, sessionPrefix(anonSessionId));
-  } catch (error) {
-    await Promise.allSettled(
-      [...frozenSources].map((agent) => agent.unfreezeAfterMigration()),
-    );
-    throw error;
-  }
-
-  return result;
-}
-
-// ---------------------------------------------------------------------------
-// Orchestration (claim + copy + completion marker)
-// ---------------------------------------------------------------------------
-
-/** The slice of the MigrationRegistry DO stub the orchestration uses. */
-export interface MigrationRegistryClient {
-  claim(subjectSessionId: string): Promise<ClaimAction>;
-  markDone(subjectSessionId: string): Promise<void>;
-  markFailed(subjectSessionId: string): Promise<void>;
-  beginAnonymousRequest(requestId: string): Promise<boolean>;
-  endAnonymousRequest(requestId: string): Promise<void>;
-}
-
-export type MigrationOutcome = 'migrated' | 'window-not-open' | ClaimAction;
-
-function migrationRegistryClient(
-  env: Env,
-  anonSessionId: string,
-): MigrationRegistryClient {
-  return env.MIGRATION_REGISTRY.get(
-    env.MIGRATION_REGISTRY.idFromName(anonSessionId)
-  ) as unknown as MigrationRegistryClient;
-}
-
-/**
- * Fence one anonymous HTTP request against first-login migration. The registry
- * serializes this lease with claim(), so either the request finishes before a
- * claim can start or the claimed namespace rejects the stale anonymous request.
- */
-export async function beginAnonymousSessionRequest(
-  env: Env,
-  anonSessionId: string,
-  requestId: string,
-): Promise<boolean> {
-  return migrationRegistryClient(env, anonSessionId).beginAnonymousRequest(requestId);
-}
-
-export async function endAnonymousSessionRequest(
-  env: Env,
-  anonSessionId: string,
-  requestId: string,
 ): Promise<void> {
-  await migrationRegistryClient(env, anonSessionId).endAnonymousRequest(requestId);
+  if (await completed(env, subjectSessionId)) return;
+
+  const workspaces = await listWorkspaces(env, anonSessionId);
+  for (const workspace of workspaces) {
+    await copyWorkspace(env, anonSessionId, subjectSessionId, workspace, getAgent);
+  }
+
+  // Gallery records are global, but private ownership tags are derived from
+  // the session namespace. Rewrite only tags matching the verified cookie.
+  await reassignGalleryAuthor(env, anonSessionId, subjectSessionId);
+
+  // This is the sole per-user completion marker. Do not write it on failure.
+  await env.WORKSPACE_FILES.put(markerKey(subjectSessionId), '1', {
+    httpMetadata: { contentType: 'text/plain; charset=utf-8' },
+  });
 }
 
-/**
- * Claim the anonymous namespace for this subject and run the copy if the
- * claim wins. Claim-state outcomes return normally. A failed copy marks the
- * claim failed (so a later request retries) and throws to the caller. The
- * caller decides whether the legacy cookie can be dropped (yes for
- * 'migrated'/'already-done'/'claimed-by-other'; keep it for active/in-progress
- * work and on failure so a later request can retry).
- */
-export async function maybeMigrateAnonymousSession(args: {
-  env: Env;
-  anonSessionId: string;
-  subjectSessionId: string;
-  registry: MigrationRegistryClient;
-  getAgent: AgentFactory;
-  now?: number;
-}): Promise<MigrationOutcome> {
-  const { env, anonSessionId, subjectSessionId, registry, getAgent, now = Date.now() } = args;
-
-  if (env.CAIL_REQUIRE_IDENTITY !== 'true' || accountImportWindowState(env, now) !== 'open') {
-    return 'window-not-open';
-  }
-
-  const action = await registry.claim(subjectSessionId);
-  if (action !== 'run') {
-    return action;
-  }
-
-  try {
-    await migrateAnonymousSession(env, anonSessionId, subjectSessionId, getAgent, now);
-    await registry.markDone(subjectSessionId);
-    return 'migrated';
-  } catch (error) {
-    await registry.markFailed(subjectSessionId).catch(() => undefined);
-    throw error;
-  }
-}
-
-/**
- * Production wiring: registry stub from the MIGRATION_REGISTRY binding and a
- * WorkspaceAgent factory. The 'agents' import is dynamic so this module stays
- * loadable outside the workerd runtime (unit tests inject their own factory).
- */
 export async function runFirstLoginMigration(
   env: Env,
   anonSessionId: string,
   subjectSessionId: string,
-  now = Date.now(),
 ): Promise<MigrationOutcome> {
-  const registry = migrationRegistryClient(env, anonSessionId);
-
-  const getAgent: AgentFactory = async (sessionId, workspaceId) => {
+  const existing = importLocks.get(subjectSessionId);
+  if (existing) {
+    await existing;
+    return 'already-done';
+  }
+  const run = (async () => {
+    if (await completed(env, subjectSessionId)) return;
     const { getAgentByName } = await import('agents');
     const { createWorkspaceAgentName } = await import('./ids');
-    // See server.ts: workers-types v5's facet brand has not yet propagated to
-    // the Agents SDK helper declaration. Runtime routing remains unchanged.
     const getWorkspaceByName = getAgentByName as unknown as (
       namespace: Env['WorkspaceAgent'],
       name: string,
     ) => Promise<MigratableAgent>;
-    const agent = await getWorkspaceByName(
+    const getAgent: AgentFactory = async (sessionId, workspaceId) => getWorkspaceByName(
       env.WorkspaceAgent,
-      createWorkspaceAgentName(sessionId, workspaceId)
+      createWorkspaceAgentName(sessionId, workspaceId),
     );
-    return agent as unknown as MigratableAgent;
-  };
-
-  return maybeMigrateAnonymousSession({
-    env,
-    anonSessionId,
-    subjectSessionId,
-    registry,
-    getAgent,
-    now,
-  });
+    await migrateAnonymousSession(env, anonSessionId, subjectSessionId, getAgent);
+  })();
+  importLocks.set(subjectSessionId, run);
+  try {
+    await run;
+    return 'migrated';
+  } finally {
+    importLocks.delete(subjectSessionId);
+  }
 }

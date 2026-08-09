@@ -1,7 +1,6 @@
 import { deleteByPrefix, getWorkspacePrefix } from './files';
 import { nextR2Cursor } from './r2-pagination';
-import { legacyAccountCompatibilityAllowed, type Env } from '../env';
-import { LOG_PRODUCT, STUDIO_EVENTS, studioLogger } from './logging';
+import type { Env } from '../env';
 
 export interface DownloadRequest {
   filename: string;
@@ -42,8 +41,6 @@ export interface ReadDownloadsOptions {
    *   Throwing routes into the migration's fail-and-retry path instead.
    */
   onCorrupt?: 'skip' | 'throw';
-  /** Testable clock for the temporary legacy-blob compatibility window. */
-  now?: number;
 }
 
 export const MAX_DOWNLOAD_CORRUPT_EVENTS_PER_READ = 20;
@@ -52,35 +49,16 @@ interface CorruptEventBudget {
   remaining: number;
 }
 
-// Corrupt objects are never silently equated with absence. Skip-mode reads
-// emit a bounded sample so a damaged prefix cannot exceed the Analytics Engine
-// per-invocation ceiling. The structured event is metadata only (the R2 key
-// embeds session/workspace ids + a filename, which are not on the safe-to-log
-// allowlist); the 'throw' path emits the first event and keeps the key in the
-// thrown Error so the migration's fail-and-retry path stays actionable.
 function reportCorruptDownloadObject(
-  env: Env,
   key: string,
   error: unknown,
   onCorrupt: 'skip' | 'throw',
-  eventBudget: CorruptEventBudget
+  eventBudget: CorruptEventBudget,
 ): void {
-  if (eventBudget.remaining > 0) {
-    eventBudget.remaining -= 1;
-    studioLogger(env)?.emit(STUDIO_EVENTS.DOWNLOAD_CORRUPT, {
-      product_id: LOG_PRODUCT,
-      terminal: { outcome: 'error', reason: 'application_failure' },
-      error_type: 'corrupt_download_object',
-    });
-  }
+  eventBudget.remaining = Math.max(0, eventBudget.remaining - 1);
   if (onCorrupt === 'throw') {
     throw new Error(`downloads: corrupt stored download object at ${key}`, { cause: error });
   }
-}
-
-// Legacy single-blob key, kept only for backward reads (see getWorkspaceDownloads).
-function getLegacyDownloadsKey(sessionId: string, workspaceId: string): string {
-  return `${getWorkspacePrefix(sessionId, workspaceId)}downloads.json`;
 }
 
 function getDownloadsPrefix(sessionId: string, workspaceId: string): string {
@@ -105,38 +83,6 @@ function makeDownloadKey(sessionId: string, workspaceId: string, seq: number): s
   return `${getDownloadsPrefix(sessionId, workspaceId)}${paddedSeq}-${ordinal}-${random}.json`;
 }
 
-async function readLegacyDownloads(
-  env: Env,
-  sessionId: string,
-  workspaceId: string,
-  onCorrupt: 'skip' | 'throw',
-  eventBudget: CorruptEventBudget
-): Promise<DownloadRequest[]> {
-  const key = getLegacyDownloadsKey(sessionId, workspaceId);
-  const object = await env.WORKSPACE_FILES.get(key);
-  // No object at the legacy key is the one case that truly means "no legacy
-  // downloads". Anything past this point is an existing object that must
-  // parse; failures are reported, never silently read as empty.
-  if (!object) return [];
-  let parsed: unknown;
-  try {
-    parsed = await object.json();
-  } catch (error) {
-    reportCorruptDownloadObject(env, key, error, onCorrupt, eventBudget);
-    return [];
-  }
-  if (!Array.isArray(parsed)) {
-    reportCorruptDownloadObject(
-      env,
-      key,
-      new Error('expected a JSON array'),
-      onCorrupt,
-      eventBudget
-    );
-    return [];
-  }
-  return parsed as DownloadRequest[];
-}
 
 export async function getWorkspaceDownloads(
   env: Env,
@@ -162,12 +108,11 @@ export async function getWorkspaceDownloads(
         try {
           parsed = await body.json<StoredDownload>();
         } catch (error) {
-          reportCorruptDownloadObject(env, object.key, error, onCorrupt, eventBudget);
+          reportCorruptDownloadObject(object.key, error, onCorrupt, eventBudget);
           return null;
         }
         if (!(parsed && typeof parsed === 'object' && parsed.download)) {
           reportCorruptDownloadObject(
-            env,
             object.key,
             new Error('missing download payload'),
             onCorrupt,
@@ -185,15 +130,7 @@ export async function getWorkspaceDownloads(
   } while (cursor);
 
   stored.sort((left, right) => left.seq - right.seq);
-  const current = stored.map((entry) => entry.download);
-
-  // Backward-read: fold in any pre-migration downloads.json content, preserving
-  // its order ahead of the per-object entries. New writes only ever go to the
-  // per-object prefix, so this blob is read-only legacy.
-  const legacy = legacyAccountCompatibilityAllowed(env, options.now)
-    ? await readLegacyDownloads(env, sessionId, workspaceId, onCorrupt, eventBudget)
-    : [];
-  return legacy.length > 0 ? [...legacy, ...current] : current;
+  return stored.map((entry) => entry.download);
 }
 
 export async function addWorkspaceDownload(
@@ -223,35 +160,26 @@ export async function clearWorkspaceDownloads(
   workspaceId: string
 ): Promise<void> {
   await deleteByPrefix(env, getDownloadsPrefix(sessionId, workspaceId));
-  // Also drop any legacy single-blob so a cleared workspace stays cleared.
-  await env.WORKSPACE_FILES.delete(getLegacyDownloadsKey(sessionId, workspaceId));
 }
 
-/**
- * Bulk-write a set of downloads as individual per-object entries. Used by the
- * first-login migration to carry queued downloads from the anonymous namespace
- * to the subject namespace. Preserves order via a monotonic sequence.
- */
+/** Replace the current per-object queue with a deterministic ordered set. */
 export async function putWorkspaceDownloads(
   env: Env,
   sessionId: string,
   workspaceId: string,
-  downloads: DownloadRequest[]
+  downloads: DownloadRequest[],
 ): Promise<void> {
-  // Replace whatever is there so this is a faithful "set the list" operation.
-  await clearWorkspaceDownloads(env, sessionId, workspaceId);
-  let seq = nextSequence();
-  for (const download of downloads) {
+  const prefix = getDownloadsPrefix(sessionId, workspaceId);
+  for (const [index, download] of downloads.entries()) {
     const stored: StoredDownload = {
-      seq,
-      createdAt: new Date(seq).toISOString(),
+      seq: index,
+      createdAt: new Date(0).toISOString(),
       download,
     };
     await env.WORKSPACE_FILES.put(
-      makeDownloadKey(sessionId, workspaceId, seq),
+      `${prefix}import-${String(index).padStart(8, '0')}.json`,
       JSON.stringify(stored),
-      { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
+      { httpMetadata: { contentType: 'application/json; charset=utf-8' } },
     );
-    seq += 1;
   }
 }

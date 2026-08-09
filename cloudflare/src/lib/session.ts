@@ -1,11 +1,7 @@
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import type { Context, MiddlewareHandler } from 'hono';
 import { createOpaqueId } from './ids';
-import {
-  accountImportWindowState,
-  legacyAccountCompatibilityAllowed,
-  type Env,
-} from '../env';
+import type { Env } from '../env';
 import {
   cailAuthRequiredResponse,
   cailIdentityMisconfiguredResponse,
@@ -16,18 +12,8 @@ import {
   type CailIdentity,
   resolveKeyringGatewayJwt,
 } from './cail-identity';
-import {
-  beginAnonymousSessionRequest,
-  endAnonymousSessionRequest,
-  runFirstLoginMigration,
-} from './migration';
+import { runFirstLoginMigration } from './migration';
 import { canonicalError } from './error-envelope';
-import {
-  LOG_PRODUCT,
-  STUDIO_EVENTS,
-  principalForOperationalSubject,
-  studioLogger,
-} from './logging';
 
 const SESSION_COOKIE_NAME = 'agent-studio-session';
 
@@ -125,11 +111,6 @@ export const sessionMiddleware: MiddlewareHandler<{
   // caller's. Typed 503, distinct from the token-invalid/anonymous 401 below;
   // otherwise a CAIL misconfiguration presents as every user's auth failing.
   if (isCailIdentityConfigError(verified)) {
-    studioLogger(c.env)?.emit(STUDIO_EVENTS.STARTUP_CONFIG_INVALID, {
-      product_id: LOG_PRODUCT,
-      terminal: { outcome: 'denied', reason: 'denied' },
-      error_type: `cail_identity_${verified.configError}`,
-    });
     return cailIdentityMisconfiguredResponse();
   }
 
@@ -158,78 +139,34 @@ export const sessionMiddleware: MiddlewareHandler<{
     }
     c.set('cailGatewayJwt', gatewayLeg);
 
-    // First login after working anonymously: the browser still carries a
-    // valid legacy anonymous cookie. Migrate that namespace's data into the
-    // subject namespace (claim-once, idempotent — see lib/migration.ts),
-    // then drop the cookie so the check never re-triggers. The cookie is
-    // kept when the run is still in progress elsewhere or failed, so a
-    // later request can retry.
+    // A verified identity may claim only the anonymous namespace represented
+    // by a cryptographically valid legacy cookie. The importer writes one
+    // completion marker after all content succeeds; failures keep the cookie
+    // so a later request can retry.
     const legacyCookie = getCookie(c, SESSION_COOKIE_NAME);
     if (legacyCookie) {
       const anonSessionId = await verifySignedValue(legacyCookie, sessionSecret);
-      if (anonSessionId && anonSessionId !== sessionId) {
-        const now = Date.now();
-        const windowState = accountImportWindowState(c.env, now);
-        if (c.env.CAIL_REQUIRE_IDENTITY === 'true' && windowState === 'open') {
-          const startedAt = now;
-          try {
-            const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId, now);
-            if (
-              outcome === 'migrated'
-              || outcome === 'already-done'
-              || outcome === 'claimed-by-other'
-            ) {
-              deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
-            }
-            const succeeded = outcome === 'migrated' || outcome === 'already-done';
-            const importFields = {
-              product_id: LOG_PRODUCT,
-              principal: principalForOperationalSubject(verified.identity.operationalSubject),
-              duration_ms: Date.now() - startedAt,
-            };
-            if (succeeded) {
-              studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
-                ...importFields,
-                terminal: { outcome: 'ok', reason: 'completed' },
-              });
-            } else {
-              studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
-                ...importFields,
-                terminal: { outcome: 'denied', reason: 'denied' },
-                error_type: `first_login_${outcome.replaceAll('-', '_')}`,
-              });
-            }
-          } catch {
-            // Soft-fail: the user sees their subject namespace (possibly still
-            // empty); the claim is marked failed and the next request retries.
-            // Structured event, metadata only: the subject identifies the user
-            // (session ids derive from it); the error itself is never logged.
-            studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
-              product_id: LOG_PRODUCT,
-              principal: principalForOperationalSubject(verified.identity.operationalSubject),
-              terminal: { outcome: 'error', reason: 'application_failure' },
-              duration_ms: Date.now() - startedAt,
-              error_type: 'first_login_migration_failed',
-            });
-          }
-        } else if (windowState === 'expired') {
-          // The deadline is final: never retain a cookie that could trigger a
-          // later import if compatibility code is accidentally re-enabled.
-          deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
-          studioLogger(c.env)?.emit(STUDIO_EVENTS.ACCOUNT_IMPORT_TERMINAL, {
-            product_id: LOG_PRODUCT,
-            principal: principalForOperationalSubject(verified.identity.operationalSubject),
-            terminal: { outcome: 'denied', reason: 'denied' },
-            duration_ms: 0,
-            error_type: 'legacy_account_import_window_expired',
-          });
-        } // Before the switch, keep the cookie so the first in-window request can import it.
-      } else {
-        // Invalid signature or (vanishingly unlikely) same id: nothing to
-        // migrate — drop the stale cookie.
+      if (!anonSessionId || anonSessionId === sessionId) {
         deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
+      } else {
+        try {
+          const outcome = await runFirstLoginMigration(c.env, anonSessionId, sessionId);
+          if (outcome === 'migrated' || outcome === 'already-done') {
+            deleteCookie(c, SESSION_COOKIE_NAME, { path: '/' });
+          }
+        } catch {
+          return c.json(
+            canonicalError(
+              'account_import_failed',
+              'Your previous Agent Studio work could not be imported. Sign in again to retry.',
+              { type: 'api_error', retryable: true },
+            ),
+            503,
+          );
+        }
       }
     }
+
   } else {
     // Anonymous / pre-rollout: fall back to the signed opaque cookie session.
     const existing = getCookie(c, SESSION_COOKIE_NAME);
@@ -252,44 +189,7 @@ export const sessionMiddleware: MiddlewareHandler<{
 
   c.set('sessionId', sessionId);
 
-  // During the compatibility window, serialize anonymous HTTP work with the
-  // first-login claim. This prevents an already-started create/import request
-  // from writing into the anonymous prefix after migration has listed it and
-  // before that prefix is deleted.
-  const shouldFenceAnonymous =
-    !verified
-    && Boolean(c.env.CAIL_IDENTITY_JWKS?.trim())
-    && legacyAccountCompatibilityAllowed(c.env);
-  if (!shouldFenceAnonymous) {
-    await next();
-    return;
-  }
-
-  const requestLeaseId = crypto.randomUUID();
-  const admitted = await beginAnonymousSessionRequest(
-    c.env,
-    sessionId,
-    requestLeaseId,
-  );
-  if (!admitted) {
-    return c.json(
-      canonicalError(
-        'legacy_session_claimed',
-        'This anonymous session is being moved to your signed-in account. Sign in and retry.',
-        { type: 'conflict_error', retryable: true },
-      ),
-      409,
-    );
-  }
-  try {
-    await next();
-  } finally {
-    // Releasing the fence is best-effort. A release failure must not replace a
-    // successful mutation response with an ambiguous 500; the durable lease
-    // expires after ten minutes and blocks migration safely in the meantime.
-    await endAnonymousSessionRequest(c.env, sessionId, requestLeaseId)
-      .catch(() => undefined);
-  }
+  await next();
 };
 
 export function requireSession(c: SessionContext): string {

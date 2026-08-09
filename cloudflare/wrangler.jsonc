@@ -118,13 +118,12 @@
     "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
     // Required production telemetry classification. Local development overrides
     // this with `development` in .dev.vars.
-    "CAIL_LOG_ENV": "production",
     // Shared-host routing is source-controlled. This value is deliberately
     // false so the checked-in file cannot serve production traffic: production
     // preflight requires true plus valid JWKS, canonical origin, migration
     // instants, rate bindings, gallery-owner keyring, and secrets.
     "CAIL_BASE_PATH": "/agent-studio",
-    "CAIL_REQUIRE_IDENTITY": "false"
+    "CAIL_REQUIRE_IDENTITY": "true"
   },
   // The reviewed staging deploy uses this explicit profile. Keep the
   // production-classified defaults above unchanged: they remain intentionally

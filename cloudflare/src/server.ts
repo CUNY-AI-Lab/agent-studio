@@ -35,7 +35,6 @@ import {
   ModelCatalogAuthError,
   ModelCatalogQuotaError,
 } from './lib/cail-models';
-import { resolveCailModelName } from './lib/cail-model';
 import {
   layoutPatchSchema,
   patchWorkspaceSchema,
@@ -58,7 +57,7 @@ import {
 } from './lib/csrf';
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { stripBasePath } from './lib/base-path';
-import { canonicalError, canonicalizeErrorResponse } from './lib/error-envelope';
+import { canonicalError } from './lib/error-envelope';
 import {
   correlationFromHeaders,
   LOG_PRODUCT,
@@ -116,6 +115,18 @@ type AppContext = Context<{
   Variables: AppVariables;
 }>;
 
+type ErrorStatus = 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 502 | 503;
+
+function jsonError(
+  c: AppContext,
+  status: ErrorStatus,
+  code: string,
+  message: string,
+  options: Parameters<typeof canonicalError>[2] = {},
+) {
+  return c.json(canonicalError(code, message, options), status);
+}
+
 /**
  * The CLASSIFIED route label for the boundary log event: the matched route
  * PATTERN (e.g. `/api/workspaces/:id/files/*`), never the raw path — raw
@@ -155,21 +166,19 @@ function emitBoundaryEvent(c: AppContext, status: number, errorType?: string): v
 // boundary middleware resumes after Hono maps the throw and remains the single
 // request-event emitter.
 app.onError((error, c) => {
-  const respond = (response: Response) =>
-    canonicalizeErrorResponse(response, c.get('logCorrelation')?.request_id);
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
-    return respond(c.json({ error: 'Invalid request body' }, 400));
+    return c.json(canonicalError('invalid_request', 'Invalid request body'), 400);
   }
   if (error instanceof GalleryError) {
-    return respond(c.json({ error: error.message }, error.status));
+    return c.json(canonicalError(error.status === 404 ? 'not_found' : 'forbidden', error.message), error.status);
   }
   if (error instanceof ModelCatalogAuthError) {
-    return respond(c.json({ error: 'Model catalog authentication failed' }, 502));
+    return c.json(canonicalError('authentication_required', 'Model catalog authentication failed', { type: 'authentication_error', retryable: false }), 502);
   }
   if (error instanceof ModelCatalogQuotaError) {
-    return respond(c.json({ error: 'quota_exceeded', message: error.message }, 429));
+    return c.json(canonicalError('quota_exceeded', error.message, { type: 'rate_limit_error', retryable: false }), 429);
   }
-  return respond(c.json({ error: 'Internal error' }, 500));
+  return c.json(canonicalError('internal_error', 'Internal error', { type: 'api_error', retryable: true }), 500);
 });
 
 // AS-3-6 boundary checks. `import` is a literal POST sub-route of
@@ -181,7 +190,7 @@ async function validateWorkspaceIdParam(
   const id = c.req.param('id') ?? '';
   if (id === 'import') return next();
   if (!isValidWorkspaceId(id)) {
-    return c.json({ error: 'Invalid workspace id' }, 400);
+    return jsonError(c, 400, 'invalid_workspace_id', 'Invalid workspace id');
   }
   return next();
 }
@@ -191,7 +200,7 @@ async function validateGalleryIdParam(
   next: () => Promise<void>,
 ): Promise<Response | void> {
   if (!isValidGalleryId(c.req.param('id') ?? '')) {
-    return c.json({ error: 'Invalid gallery id' }, 400);
+    return jsonError(c, 400, 'invalid_gallery_id', 'Invalid gallery id');
   }
   return next();
 }
@@ -234,7 +243,7 @@ async function requireWorkspace(
   if (workspaceId === 'import' && c.req.method === 'POST') return next();
   const workspace = await getWorkspace(c.env, sessionId, workspaceId);
   if (!workspace) {
-    return c.json({ error: 'Workspace not found' }, 404);
+    return jsonError(c, 404, 'not_found', 'Workspace not found');
   }
   c.set('workspace', workspace);
   return next();
@@ -296,9 +305,6 @@ app.use('*', async (c, next) => {
   c.set('logStartedAt', Date.now());
   await next();
   c.header('Referrer-Policy', 'no-referrer');
-  if (c.res.status >= 400) {
-    c.res = await canonicalizeErrorResponse(c.res, c.get('logCorrelation')?.request_id);
-  }
   let errorType: string | undefined;
   if (c.res.status >= 400 && c.res.headers.get('Content-Type')?.includes('application/json')) {
     const payload = await c.res.clone().json().catch(() => null) as {
@@ -373,17 +379,14 @@ app.get('/api/session', async (c) => {
 
 app.get('/api/models', async (c) => {
   requireSession(c);
-  const correlation = c.get('logCorrelation') ?? correlationFromHeaders(c.req.raw);
-  const { models, source } = await fetchCailModels({
+  const { models } = await fetchCailModels({
     env: c.env,
     identityJwt: cailGatewayJwt(c),
-    correlation,
   });
   const recommended = models.find((model) => model.recommended) ?? models[0];
   return c.json({
     models,
-    source,
-    default: recommended?.id ?? resolveCailModelName(c.env),
+    default: recommended.id,
   });
 });
 
@@ -396,11 +399,11 @@ app.get('/api/workspaces', async (c) => {
 app.get('/api/gallery', async (c) => {
   const cursor = c.req.query('cursor') || undefined;
   if (cursor && cursor.length > 2048) {
-    return c.json({ error: 'Invalid gallery cursor' }, 400);
+    return jsonError(c, 400, 'invalid_cursor', 'Invalid gallery cursor');
   }
   const requestedLimit = Number(c.req.query('limit') || 50);
   if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 100) {
-    return c.json({ error: 'Gallery page limit must be between 1 and 100' }, 400);
+    return jsonError(c, 400, 'invalid_limit', 'Gallery page limit must be between 1 and 100');
   }
   return c.json(await listGalleryItemsPage(c.env, { cursor, limit: requestedLimit }));
 });
@@ -408,7 +411,7 @@ app.get('/api/gallery', async (c) => {
 app.get('/api/gallery/:id', async (c) => {
   const item = await getGalleryItem(c.env, c.req.param('id'));
   if (!item) {
-    return c.json({ error: 'Gallery item not found' }, 404);
+    return jsonError(c, 404, 'not_found', 'Gallery item not found');
   }
   return c.json({ item });
 });
@@ -416,12 +419,12 @@ app.get('/api/gallery/:id', async (c) => {
 app.get('/api/gallery/:id/panels/:panelId/preview', async (c) => {
   const item = await getGalleryItem(c.env, c.req.param('id'));
   if (!item) {
-    return c.json({ error: 'Gallery item not found' }, 404);
+    return jsonError(c, 404, 'not_found', 'Gallery item not found');
   }
 
   const panel = item.state.panels.find((candidate) => candidate.id === c.req.param('panelId'));
   if (!panel || panel.type !== 'preview' || panel.filePath || !panel.content) {
-    return c.json({ error: 'Preview panel not found' }, 404);
+    return jsonError(c, 404, 'not_found', 'Preview panel not found');
   }
 
   return new Response(panel.content, {
@@ -435,7 +438,7 @@ app.get('/api/gallery/:id/files/*', async (c) => {
   const filePath = c.req.path.split(`/api/gallery/${galleryId}/files/`)[1] || '';
   const object = await readGalleryFile(c.env, galleryId, filePath);
   if (!object) {
-    return c.json({ error: 'Gallery file not found' }, 404);
+    return jsonError(c, 404, 'not_found', 'Gallery file not found');
   }
 
   const contentType = object.httpMetadata?.contentType || getMimeType(filePath);
@@ -576,22 +579,20 @@ app.post('/api/workspaces/import', async (c) => {
   const form = await c.req.formData();
   const bundleFile = form.get('bundle');
   if (!(bundleFile instanceof File)) {
-    return c.json({ error: 'No workspace bundle provided' }, 400);
+    return jsonError(c, 400, 'invalid_request', 'No workspace bundle provided');
   }
   if (bundleFile.size > MAX_IMPORT_BUNDLE_BYTES) {
-    return c.json({ error: 'Workspace bundle exceeds the 50 MB import limit' }, 400);
+    return jsonError(c, 400, 'payload_too_large', 'Workspace bundle exceeds the 50 MB import limit');
   }
 
   let bundle;
   try {
     bundle = parseWorkspaceImportBundle(JSON.parse(await bundleFile.text()));
   } catch (error) {
-    return c.json({
-      error: error instanceof Error ? error.message : 'Invalid workspace bundle',
-    }, 400);
+    return jsonError(c, 400, 'invalid_bundle', error instanceof Error ? error.message : 'Invalid workspace bundle');
   }
   if (bundle.files.length > MAX_IMPORT_FILE_COUNT) {
-    return c.json({ error: `Workspace bundle exceeds the ${MAX_IMPORT_FILE_COUNT} file import limit` }, 400);
+    return jsonError(c, 400, 'payload_too_large', `Workspace bundle exceeds the ${MAX_IMPORT_FILE_COUNT} file import limit`);
   }
   let decodedFiles: Array<{
     path: string;
@@ -605,7 +606,7 @@ app.post('/api/workspaces/import', async (c) => {
       contentType: file.contentType,
     }));
   } catch {
-    return c.json({ error: 'Workspace bundle contains an invalid file' }, 400);
+    return jsonError(c, 400, 'invalid_bundle', 'Workspace bundle contains an invalid file');
   }
 
   const workspaceId = createOpaqueId();
@@ -687,7 +688,7 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
   const state = await agent.getSnapshot();
   const panel = state.panels.find((candidate) => candidate.id === c.req.param('panelId'));
   if (!panel || panel.type !== 'preview' || panel.filePath || !panel.content) {
-    return c.json({ error: 'Preview panel not found' }, 404);
+    return jsonError(c, 404, 'not_found', 'Preview panel not found');
   }
 
   return new Response(panel.content, {
@@ -746,7 +747,7 @@ app.patch('/api/workspaces/:id', async (c) => {
   // Empty/malformed body -> `{}` -> all-optional patch -> 200 no-op.
   const parsed = patchWorkspaceSchema.safeParse(await c.req.json());
   if (!parsed.success) {
-    return c.json({ error: 'Invalid workspace update' }, 400);
+    return jsonError(c, 400, 'invalid_request', 'Invalid workspace update');
   }
   const patch = parsed.data;
 
@@ -760,8 +761,8 @@ app.patch('/api/workspaces/:id', async (c) => {
   }));
   if (!result.ok) {
     return result.reason === 'not-found'
-      ? c.json({ error: 'Workspace not found' }, 404)
-      : c.json({ error: 'Conflicting concurrent update; retry' }, 409);
+      ? jsonError(c, 404, 'not_found', 'Workspace not found')
+      : jsonError(c, 409, 'conflict', 'Conflicting concurrent update; retry', { retryable: true });
   }
   await syncedWorkspaceAgent(c, result.workspace);
 
@@ -819,9 +820,9 @@ app.post('/api/workspaces/:id/publish', async (c) => {
     state,
     title: body.title,
     description: body.description,
-    // Older clients get a stable content-derived key; current clients send a
-    // UUID that remains fixed across retries of one publish intent.
-    operationId: body.operationId ?? `legacy:${body.title}:${body.description}`,
+    // A missing operation id is a new publish intent; never derive identity
+    // from user-controlled title or description text.
+    operationId: body.operationId ?? crypto.randomUUID(),
     files,
     readFile: (filePath) => agent.readWorkspaceFileContent(filePath),
   });
@@ -847,8 +848,8 @@ app.post('/api/workspaces/:id/publish', async (c) => {
       throw new Error('publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed');
     }
     return !result.ok && result.reason === 'not-found'
-      ? c.json({ error: 'Workspace not found' }, 404)
-      : c.json({ error: 'Conflicting concurrent update; retry' }, 409);
+      ? jsonError(c, 404, 'not_found', 'Workspace not found')
+      : jsonError(c, 409, 'conflict', 'Conflicting concurrent update; retry', { retryable: true });
   }
   await agent.syncWorkspace(result.workspace, sessionId);
 
@@ -891,7 +892,7 @@ app.get('/api/workspaces/:id/files/*', async (c) => {
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const file = await agent.readWorkspaceFileContent(filePath);
   if (!file) {
-    return c.json({ error: 'File not found' }, 404);
+    return jsonError(c, 404, 'not_found', 'File not found');
   }
 
   const contentType = file.contentType || getMimeType(filePath);
@@ -919,15 +920,15 @@ app.put('/api/workspaces/:id/files/*', async (c) => {
   const putContentType = c.req.header('content-type')?.split(';', 1)[0]?.trim() || undefined;
   const uploadVerdict = isAllowedUpload({ name: filePath, type: putContentType });
   if (!uploadVerdict.allowed) {
-    return c.json({ error: uploadVerdict.reason || 'File type not allowed' }, 400);
+    return jsonError(c, 400, 'invalid_upload', uploadVerdict.reason || 'File type not allowed');
   }
   const declaredLength = Number(c.req.header('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_FILE_BYTES) {
-    return c.json({ error: 'File exceeds the 25 MB upload limit' }, 413);
+    return jsonError(c, 413, 'payload_too_large', 'File exceeds the 25 MB upload limit');
   }
   const body = await c.req.arrayBuffer();
   if (body.byteLength > MAX_UPLOAD_FILE_BYTES) {
-    return c.json({ error: 'File exceeds the 25 MB upload limit' }, 413);
+    return jsonError(c, 413, 'payload_too_large', 'File exceeds the 25 MB upload limit');
   }
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   await agent.writeWorkspaceFileContent(filePath, body, c.req.header('content-type') || undefined);
@@ -950,29 +951,29 @@ app.post('/api/workspaces/:id/upload', async (c) => {
   const form = await c.req.formData();
   const files = form.getAll('files').filter((item): item is File => item instanceof File);
   if (files.length === 0) {
-    return c.json({ error: 'No files provided' }, 400);
+    return jsonError(c, 400, 'invalid_request', 'No files provided');
   }
   if (files.length > MAX_UPLOAD_FILE_COUNT) {
-    return c.json({ error: `Upload limit is ${MAX_UPLOAD_FILE_COUNT} files per request` }, 400);
+    return jsonError(c, 400, 'payload_too_large', `Upload limit is ${MAX_UPLOAD_FILE_COUNT} files per request`);
   }
   if (files.reduce((total, file) => total + file.size, 0) > MAX_UPLOAD_TOTAL_BYTES) {
-    return c.json({ error: 'Upload request exceeds the 50 MB total limit' }, 400);
+    return jsonError(c, 400, 'payload_too_large', 'Upload request exceeds the 50 MB total limit');
   }
 
   // Phase 1: validate all files before writing any of them.
   const paths: string[] = [];
   for (const file of files) {
     if (file.size > MAX_UPLOAD_FILE_BYTES) {
-      return c.json({ error: `${file.name} exceeds the 25 MB upload limit` }, 400);
+      return jsonError(c, 400, 'payload_too_large', `${file.name} exceeds the 25 MB upload limit`);
     }
     const verdict = isAllowedUpload(file);
     if (!verdict.allowed) {
-      return c.json({ error: `${file.name}: ${verdict.reason}` }, 400);
+      return jsonError(c, 400, 'invalid_upload', `${file.name}: ${verdict.reason}`);
     }
     try {
       paths.push(sanitizeRelativePath(file.name.trim()));
     } catch {
-      return c.json({ error: `${file.name}: Invalid file path` }, 400);
+      return jsonError(c, 400, 'invalid_upload', `${file.name}: Invalid file path`);
     }
   }
 
@@ -1027,7 +1028,7 @@ app.post('/api/workspaces/:id/panels', async (c) => {
   const body = await c.req.json<{ panel?: unknown } | null>();
   const parsed = panelSchema.safeParse(body?.panel);
   if (!parsed.success) {
-    return c.json({ error: 'Invalid panel payload' }, 400);
+    return jsonError(c, 400, 'invalid_request', 'Invalid panel payload');
   }
   const panel = parsed.data as WorkspacePanel;
   const { agent } = await syncedWorkspaceAgent(c, workspace);

@@ -88,9 +88,9 @@ import {
   sanitizeRelativePath,
   toRuntimePath,
 } from '../lib/files';
-import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { addWorkspaceDownload } from '../lib/downloads';
 import { updateWorkspaceWithRetry } from '../lib/workspaces';
+import { hydrateLegacyWorkspaceFiles } from '../lib/hydration';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';

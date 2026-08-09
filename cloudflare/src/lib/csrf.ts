@@ -27,6 +27,7 @@ import { setCookie } from 'hono/cookie';
 import type { Env } from '../env';
 import { normalizeBasePath } from './base-path';
 import type { SessionVariables } from './session';
+import { canonicalError } from './error-envelope';
 
 /** Custom header the frontend echoes the per-session token in (fleet convention). */
 export const CSRF_HEADER = 'X-CAIL-CSRF';
@@ -230,18 +231,18 @@ export async function enforceCsrf(
   );
 
   if (verdict === 'reject') {
-    return c.json({ error: 'csrf_origin_mismatch' }, 403);
+    return c.json(canonicalError('csrf_origin_mismatch', 'Request origin is not allowed', { type: 'authentication_error', retryable: false }), 403);
   }
 
   // Same-origin and absent headers both prove nothing about sibling tools.
   const provided = c.req.header(CSRF_HEADER);
   if (!provided) {
-    return c.json({ error: 'csrf_token_missing' }, 403);
+    return c.json(canonicalError('csrf_token_missing', 'CSRF token is required', { type: 'authentication_error', retryable: false }), 403);
   }
   const sessionId = c.get('sessionId');
   const principalKind = c.get('cailIdentity') ? 'subject' : 'anonymous';
   if (!(await verifyCsrfToken(provided, sessionId, c.env.SESSION_SECRET, principalKind))) {
-    return c.json({ error: 'csrf_token_invalid' }, 403);
+    return c.json(canonicalError('csrf_token_invalid', 'CSRF token is invalid', { type: 'authentication_error', retryable: false }), 403);
   }
   return null;
 }
@@ -259,11 +260,11 @@ export async function enforceCsrfRead(
   const method = c.req.method.toUpperCase();
   if (method !== 'GET' && method !== 'HEAD') return null;
   const provided = c.req.header(CSRF_HEADER);
-  if (!provided) return c.json({ error: 'csrf_token_missing' }, 403);
+  if (!provided) return c.json(canonicalError('csrf_token_missing', 'CSRF token is required', { type: 'authentication_error', retryable: false }), 403);
   const sessionId = c.get('sessionId');
   const principalKind = c.get('cailIdentity') ? 'subject' : 'anonymous';
   if (!(await verifyCsrfToken(provided, sessionId, c.env.SESSION_SECRET, principalKind))) {
-    return c.json({ error: 'csrf_token_invalid' }, 403);
+    return c.json(canonicalError('csrf_token_invalid', 'CSRF token is invalid', { type: 'authentication_error', retryable: false }), 403);
   }
   return null;
 }
