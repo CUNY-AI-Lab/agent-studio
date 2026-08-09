@@ -20,7 +20,6 @@ export function ChatPanel({
   onSubmit,
   onClear,
   onRetry,
-  onDumpTrace,
   canRetry,
   errorNotice,
   selectedScopeLabel,
@@ -33,7 +32,6 @@ export function ChatPanel({
   onSubmit: (text: string) => void;
   onClear: () => void;
   onRetry: () => void;
-  onDumpTrace: () => void;
   canRetry: boolean;
   errorNotice?: string | null;
   selectedScopeLabel: string | null;
@@ -87,12 +85,6 @@ export function ChatPanel({
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                onClick={onDumpTrace}
-              >
-                Dump Trace
-              </button>
               <button
                 className="rounded-md border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={onRetry}

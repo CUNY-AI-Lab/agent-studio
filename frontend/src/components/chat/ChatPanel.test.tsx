@@ -16,7 +16,6 @@ const baseProps = {
   onSubmit: () => {},
   onClear: () => {},
   onRetry: () => {},
-  onDumpTrace: () => {},
   canRetry: false,
   selectedScopeLabel: null,
   onClearScope: () => {},

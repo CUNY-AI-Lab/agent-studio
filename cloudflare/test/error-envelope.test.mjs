@@ -1,40 +1,28 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  cailErrorEnvelope,
-  cailErrorResponse,
-} from '@cuny-ai-lab/cail-client/testing';
+import { canonicalError } from '../src/lib/error-envelope.ts';
 
-import { canonicalizeErrorResponse } from '../src/lib/error-envelope.ts';
-
-test('legacy flat errors are normalized to the CAIL nested envelope', async () => {
-  const response = await canonicalizeErrorResponse(Response.json({
-    error: 'authentication_required',
-    login_url: '/login',
-  }, { status: 401 }), 'req-1');
-  assert.deepEqual(await response.json(), {
+test('canonicalError emits the nested CAIL envelope directly', () => {
+  assert.deepEqual(canonicalError('authentication_required', 'Sign in to continue.', {
+    type: 'authentication_error',
+    retryable: false,
+    loginUrl: '/login',
+    requestId: 'req-1',
+  }), {
     error: {
-      message: 'authentication_required',
+      message: 'Sign in to continue.',
       type: 'authentication_error',
       param: null,
       code: 'authentication_required',
-      cail: { request_id: 'req-1', login_url: '/login' },
+      cail: { login_url: '/login', request_id: 'req-1', retryable: false },
     },
   });
 });
 
-test('normalization preserves status, headers, explicit retry posture, and nested data', async () => {
-  const response = await canonicalizeErrorResponse(cailErrorResponse(
-    429,
-    cailErrorEnvelope({
-      message: 'Budget exhausted',
-      type: 'rate_limit_error',
-      code: 'quota_exceeded',
-      cail: {},
-    }),
-    { 'X-Should-Retry': 'false', 'Retry-After': '60' },
-  ), 'req-2');
-  assert.equal(response.status, 429);
-  assert.equal(response.headers.get('Retry-After'), '60');
-  assert.equal((await response.json()).error.cail.retryable, false);
+test('canonicalError omits optional CAIL fields until explicitly supplied', () => {
+  const envelope = canonicalError('quota_exceeded', 'Budget exhausted.', {
+    type: 'rate_limit_error',
+    cail: { retry_after_seconds: 60 },
+  });
+  assert.deepEqual(envelope.error.cail, {});
 });

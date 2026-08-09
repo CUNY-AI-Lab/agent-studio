@@ -1,0 +1,48 @@
+# Agent Studio repository instructions
+
+## Invariants
+
+- Use Bun for JavaScript and TypeScript work. Read the relevant source and run
+  the real local path before changing behavior.
+- Agent Studio is the CUNY AI Lab app with slug `agent-studio`, mounted at
+  `/agent-studio`. The application identity header is
+  `X-CAIL-Identity-JWT` with audience `cail:agent-studio`; accept one exact
+  configured CUNY issuer and use only the verified pseudonymous subject for
+  ownership. Never authorize by email or a bare identity header.
+- Credentialed model calls use the separate
+  `X-CAIL-Gateway-Identity-JWT` leg with audience `cail:gateway`. The Worker
+  must have the `GATEWAY` service binding, `CAIL_API_BASE`, and the direct AI
+  SDK transport. Keep `X-CAIL-App: agent-studio` on model requests. Agent
+  Studio stores no provider key.
+- Workspace state belongs to the workspace Durable Object; workspace records
+  and files belong to R2. Staging always uses the isolated
+  `agent-studio-preview` bucket and must not touch production `agent-studio`.
+- OpenWebUI is a separate protected application. Preserve it and do not edit
+  or deploy it from this repository.
+
+## Workflow
+
+- Keep the implementation direct. Do not add compatibility aliases, fallback
+  reads, provenance or receipt theater, broad polling, or hidden retries.
+  Tests and smoke commands must be labeled honestly; the local Worker process
+  smoke is an integration smoke, not an end-to-end claim.
+- The only legacy bridge is one-time lazy import on first successful login:
+  require the verified current identity and a verified signed legacy Agent
+  Studio session cookie, copy complete content and relationships privately,
+  write one per-user completion marker only after success, then make the new
+  subject namespace authoritative. A failed copy is retryable; do not add
+  dual reads, aliases, synchronization, framework jobs, or a broad time
+  window. Keep the narrow per-legacy-session lock that fences already-admitted
+  anonymous writes; it contains claim/lease state only, never user content.
+- Run `bun run lint`, `bun run typecheck`, `bun run test`, `bun run build`, and
+  the local smoke before claiming a change is ready. Review source and checks
+  before the direct staging command:
+
+  ```bash
+  cd cloudflare
+  wrangler deploy --env staging --strict
+  ```
+
+- Never expose JWTs, subjects, emails, workspace identifiers, prompts, files,
+  credentials, or user data in logs, smoke output, command arguments, or
+  documentation. Keep secrets in the authorized environment.

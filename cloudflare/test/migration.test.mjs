@@ -1,90 +1,104 @@
-// Tests for the first-login migration of anonymous-session data into the
-// CAIL subject-keyed namespace: claim state machine, data copy (happy path,
-// merge-without-overwrite, idempotency), claim-once semantics, concurrency,
-// and the session-middleware trigger (anonymous flow untouched).
-
-import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
+
 import {
   TEST_SUBJECTS,
   createTestIdentityIssuer,
 } from '@cuny-ai-lab/cail-identity/testing';
 
 import {
-  CLAIM_STALE_MS,
-  decideClaim,
-  maybeMigrateAnonymousSession,
-  migrateAnonymousSession,
-} from '../src/lib/migration.ts';
-import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
+  addWorkspaceDownload,
+  clearWorkspaceDownloads,
+  getWorkspaceDownloads,
+} from '../src/lib/downloads.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
+import { migrateAnonymousSession } from '../src/lib/migration.ts';
 import {
   CAIL_IDENTITY_AUDIENCE,
   CAIL_IDENTITY_HEADER,
+  sessionIdForSubject,
 } from '../src/lib/cail-identity.ts';
-import { MockR2 } from './helpers/env.mjs';
+import { signValue } from '../src/lib/session.ts';
+import {
+  makeMigrationRegistryNamespace,
+  makeWorkspaceAgentNamespace,
+  MockR2,
+  registerCloudflareStub,
+} from './helpers/env.mjs';
 
-const NOW = Date.now();
+registerCloudflareStub();
+
 const SESSION_SECRET = 'ab'.repeat(32);
-const OPEN_IMPORT_WINDOW = {
-  CAIL_REQUIRE_IDENTITY: 'true',
-  CAIL_SSO_SWITCHED_AT: new Date(NOW - 60_000).toISOString(),
-  CAIL_ACCOUNT_IMPORT_UNTIL: new Date(NOW + 24 * 60 * 60 * 1000).toISOString(),
-};
+const SOURCE_SESSION = 'a'.repeat(32);
+const TARGET_SESSION = 'b'.repeat(32);
+const WORKSPACE_ONE = '1'.repeat(32);
+const WORKSPACE_TWO = '2'.repeat(32);
+const MARKER = `agent-studio/account-import/v1/${TARGET_SESSION}.json`;
 
-// ---------------------------------------------------------------------------
-// In-memory doubles
-// ---------------------------------------------------------------------------
+function createR2() {
+  const r2 = new MockR2();
+  r2.head = async (key) => r2.store.has(key) ? { key } : null;
+  return r2;
+}
 
-/** In-memory WorkspaceAgent double covering the MigratableAgent surface. */
+function workspaceRecord(id, name) {
+  return {
+    id,
+    name,
+    description: `${name} description`,
+    createdAt: '2026-08-01T00:00:00.000Z',
+    updatedAt: '2026-08-02T00:00:00.000Z',
+  };
+}
+
+function workspaceKey(sessionId, workspaceId) {
+  return `agent-studio/sessions/${sessionId}/workspaces/${workspaceId}/workspace.json`;
+}
+
+function legacyFileKey(sessionId, workspaceId, filePath) {
+  return `agent-studio/sessions/${sessionId}/workspaces/${workspaceId}/files/${filePath}`;
+}
+
 class FakeAgent {
   constructor() {
-    this.state = { panels: [], viewport: { x: 0, y: 0, zoom: 1 }, groups: [], connections: [] };
+    this.state = {
+      panels: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [],
+    };
     this.messages = [];
-    this.files = new Map(); // path -> { text, contentType }
-    this.unreadablePaths = new Set();
-    this.cleared = false;
-    this.syncCount = 0;
+    this.files = new Map();
     this.frozen = false;
-    this.destroyed = false;
+    this.freezeCount = 0;
+    this.unfreezeCount = 0;
+    this.failWriteOnce = null;
   }
 
   async syncWorkspace(workspace, sessionId) {
-    this.syncCount += 1;
+    if (this.frozen) throw new Error('source is frozen');
     this.workspace = workspace;
     this.sessionId = sessionId;
   }
 
   async freezeForMigration() {
     this.frozen = true;
+    this.freezeCount += 1;
   }
 
   async unfreezeAfterMigration() {
     this.frozen = false;
+    this.unfreezeCount += 1;
   }
 
-  async destroyWorkspaceState() {
-    this.files.clear();
-    this.messages = [];
-    this.state = { panels: [], viewport: { x: 0, y: 0, zoom: 1 }, groups: [], connections: [] };
-    this.cleared = true;
-    this.destroyed = true;
-  }
-
-  async getSnapshot() {
-    return this.state;
-  }
-
-  async getMessages() {
-    return this.messages;
-  }
+  async getSnapshot() { return this.state; }
+  async getMessages() { return this.messages; }
 
   async getWorkspaceFiles() {
     return [...this.files.keys()].map((path) => ({ path, isDirectory: false }));
   }
 
   async readWorkspaceFileContent(filePath) {
-    if (this.unreadablePaths.has(filePath)) return null;
     const entry = this.files.get(filePath);
     if (!entry) return null;
     return {
@@ -95,751 +109,555 @@ class FakeAgent {
   }
 
   async writeWorkspaceFileContent(filePath, data, contentType) {
+    if (this.failWriteOnce === filePath) {
+      this.failWriteOnce = null;
+      throw new Error('simulated target write failure');
+    }
     const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
-    this.files.set(filePath, { text, contentType: contentType || 'application/octet-stream' });
+    this.files.set(filePath, { text, contentType });
     return { ok: true, filePath };
+  }
+
+  async clearWorkspaceFiles() {
+    this.files.clear();
   }
 
   async replaceWorkspaceState(state, workspace, sessionId) {
     this.state = { ...state, workspace, sessionId };
   }
 
-  async persistMessages(messages) {
-    this.messages = [...messages];
+  async persistMessages(messages, _excludeBroadcastIds, options) {
+    const serverIds = new Set(this.messages.map((message) => message.id));
+    if (options?._deleteStaleRows && messages.every((message) => serverIds.has(message.id))) {
+      this.messages = structuredClone(messages);
+      return;
+    }
+    const byId = new Map(this.messages.map((message) => [message.id, message]));
+    for (const message of messages) byId.set(message.id, structuredClone(message));
+    this.messages = [...byId.values()];
   }
-
-  async clearWorkspaceFiles() { this.files.clear(); this.cleared = true; }
 }
 
-/** Agent factory backed by a map, mirroring `${sessionId}-${workspaceId}` DO names. */
-function makeAgentPool() {
+function createAgentPool() {
   const agents = new Map();
   const getAgent = async (sessionId, workspaceId) => {
-    const name = `${sessionId}-${workspaceId}`;
-    if (!agents.has(name)) agents.set(name, new FakeAgent());
-    return agents.get(name);
+    const key = `${sessionId}-${workspaceId}`;
+    if (!agents.has(key)) agents.set(key, new FakeAgent());
+    return agents.get(key);
   };
   return { agents, getAgent };
 }
 
-/**
- * Registry double that runs the REAL decideClaim behind a serialized queue —
- * the same semantics the MigrationRegistry DO provides (one request at a
- * time per anonymous session id).
- */
-class FakeRegistry {
-  constructor() {
-    this.record = undefined;
-    this.activeRequests = new Set();
-    this.queue = Promise.resolve();
-    this.claimCalls = 0;
-  }
-
-  #serialize(fn) {
-    const result = this.queue.then(fn);
-    this.queue = result.catch(() => undefined);
-    return result;
-  }
-
-  claim(subjectSessionId) {
-    this.claimCalls += 1;
-    return this.#serialize(() => {
-      if (this.activeRequests.size > 0) return 'anonymous-active';
-      const decision = decideClaim(this.record, subjectSessionId, Date.now());
-      if (decision.record) this.record = decision.record;
-      return decision.action;
-    });
-  }
-
-  beginAnonymousRequest(requestId) {
-    return this.#serialize(() => {
-      if (this.record) return false;
-      this.activeRequests.add(requestId);
-      return true;
-    });
-  }
-
-  endAnonymousRequest(requestId) {
-    return this.#serialize(() => {
-      this.activeRequests.delete(requestId);
-    });
-  }
-
-  markDone(subjectSessionId) {
-    return this.#serialize(() => {
-      if (this.record?.subjectSessionId === subjectSessionId) {
-        this.record = { ...this.record, status: 'done', completedAt: Date.now() };
-      }
-    });
-  }
-
-  markFailed(subjectSessionId) {
-    return this.#serialize(() => {
-      if (this.record?.subjectSessionId === subjectSessionId && this.record.status !== 'done') {
-        this.record = { ...this.record, status: 'failed' };
-      }
-    });
-  }
+async function seedWorkspace(r2, pool, sessionId, id, name) {
+  const record = workspaceRecord(id, name);
+  await r2.put(workspaceKey(sessionId, id), JSON.stringify(record));
+  const agent = await pool.getAgent(sessionId, id);
+  await agent.syncWorkspace(record, sessionId);
+  return agent;
 }
 
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-const ANON = 'a'.repeat(32);
-const SUBJECT = 'b'.repeat(32);
-const OTHER_SUBJECT = 'c'.repeat(32);
-
-function wsKey(sessionId, workspaceId) {
-  return `agent-studio/sessions/${sessionId}/workspaces/${workspaceId}/workspace.json`;
-}
-
-function record(id, name) {
-  const now = new Date(NOW).toISOString();
-  return { id, name, description: '', createdAt: now, updatedAt: now };
-}
-
-async function seedWorkspace(r2, pool, sessionId, workspaceId, name, files = {}, messages = []) {
-  await r2.put(wsKey(sessionId, workspaceId), JSON.stringify(record(workspaceId, name)));
-  const agent = await pool.getAgent(sessionId, workspaceId);
-  for (const [path, text] of Object.entries(files)) {
-    agent.files.set(path, { text, contentType: 'text/plain; charset=utf-8' });
-  }
-  agent.messages = messages;
-  agent.state = { ...agent.state, panels: [{ id: 'chat', type: 'chat', title: name }] };
-}
-
-async function seedGalleryItem(r2, id, authorId) {
-  const ownerTag = await galleryOwnerTag(authorId, SESSION_SECRET);
+async function seedGallery(r2, galleryId, ownerSessionId) {
   await r2.put(
-    `agent-studio/gallery/items/${id}/manifest.json`,
-    JSON.stringify({ id, title: 't', description: 'd', authorId: ownerTag, publishedAt: new Date(NOW).toISOString(), artifactCount: 0 })
+    `agent-studio/gallery/items/${galleryId}/manifest.json`,
+    JSON.stringify({
+      id: galleryId,
+      title: 'Published workspace',
+      description: 'Description',
+      authorId: await galleryOwnerTag(ownerSessionId, SESSION_SECRET),
+      publishedAt: '2026-08-01T00:00:00.000Z',
+      artifactCount: 1,
+    }),
   );
-  await r2.put(`agent-studio/gallery/items/${id}/state.json`, JSON.stringify({ panels: [] }));
-}
-
-function makeEnv(r2) {
-  return { WORKSPACE_FILES: r2, SESSION_SECRET, ...OPEN_IMPORT_WINDOW };
-}
-
-// ---------------------------------------------------------------------------
-// Claim state machine
-// ---------------------------------------------------------------------------
-
-test('decideClaim: fresh namespace -> run and record in-progress', () => {
-  const decision = decideClaim(undefined, SUBJECT, NOW);
-  assert.equal(decision.action, 'run');
-  assert.deepEqual(decision.record, { subjectSessionId: SUBJECT, status: 'in-progress', startedAt: NOW });
-});
-
-test('decideClaim: done claim by same subject -> already-done, no rewrite', () => {
-  const existing = { subjectSessionId: SUBJECT, status: 'done', startedAt: NOW - 1000, completedAt: NOW - 500 };
-  const decision = decideClaim(existing, SUBJECT, NOW);
-  assert.equal(decision.action, 'already-done');
-  assert.equal(decision.record, undefined);
-});
-
-test('decideClaim: claim held by another subject is sticky in every status', () => {
-  for (const status of ['in-progress', 'done', 'failed']) {
-    const existing = { subjectSessionId: SUBJECT, status, startedAt: NOW - 1000 };
-    assert.equal(decideClaim(existing, OTHER_SUBJECT, NOW).action, 'claimed-by-other', `status=${status}`);
-  }
-});
-
-test('decideClaim: fresh in-progress by self -> in-progress (no concurrent double-run)', () => {
-  const existing = { subjectSessionId: SUBJECT, status: 'in-progress', startedAt: NOW - 1000 };
-  assert.equal(decideClaim(existing, SUBJECT, NOW).action, 'in-progress');
-});
-
-test('decideClaim: stale in-progress and failed claims retry for the same subject', () => {
-  const stale = { subjectSessionId: SUBJECT, status: 'in-progress', startedAt: NOW - CLAIM_STALE_MS };
-  assert.equal(decideClaim(stale, SUBJECT, NOW).action, 'run');
-  const failed = { subjectSessionId: SUBJECT, status: 'failed', startedAt: NOW - 1000 };
-  assert.equal(decideClaim(failed, SUBJECT, NOW).action, 'run');
-});
-
-test('claim waits for an admitted anonymous request before migration can start', async () => {
-  const registry = new FakeRegistry();
-  assert.equal(await registry.beginAnonymousRequest('request-1'), true);
-  assert.equal(await registry.claim(SUBJECT), 'anonymous-active');
-  assert.equal(registry.record, undefined);
-
-  await registry.endAnonymousRequest('request-1');
-  assert.equal(await registry.claim(SUBJECT), 'run');
-  assert.equal(registry.record.subjectSessionId, SUBJECT);
-  assert.equal(await registry.beginAnonymousRequest('request-2'), false);
-});
-
-// ---------------------------------------------------------------------------
-// Data copy
-// ---------------------------------------------------------------------------
-
-test('happy path: workspaces, files, messages, state, downloads, gallery all move', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'notes.md': 'hello' }, [
-    { id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
-  ]);
-  await seedWorkspace(r2, pool, ANON, 'ws2', 'Second', { 'data.csv': 'a,b' });
   await r2.put(
-    `agent-studio/sessions/${ANON}/workspaces/ws1/downloads.json`,
-    JSON.stringify([{ filename: 'x.txt', format: 'txt', data: 'x' }])
+    `agent-studio/gallery/items/${galleryId}/state.json`,
+    JSON.stringify({ panels: [] }),
   );
-  await seedGalleryItem(r2, 'gal1', ANON);
-  await seedGalleryItem(r2, 'gal2', 'someone-else');
+}
 
-  const result = await migrateAnonymousSession(env, ANON, SUBJECT, pool.getAgent);
+function env(r2) {
+  return { WORKSPACE_FILES: r2, SESSION_SECRET };
+}
 
-  assert.deepEqual(result.migratedWorkspaceIds.sort(), ['ws1', 'ws2']);
-  assert.deepEqual(result.skippedWorkspaceIds, []);
-  assert.equal(result.galleryItemsReassigned, 1);
-
-  // Subject namespace has both workspace records.
-  assert.ok(await r2.get(wsKey(SUBJECT, 'ws1')));
-  assert.ok(await r2.get(wsKey(SUBJECT, 'ws2')));
-
-  // DO content copied into the subject-named agents.
-  const newAgent1 = await pool.getAgent(SUBJECT, 'ws1');
-  assert.equal(newAgent1.files.get('notes.md').text, 'hello');
-  assert.equal(newAgent1.messages.length, 1);
-  assert.equal(newAgent1.state.sessionId, SUBJECT);
-  assert.equal(newAgent1.state.panels[0].title, 'First');
-
-  // Downloads carried over (read via the storage-agnostic public reader; the
-  // seed used the legacy downloads.json blob, migration re-writes per-object).
-  const downloads = await getWorkspaceDownloads(env, SUBJECT, 'ws1');
-  assert.equal(downloads[0].filename, 'x.txt');
-
-  // Gallery authorship follows the user; other authors untouched.
-  const gal1 = await (await r2.get('agent-studio/gallery/items/gal1/manifest.json')).json();
-  const gal1Owner = await (await r2.get('agent-studio/gallery/items/gal1/owner.json')).json();
-  assert.equal(gal1.authorId, undefined);
-  assert.equal(gal1Owner.keyId, 'development');
-  assert.equal(gal1Owner.tag, await galleryOwnerTag(SUBJECT, SESSION_SECRET));
-  const gal2 = await (await r2.get('agent-studio/gallery/items/gal2/manifest.json')).json();
-  assert.equal(gal2.authorId, await galleryOwnerTag('someone-else', SESSION_SECRET));
-
-  // Anonymous namespace deleted; old agents cleared.
-  assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
-  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, true);
-  assert.equal((await pool.getAgent(ANON, 'ws2')).cleared, true);
-  assert.equal((await pool.getAgent(ANON, 'ws1')).frozen, true);
-  assert.equal((await pool.getAgent(ANON, 'ws2')).frozen, true);
-  assert.equal((await pool.getAgent(ANON, 'ws1')).destroyed, true);
-});
-
-test('merge without overwrite: subject-owned workspace ids are never touched', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-
-  // Subject already owns wsX with its own content.
-  await seedWorkspace(r2, pool, SUBJECT, 'wsX', 'Subject version', { 'mine.md': 'subject data' });
-  // Anonymous namespace claims the same id with different content, plus a new one.
-  await seedWorkspace(r2, pool, ANON, 'wsX', 'Anon version', { 'mine.md': 'anon data' });
-  await seedWorkspace(r2, pool, ANON, 'wsY', 'Anon only', { 'other.md': 'anon other' });
-
-  const result = await migrateAnonymousSession(env, ANON, SUBJECT, pool.getAgent);
-
-  assert.deepEqual(result.skippedWorkspaceIds, ['wsX']);
-  assert.deepEqual(result.migratedWorkspaceIds, ['wsY']);
-
-  // Subject's wsX record and agent content are exactly as they were.
-  const kept = await (await r2.get(wsKey(SUBJECT, 'wsX'))).json();
-  assert.equal(kept.name, 'Subject version');
-  const keptAgent = await pool.getAgent(SUBJECT, 'wsX');
-  assert.equal(keptAgent.files.get('mine.md').text, 'subject data');
-
-  // The new workspace arrived.
-  const arrived = await pool.getAgent(SUBJECT, 'wsY');
-  assert.equal(arrived.files.get('other.md').text, 'anon other');
-});
-
-test('idempotency: a second full run is a no-op with identical final state', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'notes.md': 'hello' });
-  await migrateAnonymousSession(env, ANON, SUBJECT, pool.getAgent);
-  const snapshotKeys = [...r2.store.keys()].sort();
-
-  const second = await migrateAnonymousSession(env, ANON, SUBJECT, pool.getAgent);
-  assert.deepEqual(second.migratedWorkspaceIds, []);
-  assert.deepEqual(second.skippedWorkspaceIds, []);
-  assert.deepEqual([...r2.store.keys()].sort(), snapshotKeys);
-  const agent = await pool.getAgent(SUBJECT, 'ws1');
-  assert.equal(agent.files.get('notes.md').text, 'hello');
-});
-
-test('listed-but-unreadable files fail migration without deleting anonymous data or marking done', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', {
-    'ok.txt': 'ok',
-    'missing.txt': 'listed only',
+test('first login copies every current relationship and writes the marker last', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const source = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'Research');
+  source.state = {
+    panels: [
+      { id: 'chat', type: 'chat', title: 'Chat' },
+      { id: 'notes', type: 'markdown', title: 'Notes', content: 'Preserved' },
+    ],
+    viewport: { x: 12, y: 20, zoom: 0.8 },
+    groups: [{ id: 'group', panelIds: ['chat', 'notes'] }],
+    connections: [{ id: 'edge', sourceId: 'chat', targetId: 'notes' }],
+  };
+  source.messages = [{ id: 'message', role: 'user', parts: [{ type: 'text', text: 'Question' }] }];
+  source.files.set('runtime.md', { text: 'runtime', contentType: 'text/markdown' });
+  await r2.put(legacyFileKey(SOURCE_SESSION, WORKSPACE_ONE, 'legacy.txt'), 'legacy', {
+    httpMetadata: { contentType: 'text/plain' },
   });
-  const source = await pool.getAgent(ANON, 'ws1');
-  source.unreadablePaths.add('missing.txt');
-  const registry = new FakeRegistry();
-
-  await assert.rejects(
-    maybeMigrateAnonymousSession({
-      env,
-      anonSessionId: ANON,
-      subjectSessionId: SUBJECT,
-      registry,
-      getAgent: pool.getAgent,
-    }),
-    /migration: listed file missing\.txt could not be read from workspace ws1/,
+  await addWorkspaceDownload(
+    env(r2),
+    SOURCE_SESSION,
+    WORKSPACE_ONE,
+    { filename: 'current.txt', format: 'txt', data: 'current' },
   );
-
-  assert.equal(registry.record.status, 'failed');
-  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
-  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
-  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, false);
-  assert.equal((await pool.getAgent(ANON, 'ws1')).frozen, false);
-  assert.equal((await pool.getAgent(SUBJECT, 'ws1')).destroyed, true);
-});
-
-test('retry after a listed-file read failure succeeds and completes cleanup', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', {
-    'ok.txt': 'ok',
-    'missing.txt': 'readable later',
-  });
-  const source = await pool.getAgent(ANON, 'ws1');
-  source.unreadablePaths.add('missing.txt');
-  const registry = new FakeRegistry();
-
-  await assert.rejects(
-    maybeMigrateAnonymousSession({
-      env,
-      anonSessionId: ANON,
-      subjectSessionId: SUBJECT,
-      registry,
-      getAgent: pool.getAgent,
-    }),
-    /missing\.txt/,
+  await r2.put(
+    `agent-studio/sessions/${SOURCE_SESSION}/workspaces/${WORKSPACE_ONE}/downloads.json`,
+    JSON.stringify([{ filename: 'earlier.csv', format: 'csv', data: 'a,b' }]),
   );
+  const galleryId = 'c'.repeat(24);
+  await seedGallery(r2, galleryId, SOURCE_SESSION);
 
-  source.unreadablePaths.delete('missing.txt');
-  const retry = await maybeMigrateAnonymousSession({
-    env,
-    anonSessionId: ANON,
-    subjectSessionId: SUBJECT,
-    registry,
-    getAgent: pool.getAgent,
-  });
-
-  assert.equal(retry, 'migrated');
-  assert.equal(registry.record.status, 'done');
-  const target = await pool.getAgent(SUBJECT, 'ws1');
-  assert.equal(target.files.get('ok.txt').text, 'ok');
-  assert.equal(target.files.get('missing.txt').text, 'readable later');
-  assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
-});
-
-test('retry cleans source runtime files for workspaces marked complete before failure', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'first.txt': 'first' });
-  await seedWorkspace(r2, pool, ANON, 'ws2', 'Second', { 'second.txt': 'second' });
-  const secondSource = await pool.getAgent(ANON, 'ws2');
-  secondSource.unreadablePaths.add('second.txt');
-  const registry = new FakeRegistry();
-
-  await assert.rejects(
-    maybeMigrateAnonymousSession({
-      env,
-      anonSessionId: ANON,
-      subjectSessionId: SUBJECT,
-      registry,
-      getAgent: pool.getAgent,
-    }),
-    /second\.txt/,
-  );
-
-  // ws1's target record is the completion marker, but cleanup has not run yet.
-  assert.ok(await r2.get(wsKey(SUBJECT, 'ws1')));
-  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, false);
-
-  // Simulate subject-owned work after the partial migration. The retry must
-  // skip this target workspace and clean only its anonymous counterpart.
-  const firstTarget = await pool.getAgent(SUBJECT, 'ws1');
-  firstTarget.files.set('subject-only.txt', {
-    text: 'keep me',
-    contentType: 'text/plain; charset=utf-8',
-  });
-
-  secondSource.unreadablePaths.delete('second.txt');
-  const retry = await maybeMigrateAnonymousSession({
-    env,
-    anonSessionId: ANON,
-    subjectSessionId: SUBJECT,
-    registry,
-    getAgent: pool.getAgent,
-  });
-
-  assert.equal(retry, 'migrated');
-  assert.equal(registry.record.status, 'done');
-  assert.equal((await pool.getAgent(ANON, 'ws1')).cleared, true);
-  assert.equal((await pool.getAgent(ANON, 'ws2')).cleared, true);
-  assert.equal(firstTarget.files.get('subject-only.txt').text, 'keep me');
-  assert.equal((await pool.getAgent(SUBJECT, 'ws2')).files.get('second.txt').text, 'second');
-  assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${ANON}/`), []);
-});
-
-test('corrupt anon downloads blob fails migration loudly instead of silently dropping deliverables', async (t) => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'notes.md': 'hello' });
-  const legacyKey = `agent-studio/sessions/${ANON}/workspaces/ws1/downloads.json`;
-  await r2.put(legacyKey, '{corrupt, not json');
-  const registry = new FakeRegistry();
-
-  t.mock.method(console, 'error', () => {});
-  // Old behavior: the corrupt blob was read as "no downloads", migration
-  // "succeeded", and the anonymous namespace was deleted — the user's queued
-  // deliverables vanished with no trace. Now the read fails loudly.
-  await assert.rejects(
-    maybeMigrateAnonymousSession({
-      env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: pool.getAgent,
-    }),
-    /corrupt stored download object/,
-  );
-
-  // Claim marked failed for retry; nothing anonymous was deleted or marked done.
-  assert.equal(registry.record.status, 'failed');
-  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
-  assert.ok(await r2.get(legacyKey), 'corrupt blob preserved for repair, not dropped');
-  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
-
-  // Repairing the blob lets a retry complete and carry the download over.
-  await r2.put(legacyKey, JSON.stringify([{ filename: 'x.txt', format: 'txt', data: 'x' }]));
-  const retry = await maybeMigrateAnonymousSession({
-    env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: pool.getAgent,
-  });
-  assert.equal(retry, 'migrated');
-  assert.equal(registry.record.status, 'done');
-  const downloads = await getWorkspaceDownloads(env, SUBJECT, 'ws1');
-  assert.deepEqual(downloads.map((d) => d.filename), ['x.txt']);
-});
-
-// ---------------------------------------------------------------------------
-// Claim-once + concurrency (orchestration)
-// ---------------------------------------------------------------------------
-
-test('claim-once: a namespace claimed by another subject is never copied', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'notes.md': 'hello' });
-
-  const registry = new FakeRegistry();
-  // First verified claim wins...
-  const first = await maybeMigrateAnonymousSession({
-    env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: pool.getAgent,
-  });
-  assert.equal(first, 'migrated');
-  assert.equal(registry.record.subjectSessionId, SUBJECT);
-
-  // ...and a different subject can never claim the same namespace.
-  let otherAgentCalls = 0;
-  const outcome = await maybeMigrateAnonymousSession({
-    env,
-    anonSessionId: ANON,
-    subjectSessionId: OTHER_SUBJECT,
-    registry,
-    getAgent: async (...args) => {
-      otherAgentCalls += 1;
-      return pool.getAgent(...args);
-    },
-  });
-  assert.equal(outcome, 'claimed-by-other');
-  assert.equal(otherAgentCalls, 0);
-  // Nothing was written into the other subject's namespace.
-  assert.deepEqual(r2.keysWithPrefix(`agent-studio/sessions/${OTHER_SUBJECT}/`), []);
-});
-
-test('concurrency: parallel first-login requests migrate exactly once', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'notes.md': 'hello' });
-
-  const registry = new FakeRegistry();
-  let sourceReads = 0;
-  const slowGetAgent = async (sessionId, workspaceId) => {
-    // Yield so the second claim lands while the first run is mid-copy.
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    if (sessionId === ANON) sourceReads += 1;
-    return pool.getAgent(sessionId, workspaceId);
+  const markerWrites = [];
+  const originalPut = r2.put.bind(r2);
+  r2.put = async (key, value, options) => {
+    if (key === MARKER) markerWrites.push([...r2.store.keys()]);
+    return originalPut(key, value, options);
   };
 
-  const [a, b] = await Promise.all([
-    maybeMigrateAnonymousSession({
-      env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: slowGetAgent,
-    }),
-    maybeMigrateAnonymousSession({
-      env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: slowGetAgent,
-    }),
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+
+  const target = await pool.getAgent(TARGET_SESSION, WORKSPACE_ONE);
+  assert.equal(target.files.get('runtime.md').text, 'runtime');
+  assert.equal(target.files.get('legacy.txt').text, 'legacy');
+  assert.deepEqual(target.messages, source.messages);
+  assert.equal(target.state.sessionId, TARGET_SESSION);
+  assert.deepEqual(target.state.groups, source.state.groups);
+  assert.deepEqual(target.state.connections, source.state.connections);
+  assert.deepEqual(
+    (await getWorkspaceDownloads(env(r2), TARGET_SESSION, WORKSPACE_ONE))
+      .map((download) => download.filename),
+    ['current.txt', 'earlier.csv'],
+  );
+  assert.ok(await r2.get(workspaceKey(TARGET_SESSION, WORKSPACE_ONE)));
+  assert.equal(await (await r2.get(MARKER)).text(), '1');
+  assert.equal(markerWrites.length, 1);
+  assert.equal(
+    markerWrites[0].includes(workspaceKey(TARGET_SESSION, WORKSPACE_ONE)),
+    true,
+    'workspace visibility record exists before the account marker',
+  );
+  const manifest = await (
+    await r2.get(`agent-studio/gallery/items/${galleryId}/manifest.json`)
+  ).json();
+  const owner = await (
+    await r2.get(`agent-studio/gallery/items/${galleryId}/owner.json`)
+  ).json();
+  assert.equal(manifest.authorId, undefined);
+  assert.equal(owner.tag, await galleryOwnerTag(TARGET_SESSION, SESSION_SECRET));
+  assert.equal(source.frozen, true);
+  assert.ok(await r2.get(workspaceKey(SOURCE_SESSION, WORKSPACE_ONE)), 'source retained as an inaccessible backup');
+});
+
+test('repeat login is a marker-only no-op', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const source = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'Research');
+  source.files.set('notes.md', { text: 'original', contentType: 'text/markdown' });
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+  const target = await pool.getAgent(TARGET_SESSION, WORKSPACE_ONE);
+  const keys = [...r2.store.keys()].sort();
+  const freezeCount = source.freezeCount;
+  target.files.set('new-store-only.md', { text: 'authoritative', contentType: 'text/markdown' });
+
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+
+  assert.deepEqual([...r2.store.keys()].sort(), keys);
+  assert.equal(source.freezeCount, freezeCount);
+  assert.equal(target.files.get('new-store-only.md').text, 'authoritative');
+});
+
+test('partial target failure leaves no marker or visible workspace and retries without duplicates', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const source = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'Research');
+  source.files.set('a.txt', { text: 'a', contentType: 'text/plain' });
+  source.files.set('b.txt', { text: 'b', contentType: 'text/plain' });
+  const target = await pool.getAgent(TARGET_SESSION, WORKSPACE_ONE);
+  target.failWriteOnce = 'b.txt';
+
+  await assert.rejects(
+    migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
+    /simulated target write failure/,
+  );
+  assert.equal(await r2.get(MARKER), null);
+  assert.equal(await r2.get(workspaceKey(TARGET_SESSION, WORKSPACE_ONE)), null);
+  assert.equal(source.frozen, false);
+  assert.ok(await r2.get(workspaceKey(SOURCE_SESSION, WORKSPACE_ONE)));
+
+  // The retry must mirror the current source, not expose a stale file written
+  // by the failed attempt or lose a file added before the later login.
+  source.files.delete('a.txt');
+  source.files.set('c.txt', { text: 'c', contentType: 'text/plain' });
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+  assert.deepEqual([...target.files.keys()].sort(), ['b.txt', 'c.txt']);
+  assert.ok(await r2.get(MARKER));
+  assert.equal(source.frozen, true);
+});
+
+test('marker failure after a committed workspace retries without overwriting new-store content', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const source = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'Research');
+  source.files.set('source.txt', { text: 'source', contentType: 'text/plain' });
+  const originalPut = r2.put.bind(r2);
+  let failMarker = true;
+  r2.put = async (key, value, options) => {
+    if (key === MARKER && failMarker) {
+      failMarker = false;
+      throw new Error('simulated marker failure');
+    }
+    return originalPut(key, value, options);
+  };
+
+  await assert.rejects(
+    migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
+    /simulated marker failure/,
+  );
+  assert.ok(await r2.get(workspaceKey(TARGET_SESSION, WORKSPACE_ONE)));
+  assert.equal(await r2.get(MARKER), null);
+  assert.equal(source.frozen, true);
+  const target = await pool.getAgent(TARGET_SESSION, WORKSPACE_ONE);
+  target.files.set('new-store-only.txt', { text: 'keep', contentType: 'text/plain' });
+
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+  assert.equal(target.files.get('new-store-only.txt').text, 'keep');
+  assert.equal(target.files.get('source.txt').text, 'source');
+  assert.ok(await r2.get(MARKER));
+  assert.equal(source.frozen, true);
+});
+
+test('retry replaces partial target downloads when the legacy queue shrinks', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const source = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'Research');
+  source.messages = [
+    { id: 'stale-message', role: 'user', parts: [{ type: 'text', text: 'stale' }] },
+    { id: 'current-message', role: 'assistant', parts: [{ type: 'text', text: 'current' }] },
+  ];
+  await addWorkspaceDownload(env(r2), SOURCE_SESSION, WORKSPACE_ONE, {
+    filename: 'stale.txt', format: 'txt', data: 'stale',
+  });
+  await addWorkspaceDownload(env(r2), SOURCE_SESSION, WORKSPACE_ONE, {
+    filename: 'keep.txt', format: 'txt', data: 'keep',
+  });
+  const targetKey = workspaceKey(TARGET_SESSION, WORKSPACE_ONE);
+  const originalPut = r2.put.bind(r2);
+  let failCommit = true;
+  r2.put = async (key, value, options) => {
+    if (key === targetKey && failCommit) {
+      failCommit = false;
+      throw new Error('simulated target record failure');
+    }
+    return originalPut(key, value, options);
+  };
+
+  await assert.rejects(
+    migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
+    /simulated target record failure/,
+  );
+  source.messages = [
+    { id: 'replacement-message', role: 'user', parts: [{ type: 'text', text: 'replacement' }] },
+  ];
+  await clearWorkspaceDownloads(env(r2), SOURCE_SESSION, WORKSPACE_ONE);
+  await addWorkspaceDownload(env(r2), SOURCE_SESSION, WORKSPACE_ONE, {
+    filename: 'current.txt', format: 'txt', data: 'current',
+  });
+
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+  assert.deepEqual(
+    (await getWorkspaceDownloads(env(r2), TARGET_SESSION, WORKSPACE_ONE))
+      .map((download) => download.filename),
+    ['current.txt'],
+  );
+  assert.deepEqual(
+    (await pool.getAgent(TARGET_SESSION, WORKSPACE_ONE)).messages.map((message) => message.id),
+    ['replacement-message'],
+  );
+});
+
+test('failure after an earlier workspace commit keeps committed sources frozen and retry completes', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const first = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'First');
+  first.files.set('first.txt', { text: 'first', contentType: 'text/plain' });
+  const second = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_TWO, 'Second');
+  second.files.set('second.txt', { text: 'second', contentType: 'text/plain' });
+  (await pool.getAgent(TARGET_SESSION, WORKSPACE_TWO)).failWriteOnce = 'second.txt';
+
+  await assert.rejects(
+    migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
+    /simulated target write failure/,
+  );
+  assert.ok(await r2.get(workspaceKey(TARGET_SESSION, WORKSPACE_ONE)));
+  assert.equal(await r2.get(workspaceKey(TARGET_SESSION, WORKSPACE_TWO)), null);
+  assert.equal(first.frozen, true);
+  assert.equal(second.frozen, false);
+  assert.equal(await r2.get(MARKER), null);
+
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+  assert.ok(await r2.get(workspaceKey(TARGET_SESSION, WORKSPACE_TWO)));
+  assert.ok(await r2.get(MARKER));
+  assert.equal(first.frozen, true);
+  assert.equal(second.frozen, true);
+});
+
+test('corrupt current or earlier downloads remain retryable and are never silently dropped', async () => {
+  for (const storage of ['current', 'earlier']) {
+    const r2 = createR2();
+    const pool = createAgentPool();
+    const source = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'Research');
+    source.files.set('notes.md', { text: 'notes', contentType: 'text/plain' });
+    const corruptKey = storage === 'current'
+      ? `agent-studio/sessions/${SOURCE_SESSION}/workspaces/${WORKSPACE_ONE}/downloads/corrupt.json`
+      : `agent-studio/sessions/${SOURCE_SESSION}/workspaces/${WORKSPACE_ONE}/downloads.json`;
+    await r2.put(corruptKey, '{not json');
+
+    await assert.rejects(
+      migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
+    );
+    assert.equal(await r2.get(MARKER), null);
+    assert.equal(await r2.get(workspaceKey(TARGET_SESSION, WORKSPACE_ONE)), null);
+    assert.ok(await r2.get(corruptKey));
+    assert.equal(source.frozen, false);
+
+    if (storage === 'current') {
+      await r2.put(corruptKey, JSON.stringify({
+        seq: 0,
+        createdAt: '1970-01-01T00:00:00.000Z',
+        download: { filename: 'recovered.txt', format: 'txt', data: 'recovered' },
+      }));
+    } else {
+      await r2.put(corruptKey, JSON.stringify([
+        { filename: 'recovered.txt', format: 'txt', data: 'recovered' },
+      ]));
+    }
+    await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+    assert.deepEqual(
+      (await getWorkspaceDownloads(env(r2), TARGET_SESSION, WORKSPACE_ONE))
+        .map((download) => download.filename),
+      ['recovered.txt'],
+    );
+  }
+});
+
+test('parallel attempts converge on one deterministic target without duplicated downloads', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const source = await seedWorkspace(r2, pool, SOURCE_SESSION, WORKSPACE_ONE, 'Research');
+  source.files.set('notes.md', { text: 'notes', contentType: 'text/plain' });
+  await r2.put(
+    `agent-studio/sessions/${SOURCE_SESSION}/workspaces/${WORKSPACE_ONE}/downloads.json`,
+    JSON.stringify([{ filename: 'one.txt', format: 'txt', data: 'one' }]),
+  );
+
+  const outcomes = await Promise.allSettled([
+    migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
+    migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
   ]);
 
-  assert.deepEqual([a, b].sort(), ['in-progress', 'migrated']);
-  assert.equal(registry.record.status, 'done');
-  // Single copy: the source was read by exactly one run (migrate touches the
-  // anon agent twice — copy + cleanup), and the content arrived intact.
-  assert.equal(sourceReads, 2);
-  const agent = await pool.getAgent(SUBJECT, 'ws1');
-  assert.equal(agent.files.get('notes.md').text, 'hello');
+  assert.ok(outcomes.some((outcome) => outcome.status === 'fulfilled'));
+  assert.ok(await r2.get(MARKER));
+  assert.deepEqual(
+    (await getWorkspaceDownloads(env(r2), TARGET_SESSION, WORKSPACE_ONE))
+      .map((download) => download.filename),
+    ['one.txt'],
+  );
+  const target = await pool.getAgent(TARGET_SESSION, WORKSPACE_ONE);
+  assert.deepEqual([...target.files.keys()], ['notes.md']);
 });
 
-test('failure marks the claim failed and a later run retries and completes', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = makeEnv(r2);
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'First', { 'notes.md': 'hello' });
-
-  const registry = new FakeRegistry();
-  let shouldFail = true;
-  const flakyGetAgent = async (sessionId, workspaceId) => {
-    if (shouldFail) throw new Error('transient');
-    return pool.getAgent(sessionId, workspaceId);
+test('gallery ownership reassignment repairs a failed manifest write on retry', async () => {
+  const r2 = createR2();
+  const pool = createAgentPool();
+  const galleryId = 'f'.repeat(24);
+  await seedGallery(r2, galleryId, SOURCE_SESSION);
+  const manifestKey = `agent-studio/gallery/items/${galleryId}/manifest.json`;
+  const ownerKey = `agent-studio/gallery/items/${galleryId}/owner.json`;
+  const originalPut = r2.put.bind(r2);
+  let failManifest = true;
+  r2.put = async (key, value, options) => {
+    if (key === manifestKey && failManifest) {
+      failManifest = false;
+      throw new Error('simulated gallery manifest failure');
+    }
+    return originalPut(key, value, options);
   };
 
   await assert.rejects(
-    maybeMigrateAnonymousSession({
-      env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: flakyGetAgent,
-    }),
-    /transient/,
+    migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent),
+    /simulated gallery manifest failure/,
   );
-  assert.equal(registry.record.status, 'failed');
+  assert.equal(await r2.get(MARKER), null);
+  assert.equal(
+    (await (await r2.get(ownerKey)).json()).tag,
+    await galleryOwnerTag(TARGET_SESSION, SESSION_SECRET),
+  );
+  assert.ok((await (await r2.get(manifestKey)).json()).authorId);
 
-  shouldFail = false;
-  const retry = await maybeMigrateAnonymousSession({
-    env, anonSessionId: ANON, subjectSessionId: SUBJECT, registry, getAgent: flakyGetAgent,
-  });
-  assert.equal(retry, 'migrated');
-  assert.equal((await pool.getAgent(SUBJECT, 'ws1')).files.get('notes.md').text, 'hello');
+  await migrateAnonymousSession(env(r2), SOURCE_SESSION, TARGET_SESSION, pool.getAgent);
+  assert.equal('authorId' in await (await r2.get(manifestKey)).json(), false);
+  assert.ok(await r2.get(MARKER));
 });
 
-test('expired import window refuses migration before claiming or reading legacy data', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = {
-    ...makeEnv(r2),
-    CAIL_REQUIRE_IDENTITY: 'true',
-    CAIL_SSO_SWITCHED_AT: '2026-07-01T00:00:00Z',
-    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-07-02T00:00:00Z',
-  };
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'Legacy', { 'notes.md': 'stay put' });
-  const registry = new FakeRegistry();
+const identityIssuer = await createTestIdentityIssuer({ kid: 'login-import-key' });
 
-  const outcome = await maybeMigrateAnonymousSession({
-    env,
-    anonSessionId: ANON,
-    subjectSessionId: SUBJECT,
-    registry,
-    getAgent: pool.getAgent,
-    now: Date.parse('2026-07-02T00:00:00.001Z'),
-  });
-
-  assert.equal(outcome, 'window-not-open');
-  assert.equal(registry.claimCalls, 0);
-  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
-  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
-});
-
-test('pre-cutover optional authentication cannot import a legacy namespace', async () => {
-  const r2 = new MockR2();
-  const pool = makeAgentPool();
-  const env = { ...makeEnv(r2), CAIL_REQUIRE_IDENTITY: 'false' };
-  await seedWorkspace(r2, pool, ANON, 'ws1', 'Legacy', { 'notes.md': 'stay put' });
-  const registry = new FakeRegistry();
-
-  const outcome = await maybeMigrateAnonymousSession({
-    env,
-    anonSessionId: ANON,
-    subjectSessionId: SUBJECT,
-    registry,
-    getAgent: pool.getAgent,
-  });
-
-  assert.equal(outcome, 'window-not-open');
-  assert.equal(registry.claimCalls, 0);
-  assert.ok(await r2.get(wsKey(ANON, 'ws1')));
-  assert.equal(await r2.get(wsKey(SUBJECT, 'ws1')), null);
-});
-
-// ---------------------------------------------------------------------------
-// Middleware trigger (Hono integration): anonymous flow untouched, first
-// authenticated request with a legacy cookie migrates and drops the cookie.
-// ---------------------------------------------------------------------------
-
-const identityIssuer = await createTestIdentityIssuer({
-  kid: 'migration-middleware-key',
-});
-
-async function mintJwt(sub) {
-  return identityIssuer.mintIdentityJwt({
-    audience: CAIL_IDENTITY_AUDIENCE,
-    subject: sub,
-  });
-}
-
-async function makeMiddlewareApp() {
+async function createMiddlewareFixture() {
   const { Hono } = await import('hono');
   const { sessionMiddleware } = await import('../src/lib/session.ts');
-
-  const r2 = new MockR2();
-  const registry = new FakeRegistry();
-  const env = {
-    SESSION_SECRET,
-    CAIL_LOG_ENV: 'test',
-    CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-    CF_VERSION_METADATA: {
-      id: '11111111-1111-4111-8111-111111111111',
-      tag: '',
-      timestamp: '2026-07-13T14:00:00Z',
-    },
-    CAIL_IDENTITY_JWKS: identityIssuer.jwksJson,
-    CAIL_IDENTITY_ISSUER: identityIssuer.issuer,
-    WORKSPACE_FILES: r2,
-    ...OPEN_IMPORT_WINDOW,
-    CAIL_REQUIRE_IDENTITY: 'false',
-    MIGRATION_REGISTRY: {
-      idFromName: (name) => name,
-      get: () => registry,
-    },
-  };
-
+  const r2 = createR2();
+  const registry = makeMigrationRegistryNamespace();
+  const workspaceAgents = makeWorkspaceAgentNamespace();
   const app = new Hono();
   app.use('/api/*', sessionMiddleware);
   app.get('/api/session', (c) => c.json({ sessionId: c.get('sessionId') }));
-
-  return { app, env, r2, registry };
-}
-
-function cookieFrom(response) {
-  const header = response.headers.get('set-cookie') || '';
-  const match = header.match(/agent-studio-session=([^;]*)/);
-  return match ? `agent-studio-session=${match[1]}` : null;
-}
-
-test('middleware: pure anonymous flow preserves its session without making a claim', async () => {
-  const { app, env, registry } = await makeMiddlewareApp();
-
-  const first = await app.request('/api/session', {}, env);
-  assert.equal(first.status, 200);
-  const { sessionId } = await first.json();
-  const cookie = cookieFrom(first);
-  assert.ok(cookie);
-
-  // Same cookie, still anonymous: same session, no claims, no writes.
-  const second = await app.request('/api/session', { headers: { Cookie: cookie } }, env);
-  assert.equal((await second.json()).sessionId, sessionId);
-  assert.equal(registry.claimCalls, 0);
-});
-
-test('middleware: lease-release failure does not make a completed request ambiguous', async () => {
-  const { app, env, registry } = await makeMiddlewareApp();
-  registry.endAnonymousRequest = async () => {
-    throw new Error('simulated registry release failure');
-  };
-
-  const response = await app.request('/api/session', {}, env);
-  assert.equal(response.status, 200);
-  assert.match((await response.json()).sessionId, /^[a-f0-9]{32}$/);
-});
-
-test('middleware: first authenticated request with legacy cookie migrates once and drops the cookie', async () => {
-  const { app, env, r2, registry } = await makeMiddlewareApp();
-
-  // Establish an anonymous session and give it a gallery item to own.
-  const anonResponse = await app.request('/api/session', {}, env);
-  const anonSessionId = (await anonResponse.json()).sessionId;
-  const cookie = cookieFrom(anonResponse);
-  await seedGalleryItem(r2, 'galM', anonSessionId);
-
-  // Authenticate with the legacy cookie still present.
-  env.CAIL_REQUIRE_IDENTITY = 'true';
-  const jwt = await mintJwt(TEST_SUBJECTS.bob);
-  const authed = await app.request('/api/session', {
-    headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
-  }, env);
-  assert.equal(authed.status, 200);
-  const subjectSessionId = (await authed.json()).sessionId;
-  assert.notEqual(subjectSessionId, anonSessionId);
-
-  // Migration ran: gallery ownership moved, claim recorded done.
-  const manifest = await (await r2.get('agent-studio/gallery/items/galM/manifest.json')).json();
-  const owner = await (await r2.get('agent-studio/gallery/items/galM/owner.json')).json();
-  assert.equal(manifest.authorId, undefined);
-  assert.equal(owner.tag, await galleryOwnerTag(subjectSessionId, SESSION_SECRET));
-  assert.equal(registry.record.status, 'done');
-  assert.equal(registry.record.subjectSessionId, subjectSessionId);
-
-  // The legacy cookie is dropped (Max-Age=0 delete).
-  const setCookie = authed.headers.get('set-cookie') || '';
-  assert.match(setCookie, /agent-studio-session=;/);
-
-  // A repeat request with the same (stale) cookie is a no-op.
-  const claimCallsBefore = registry.claimCalls;
-  const again = await app.request('/api/session', {
-    headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
-  }, env);
-  assert.equal((await again.json()).sessionId, subjectSessionId);
-  assert.equal(registry.claimCalls, claimCallsBefore + 1); // claim checked, returns already-done
-  assert.equal(registry.record.status, 'done');
-});
-
-test('middleware: a claimed namespace rejects stale anonymous HTTP work', async () => {
-  const { app, env, registry } = await makeMiddlewareApp();
-  const first = await app.request('/api/session', {}, env);
-  const cookie = cookieFrom(first);
-  registry.record = {
-    subjectSessionId: SUBJECT,
-    status: 'in-progress',
-    startedAt: Date.now(),
-  };
-
-  const stale = await app.request('/api/session', {
-    headers: { Cookie: cookie },
-  }, env);
-  assert.equal(stale.status, 409);
-  assert.equal((await stale.json()).error.code, 'legacy_session_claimed');
-});
-
-test('middleware: authenticated request after expiry refuses import and clears the legacy cookie', async (t) => {
-  const { app, env, r2, registry } = await makeMiddlewareApp();
-  const anonResponse = await app.request('/api/session', {}, env);
-  const anonSessionId = (await anonResponse.json()).sessionId;
-  const cookie = cookieFrom(anonResponse);
-  await seedGalleryItem(r2, 'galExpired', anonSessionId);
-  Object.assign(env, {
+  const fixtureEnv = {
+    SESSION_SECRET,
     CAIL_REQUIRE_IDENTITY: 'true',
-    CAIL_SSO_SWITCHED_AT: '2026-01-01T00:00:00Z',
-    CAIL_ACCOUNT_IMPORT_UNTIL: '2026-01-02T00:00:00Z',
+    CAIL_IDENTITY_JWKS: identityIssuer.jwksJson,
+    CAIL_IDENTITY_ISSUER: identityIssuer.issuer,
+    WORKSPACE_FILES: r2,
+    WorkspaceAgent: workspaceAgents.namespace,
+    MIGRATION_REGISTRY: registry.namespace,
+  };
+  const identityJwt = await identityIssuer.mintIdentityJwt({
+    audience: CAIL_IDENTITY_AUDIENCE,
+    subject: TEST_SUBJECTS.alice,
   });
-  const jwt = await mintJwt(TEST_SUBJECTS.carol);
+  return { app, env: fixtureEnv, r2, registry, workspaceAgents, identityJwt };
+}
 
-  const warnings = t.mock.method(console, 'warn', () => {});
-  const authed = await app.request('/api/session', {
-    headers: { Cookie: cookie, [CAIL_IDENTITY_HEADER]: jwt },
-  }, env);
+test('an admitted anonymous create fences first login until the new workspace can be imported', async () => {
+  const fixture = await createMiddlewareFixture();
+  fixture.env.CAIL_REQUIRE_IDENTITY = 'false';
+  let entered;
+  let release;
+  const requestEntered = new Promise((resolve) => { entered = resolve; });
+  const releaseRequest = new Promise((resolve) => { release = resolve; });
+  fixture.app.post('/api/create-during-cutover', async (c) => {
+    const sourceSession = c.get('sessionId');
+    entered();
+    await releaseRequest;
+    const workspace = workspaceRecord(WORKSPACE_ONE, 'Created during cutover');
+    await fixture.workspaceAgents.ensure(`${sourceSession}-${WORKSPACE_ONE}`)
+      .syncWorkspace(workspace, sourceSession);
+    await fixture.r2.put(workspaceKey(sourceSession, WORKSPACE_ONE), JSON.stringify(workspace));
+    return c.json({ ok: true }, 201);
+  });
 
-  assert.equal(authed.status, 200);
-  assert.equal(registry.claimCalls, 0);
-  assert.match(authed.headers.get('set-cookie') || '', /agent-studio-session=;/);
-  const manifest = await (await r2.get('agent-studio/gallery/items/galExpired/manifest.json')).json();
-  assert.equal(manifest.authorId, await galleryOwnerTag(anonSessionId, SESSION_SECRET));
-  assert.equal(warnings.mock.callCount(), 1);
+  const signed = await signValue(SOURCE_SESSION, SESSION_SECRET);
+  const cookie = `agent-studio-session=${signed}`;
+  const anonymousCreate = fixture.app.request('/api/create-during-cutover', {
+    method: 'POST',
+    headers: { Cookie: cookie },
+  }, fixture.env);
+  await requestEntered;
+
+  const blockedLogin = await fixture.app.request('/api/session', {
+    headers: {
+      Cookie: cookie,
+      [CAIL_IDENTITY_HEADER]: fixture.identityJwt,
+    },
+  }, fixture.env);
+  assert.equal(blockedLogin.status, 503);
+  assert.equal((await blockedLogin.json()).error.code, 'account_import_failed');
+
+  release();
+  assert.equal((await anonymousCreate).status, 201);
+
+  const retried = await fixture.app.request('/api/session', {
+    headers: {
+      Cookie: cookie,
+      [CAIL_IDENTITY_HEADER]: fixture.identityJwt,
+    },
+  }, fixture.env);
+  assert.equal(retried.status, 200);
+  const targetSession = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  assert.ok(await fixture.r2.get(workspaceKey(targetSession, WORKSPACE_ONE)));
+});
+
+test('verified first login imports the signed cookie namespace and clears the cookie', async () => {
+  const fixture = await createMiddlewareFixture();
+  const galleryId = 'd'.repeat(24);
+  await seedGallery(fixture.r2, galleryId, SOURCE_SESSION);
+  const signed = await signValue(SOURCE_SESSION, SESSION_SECRET);
+  const response = await fixture.app.request('/api/session', {
+    headers: {
+      Cookie: `agent-studio-session=${signed}`,
+      [CAIL_IDENTITY_HEADER]: fixture.identityJwt,
+    },
+  }, fixture.env);
+
+  assert.equal(response.status, 200);
+  const targetSession = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  assert.equal((await response.json()).sessionId, targetSession);
+  assert.match(response.headers.get('set-cookie') ?? '', /agent-studio-session=;/);
+  assert.ok(await fixture.r2.get(`agent-studio/account-import/v1/${targetSession}.json`));
+  const owner = await (
+    await fixture.r2.get(`agent-studio/gallery/items/${galleryId}/owner.json`)
+  ).json();
+  assert.equal(owner.tag, await galleryOwnerTag(targetSession, SESSION_SECRET));
+});
+
+test('invalid legacy cookies and caller-supplied identity headers cannot select import data', async () => {
+  const fixture = await createMiddlewareFixture();
+  const galleryId = 'e'.repeat(24);
+  await seedGallery(fixture.r2, galleryId, SOURCE_SESSION);
+
+  const callerOnly = await fixture.app.request('/api/session', {
+    headers: {
+      Cookie: `agent-studio-session=${await signValue(SOURCE_SESSION, SESSION_SECRET)}`,
+      'x-cail-subject': 'caller-selected',
+    },
+  }, fixture.env);
+  assert.equal(callerOnly.status, 401);
+
+  const invalidCookie = await fixture.app.request('/api/session', {
+    headers: {
+      Cookie: `agent-studio-session=${SOURCE_SESSION}.${'0'.repeat(64)}`,
+      [CAIL_IDENTITY_HEADER]: fixture.identityJwt,
+    },
+  }, fixture.env);
+  assert.equal(invalidCookie.status, 200);
+  assert.match(invalidCookie.headers.get('set-cookie') ?? '', /agent-studio-session=;/);
+  const manifest = await (
+    await fixture.r2.get(`agent-studio/gallery/items/${galleryId}/manifest.json`)
+  ).json();
+  assert.ok(manifest.authorId, 'invalid cookie did not select the source namespace');
+});
+
+test('login import failure returns a private retryable error and does not mark complete', async () => {
+  const fixture = await createMiddlewareFixture();
+  const signed = await signValue(SOURCE_SESSION, SESSION_SECRET);
+  const originalPut = fixture.r2.put.bind(fixture.r2);
+  let failMarker = true;
+  fixture.r2.put = async (key, value, options) => {
+    if (key.startsWith('agent-studio/account-import/v1/') && failMarker) {
+      failMarker = false;
+      throw new Error('private storage detail');
+    }
+    return originalPut(key, value, options);
+  };
+  const headers = {
+    Cookie: `agent-studio-session=${signed}`,
+    [CAIL_IDENTITY_HEADER]: fixture.identityJwt,
+  };
+
+  const failed = await fixture.app.request('/api/session', { headers }, fixture.env);
+  assert.equal(failed.status, 503);
+  const payload = await failed.json();
+  assert.equal(payload.error.code, 'account_import_failed');
+  assert.equal(payload.error.cail.retryable, true);
+  const encoded = JSON.stringify(payload);
+  assert.equal(encoded.includes(SOURCE_SESSION), false);
+  assert.equal(encoded.includes(TEST_SUBJECTS.alice), false);
+  assert.equal(encoded.includes('private storage detail'), false);
+  assert.equal(failed.headers.get('set-cookie'), null, 'cookie remains for retry');
+
+  const retried = await fixture.app.request('/api/session', { headers }, fixture.env);
+  assert.equal(retried.status, 200);
+  assert.match(retried.headers.get('set-cookie') ?? '', /agent-studio-session=;/);
+  const targetSession = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  assert.ok(await fixture.r2.get(`agent-studio/account-import/v1/${targetSession}.json`));
 });

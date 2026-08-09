@@ -1,71 +1,28 @@
-/**
- * CAIL model catalog client for Agent Studio.
- *
- * The user-facing model picker is fed by the CAIL model proxy's curated
- * catalog: `GET {CAIL_API_BASE}/v1/models` with the caller's identity JWT and the
- * agent-studio app header. The response is an OpenAI list; the proxy returns it
- * pre-sorted by `order`, so `data[0]` is the fleet default.
- *
- * Beyond the OpenAI-list basics, each entry carries CAIL policy + facts
- * (`tier`/`recommended`, `status`/`sunset`, `capabilities`, `context_length`,
- * `registry_url`). We validate tolerantly — only `id` is required, and enum-ish
- * fields are parsed as free strings so an unknown `tier`/`status` value the
- * fleet adds later never fails the whole list — then normalize downstream.
- *
- * When the proxy is intentionally unconfigured (no base URL), or is unreachable
- * after an authenticated request, we fall back to a
- * single-entry list of the configured default model, so the picker always has
- * something to show and chat never breaks. A proxy 401/403 for a
- * gateway-verified identity is config/secret drift and throws
- * ModelCatalogAuthError instead — masking it with a working-looking picker
- * would hide a broken deployment. A proxy 429 similarly throws
- * ModelCatalogQuotaError so an over-quota user never sees a working-looking
- * fallback. Only the proxy list is cached (globally, ~5 min); the catalog is
- * not per-user beyond auth, so one cache serves everyone.
- */
+/** Direct authenticated CAIL Gateway model catalog transport. */
 
-import { CailError, createCailClient } from '@cuny-ai-lab/cail-client';
 import { z } from 'zod';
 import { CAIL_APP_SLUG } from './cail-identity';
 import { resolveCailModelName, type CailModelEnv } from './cail-model';
 import { CAIL_MODEL_ID_PATTERN } from './workspace-validation';
-import {
-  LOG_PRODUCT,
-  STUDIO_EVENTS,
-  studioLogger,
-  traceFromCorrelation,
-  type CailCorrelation,
-  type StudioLogRuntime,
-} from './logging';
 
 export type CailModelTier = 'recommended' | 'advanced';
 export type CailModelStatus = 'active' | 'deprecated' | 'retiring';
 
 export interface CailModelInfo {
   id: string;
-  /** True for the catalog's recommended default. Exactly one when from proxy. */
   recommended: boolean;
-  /** Disclosure boundary: recommended tier is shown by default, advanced hidden. */
   tier: CailModelTier;
-  /** Lifecycle. 'retiring' surfaces a sunset note; 'deprecated' is hidden unless selected. */
   status: CailModelStatus;
-  /** ISO date the model retires, when status is 'retiring'; otherwise null. */
   sunset: string | null;
-  /** Facts: e.g. 'text-generation', 'vision', 'function-calling', 'long-context'. */
   capabilities: string[];
-  /** Max context window in tokens, when known. */
   contextLength: number | null;
-  /** Link to the public Model Registry entry, when known. */
   registryUrl: string | null;
-  /** Human-friendly name from the catalog, when provided. */
   name: string | null;
-  /** Short description from the catalog, when provided. */
   description: string | null;
 }
 
 export interface CailModelsResult {
   models: CailModelInfo[];
-  source: 'proxy' | 'fallback';
 }
 
 export class ModelCatalogAuthError extends Error {}
@@ -73,26 +30,17 @@ export class ModelCatalogQuotaError extends Error {}
 
 export interface FetchCailModelsOptions {
   env: CailModelEnv;
-  /** The caller's verified X-CAIL-Identity-JWT, forwarded as the credential. */
   identityJwt: string | null;
-  /** Injectable fetch for tests; defaults to global fetch. */
+  /** Injectable transport for unit tests; deployed code uses env.GATEWAY. */
   fetchImpl?: typeof fetch;
-  /** Canonical request correlation forwarded by the shared client. */
-  correlation?: CailCorrelation;
 }
 
-// Tolerant entry schema: only `id` is required. Enum-ish fields are free
-// strings so an unknown tier/status the fleet adds later doesn't reject the
-// list — normalization below coerces to known values with sensible defaults.
 const modelEntrySchema = z.object({
   id: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200),
-  object: z.string().optional(),
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
-  task: z.string().nullable().optional(),
   recommended: z.boolean().optional(),
   tier: z.string().optional(),
-  order: z.number().optional(),
   status: z.string().optional(),
   sunset: z.string().nullable().optional(),
   capabilities: z.array(z.string()).optional(),
@@ -100,53 +48,36 @@ const modelEntrySchema = z.object({
   registry_url: z.string().nullable().optional(),
 });
 
-type ModelEntry = z.infer<typeof modelEntrySchema>;
-
 const modelListSchema = z.object({
   object: z.literal('list'),
   data: z.array(z.unknown()).min(1),
 });
 
-const CACHE_TTL_MS = 5 * 60 * 1000;
-
-interface ProxyCacheEntry {
-  models: CailModelInfo[];
-  expiresAt: number;
+function canonicalBase(value: string): string {
+  if (value.trim() !== value || /[\u0000-\u001f\u007f\\\s]/.test(value)) {
+    throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
+  }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error('CAIL_API_BASE must use HTTPS and cannot contain credentials, a query, or a fragment.');
+  }
+  return value.replace(/\/+$/, '');
 }
 
-// Module-global cache of the proxy catalog. The catalog is the same for every
-// authenticated user, so we key nothing per-subject. Fallbacks are never cached.
-let proxyCache: ProxyCacheEntry | null = null;
-
-/** Reset the in-memory proxy cache. Test-only hook. */
-export function resetCailModelsCache(): void {
-  proxyCache = null;
-}
-
-/**
- * Normalize a raw catalog entry into a CailModelInfo.
- *
- * tier precedence: an explicit valid `tier` wins; else `recommended: true`
- * (or being data[0]) means 'recommended'; else 'advanced'. status defaults to
- * 'active' when absent or unrecognized. `recommended` is true only for data[0]
- * (the fleet default), matching the proxy's pre-sorted, recommended-first list.
- */
-function normalizeEntry(entry: ModelEntry, index: number): CailModelInfo {
-  const isDefault = index === 0;
-
-  const explicitTier: CailModelTier | null =
-    entry.tier === 'recommended' || entry.tier === 'advanced' ? entry.tier : null;
-  const tier: CailModelTier =
-    explicitTier ?? (entry.recommended === true || isDefault ? 'recommended' : 'advanced');
-
-  const status: CailModelStatus =
-    entry.status === 'deprecated' || entry.status === 'retiring' || entry.status === 'active'
-      ? entry.status
-      : 'active';
-
+function normalizeEntry(entry: z.infer<typeof modelEntrySchema>, index: number): CailModelInfo {
+  const tier: CailModelTier = entry.tier === 'recommended' || entry.tier === 'advanced'
+    ? entry.tier
+    : entry.recommended === true || index === 0 ? 'recommended' : 'advanced';
+  const status: CailModelStatus = entry.status === 'deprecated'
+    || entry.status === 'retiring' || entry.status === 'active' ? entry.status : 'active';
   return {
     id: entry.id,
-    recommended: isDefault,
+    recommended: index === 0,
     tier,
     status,
     sunset: entry.sunset ?? null,
@@ -158,106 +89,42 @@ function normalizeEntry(entry: ModelEntry, index: number): CailModelInfo {
   };
 }
 
-function fallbackResult(env: CailModelEnv): CailModelsResult {
-  return {
-    models: [
-      {
-        id: resolveCailModelName(env),
-        recommended: true,
-        tier: 'recommended',
-        status: 'active',
-        sunset: null,
-        capabilities: [],
-        contextLength: null,
-        registryUrl: null,
-        name: null,
-        description: null,
-      },
-    ],
-    source: 'fallback',
-  };
-}
-
-/**
- * Fetch the curated model catalog from the proxy, or fall back to the single
- * configured default. The shared CAIL client owns the retry and error contract.
- */
 export async function fetchCailModels(options: FetchCailModelsOptions): Promise<CailModelsResult> {
   const { env, identityJwt } = options;
-  const fetchImpl =
-    options.fetchImpl ??
-    (env.GATEWAY ? (env.GATEWAY.fetch.bind(env.GATEWAY) as typeof fetch) : fetch);
-  const apiBase = env.CAIL_API_BASE;
+  if (!identityJwt) throw new ModelCatalogAuthError('CAIL authentication is required to list models.');
+  const apiBase = canonicalBase(env.CAIL_API_BASE ?? '');
+  const fetchImpl = options.fetchImpl
+    ?? (env.GATEWAY ? env.GATEWAY.fetch.bind(env.GATEWAY) as typeof fetch : null);
+  if (!fetchImpl) throw new Error('GATEWAY service binding is required for model catalog calls.');
 
-  if (!apiBase) {
-    return fallbackResult(env);
+  const response = await fetchImpl(`${apiBase}/v1/models`, {
+    method: 'GET',
+    headers: {
+      accept: 'application/json',
+      authorization: `Bearer ${identityJwt}`,
+      'x-cail-app': CAIL_APP_SLUG,
+    },
+    credentials: 'omit',
+    redirect: 'error',
+  });
+  if (response.status === 401 || response.status === 403) {
+    throw new ModelCatalogAuthError('Model catalog authentication failed.');
   }
-  if (!identityJwt) {
-    throw new ModelCatalogAuthError('CAIL authentication is required to list models.');
+  if (response.status === 429) {
+    throw new ModelCatalogQuotaError('Model catalog quota exceeded.');
   }
-
-  if (proxyCache && proxyCache.expiresAt > Date.now()) {
-    return { models: proxyCache.models, source: 'proxy' };
-  }
-
-  let response: Response;
-  try {
-    const cail = createCailClient({
-      baseUrl: apiBase,
-      app: CAIL_APP_SLUG,
-      onAuthRequired: () => {},
-      fetchImpl,
-    });
-    // Model discovery follows the OpenAI-compatible surface. The old root
-    // `/models` route is intentionally retired by the gateway.
-    response = await cail.call(
-      '/v1/models',
-      { method: 'GET' },
-      { kind: 'jwt', token: identityJwt },
-      options.correlation ? { correlation: options.correlation } : undefined,
-    );
-  } catch (error) {
-    if (error instanceof CailError && (error.status === 401 || error.status === 403)) {
-      throw new ModelCatalogAuthError(error.message);
-    }
-    if (error instanceof CailError && error.status === 429) {
-      throw new ModelCatalogQuotaError(error.message);
-    }
-    return fallbackResult(env);
+  if (!response.ok) {
+    throw new Error(`Model catalog request failed with status ${response.status}.`);
   }
 
-  // The gateway catalog is pass-through (Workers AI + OpenRouter). This app's
-  // policy is Workers AI ids only, so filter per entry instead of letting one
-  // out-of-policy entry reject the whole catalog.
-  let entries: ModelEntry[];
-  try {
-    const raw = modelListSchema.parse(await response.json());
-    entries = raw.data
-      .map((entry) => modelEntrySchema.safeParse(entry))
-      .filter((result): result is { success: true; data: ModelEntry } => result.success)
-      .map((result) => result.data);
-    if (entries.length === 0) throw new Error('no in-policy entries');
-  } catch {
-    // A 200 whose body fails the tolerant schema is proxy contract drift, not
-    // an outage. Keep the fallback so chat stays usable, but surface the drift
-    // — a working-looking single-model picker must not hide it.
-    studioLogger(env as StudioLogRuntime)?.emit(STUDIO_EVENTS.MODEL_CATALOG_CONTRACT_DRIFT, {
-      product_id: LOG_PRODUCT,
-      terminal: { outcome: 'error', reason: 'upstream_failure' },
-      error_type: 'model_catalog_schema_invalid',
-      ...(options.correlation
-        ? {
-            request_id: options.correlation.request_id,
-            trace: traceFromCorrelation(options.correlation),
-          }
-        : {}),
-    });
-    return fallbackResult(env);
-  }
-
-  // Convention: the proxy returns the catalog pre-sorted, recommended-first.
-  const models: CailModelInfo[] = entries.map((entry, index) => normalizeEntry(entry, index));
-
-  proxyCache = { models, expiresAt: Date.now() + CACHE_TTL_MS };
-  return { models, source: 'proxy' };
+  const parsed = modelListSchema.safeParse(await response.json());
+  if (!parsed.success) throw new Error('Model catalog response did not match the CAIL schema.');
+  const entries = parsed.data.data
+    .map((entry) => modelEntrySchema.safeParse(entry))
+    .filter((result): result is { success: true; data: z.infer<typeof modelEntrySchema> } => result.success)
+    .map((result) => result.data);
+  if (entries.length === 0) throw new Error('Model catalog contains no in-policy models.');
+  return { models: entries.map(normalizeEntry) };
 }
+
+export { resolveCailModelName };

@@ -3,11 +3,26 @@ import type {
   GalleryItem,
   GalleryItemFull,
   WorkspaceFileInfo,
-  WorkspaceObservabilitySnapshot,
   WorkspaceRecord,
   WorkspaceResponse,
 } from './types';
 import { appPath } from './base-path';
+
+type CanonicalError = {
+  code?: unknown;
+  message?: unknown;
+  cail?: {
+    login_url?: unknown;
+  };
+};
+
+function canonicalErrorFromPayload(payload: unknown): CanonicalError | null {
+  if (typeof payload !== 'object' || payload === null) return null;
+  const error = (payload as { error?: unknown }).error;
+  return typeof error === 'object' && error !== null
+    ? error as CanonicalError
+    : null;
+}
 
 /**
  * CAIL 401 handling (see docs/security-and-operations.md). When the SSO
@@ -17,18 +32,10 @@ import { appPath } from './base-path';
  */
 export function handleAuthRequired(status: number, payload: unknown): boolean {
   if (status !== 401) return false;
-  const envelope = typeof payload === 'object' && payload !== null
-    ? (payload as { error?: unknown }).error
-    : undefined;
-  const nested = typeof envelope === 'object' && envelope !== null
-    ? envelope as { code?: unknown; cail?: { login_url?: unknown } }
-    : null;
-  const code = nested?.code ?? envelope;
-  if (code !== 'authentication_required') return false;
+  const nested = canonicalErrorFromPayload(payload);
+  if (nested?.code !== 'authentication_required') return false;
 
-  const loginUrl = nested?.cail?.login_url ?? (typeof payload === 'object' && payload !== null
-    ? (payload as { login_url?: unknown }).login_url
-    : undefined);
+  const loginUrl = nested.cail?.login_url;
   // Accept only a same-origin path. Reject protocol-relative URLs (`//host`),
   // absolute URLs, and query/hash-bearing values supplied by an upstream
   // error envelope; the login route itself owns any state it needs.
@@ -154,10 +161,8 @@ async function protectedFetch(input: string, init: RequestInit): Promise<Respons
   let response = await send(await ensureCsrfToken());
   if (response.status !== 403) return response;
 
-  const payload = await response.clone().json().catch(() => null) as {
-    error?: string | { code?: string };
-  } | null;
-  const code = typeof payload?.error === 'object' ? payload.error.code : payload?.error;
+  const payload = await response.clone().json().catch(() => null);
+  const code = canonicalErrorFromPayload(payload)?.code;
   if (code !== 'csrf_token_invalid' && code !== 'csrf_token_missing') {
     return response;
   }
@@ -181,26 +186,24 @@ export async function readingFetch(input: string, init: RequestInit = {}): Promi
 }
 
 /**
- * Read a failed response's JSON error envelope. Returns the parsed payload (for
- * auth-required detection) and the extracted message, mirroring the worker's
- * `{ error }` shape (and tolerating a `{ message }` variant). Falls back to a
- * status string when the body isn't JSON or carries neither field. Shared by
+ * Read a failed response's canonical CAIL error envelope. Returns the parsed
+ * payload (for auth-required detection) and the nested error message. Falls
+ * back to a status string when the body isn't JSON or carries no canonical
+ * message. Shared by
  * parseJson and fetchWorkspaceExport so their error extraction can't drift.
  * Reads the body exactly once.
  */
 async function readResponseError(
   response: Response,
 ): Promise<{ payload: unknown; message: string }> {
-  const payload = await response.json().catch(() => ({ error: `Request failed with ${response.status}` }));
-  const error = typeof payload === 'object' && payload !== null
-    ? (payload as { error?: unknown }).error
-    : undefined;
-  const message = typeof error === 'object' && error !== null
-    ? (error as { message?: string }).message
-    : typeof payload === 'object' && payload !== null
-      ? ((payload as { message?: string }).message ?? (typeof error === 'string' ? error : undefined))
-      : undefined;
-  return { payload, message: message || `Request failed with ${response.status}` };
+  const payload = await response.json().catch(() => null);
+  const message = canonicalErrorFromPayload(payload)?.message;
+  return {
+    payload,
+    message: typeof message === 'string' && message.length > 0
+      ? message
+      : `Request failed with ${response.status}`,
+  };
 }
 
 async function parseJson<T>(response: Response): Promise<T> {
@@ -276,7 +279,6 @@ export interface ModelCatalogEntry {
 
 export interface ModelCatalog {
   models: ModelCatalogEntry[];
-  source: 'proxy' | 'fallback';
   default: string;
 }
 
@@ -463,12 +465,6 @@ export async function fetchWorkspace(workspaceId: string): Promise<WorkspaceResp
   return parseJson<WorkspaceResponse>(response);
 }
 
-export async function fetchWorkspaceObservability(workspaceId: string): Promise<WorkspaceObservabilitySnapshot> {
-  const response = await readingFetch(`/api/workspaces/${workspaceId}/observability`);
-  const payload = await parseJson<{ observability: WorkspaceObservabilitySnapshot }>(response);
-  return payload.observability;
-}
-
 export async function fetchWorkspaceExport(workspaceId: string): Promise<{ blob: Blob; filename: string }> {
   const response = await readingFetch(`/api/workspaces/${workspaceId}/export`);
   if (!response.ok) {
@@ -511,10 +507,6 @@ export function getWorkspaceFileUrl(workspaceId: string, filePath: string): stri
 
 export function getGalleryFileUrl(galleryId: string, filePath: string): string {
   return appPath(`/api/gallery/${galleryId}/files/${encodePath(filePath)}`);
-}
-
-export function getWorkspacePanelPreviewUrl(workspaceId: string, panelId: string): string {
-  return appPath(`/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`);
 }
 
 export function getGalleryPanelPreviewUrl(galleryId: string, panelId: string): string {

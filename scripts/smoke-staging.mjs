@@ -4,16 +4,16 @@ import { fileURLToPath } from 'node:url';
 import {
   identityCredentialsFromEnv,
   parseArgs,
-} from './_debug-common.mjs';
+} from './smoke-common.mjs';
 
 const WORKER_PATH = fileURLToPath(new URL('./smoke-worker.mjs', import.meta.url));
 const STAGING_URL_ENV = 'AGENT_STUDIO_STAGING_URL';
 
 /**
- * The staging profile may run an API-only smoke with the app leg alone, but a
- * staging chat smoke must not touch the deployment until both keyring legs are
- * present. This check intentionally lives in the staging wrapper rather than
- * the generic worker so local anonymous `--with-chat=true` remains available.
+ * Staging always validates its base URL before starting the worker. An
+ * authenticated chat smoke must have both identity-keyring legs before it
+ * contacts the deployment; local anonymous smoke remains available through
+ * smoke-worker.
  */
 export function assertStagingCredentials(argv = [], env = process.env) {
   const args = parseArgs(argv);
@@ -24,6 +24,15 @@ export function assertStagingCredentials(argv = [], env = process.env) {
   const stagingUrl = typeof env[STAGING_URL_ENV] === 'string' ? env[STAGING_URL_ENV].trim() : '';
   if (!stagingUrl) {
     throw new Error(`${STAGING_URL_ENV} is required`);
+  }
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(stagingUrl);
+  } catch {
+    throw new Error(`${STAGING_URL_ENV} must be an absolute HTTPS URL`);
+  }
+  if (parsedUrl.protocol !== 'https:' || parsedUrl.username || parsedUrl.password || parsedUrl.search || parsedUrl.hash) {
+    throw new Error(`${STAGING_URL_ENV} must be an absolute HTTPS URL without credentials or query data`);
   }
 
   if (args['with-chat'] === 'true') {
@@ -42,9 +51,7 @@ export function runStagingSmoke(argv = process.argv.slice(2), env = process.env)
   const stagingUrl = assertStagingCredentials(argv, env);
 
   return new Promise((resolveRun, rejectRun) => {
-    // Keep the staging profile redacted even if an extra `--quiet=false` is
-    // supplied after the package script's defaults.
-    const child = spawn(process.execPath, [WORKER_PATH, ...argv, '--base-url', stagingUrl, '--quiet=true'], {
+    const child = spawn(process.execPath, [WORKER_PATH, ...argv, '--base-url', stagingUrl], {
       env,
       stdio: 'inherit',
     });
@@ -67,9 +74,7 @@ if (isMain) {
     const exitCode = await runStagingSmoke();
     process.exitCode = exitCode;
   } catch {
-    // Staging output is a boolean receipt stream. Never echo validation or
-    // child-process details, which could contain deployment-specific data.
-    console.error('[smoke] failed: false');
+    console.error('[smoke] staging validation failed');
     process.exitCode = 1;
   }
 }

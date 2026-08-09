@@ -16,8 +16,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.4",
-    "agents": "0.20.1",
-    "semver": "7.8.5"
+    "agents": "0.20.1"
   },
   "scripts": {
     "dev": "bun run --cwd cloudflare dev",
@@ -26,17 +25,14 @@
     "build": "bun run --cwd frontend build && bun run --cwd cloudflare typecheck",
     "typecheck": "bun run --cwd cloudflare typecheck && bun run --cwd frontend typecheck",
     "lint": "biome lint .",
-    "check:dependencies": "node ./scripts/dependency-resolution-gate.mjs",
-    "check": "bun run check:dependencies && bun run lint && bun run typecheck && bun run test && bun run build && (cd cloudflare && bunx wrangler deploy --env staging --strict --dry-run --outdir /tmp/agent-studio-wrangler-dry-run)",
+    "check": "bun run lint && bun run typecheck && bun run test && bun run build && (cd cloudflare && bunx wrangler deploy --env staging --strict --dry-run --outdir /tmp/agent-studio-wrangler-dry-run)",
     "test": "bun run test:backend && bun run test:frontend && bun run test:tools",
     "test:backend": "bun run --cwd cloudflare test",
     "test:frontend": "bun run --cwd frontend test",
     "test:tools": "node --test scripts/**/*.test.mjs",
     "preview": "bun run --cwd frontend preview",
     "smoke": "bun ./scripts/smoke-worker.mjs",
-    "smoke:staging": "bun ./scripts/smoke-staging.mjs --with-chat=true --quiet=true",
-    "deploy": "bun run --cwd cloudflare deploy",
-    "chat:debug": "bun ./scripts/workspace-chat-debug.mjs",
-    "trace": "bun ./scripts/workspace-observability.mjs"
+    "smoke:staging": "bun ./scripts/smoke-staging.mjs --with-chat=true",
+    "deploy": "bun run --cwd cloudflare deploy"
   }
 }

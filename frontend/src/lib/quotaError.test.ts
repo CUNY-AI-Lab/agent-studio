@@ -21,5 +21,6 @@ describe('quotaMessageFromChatError', () => {
     expect(quotaMessageFromChatError(new Error('stream failed'))).toBeNull();
     expect(quotaMessageFromChatError(new Error('{not json'))).toBeNull();
     expect(quotaMessageFromChatError({ message: '{"type":"other"}' })).toBeNull();
+    expect(quotaMessageFromChatError({ message: '{"type":"quota_exceeded"}' })).toBeNull();
   });
 });

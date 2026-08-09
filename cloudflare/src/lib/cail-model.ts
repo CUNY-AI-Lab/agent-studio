@@ -9,14 +9,11 @@
  * the institutional CAIL tool integration contract).
  *
  * Transport: the Vercel AI SDK's OpenAI-compatible provider talks directly to
- * the gateway. The verified gateway JWT is the provider API key, so exactly
- * one `Authorization: Bearer …` credential reaches the wire. A final fetch
- * sanitizer keeps only ordinary JSON/content-negotiation headers, then stamps
- * the server-owned credential, app, and correlation headers. The seam selects
- * the service binding when configured (or global fetch otherwise) and keeps
- * ambient credentials and redirects out of the model boundary. The workspace
- * agent disables SDK retries for each turn and surfaces typed quota failures
- * with the gateway's safe message (see lib/quota-error.ts).
+ * the required GATEWAY service binding. The verified gateway JWT is the
+ * provider API key, so exactly one `Authorization: Bearer …` credential
+ * reaches the wire. A final fetch sanitizer keeps only ordinary
+ * JSON/content-negotiation headers, then stamps the server-owned credential
+ * and app header. Ambient credentials and redirects never cross the boundary.
  *
  * Credential: this is a browser tool behind the SSO gate, so we forward the
  * requesting user's verified gateway-audience JWT. No personal `sk-cail-…`
@@ -26,7 +23,6 @@
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import type { LanguageModel } from 'ai';
 import { CAIL_APP_SLUG } from './cail-identity';
-import { outboundCorrelationHeaders, type CailCorrelation } from './logging';
 import { isAllowedCailModelId } from './workspace-validation';
 
 /**
@@ -47,7 +43,7 @@ export interface CailModelEnv {
   CAIL_API_BASE?: string;
   /** Optional model override; defaults to DEFAULT_CAIL_MODEL. */
   CAIL_MODEL?: string;
-  /** Service binding to CAIL Model API; preferred over public fetch. */
+  /** Service binding to CAIL Model API. Required for deployed model calls. */
   GATEWAY?: Fetcher;
 }
 
@@ -61,12 +57,6 @@ export interface CreateCailModelOptions {
   identityJwt: string;
   /** Optional per-call model override (falls back to env / default). */
   model?: string;
-  /**
-   * Correlation to propagate to the model proxy (`traceparent` +
-   * `X-CAIL-Request-Id`), so gateway/proxy logs join to this Worker's wide
-   * events. Omitted → no correlation headers are attached.
-   */
-  correlation?: CailCorrelation;
 }
 
 function canonicalCailApiBase(apiBase: string): string {
@@ -121,13 +111,11 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
   // Trim all trailing slashes once so the provider's `/chat/completions`
   // suffix resolves to the one canonical gateway endpoint.
   const canonicalBase = canonicalCailApiBase(apiBase);
-  const headers: Record<string, string> = {
-    'X-CAIL-App': CAIL_APP_SLUG,
-    ...(options.correlation ? outboundCorrelationHeaders(options.correlation) : {}),
-  };
-  const upstreamFetch = env.GATEWAY
-    ? (env.GATEWAY.fetch.bind(env.GATEWAY) as typeof globalThis.fetch)
-    : globalThis.fetch;
+  if (typeof env.GATEWAY?.fetch !== 'function') {
+    throw new Error('GATEWAY service binding is required for CAIL model calls.');
+  }
+  const headers: Record<string, string> = { 'X-CAIL-App': CAIL_APP_SLUG };
+  const upstreamFetch = env.GATEWAY.fetch.bind(env.GATEWAY) as typeof globalThis.fetch;
   const safeFetch: typeof globalThis.fetch = (input, init) => upstreamFetch(input, {
     ...init,
     headers: (() => {

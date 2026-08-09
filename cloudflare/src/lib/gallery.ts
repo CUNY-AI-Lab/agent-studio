@@ -29,36 +29,18 @@ function galleryOwnerKey(id: string): string {
 }
 
 interface GalleryOwnerRecord {
-  version: 1;
-  keyId: string;
   tag: string;
 }
 
-function ownerKeyring(env: Env): { activeKeyId: string; keys: Record<string, string> } {
-  if (env.GALLERY_OWNER_KEYS && env.GALLERY_OWNER_ACTIVE_KEY_ID) {
-    const keys = JSON.parse(env.GALLERY_OWNER_KEYS) as Record<string, string>;
-    const active = keys[env.GALLERY_OWNER_ACTIVE_KEY_ID];
-    if (typeof active !== 'string') throw new Error('gallery owner active key is unavailable');
-    return { activeKeyId: env.GALLERY_OWNER_ACTIVE_KEY_ID, keys };
-  }
-  // Development/test compatibility only. Production preflight requires the
-  // dedicated versioned keyring, so SESSION_SECRET rotation cannot strand ACLs.
-  return { activeKeyId: 'development', keys: { development: env.SESSION_SECRET } };
-}
-
 async function galleryOwnerRecord(env: Env, sessionId: string): Promise<GalleryOwnerRecord> {
-  const { activeKeyId, keys } = ownerKeyring(env);
   return {
-    version: 1,
-    keyId: activeKeyId,
-    tag: await galleryOwnerTag(sessionId, keys[activeKeyId]),
+    tag: await galleryOwnerTag(sessionId, env.SESSION_SECRET),
   };
 }
 
 async function ownerRecordMatches(env: Env, record: GalleryOwnerRecord, sessionId: string): Promise<boolean> {
-  const secret = ownerKeyring(env).keys[record.keyId];
-  if (!secret) return false;
-  return timingSafeEqual(record.tag, await galleryOwnerTag(sessionId, secret));
+  return typeof record.tag === 'string'
+    && timingSafeEqual(record.tag, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
 }
 
 function publicGalleryItem(item: GalleryItem): GalleryItem {
@@ -109,8 +91,8 @@ export async function listGalleryItemsPage(
 }
 
 /**
- * Opaque keyed owner tag. Current tags live in a private, versioned owner
- * record; the public manifest contains no stable author identifier.
+ * Opaque keyed owner tag. Tags live in a private owner record; the public
+ * manifest contains no stable author identifier.
  */
 export async function galleryOwnerTag(sessionId: string, secret: string): Promise<string> {
   const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
@@ -288,14 +270,9 @@ export async function unpublishGalleryItem(env: Env, galleryId: string, sessionI
   if (!manifestObject) {
     throw new GalleryError('Gallery item not found', 404);
   }
-  const manifest = await manifestObject.json<GalleryItem>();
   const authorized = ownerObject
     ? await ownerRecordMatches(env, await ownerObject.json<GalleryOwnerRecord>(), sessionId)
-    : Boolean(manifest.authorId)
-      && timingSafeEqual(
-        manifest.authorId as string,
-        await galleryOwnerTag(sessionId, env.SESSION_SECRET),
-      );
+    : false;
   if (!authorized) {
     throw new GalleryError('Not authorized to unpublish this item', 403);
   }
@@ -326,9 +303,15 @@ export async function reassignGalleryAuthor(
     ]);
     if (!manifestObject) continue;
     const item = await manifestObject.json<GalleryItem>();
-    const matches = ownerObject
-      ? await ownerRecordMatches(env, await ownerObject.json<GalleryOwnerRecord>(), fromSessionId)
-      : Boolean(item.authorId) && timingSafeEqual(item.authorId as string, legacyFromTag);
+    const owner = ownerObject ? await ownerObject.json<GalleryOwnerRecord>() : null;
+    const legacyMatches = Boolean(item.authorId)
+      && timingSafeEqual(item.authorId as string, legacyFromTag);
+    const matches = owner
+      ? await ownerRecordMatches(env, owner, fromSessionId)
+        // Retry a prior attempt that switched the private owner but failed
+        // before removing the matching public legacy tag from the manifest.
+        || (legacyMatches && await ownerRecordMatches(env, owner, toSessionId))
+      : legacyMatches;
     if (!matches) continue;
     const next = publicGalleryItem(item);
     await env.WORKSPACE_FILES.put(

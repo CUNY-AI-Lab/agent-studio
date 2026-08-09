@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Wave item 5: fetchWorkspaceExport's error branch was a hand-rolled copy of
-// parseJson's error extraction that only read `payload.error` and skipped the
-// `payload.message` fallback. Both now share readResponseError(). These tests
-// characterize the aligned error extraction (the export error path was
-// previously untested) so it can't silently drift from parseJson again.
+// fetchWorkspaceExport and parseJson share the canonical CAIL error extraction
+// so their user-facing failures cannot silently drift apart.
 
 async function loadApi() {
   vi.resetModules();
@@ -33,18 +30,25 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it('surfaces the worker `{ error }` envelope message', async () => {
+  it('surfaces the canonical nested error envelope message', async () => {
     const { fetchWorkspaceExport } = await loadApi();
     mockFetch((input) => {
       if (String(input).includes('/export')) {
-        return jsonResponse({ error: 'Workspace not found' }, 404);
+        return jsonResponse({
+          error: {
+            code: 'not_found',
+            message: 'Workspace not found',
+            type: 'invalid_request_error',
+            retryable: false,
+          },
+        }, 404);
       }
       return jsonResponse({}, 200);
     });
     await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Workspace not found');
   });
 
-  it('surfaces a `{ message }` envelope too (the branch the old inline copy missed)', async () => {
+  it('uses a status fallback for a noncanonical JSON error body', async () => {
     const { fetchWorkspaceExport } = await loadApi();
     mockFetch((input) => {
       if (String(input).includes('/export')) {
@@ -52,7 +56,7 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
       }
       return jsonResponse({}, 200);
     });
-    await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Export failed upstream');
+    await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Request failed with 500');
   });
 
   it('falls back to a status string when the error body is not JSON', async () => {
@@ -98,8 +102,12 @@ describe('fetchModels quota errors', () => {
   it('throws ModelsQuotaError with the worker quota message for a 429', async () => {
     const { fetchModels, ModelsQuotaError } = await loadApi();
     mockFetch(() => jsonResponse({
-      error: 'quota_exceeded',
-      message: 'You have used your $10 monthly AI budget.',
+      error: {
+        code: 'quota_exceeded',
+        message: 'You have used your $10 monthly AI budget.',
+        type: 'rate_limit_error',
+        retryable: false,
+      },
     }, 429));
 
     const error = await fetchModels().catch((nextError: unknown) => nextError);
@@ -109,7 +117,14 @@ describe('fetchModels quota errors', () => {
 
   it('throws typed ModelsUnavailableError for 5xx so a broken deployment surfaces', async () => {
     const { fetchModels, ModelsQuotaError, ModelsUnavailableError } = await loadApi();
-    mockFetch(() => jsonResponse({ message: 'Catalog failed upstream' }, 500));
+    mockFetch(() => jsonResponse({
+      error: {
+        code: 'internal_error',
+        message: 'Catalog failed upstream',
+        type: 'api_error',
+        retryable: true,
+      },
+    }, 500));
 
     const error = await fetchModels().catch((nextError: unknown) => nextError);
     expect(error).toBeInstanceOf(ModelsUnavailableError);
@@ -119,7 +134,14 @@ describe('fetchModels quota errors', () => {
 
   it('throws ModelsUnavailableError for the deliberate 502 config-drift response', async () => {
     const { fetchModels, ModelsUnavailableError } = await loadApi();
-    mockFetch(() => jsonResponse({ error: 'Model catalog authentication failed' }, 502));
+    mockFetch(() => jsonResponse({
+      error: {
+        code: 'upstream_error',
+        message: 'Model catalog authentication failed',
+        type: 'api_error',
+        retryable: false,
+      },
+    }, 502));
 
     const error = await fetchModels().catch((nextError: unknown) => nextError);
     expect(error).toBeInstanceOf(ModelsUnavailableError);

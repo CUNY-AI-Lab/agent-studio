@@ -1,10 +1,12 @@
 # Agent Studio Worker
 
-This package contains the Hono API, `WorkspaceAgent` and
-`MigrationRegistry` Durable Objects, Dynamic Worker execution boundary, R2
-storage adapters, and frontend asset binding.
+This package contains the Hono API, `WorkspaceAgent` Durable Object, Dynamic
+Worker execution boundary, R2 adapters, and `/agent-studio` asset delivery.
+The React/Vite client lives in `../frontend`.
 
-Install from the repository root, then copy the local variable template:
+## Local Worker
+
+From the repository root:
 
 ```bash
 bun install
@@ -12,86 +14,69 @@ cp cloudflare/.dev.vars.example cloudflare/.dev.vars
 bun run dev
 ```
 
-Local development requires a unique `SESSION_SECRET` and
-`CAIL_LOG_ENV=development`. Model calls also require an approved
-`CAIL_API_BASE`. Anonymous local mode leaves the identity issuer and JWKS
-unset, along with the dedicated gallery-owner keyring; production may not.
-When identity is configured, `CAIL_IDENTITY_ISSUER` and its JWKS must be
-provided together. The issuer selects one exact environment value; staging
-must use the staging issuer.
+Set a unique local `SESSION_SECRET`. Anonymous local work may leave the
+identity issuer and JWKS empty. If identity is used,
+set one exact CUNY issuer with its complete JWKS; do not mix staging and
+production values.
 
-The production build uses `/agent-studio` for Vite assets, API calls, the
-Agents WebSocket path, Worker routing, and CSRF-cookie scope. Wrangler routes
-all paths through the Worker before explicit asset delegation.
+The Worker accepts `X-CAIL-Identity-JWT` for audience `cail:agent-studio` and
+uses the verified pseudonymous subject for ownership. Before credentialed chat,
+the server verifies the gateway leg (`X-CAIL-Gateway-Identity-JWT`, audience
+`cail:gateway`) and installs it into the workspace Durable Object. Model calls
+use the direct AI SDK transport through `GATEWAY`, with `CAIL_API_BASE` as the
+CAIL Model API address and `X-CAIL-App: agent-studio`. Agent Studio stores no
+provider key.
 
-`wrangler.jsonc` declares the production and preview R2 bindings, Worker
-Loader, Durable Objects, rate-limit bindings, version metadata, Analytics
-Engine projection, and frontend build. The preview bucket must remain distinct
-from production. The file deliberately does not contain production secrets or
-the final identity/cutover inputs.
+Use `https://tools.ailab.gc.cuny.edu/cail-sso` for the production issuer and
+`https://tools.cuny.qzz.io/cail-sso` for staging. Configure exactly one issuer
+with its matching JWKS.
 
-Production preflight rejects traffic when identity, JWKS, model-proxy URL,
-canonical origin, non-root base path, rate-limit bindings, versioned gallery
-owner keys, telemetry metadata, or the temporary migration window is missing
-or invalid. `CAIL_MODEL` and proxy catalog entries must use the Cloudflare
-Workers AI `@cf/...` namespace. `/health` reports the same validation result.
+Workspace state and chat messages live in the Durable Object. Workspace
+records and files live in R2. Dynamic Workers isolate code execution. Staging
+binds `WORKSPACE_FILES` to `agent-studio-preview`; production uses
+`agent-studio`. Keep the buckets separate. Wrangler's declarative `exports`
+map identifies the live SQLite workspace class and the small first-login lock
+class without retaining a deployment-history ledger. Both create instances
+only on use; the lock stores no user content.
 
-Operational and security requirements are canonical in
-[Security and operations](../docs/security-and-operations.md). The temporary
-identity migration is documented in
-[Legacy account import](../docs/legacy-account-import.md), and logging
-authority is documented in [Observability](../docs/observability.md).
+The one-time first-login import is described in
+[the current import guide](../docs/legacy-account-import.md). It requires a
+verified current identity and a valid signed legacy session cookie, copies
+complete content and relationships, writes a per-user completion marker only
+after success, and then uses the subject namespace as authority.
 
-Package checks:
+## Checks
 
 ```bash
 bun run --cwd cloudflare typecheck
 bun run --cwd cloudflare test
-(cd cloudflare && bunx wrangler deploy --env staging --strict --dry-run)
 ```
 
-## Reviewed staging deployment
-
-`wrangler.jsonc` has an explicit `staging` environment. It targets the
-`cail-model-api-staging` service binding and staging workers.dev URL, requires
-the staging issuer, classifies logs as `staging`, and keeps identity required.
-The named environment deploys as `agent-studio-staging`, leaving the live
-`agent-studio` Worker untouched until a separate, authorized promotion.
-The environment repeats the Worker Loader, Durable Object, R2, rate-limit,
-Analytics Engine, version-metadata, and migration declarations because
-Wrangler does not inherit those bindings into named environments. Its R2
-binding uses the established `agent-studio-preview` bucket, not production
-`agent-studio`. The default `deploy` script selects this profile, enables
-strict conflict checks, and applies source-controlled variables
-authoritatively; stale dashboard variables cannot silently survive and the
-candidate service cannot be selected.
-The wrapper accepts no live-deploy overrides; only `--dry-run` and `--outdir`
-are allowed for local checks, so identity, gateway, routes, and strictness stay
-reviewed.
-
-After reviewing the release commit, provide a private secrets file containing
-the approved staging `SESSION_SECRET` and `CAIL_IDENTITY_JWKS` (and any other
-secrets being rotated) without printing its contents. The profile declares
-those two names as required, so a first deploy cannot create an identity-gated
-Worker without them. Then run:
+From the repository root, the local Worker integration smoke is:
 
 ```bash
-RELEASE_TAG='<reviewed full 40-character Git SHA>'
-RELEASE_MESSAGE='Agent Studio staging: cail-model-api-staging'
-bun run --cwd cloudflare deploy -- \
-  --tag "$RELEASE_TAG" \
-  --message "$RELEASE_MESSAGE" \
-  --secrets-file "$CAIL_STAGING_SECRETS_FILE"
+bun run smoke
 ```
 
-`wrangler` is resolved from the exact `4.115.0` workspace dependency. The
-script's `--strict` flag prevents a conflicting remote upload and the source
-configuration owns every staging variable. Wrangler never deletes secrets
-during a deployment; keep `CAIL_STAGING_SECRETS_FILE` outside the repository
-and remove it through the approved secret-handling process after the release.
+It creates and deletes a synthetic workspace, checks protected API and
+WebSocket paths, verifies file/canvas/runtime state, and emits no JWTs,
+subjects, emails, identifiers, or user content.
 
-Probe `/agent-studio/health`, an authenticated workspace, and one model call
-after activation. For an incident, route traffic back to the previously
-verified Worker version through Cloudflare's version rollback mechanism, then
-repeat the health and workspace smoke checks. A rollback is not a reason to
-reintroduce the candidate binding in source.
+## Reviewed staging deploy
+
+Review source and run the repository checks before deploying. Use the direct
+manifest command; do not use a deploy wrapper or override its reviewed
+bindings:
+
+```bash
+wrangler deploy --env staging --strict
+```
+
+The `staging` environment binds `GATEWAY` and `CAIL_API_BASE` to the staging
+CAIL Model API, requires the staging identity settings, and uses the isolated
+preview R2 bucket. After activation, run the authenticated smoke with
+`AGENT_STUDIO_STAGING_URL`, `AGENT_STUDIO_APP_IDENTITY_JWT`, and
+`AGENT_STUDIO_GATEWAY_IDENTITY_JWT` supplied through the private environment.
+
+OpenWebUI remains a separate protected application and is outside this Worker
+package's scope.

@@ -131,65 +131,6 @@ export interface WorkspaceState {
   connections: PanelConnection[];
 }
 
-export interface WorkspaceObservabilityToolCall {
-  toolCallId: string;
-  toolName: string;
-  state: 'input-streaming' | 'input-available' | 'output-available' | 'output-error';
-  inputChars: number;
-  deltaCount: number;
-  startedAt: string;
-  updatedAt: string;
-  lastPreview?: string;
-}
-
-export interface WorkspaceObservabilityRequest {
-  requestId: string;
-  status: 'streaming' | 'finished' | 'aborted' | 'error';
-  model: string;
-  startedAt: string;
-  updatedAt: string;
-  lastChunkAt?: string;
-  idleMs: number;
-  suspectedStall: boolean;
-  scopedPanelIds: string[];
-  steps: number;
-  chunkCounts: {
-    text: number;
-    reasoning: number;
-    toolInput: number;
-    toolResult: number;
-    raw: number;
-  };
-  finishReason?: string;
-  rawFinishReason?: string;
-  errors: string[];
-  tools: WorkspaceObservabilityToolCall[];
-}
-
-export interface WorkspaceObservabilityEvent {
-  id: string;
-  requestId: string;
-  at: string;
-  level: 'info' | 'warn' | 'error';
-  type:
-    | 'request-start'
-    | 'step-start'
-    | 'chunk'
-    | 'tool-call'
-    | 'tool-result'
-    | 'finish'
-    | 'abort'
-    | 'error';
-  detail: string;
-  data?: Record<string, unknown>;
-}
-
-export interface WorkspaceObservabilitySnapshot {
-  generatedAt: string;
-  requests: WorkspaceObservabilityRequest[];
-  events: WorkspaceObservabilityEvent[];
-}
-
 export interface WorkspaceFileInfo {
   name: string;
   path: string;

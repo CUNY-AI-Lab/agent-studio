@@ -1,113 +1,49 @@
-# Temporary legacy-account import
+# One-time first-login import
 
-This runbook covers the bounded compatibility path that moves an anonymous
-pre-SSO namespace into the verified CAIL subject namespace. The same deadline
-controls legacy R2 file hydration and the old `downloads.json` reader.
+Agent Studio has one narrow bridge for users who created work before CAIL
+identity was required. It runs lazily on the first successful login that
+contains both:
 
-## Configuration
+- a currently verified `X-CAIL-Identity-JWT` for the Agent Studio audience,
+- a valid signed legacy Agent Studio session cookie carried by that browser.
 
-Set these in the same authorized release that changes
-`CAIL_REQUIRE_IDENTITY` to `true`:
+The import copies the complete legacy content and relationships into the
+verified subject's namespace: workspace records, Durable Object state, chat
+messages, files, queued downloads, and gallery ownership. The new subject
+namespace becomes authoritative only after the copy succeeds.
 
-```text
-CAIL_SSO_SWITCHED_AT=<complete ISO instant>
-CAIL_ACCOUNT_IMPORT_UNTIL=<exclusive complete ISO instant>
-```
+Each user has one completion marker. It is written after the complete copy
+succeeds, so an interrupted attempt can be retried privately. A failed
+attempt is retryable and does not make a partial target authoritative. The
+request never serves data from both namespaces, and there is no alias, dual
+read, background import job, synchronization loop, or broad compatibility
+window.
 
-Both require `Z` or an explicit UTC offset. The deadline cannot precede the
-switch or exceed it by more than 30 days. Missing, blank, date-only, or invalid
-values fail configuration. Before enforcement, leaving both absent preserves
-anonymous local behavior; configuring only one is invalid.
+Each legacy workspace is frozen as soon as its target workspace record
+commits. If a later workspace or the final marker fails, retries leave the
+committed target untouched and the frozen source cannot diverge. A failure
+before a workspace record commits unfreezes that source so the complete copy
+can run again. The retry replaces the invisible target's runtime files,
+messages, state, and download queue before the workspace record makes them
+authoritative, so content removed from the source between attempts cannot
+survive as stale target data.
 
-## State machine and invariants
+The bridge is not a general import API. It accepts only the verified current
+identity and the verified signed cookie, keeps all identity and workspace
+values server-side, and clears the browser's legacy cookie after the new
+namespace is committed. The old namespace is retained as an inaccessible
+backup and is never consulted by normal reads. A user with no valid legacy
+cookie starts with an empty subject namespace.
 
-One `MigrationRegistry` object is keyed by the anonymous session id. The first
-verified subject to claim it wins permanently. The same subject may retry a
-failed claim or an in-progress claim older than ten minutes; a different
-subject can never take it over.
+One small `MigrationRegistry` Durable Object instance is addressed by the
+legacy cookie namespace. It admits or rejects short-lived anonymous request
+leases and makes the first verified subject claim sticky, so workspace and
+gallery writes cannot pass the import marker. It is created only on use,
+contains no workspace content, and does not run while idle. The R2 subject
+marker remains the only per-user signal that the complete copy finished.
 
-During the open compatibility window, each anonymous HTTP request first
-acquires a durable lease in that same registry. A claim cannot begin while an
-admitted request is active, so create and bundle-import work cannot finish in
-the anonymous namespace after migration has already listed and deleted it.
-Leases expire after ten minutes if an interrupted request cannot release one.
-
-For each workspace:
-
-1. An existing subject-side workspace id is never overwritten.
-2. The anonymous agent hydrates compatibility files, then refuses the freeze
-   if any fenced mutation is active.
-3. Freeze becomes durable before the snapshot. Runtime file writes, code
-   execution, and host tools are fenced; synchronous canvas mutations cannot
-   interleave across an await.
-4. State, messages, files, and eligible downloads copy into a clean target.
-5. The subject workspace record is written last as that workspace's completion
-   marker.
-6. A failed copy destroys the partial target agent and target R2 prefix, then
-   unfreezes every source so the same subject can retry.
-
-After every workspace is committed, private gallery ownership is reassigned
-across all R2 pages. Source agents and anonymous R2 prefixes are then destroyed.
-The registry is marked done only after the copy-and-cleanup workflow returns.
-
-The process is idempotent, not a cross-store transaction. A failure during
-source cleanup can occur after target completion markers exist. On retry,
-those targets are skipped and cleanup resumes. Do not delete or edit the claim
-record manually.
-
-## Deadline behavior
-
-During the open window, a request carrying both a verified identity and a valid
-legacy cookie can run the claim. While another request owns a fresh in-progress
-claim, the request continues in the subject namespace and retains the legacy
-cookie for a later retry.
-
-An anonymous request that reaches a namespace after it has been claimed
-receives a retryable `legacy_session_claimed` conflict and must sign in. A
-first-login request that encounters an active anonymous lease retains the
-legacy cookie and retries the claim on a later authenticated request.
-
-At and after the exclusive deadline:
-
-- no new anonymous namespace is claimed;
-- the legacy browser cookie is removed;
-- legacy workspace-file prefixes and `downloads.json` are ignored;
-- current subject workspaces, runtime files, and per-object downloads continue;
-- compatibility refusal events contain no session id, workspace id, filename,
-  or user content.
-
-Expiry does not itself delete unclaimed server-side data. That cleanup depends
-on the approved retention and deletion procedure.
-
-## Recovery
-
-For a failed or stale claim:
-
-1. Confirm the claimant subject matches the durable claim. Never reassign it.
-2. Inspect fixed-code migration telemetry; do not log user ids, paths, or
-   content.
-3. For each workspace, use the subject workspace record as the commit marker.
-   If absent, the partial target should have been destroyed and the source is
-   retryable. If present, preserve the target and let the retry skip the copy.
-4. Confirm source agents are unfrozen after a copy failure. A source that was
-   already committed may be partially cleaned; recover from the committed
-   target, not by rolling it back into the anonymous namespace.
-5. Retry through the normal authenticated request path. Do not invoke internal
-   migration RPCs from a browser or edit R2 prefixes by hand.
-
-There is no automatic rollback from a committed subject workspace to its
-anonymous source. Backup/restore and operator access remain external
-activation requirements.
-
-## Removal at cutoff
-
-Create the removal ticket before the switch, due at
-`CAIL_ACCOUNT_IMPORT_UNTIL`. After telemetry and claims are reconciled, remove
-the cookie-triggered import path, `MigrationRegistry` binding/class and class
-migration only when no rollback needs it, legacy R2 hydration, the
-`downloads.json` reader, both window variables, and their tests and docs.
-
-Preserve the class and compatibility readers through any rollback window.
-Cloudflare class migrations register Durable Object classes; they do not
-delete data or migrate application records. Deleting anonymous data requires
-the retention-approved purge and backup procedure.
+The route tests cover first login, repeat login, invalid identity inputs,
+partial failure, committed-workspace failure, corrupt stored content, parallel
+attempts, and retry. A live verification must use only synthetic content and
+must delete it afterward. No secret, token, subject, email, or workspace
+identifier belongs in logs or documentation.

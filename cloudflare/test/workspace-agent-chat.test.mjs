@@ -1,10 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TEST_SUBJECTS } from '@cuny-ai-lab/cail-identity/testing';
-import {
-  cailErrorResponse,
-  quotaExceededEnvelope,
-} from '@cuny-ai-lab/cail-client/testing';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
 
@@ -86,68 +82,6 @@ function testConnection(id = 'connection-1') {
     close() {},
   };
 }
-
-test('chat action success waits for the post-persistence onChatResponse hook', async () => {
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const action = { actionTerminal: false };
-  const calls = [];
-  const agent = {
-    ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
-    pendingChatAction: action,
-    finishModelCall(seenAction, terminal, errorType) {
-      calls.push(['model', seenAction, terminal, errorType]);
-    },
-    finishChatAction(seenAction, terminal, errorType) {
-      calls.push(['action', seenAction, terminal, errorType]);
-    },
-  };
-
-  WorkspaceAgent.prototype.onChatResponse.call(agent, {
-    message: { id: 'assistant-1', role: 'assistant', parts: [] },
-    requestId: 'request-1',
-    continuation: false,
-    status: 'completed',
-  });
-
-  assert.deepEqual(calls, [
-    ['model', action, { outcome: 'ok', reason: 'completed' }, undefined],
-    ['action', action, { outcome: 'ok', reason: 'completed' }, undefined],
-  ]);
-});
-
-test('deferred chat failures become terminal only in the post-persistence hook', async () => {
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const action = {
-    actionTerminal: false,
-    deferredTerminal: {
-      terminal: { outcome: 'denied', reason: 'quota_blocked' },
-      errorType: 'quota_exceeded',
-    },
-  };
-  const calls = [];
-  const agent = {
-    ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
-    pendingChatAction: action,
-    finishModelCall(seenAction, terminal, errorType) {
-      calls.push(['model', seenAction, terminal, errorType]);
-    },
-    finishChatAction(seenAction, terminal, errorType) {
-      calls.push(['action', seenAction, terminal, errorType]);
-    },
-  };
-
-  WorkspaceAgent.prototype.onChatResponse.call(agent, {
-    message: { id: 'assistant-1', role: 'assistant', parts: [] },
-    requestId: 'request-1',
-    continuation: false,
-    status: 'failed',
-  });
-
-  assert.deepEqual(calls, [
-    ['model', action, { outcome: 'denied', reason: 'quota_blocked' }, 'quota_exceeded'],
-    ['action', action, { outcome: 'denied', reason: 'quota_blocked' }, 'quota_exceeded'],
-  ]);
-});
 
 test('chat persistence counts an admitted write and rejects only after migration freeze', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
@@ -454,7 +388,6 @@ test('destructive cleanup defers Durable Object destruction for RPC callers', as
     migrationFrozen: true,
     cailIdentityJwt: 'credential',
     cailSubject: 'subject',
-    cailOperationalSubject: 'operational-subject',
     messages: [{ id: 'message' }],
     clearRuntimeFilesUnchecked: async () => {
       clearRuntimeCalls += 1;
@@ -480,7 +413,6 @@ test('destructive cleanup defers Durable Object destruction for RPC callers', as
   assert.equal(directDestroyCalls, 0);
   assert.equal(agent.cailIdentityJwt, null);
   assert.equal(agent.cailSubject, null);
-  assert.equal(agent.cailOperationalSubject, null);
   assert.deepEqual(agent.messages, []);
 });
 
@@ -500,17 +432,10 @@ test('identity enforcement rejects mutation RPCs on an anonymous pre-cutover soc
   );
 });
 
-test('code rate-limit denial does not emit an orphan canonical action terminal', async (t) => {
+test('code rate-limit denial rejects before sandbox execution', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const records = [];
-  t.mock.method(console, 'warn', (record) => records.push(record));
   const agent = {
     env: {
-      CAIL_LOG_ENV: 'test',
-      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-      CF_VERSION_METADATA: {
-        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
-      },
       HEAVY_RATE_LIMIT: { limit: async () => ({ success: false }) },
     },
     cailSubject: TEST_SUBJECTS.alice,
@@ -526,16 +451,11 @@ test('code rate-limit denial does not emit an orphan canonical action terminal',
     WorkspaceAgent.prototype.executeCode.call(agent, 'return 1'),
     /rate_limited/,
   );
-  assert.deepEqual(records.map((record) => record['event.name']), ['agent_studio.code.denied']);
-  assert.equal(records[0]['url.template'], '/api/workspaces/{id}/runtime/execute');
-  assert.equal(records[0]['cail.outcome.reason'], 'rate_limited');
 });
 
-test('successful code execution emits one paired canonical action lifecycle', async (t) => {
+test('successful code execution runs the sandbox once without lifecycle writes', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const records = [];
   const sqlWrites = [];
-  t.mock.method(console, 'log', (record) => records.push(record));
   const agent = {
     ctx: {
       storage: {
@@ -548,11 +468,7 @@ test('successful code execution emits one paired canonical action lifecycle', as
       },
     },
     env: {
-      CAIL_LOG_ENV: 'test',
-      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-      CF_VERSION_METADATA: {
-        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
-      },
+      HEAVY_RATE_LIMIT: { limit: async () => ({ success: true }) },
     },
     cailSubject: TEST_SUBJECTS.alice,
     assertNotFrozen() {},
@@ -571,17 +487,7 @@ test('successful code execution emits one paired canonical action lifecycle', as
 
   const result = await WorkspaceAgent.prototype.executeCode.call(agent, 'return 1');
   assert.equal(result.ok, true);
-  assert.deepEqual(records.map((record) => record['event.name']), [
-    'cail.action.admitted',
-    'cail.action.terminal',
-  ]);
-  assert.equal(records[0]['cail.action.id'], records[1]['cail.action.id']);
-  assert.equal(records[0]['url.template'], '/api/workspaces/{id}/runtime/execute');
-  assert.equal(records[1]['cail.outcome'], 'ok');
-  assert.equal(sqlWrites.length, 2);
-  assert.match(sqlWrites[0].query, /studio_action_lifecycle_events_v1/);
-  assert.equal(sqlWrites[0].bindings[1], '/api/workspaces/{id}/runtime/execute');
-  assert.equal(sqlWrites[1].bindings[3], 'ok');
+  assert.equal(sqlWrites.length, 0);
 });
 
 test('code RPC fence spans rate-limit admission and rejects queued work before side effects', async () => {
@@ -597,13 +503,7 @@ test('code RPC fence spans rate-limit admission and rejects queued work before s
     migrationFrozen: false,
     activeMutations: 0,
     cailSubject: TEST_SUBJECTS.alice,
-    cailOperationalSubject: null,
     env: {
-      CAIL_LOG_ENV: 'test',
-      CAIL_FLEET_EVENTS: { writeDataPoint() {} },
-      CF_VERSION_METADATA: {
-        id: '11111111-1111-4111-8111-111111111111', tag: '', timestamp: '2026-07-13T14:00:00Z',
-      },
       HEAVY_RATE_LIMIT: {
         limit: async () => {
           limitCalls += 1;
@@ -723,7 +623,6 @@ test('anonymous chat streams an authentication error instead of assistant JSON',
     verifyCurrentGatewayCredential() {
       return { status: 'missing' };
     },
-    finalizeObservabilityRequest() {},
   };
 
   const response = await WorkspaceAgent.prototype.onChatMessage.call(
@@ -765,12 +664,10 @@ test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
   assert.equal(payload.error.cail.retryable, true);
 });
 
-// Behavioral pin for the fleet's quota-surfacing bug (S5/A7): a gateway 429
-// quota_exceeded envelope must reach the chat user as the VERBATIM envelope
-// message, not a generic failure — and on the FIRST wire call (the direct AI
-// SDK provider gets maxRetries: 0, while the bounded CAIL extractor preserves
-// the canonical envelope).
+// A gateway quota envelope reaches the chat user on the first wire call. The
+// direct AI SDK provider has retries disabled and preserves the typed message.
 test('gateway 429 quota_exceeded streams the verbatim quota message to the user', async (t) => {
+  t.mock.method(console, 'error', () => {});
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const { tool } = await import('ai');
   const { z } = await import('zod');
@@ -778,24 +675,24 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   const quotaMessage =
     'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
   let wireCalls = 0;
-  const originalFetch = globalThis.fetch;
-  // createCailModel captures globalThis.fetch at construction — so this stub
-  // IS the gateway for the model call.
-  globalThis.fetch = async () => {
-    wireCalls += 1;
-    return cailErrorResponse(
-      429,
-      quotaExceededEnvelope({ message: quotaMessage, retryAfterSeconds: 1800 }),
-      {
+  const gateway = {
+    async fetch() {
+      wireCalls += 1;
+      return Response.json({
+        error: {
+          message: quotaMessage,
+          type: 'rate_limit_error',
+          param: null,
+          code: 'quota_exceeded',
+          cail: { retry_after_seconds: 1800, retryable: false },
+        },
+      }, { status: 429, headers: {
         'retry-after': '1800',
         'x-request-id': 'req-agent-quota-1',
         'x-should-retry': 'false',
-      },
-    );
+      } });
+    },
   };
-  t.after(() => {
-    globalThis.fetch = originalFetch;
-  });
 
   const noopTool = tool({
     description: 'noop',
@@ -812,12 +709,12 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
       return 'session-1';
     },
     cailIdentityJwt: 'header.payload.signature',
-    // Explicit isolated seam: this test pins quota error surfacing after the
+    // Explicit isolated seam: this test checks quota error surfacing after the
     // credential boundary has already been admitted.
     verifyCurrentGatewayCredential() {
       return { status: 'valid' };
     },
-    env: { CAIL_API_BASE: 'https://cail.test' },
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
     state: { panels: [] },
     messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
     buildHostTools() {
@@ -828,25 +725,6 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     },
     buildModelTools() {
       return {};
-    },
-    ensureObservabilityRequest() {
-      return { steps: 0 };
-    },
-    pushObservabilityEvent() {},
-    finalizeObservabilityRequest() {},
-    recordChunkObservability() {},
-    markObservabilityUpdated() {},
-    admitModelCall(action) {
-      return WorkspaceAgent.prototype.admitModelCall.call(this, action);
-    },
-    finishModelCall(action, terminal, errorType) {
-      return WorkspaceAgent.prototype.finishModelCall.call(this, action, terminal, errorType);
-    },
-    finishChatAction(action, terminal, errorType) {
-      return WorkspaceAgent.prototype.finishChatAction.call(this, action, terminal, errorType);
-    },
-    deferChatTerminal(action, terminal, errorType) {
-      return WorkspaceAgent.prototype.deferChatTerminal.call(this, action, terminal, errorType);
     },
   };
 
@@ -873,12 +751,6 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   assert.equal(payload.error.code, 'quota_exceeded');
   assert.equal(payload.error.message, quotaMessage);
   assert.equal(payload.error.cail.retry_after_seconds, 1800);
-  // Direct providers surface APICallError; observability still uses the
-  // canonical envelope for quota terminal fields and error_type.
-  assert.deepEqual(agent.pendingChatAction.deferredTerminal, {
-    terminal: { outcome: 'denied', reason: 'quota_blocked' },
-    errorType: 'quota_exceeded',
-  });
   // The APICallError must not be SDK-retried: one wire call, no retry storm.
   assert.equal(wireCalls, 1);
 });

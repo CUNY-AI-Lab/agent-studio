@@ -35,7 +35,6 @@ import {
   fetchGalleryItem,
   fetchGalleryItems,
   fetchWorkspaceDownloads,
-  fetchWorkspaceObservability,
   fetchWorkspaceExport,
   fetchWorkspace,
   fetchWorkspaceFiles,
@@ -94,7 +93,6 @@ import type {
   GalleryItem,
   GalleryItemFull,
   WorkspaceAgentClient,
-  WorkspaceObservabilitySnapshot,
   WorkspaceFileInfo,
   WorkspacePanel,
   WorkspaceResponse,
@@ -225,32 +223,6 @@ function WorkspaceShell({
     },
   });
 
-  const dumpWorkspaceObservability = useCallback(async (): Promise<WorkspaceObservabilitySnapshot | null> => {
-    try {
-      const observability = await fetchWorkspaceObservability(workspace.workspace.id);
-      // Browser consoles can be collected by extensions or support tooling.
-      // Keep the convenient trace action, but never print request ids, errors,
-      // tool previews, panel ids, or other workspace content.
-      console.error('Workspace observability summary', {
-        generatedAt: observability.generatedAt,
-        eventCount: observability.events.length,
-        requests: observability.requests.map((request) => ({
-          status: request.status,
-          model: request.model,
-          steps: request.steps,
-          idleMs: request.idleMs,
-          suspectedStall: request.suspectedStall,
-          chunkCounts: request.chunkCounts,
-          toolCount: request.tools.length,
-        })),
-      });
-      return observability;
-    } catch {
-      console.error('Failed to fetch workspace observability');
-      return null;
-    }
-  }, [workspace.workspace.id]);
-
   const chat = useAgentChat<WorkspaceState>({
     agent,
     getInitialMessages: async () => workspace.messages,
@@ -266,8 +238,8 @@ function WorkspaceShell({
           const parsed = JSON.parse(message.slice(message.indexOf('{')));
           if (handleAuthRequired(401, parsed)) return;
         } catch {
-          handleAuthRequired(401, { error: 'authentication_required' });
-          return;
+          // Stream errors that are not a complete canonical envelope remain
+          // ordinary chat failures and keep the retry affordance visible.
         }
       }
       // Surface CAIL quota exhaustion distinctly (the stream error text carries a
@@ -277,8 +249,6 @@ function WorkspaceShell({
         setChatErrorNotice(quotaMessage);
         return;
       }
-      console.error('Workspace chat error', chatError);
-      void dumpWorkspaceObservability();
     },
   });
 
@@ -2560,9 +2530,6 @@ function WorkspaceShell({
       onSubmit={(text) => void sendChatMessage(text)}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
-      onDumpTrace={() => {
-        void dumpWorkspaceObservability();
-      }}
       canRetry={Boolean(lastUserPrompt)}
       errorNotice={chatErrorNotice}
       selectedScopeLabel={selectedScopeLabel}

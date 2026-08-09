@@ -1,15 +1,25 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CailError } from '@cuny-ai-lab/cail-client';
 import { quotaSignalFromError } from '../src/lib/quota-error.ts';
 
 const QUOTA_MESSAGE =
   'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
 
+function quotaError(extra = {}) {
+  return {
+    error: {
+      message: QUOTA_MESSAGE,
+      type: 'rate_limit_error',
+      code: 'quota_exceeded',
+      cail: extra,
+    },
+  };
+}
+
 test('quotaSignalFromError forwards a thrown quota CailError verbatim', () => {
   const signal = quotaSignalFromError(
-    new CailError('quota_exceeded', QUOTA_MESSAGE, 429, { retry_after_seconds: 1800 }),
+    quotaError({ retry_after_seconds: 1800 }),
   );
   assert.equal(typeof signal, 'string');
   const parsed = JSON.parse(signal);
@@ -19,7 +29,7 @@ test('quotaSignalFromError forwards a thrown quota CailError verbatim', () => {
 });
 
 test('quotaSignalFromError omits retryAfter when the envelope has none', () => {
-  const signal = quotaSignalFromError(new CailError('quota_exceeded', QUOTA_MESSAGE, 429));
+  const signal = quotaSignalFromError(quotaError());
   const parsed = JSON.parse(signal);
   assert.equal(parsed.error.message, QUOTA_MESSAGE);
   assert.equal('retry_after_seconds' in parsed.error.cail, false);
@@ -28,15 +38,14 @@ test('quotaSignalFromError omits retryAfter when the envelope has none', () => {
 test('quotaSignalFromError ignores non-quota CailErrors', () => {
   assert.equal(
     quotaSignalFromError(
-      new CailError('authentication_required', 'Sign in to continue.', 401, { login_url: '/login' }),
+      { error: { code: 'authentication_required', message: 'Sign in to continue.', cail: { login_url: '/login' } } },
     ),
     null,
   );
-  assert.equal(quotaSignalFromError(new CailError('network_error', 'fetch failed', 0)), null);
+  assert.equal(quotaSignalFromError({ error: { code: 'network_error', message: 'fetch failed' } }), null);
 });
 
-// Extraction is delegated to cail-client's extractCailError, which digs a
-// TYPED CAIL envelope out of SDK wrappers but never sniffs bare statuses or
+// Extraction digs a typed CAIL envelope out of SDK wrappers but never sniffs bare statuses or
 // message text: a bare 429 shape or an envelope-free RetryError is NOT a
 // CAIL quota signal.
 test('quotaSignalFromError does not sniff envelope-free SDK error shapes', () => {
@@ -64,7 +73,7 @@ test('quotaSignalFromError unwraps a quota CailError buried in a RetryError', ()
     reason: 'maxRetriesExceeded',
     errors: [
       { statusCode: 500 },
-      new CailError('quota_exceeded', QUOTA_MESSAGE, 429, { retry_after_seconds: 1800 }),
+      quotaError({ retry_after_seconds: 1800 }),
     ],
   });
   assert.equal(typeof signal, 'string');
