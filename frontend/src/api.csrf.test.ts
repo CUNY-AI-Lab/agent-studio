@@ -186,6 +186,26 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
+  it('ignores flat and top-level legacy authentication fields', async () => {
+    const { handleAuthRequired } = await loadApi();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio.test',
+        pathname: '/gallery',
+        search: '?id=abc',
+        assign,
+      },
+    });
+
+    expect(handleAuthRequired(401, { error: 'authentication_required' })).toBe(false);
+    expect(handleAuthRequired(401, {
+      error: { code: 'authentication_required' },
+      login_url: '/legacy-login',
+    })).toBe(true);
+    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+  });
+
   it('mutatingFetch attaches the X-CAIL-CSRF header with the cookie token', async () => {
     const { mutatingFetch, CSRF_HEADER } = await loadApi();
     const token = 'b'.repeat(64);
@@ -304,7 +324,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
       }
       const workspaceCalls = spy.mock.calls.filter((call) => String(call[0]).includes('/api/workspaces'));
       return workspaceCalls.length === 1
-        ? new Response(JSON.stringify({ error: 'csrf_token_invalid' }), {
+        ? new Response(JSON.stringify({ error: { code: 'csrf_token_invalid', message: 'CSRF token is invalid.' } }), {
             status: 403,
             headers: { 'Content-Type': 'application/json' },
           })
@@ -327,17 +347,12 @@ describe('CSRF fetch helper (cookie delivery)', () => {
       getGalleryFileUrl,
       getGalleryPanelPreviewUrl,
       getWorkspaceFileUrl,
-      getWorkspacePanelPreviewUrl,
     } = await loadApi();
 
     expect(getWorkspaceFileUrl('ws', 'notes/read me.md')).toBe(
       '/api/workspaces/ws/files/notes/read%20me.md',
     );
-    expect(getWorkspacePanelPreviewUrl('ws', 'panel one')).toBe(
-      '/api/workspaces/ws/panels/panel%20one/preview',
-    );
     expect(getWorkspaceFileUrl('ws', 'notes/read me.md')).not.toContain('csrfToken=');
-    expect(getWorkspacePanelPreviewUrl('ws', 'panel one')).not.toContain('csrfToken=');
     expect(getGalleryFileUrl('gallery', 'notes/read me.md')).not.toContain('csrfToken=');
     expect(getGalleryPanelPreviewUrl('gallery', 'panel one')).not.toContain('csrfToken=');
   });
