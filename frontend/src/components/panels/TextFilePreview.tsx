@@ -16,16 +16,16 @@ export function TextFilePreview({ url, filePath }: { url: string; filePath: stri
     fetch(url)
       .then(async (response) => {
         if (!response.ok) {
-          throw new Error(`Failed to load file (${response.status})`);
+          throw new Error('We couldn’t load this file. Try again or download it.');
         }
         const text = await response.text();
         if (!cancelled) {
           setTextContent(text);
         }
       })
-      .catch((error) => {
+      .catch(() => {
         if (!cancelled) {
-          setLoadError(error instanceof Error ? error.message : 'Failed to load file');
+          setLoadError('We couldn’t load this file. Try again or download it.');
         }
       });
 

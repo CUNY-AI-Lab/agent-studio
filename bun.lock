@@ -17,7 +17,7 @@
         "@cloudflare/ai-chat": "0.9.3",
         "@cloudflare/codemode": "0.5.1",
         "@cloudflare/shell": "0.4.1",
-        "@cuny-ai-lab/cail-identity": "5.1.2",
+        "@cuny-ai-lab/cail-identity": "5.2.2",
         "@modelcontextprotocol/sdk": "1.30.0",
         "agents": "0.20.1",
         "ai": "6.0.225",
@@ -218,7 +218,7 @@
 
     "@csstools/css-tokenizer": ["@csstools/css-tokenizer@4.0.0", "", {}, "sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA=="],
 
-    "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@5.1.2", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.1.2/457eb418b1ea36b26bd9e6dd1650cfb8cb264878", { "dependencies": { "jose": "6.2.3" } }, "sha512-FQej5lWjeOfZreEObYd92NzNEe5DxHFCCn6qWXIxqDRAfUoEtYJmZn8ittJlzs7y4BGFwNZjTaBX/qn6wHAQuQ=="],
+    "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@5.2.2", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.2.2/fb51ea5800e517cdb5780709e92e6559f6139a5e", { "dependencies": { "jose": "6.2.3" } }, "sha512-IFDLK3CxXlntPMaEjYOziKLCEWRN6FOFuf2tIEAYmt0JHpJaqRnXswsUaxvmW3XQKs0R/yvJ5gCMCm0J9TykrQ=="],
 
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 

@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTestIdentityIssuer } from '@cuny-ai-lab/cail-identity/testing';
+import { createTestIdentityIssuer } from './helpers/identity.mjs';
 
 import {
   importServer,
@@ -28,7 +28,6 @@ import {
   CAIL_IDENTITY_AUDIENCE,
   CAIL_IDENTITY_HEADER,
   CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
 } from '../src/lib/cail-identity.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
 
@@ -146,7 +145,7 @@ test('identity-required staging health rejects malformed JWKS before runtime req
   const { env } = makeEnv();
   Object.assign(env, {
     CAIL_REQUIRE_IDENTITY: 'true',
-    CAIL_IDENTITY_ISSUER: CAIL_STAGING_ISSUER,
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
     CAIL_IDENTITY_JWKS: '{not-json',
   });
 
@@ -181,7 +180,7 @@ test('identity-required session bootstrap returns the canonical login challenge'
   const body = await res.json();
   assert.equal(body.error.code, 'authentication_required');
   assert.equal(body.error.type, 'authentication_error');
-  assert.equal(body.error.cail.login_url, '/login');
+  assert.equal(body.error.cail.login_url, '/agent-studio');
   assert.equal(body.error.cail.retryable, false);
 });
 

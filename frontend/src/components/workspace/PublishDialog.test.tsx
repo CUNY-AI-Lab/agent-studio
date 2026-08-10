@@ -24,7 +24,8 @@ describe('PublishDialog', () => {
 
   it('summarizes the shared tile and file counts with correct pluralization', () => {
     render(<PublishDialog {...baseProps} publishablePanelCount={2} fileCount={1} />);
-    expect(screen.getByText(/share 2 tile views and 1 file to the public gallery/)).toBeInTheDocument();
+    expect(screen.getByText(/This makes 2 tile views and 1 file public/)).toBeInTheDocument();
+    expect(screen.getByText(/Don’t publish private or sensitive files/)).toBeInTheDocument();
   });
 
   it('disables Publish when the title is blank', () => {
@@ -48,7 +49,9 @@ describe('PublishDialog', () => {
 
   it('is a labeled modal dialog with labeled fields', () => {
     render(<PublishDialog {...baseProps} />);
-    expect(screen.getByRole('dialog', { name: 'Publish to Gallery' })).toHaveAttribute('aria-modal', 'true');
+    const dialog = screen.getByRole('dialog', { name: 'Publish to Gallery' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveAttribute('aria-describedby');
     expect(screen.getByLabelText('Title')).toBeInTheDocument();
     expect(screen.getByLabelText('Description')).toBeInTheDocument();
   });

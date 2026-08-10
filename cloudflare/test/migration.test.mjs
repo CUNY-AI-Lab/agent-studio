@@ -1,10 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import {
-  TEST_SUBJECTS,
-  createTestIdentityIssuer,
-} from '@cuny-ai-lab/cail-identity/testing';
+import { TEST_SUBJECTS, createTestIdentityIssuer } from './helpers/identity.mjs';
 
 import {
   addWorkspaceDownload,

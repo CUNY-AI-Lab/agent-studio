@@ -23,10 +23,9 @@ CAIL_IDENTITY_ISSUER=
 # configured or cannot verify a presented token, all requests fail.
 CAIL_REQUIRE_IDENTITY=false
 
-# One mount for assets, API, WebSocket, and CSRF-cookie scope. Leave empty for
-# root-mounted local development. Production builds use /agent-studio and
-# production preflight rejects a missing or root base path.
-CAIL_BASE_PATH=
+# Use the same mount locally as the production build so assets, API,
+# WebSocket, and the CSRF cookie all follow one path.
+CAIL_BASE_PATH=/agent-studio
 
 # Exact public HTTPS origin used by CSRF origin checks. Leave empty locally so
 # the request origin is canonical. Production requires an origin with no path.

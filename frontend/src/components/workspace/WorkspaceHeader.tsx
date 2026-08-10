@@ -121,14 +121,16 @@ export function WorkspaceHeader({
             </select>
           );
         })() : modelQuotaNotice ? (
-          <select
-            className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 transition-colors cursor-not-allowed opacity-60 outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            disabled
-            title={modelQuotaNotice}
-            aria-label="Model choices paused"
-          >
-            <option>Model choices paused</option>
-          </select>
+          <div className="mr-1 flex max-w-[18rem] items-center gap-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">
+            <select
+              className="max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 transition-colors cursor-not-allowed opacity-60 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              disabled
+              aria-label="Model choices unavailable"
+            >
+              <option>Model choices unavailable</option>
+            </select>
+            <span className="truncate" title={modelQuotaNotice}>{modelQuotaNotice}</span>
+          </div>
         ) : null}
         <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onRefresh} title="Refresh" aria-label="Refresh workspace">
           <RotateCcw size={16} aria-hidden="true" />

@@ -83,10 +83,10 @@ test('canonicalOrigin: derives the request origin when no override is set', () =
 
 test('canonicalOrigin: honors CAIL_CANONICAL_ORIGIN override (trailing slash trimmed)', () => {
   const c = {
-    env: { CAIL_CANONICAL_ORIGIN: 'https://tools.ailab.gc.cuny.edu/' },
+    env: { CAIL_CANONICAL_ORIGIN: 'https://cail-doorway.ailab-452.workers.dev/' },
     req: { url: 'https://agent-studio.workers.dev/api/x' },
   };
-  assert.equal(canonicalOrigin(c), 'https://tools.ailab.gc.cuny.edu');
+  assert.equal(canonicalOrigin(c), 'https://cail-doorway.ailab-452.workers.dev');
 });
 
 // ---------------------------------------------------------------------------
@@ -141,9 +141,9 @@ test('wsOriginAllowed: header-less handshake defers to the token gate (allowed h
 
 test('wsOriginAllowed: override changes what counts as same-origin', () => {
   const req = new Request('https://agent-studio.workers.dev/agents/x/y', {
-    headers: { Origin: 'https://tools.ailab.gc.cuny.edu' },
+    headers: { Origin: 'https://cail-doorway.ailab-452.workers.dev' },
   });
-  assert.equal(wsOriginAllowed(req, 'https://tools.ailab.gc.cuny.edu'), true);
+  assert.equal(wsOriginAllowed(req, 'https://cail-doorway.ailab-452.workers.dev'), true);
   assert.equal(wsOriginAllowed(req), false); // without override, origin != request origin
 });
 

@@ -194,8 +194,7 @@ export function GroupBoundary({
   return (
     <div
       role="group"
-      aria-label={`${group.name || `${validPanelCount} tiles`} group`}
-      aria-pressed={isActive}
+      aria-label={`${group.name || `${validPanelCount} tiles`} group${isActive ? ', selected' : ''}`}
       tabIndex={0}
       className={`group-boundary absolute pointer-events-auto ${isDragging ? 'cursor-grabbing' : 'cursor-grab'} ${isActive ? 'active' : ''}`}
       style={{

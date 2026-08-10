@@ -26,6 +26,7 @@ export function PublishDialog({
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const disclosureId = useId();
   const titleFieldId = useId();
   const descriptionFieldId = useId();
 
@@ -55,6 +56,7 @@ export function PublishDialog({
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        aria-describedby={disclosureId}
         tabIndex={-1}
         className="mx-4 w-full max-w-md rounded-2xl bg-card p-6 shadow-xl focus:outline-none"
         onClick={(event) => event.stopPropagation()}
@@ -83,8 +85,8 @@ export function PublishDialog({
               className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 focus:border-primary/50 focus:outline-none"
             />
           </div>
-          <p className="text-xs text-muted-foreground">
-            This will share {publishablePanelCount} tile view{publishablePanelCount !== 1 ? 's' : ''} and {fileCount} file{fileCount !== 1 ? 's' : ''} to the public gallery.
+          <p id={disclosureId} className="text-xs text-muted-foreground">
+            This makes {publishablePanelCount} tile view{publishablePanelCount !== 1 ? 's' : ''} and {fileCount} file{fileCount !== 1 ? 's' : ''} public. Anyone with the gallery link can view and download them. Don’t publish private or sensitive files.
           </p>
         </div>
         <div className="mt-6 flex justify-end gap-3">

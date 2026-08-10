@@ -76,6 +76,9 @@ export function ReadOnlyCanvas({
           return (
             <article
               key={panel.id}
+              role="group"
+              aria-label={`${panel.title || panel.id} (${panel.type} tile)`}
+              tabIndex={0}
               className="artifact-card absolute"
               style={{
                 left: layout.x,

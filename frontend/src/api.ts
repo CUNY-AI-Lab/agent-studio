@@ -16,6 +16,9 @@ type CanonicalError = {
   };
 };
 
+const CAIL_DOORWAY_ORIGIN = 'https://cail-doorway.ailab-452.workers.dev';
+const AGENT_STUDIO_PATH = '/agent-studio';
+
 function canonicalErrorFromPayload(payload: unknown): CanonicalError | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const error = (payload as { error?: unknown }).error;
@@ -27,34 +30,21 @@ function canonicalErrorFromPayload(payload: unknown): CanonicalError | null {
 /**
  * CAIL 401 handling (see docs/security-and-operations.md). When the SSO
  * gate / model proxy returns `authentication_required`, redirect the browser
- * to /login?rt=<current-path> so the user re-authenticates and returns here.
- * Same-origin paths only. Returns true when it handled (and is redirecting).
+ * to the standalone Doorway at the current Agent Studio path so the user
+ * re-authenticates and returns here. Returns true when it handled (and is
+ * redirecting).
  */
 export function handleAuthRequired(status: number, payload: unknown): boolean {
   if (status !== 401) return false;
   const nested = canonicalErrorFromPayload(payload);
   if (nested?.code !== 'authentication_required') return false;
 
-  const loginUrl = nested.cail?.login_url;
-  // Accept only a same-origin path. Reject protocol-relative URLs (`//host`),
-  // absolute URLs, and query/hash-bearing values supplied by an upstream
-  // error envelope; the login route itself owns any state it needs.
-  let base = '/login';
-  if (typeof loginUrl === 'string' && loginUrl.startsWith('/') && !loginUrl.startsWith('//')) {
-    try {
-      const candidate = new URL(loginUrl, window.location.origin);
-      if (candidate.origin === window.location.origin) {
-        base = candidate.pathname || '/login';
-      }
-    } catch {
-      // Keep the fixed same-origin fallback.
-    }
-  }
-  // Do not bounce a login page back to itself when a stale session response is
-  // retried while the browser is already at the login route.
-  if (window.location.pathname === base) return false;
-  const rt = `${window.location.pathname}${window.location.search}`;
-  window.location.assign(`${base}?rt=${encodeURIComponent(rt)}`);
+  const currentPath = `${window.location.pathname}${window.location.search}`;
+  const returnPath = window.location.pathname === AGENT_STUDIO_PATH
+    || window.location.pathname.startsWith(`${AGENT_STUDIO_PATH}/`)
+    ? currentPath
+    : `${AGENT_STUDIO_PATH}${window.location.search}`;
+  window.location.assign(`${CAIL_DOORWAY_ORIGIN}${returnPath}`);
   return true;
 }
 
@@ -210,7 +200,7 @@ async function parseJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const { payload, message } = await readResponseError(response);
     if (handleAuthRequired(response.status, payload)) {
-      // Redirecting to /login; reject with a benign message so callers stop.
+      // Redirecting to the standalone Doorway; reject with a benign message so callers stop.
       throw new Error('Sign in to continue.');
     }
     throw new Error(message);
@@ -302,6 +292,7 @@ export interface ModelCatalog {
 }
 
 export class ModelsQuotaError extends Error {}
+export class ModelsAuthError extends Error {}
 /** A 5xx from the catalog route — including the 502 the worker mints for
  * config/secret drift. Typed so the UI can surface a broken deployment
  * instead of silently hiding the picker. */
@@ -309,6 +300,13 @@ export class ModelsUnavailableError extends Error {}
 
 export async function fetchModels(): Promise<ModelCatalog> {
   const response = await fetch(appPath('/api/models'), { credentials: 'include' });
+  if (response.status === 401) {
+    const { payload, message } = await readResponseError(response);
+    if (handleAuthRequired(response.status, payload)) {
+      throw new ModelsAuthError('Your sign-in expired. Sign in again to load models.');
+    }
+    throw new Error(message);
+  }
   if (response.status === 429) {
     const { message } = await readResponseError(response);
     throw new ModelsQuotaError(message);
@@ -487,11 +485,14 @@ export async function fetchWorkspace(workspaceId: string): Promise<WorkspaceResp
 export async function fetchWorkspaceExport(workspaceId: string): Promise<{ blob: Blob; filename: string }> {
   const response = await readingFetch(`/api/workspaces/${workspaceId}/export`);
   if (!response.ok) {
-    // Same error extraction as parseJson (via readResponseError). Export does
-    // NOT route 401s through handleAuthRequired: it returns a Blob and runs from
-    // an already-authenticated workspace view, so a login redirect mid-download
-    // is worse than surfacing the error. That divergence is deliberate.
-    const { message } = await readResponseError(response);
+    // Keep export aligned with the other protected workspace reads. If the
+    // session expires while a download is being prepared, send the user
+    // through the canonical sign-in recovery path instead of leaving them
+    // with an opaque download failure.
+    const { payload, message } = await readResponseError(response);
+    if (handleAuthRequired(response.status, payload)) {
+      throw new Error('Sign in to continue.');
+    }
     throw new Error(message);
   }
 

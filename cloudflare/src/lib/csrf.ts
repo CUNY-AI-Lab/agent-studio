@@ -59,11 +59,9 @@ export type CsrfPrincipalKind = 'anonymous' | 'subject';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
- * The canonical origin a same-origin request must match. Per the contract, a
- * gated tool not yet on tools.ailab uses its OWN serving origin (derived from
- * the request URL) until the central allow-list exists. CAIL_CANONICAL_ORIGIN
- * overrides this for the tools.ailab deployment, where the browser-visible
- * origin differs from the worker's own request URL.
+ * The canonical origin a same-origin request must match. CAIL_CANONICAL_ORIGIN
+ * overrides the worker's own request URL when the standalone Doorway serves
+ * the browser-visible application origin.
  */
 export function canonicalOrigin(c: Context<{ Bindings: Env; Variables: SessionVariables }>): string {
   const override = (c.env as { CAIL_CANONICAL_ORIGIN?: string }).CAIL_CANONICAL_ORIGIN;

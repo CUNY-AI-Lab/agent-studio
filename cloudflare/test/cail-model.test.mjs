@@ -43,7 +43,7 @@ test('direct provider authentication errors keep the AI SDK shape and make one a
       type: 'authentication_error',
       param: null,
       code: 'authentication_required',
-      cail: { login_url: '/login' },
+      cail: { login_url: '/agent-studio' },
     },
   }), {
     status: 401,

@@ -1,11 +1,11 @@
 /**
  * CAIL gateway identity (CUNYLogin SSO) for the Agent Studio worker.
  *
- * The OpenResty SSO gate on tools.ailab.gc.cuny.edu injects X-CAIL-* headers
- * after authentication. This worker is also directly reachable on its
- * workers.dev URL, so bare X-CAIL-* headers prove nothing — anyone can set
- * them. Identity is accepted only from an RS256 identity JWT verified against
- * the configured static public JWKS for this service's audience.
+ * The standalone Doorway injects X-CAIL-* headers after authentication. This
+ * worker is also directly reachable on its workers.dev URL, so bare X-CAIL-*
+ * headers prove nothing — anyone can set them. Identity is accepted only from
+ * an RS256 identity JWT verified against the configured static public JWKS for
+ * this service's audience.
  *
  * The JWT verifiers are shared @cuny-ai-lab/cail-identity primitives — one
  * source of truth across the CAIL fleet for pinned algorithms, audience/time
@@ -18,13 +18,12 @@
  */
 
 import {
+  CAIL_CANONICAL_ISSUER,
   CAIL_GATEWAY_AUDIENCE,
   readIdentityKeyring,
   verifyKeyringGatewayJwt,
   loadIdentityVerifierConfig,
   verifyIdentityJwt,
-  CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
   type CailIdentity,
   type IdentityVerifierConfig,
 } from '@cuny-ai-lab/cail-identity';
@@ -42,7 +41,6 @@ import { canonicalError } from './error-envelope';
 export {
   verifyIdentityJwt,
   CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
   CAIL_GATEWAY_AUDIENCE,
 };
 export type { CailIdentity, IdentityConfigErrorReason };
@@ -50,18 +48,6 @@ export type { CailIdentity, IdentityConfigErrorReason };
 export const CAIL_IDENTITY_HEADER = 'X-CAIL-Identity-JWT';
 export const CAIL_APP_SLUG = 'agent-studio';
 export const CAIL_IDENTITY_AUDIENCE = 'cail:agent-studio';
-
-/**
- * The only issuer values an operator may select. Verification still receives
- * exactly one configured value, so production and staging namespaces can
- * never be combined in one trust decision.
- */
-// Frozen at runtime, not just in the type system: a mutation here would be
-// reflected in cached verifier snapshots loaded afterwards.
-export const CAIL_SUPPORTED_ISSUERS = Object.freeze([
-  CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
-] as const);
 
 export interface CailIdentityEnv {
   CAIL_IDENTITY_JWKS?: string;
@@ -94,10 +80,7 @@ const encoder = new TextEncoder();
 
 export function resolveCailIdentityIssuer(env: CailIdentityEnv): string | null {
   const issuer = env.CAIL_IDENTITY_ISSUER;
-  return typeof issuer === 'string'
-    && CAIL_SUPPORTED_ISSUERS.some((supported) => supported === issuer)
-    ? issuer
-    : null;
+  return issuer === CAIL_CANONICAL_ISSUER ? CAIL_CANONICAL_ISSUER : null;
 }
 
 /**
@@ -126,7 +109,6 @@ async function loadIdentityConfig(
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
-    supportedIssuers: CAIL_SUPPORTED_ISSUERS,
     ...(now === undefined ? {} : { now }),
   });
   if (!loaded.ok) return { configError: loaded.reason };
@@ -242,11 +224,11 @@ export function cailIdentityMisconfiguredResponse(): Response {
   );
 }
 
-export function cailAuthRequiredResponse(loginPath = '/login'): Response {
+export function cailAuthRequiredResponse(loginPath = '/agent-studio'): Response {
   return new Response(
     JSON.stringify(canonicalError(
       'authentication_required',
-      'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
+      'Sign in to continue.',
       { type: 'authentication_error', loginUrl: loginPath, retryable: false },
     )),
     {
@@ -277,7 +259,6 @@ async function loadGatewayLegConfig(
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
     expectedAudience: CAIL_GATEWAY_AUDIENCE,
-    supportedIssuers: CAIL_SUPPORTED_ISSUERS,
     ...(now === undefined ? {} : { now }),
   });
   if (!loaded.ok) return { configError: loaded.reason };

@@ -56,4 +56,25 @@ describe('TablePanelView', () => {
     // Ascending by numeric score: Charlie(2), Bob(5), Alice(10)
     expect(bodyRowOrder()).toEqual(['Charlie', 'Bob', 'Alice']);
   });
+
+  it('announces the active sort direction on each column header', async () => {
+    const user = userEvent.setup();
+    render(
+      <TablePanelView
+        panel={{
+          id: 'sales',
+          type: 'table',
+          columns: [{ key: 'region', label: 'Region' }],
+          rows: [{ region: 'North' }],
+        }}
+      />,
+    );
+
+    const header = screen.getByRole('columnheader', { name: 'Region' });
+    expect(header).toHaveAttribute('aria-sort', 'none');
+    await user.click(screen.getByRole('button', { name: 'Region' }));
+    expect(header).toHaveAttribute('aria-sort', 'ascending');
+    await user.click(screen.getByRole('button', { name: 'Region↑' }));
+    expect(header).toHaveAttribute('aria-sort', 'descending');
+  });
 });

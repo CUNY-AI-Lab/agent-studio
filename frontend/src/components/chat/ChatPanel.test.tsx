@@ -41,10 +41,34 @@ describe('ChatPanel', () => {
     expect(screen.getByText('hello there')).toBeInTheDocument();
   });
 
+  it('shows tool progress in plain words instead of raw SDK states', () => {
+    const message = {
+      id: 'a1',
+      role: 'assistant',
+      parts: [{ type: 'tool-write_file', toolCallId: 't1', state: 'output-available', input: {}, output: {} }],
+    } as unknown as UIMessage;
+    render(<ChatPanel {...baseProps} messages={[message]} />);
+    expect(screen.getByText('Write file')).toBeInTheDocument();
+    expect(screen.getByText('Done')).toBeInTheDocument();
+    expect(screen.queryByText('output-available')).not.toBeInTheDocument();
+    expect(screen.queryByText('write_file')).not.toBeInTheDocument();
+  });
+
   it('shows the error recovery banner and retry gating', () => {
     render(<ChatPanel {...baseProps} status="error" canRetry={false} />);
     expect(screen.getByText('The last response failed before it finished.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
+  });
+
+  it('confirms before clearing a conversation with messages', async () => {
+    const user = userEvent.setup();
+    const onClear = vi.fn();
+    vi.stubGlobal('confirm', vi.fn(() => false));
+    render(<ChatPanel {...baseProps} messages={[userMessage('keep this')]} onClear={onClear} />);
+
+    await user.click(screen.getByRole('button', { name: 'Clear conversation' }));
+    expect(window.confirm).toHaveBeenCalledWith('Clear this conversation? This permanently deletes its messages.');
+    expect(onClear).not.toHaveBeenCalled();
   });
 
   it('shows a quota-specific error notice instead of the generic sentence', () => {

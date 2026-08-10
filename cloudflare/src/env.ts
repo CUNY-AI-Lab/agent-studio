@@ -1,12 +1,8 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
 import type { MigrationRegistry } from './migration-registry';
-import {
-  CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
-  loadIdentityVerifierConfig,
-} from '@cuny-ai-lab/cail-identity';
+import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
 import { isValidBasePath, normalizeBasePath } from './lib/base-path';
-import { CAIL_IDENTITY_AUDIENCE } from './lib/cail-identity';
+import { CAIL_CANONICAL_ISSUER, CAIL_IDENTITY_AUDIENCE } from './lib/cail-identity';
 import { isAllowedCailModelId } from './lib/workspace-validation';
 
 /** Runtime bindings and settings used by the worker. */
@@ -61,7 +57,6 @@ function loadSharedIdentityConfig(jwks: string | undefined, issuer: string | und
     jwks,
     issuer,
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
-    supportedIssuers: [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
   }).catch(() => ({ ok: false as const, reason: 'jwks_malformed' as const }));
   identityConfigValidationCache = { key: cacheKey, result };
   return result;
@@ -152,8 +147,7 @@ export async function validateAgentStudioConfig(env: {
   if (required && !issuerConfigured) {
     return { ok: false, errorCode: 'cail_identity_issuer_missing' };
   }
-  if (issuerConfigured && env.CAIL_IDENTITY_ISSUER !== CAIL_CANONICAL_ISSUER
-    && env.CAIL_IDENTITY_ISSUER !== CAIL_STAGING_ISSUER) {
+  if (issuerConfigured && env.CAIL_IDENTITY_ISSUER !== CAIL_CANONICAL_ISSUER) {
     return { ok: false, errorCode: 'cail_identity_issuer_invalid' };
   }
   if (identityConfigured) {

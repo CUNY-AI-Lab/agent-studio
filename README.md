@@ -31,9 +31,10 @@ bun run dev:worker
 bun run dev:frontend
 ```
 
-The split client proxies `/api`, `/agents`, and `/health` to the Worker. The
-same `/agent-studio` base path is used by the production build, API, WebSocket,
-and CSRF cookie.
+Open the split client at `http://127.0.0.1:5173/agent-studio/`. It proxies the
+mounted API, WebSocket, and health paths to the Worker. The same
+`/agent-studio` base path is used by local development, the production build,
+and the CSRF cookie.
 
 ## CAIL identity and model path
 
@@ -43,9 +44,9 @@ and audience `cail:agent-studio`; ownership uses the stable pseudonymous CAIL
 subject, never email. The app identity is the exact slug `agent-studio` and
 model requests carry `X-CAIL-App: agent-studio`.
 
-The production issuer is `https://tools.ailab.gc.cuny.edu/cail-sso`; the
-staging issuer is `https://tools.cuny.qzz.io/cail-sso`. A deployment selects
-one exact issuer and never combines them.
+Both production and staging use the standalone Doorway issuer
+`https://cail-doorway.ailab-452.workers.dev/cail-sso` and canonical origin
+`https://cail-doorway.ailab-452.workers.dev`.
 
 Credentialed model work uses the separate gateway leg in
 `X-CAIL-Gateway-Identity-JWT`, whose audience is `cail:gateway`. The Worker

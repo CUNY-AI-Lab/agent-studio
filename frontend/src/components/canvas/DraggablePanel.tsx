@@ -293,8 +293,7 @@ export function DraggablePanel({
   return (
     <div
       role="group"
-      aria-label={`${title} (${type} tile)`}
-      aria-pressed={isSelected}
+      aria-label={`${title} (${type} tile)${isSelected ? ', selected' : ''}`}
       tabIndex={isFocusTarget ? 0 : -1}
       data-panel-id={id}
       className={cn(

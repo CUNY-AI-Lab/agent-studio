@@ -41,7 +41,7 @@ test('quotaSignalFromError omits retryAfter when the envelope has none', () => {
 test('quotaSignalFromError ignores non-quota CailErrors', () => {
   assert.equal(
     quotaSignalFromError(
-      { error: { code: 'authentication_required', message: 'Sign in to continue.', cail: { login_url: '/login' } } },
+      { error: { code: 'authentication_required', message: 'Sign in to continue.', cail: { login_url: '/agent-studio' } } },
     ),
     null,
   );
@@ -117,13 +117,13 @@ test('extractCanonicalCailError preserves auth status from an AI SDK APICallErro
         type: 'authentication_error',
         param: null,
         code: 'authentication_required',
-        cail: { login_url: '/login' },
+        cail: { login_url: '/agent-studio' },
       },
     }),
   });
   assert.equal(cail?.code, 'authentication_required');
   assert.equal(cail?.status, 401);
-  assert.equal(cail?.extras.login_url, '/login');
+  assert.equal(cail?.extras.login_url, '/agent-studio');
 });
 
 test('extractCanonicalCailError ignores unsafe wrapper status values', () => {
@@ -131,7 +131,7 @@ test('extractCanonicalCailError ignores unsafe wrapper status values', () => {
     error: {
       message: 'Sign in to use CAIL models.',
       code: 'authentication_required',
-      cail: { login_url: '/login' },
+      cail: { login_url: '/agent-studio' },
     },
   });
   const throwingStatus = { responseBody };

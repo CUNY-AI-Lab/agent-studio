@@ -14,6 +14,22 @@ const STATUS_LABELS: Record<string, string> = {
   error: 'Something went wrong',
 };
 
+const TOOL_STATE_LABELS: Record<string, string> = {
+  'input-streaming': 'Starting',
+  'input-available': 'Running',
+  'approval-requested': 'Needs approval',
+  'approval-responded': 'Continuing',
+  'output-available': 'Done',
+  'output-error': 'Failed',
+  'output-denied': 'Not run',
+};
+
+function toolDisplayName(name: string): string {
+  const words = name.replace(/^(ui_|tool_)/, '').replaceAll('_', ' ').trim();
+  if (!words) return 'Tool';
+  return `${words[0].toUpperCase()}${words.slice(1)}`;
+}
+
 /**
  * Presentational main chat panel. All state (composer text, chat status,
  * messages, scope) is owned by WorkspaceShell and passed in as props so the
@@ -54,6 +70,13 @@ export function ChatPanel({
     onComposerChange('');
   };
 
+  const clearConversation = () => {
+    if (messages.length > 0 && !window.confirm('Clear this conversation? This permanently deletes its messages.')) {
+      return;
+    }
+    onClear();
+  };
+
   return (
     <section className="flex-1 flex flex-col overflow-hidden">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
@@ -74,7 +97,13 @@ export function ChatPanel({
                   : 'text-accent bg-accent/10'
             )}
           >{statusLabel}</span>
-          <button className="text-xs text-muted-foreground hover:text-foreground transition-colors" onClick={onClear}>Clear</button>
+          <button
+            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+            onClick={clearConversation}
+            aria-label="Clear conversation"
+          >
+            Clear conversation
+          </button>
         </div>
       </div>
       {selectedScopeLabel ? (
@@ -104,9 +133,10 @@ export function ChatPanel({
               </button>
               <button
                 className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                onClick={onClear}
+                onClick={clearConversation}
+                aria-label="Clear conversation"
               >
-                Clear
+                Clear conversation
               </button>
             </div>
           </div>
@@ -157,8 +187,8 @@ export function ChatPanel({
                             : 'bg-secondary text-secondary-foreground border-border'
                       )}
                     >
-                      {tool.name.replace(/^(ui_|tool_)/, '')}
-                      <span className="opacity-60">{tool.state}</span>
+                      {toolDisplayName(tool.name)}
+                      <span className="opacity-60">{TOOL_STATE_LABELS[tool.state] ?? 'Working'}</span>
                     </span>
                   ))}
                   </div>

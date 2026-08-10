@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createTestIdentityIssuer } from '@cuny-ai-lab/cail-identity/testing';
+import { createTestIdentityIssuer } from './helpers/identity.mjs';
 import {
   CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
 } from '../src/lib/cail-identity.ts';
 import {
   MIN_REQUIRED_SESSION_SECRET_LENGTH,
@@ -78,7 +77,7 @@ test('identity configuration is exact and partial configuration fails closed', a
 
   assert.deepEqual(await validateAgentStudioConfig({
     SESSION_SECRET: SECRET,
-    CAIL_IDENTITY_ISSUER: CAIL_STAGING_ISSUER,
+    CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
     CAIL_IDENTITY_JWKS: '{not json',
   }), { ok: false, errorCode: 'cail_identity_jwks_invalid' });
 });

@@ -15,6 +15,8 @@ import {
   verifySignedValue,
   sessionMiddleware,
 } from '../src/lib/session.ts';
+import { createTestIdentityIssuer } from './helpers/identity.mjs';
+import { CAIL_CANONICAL_ISSUER } from '../src/lib/cail-identity.ts';
 
 const SESSION_ID = 'ab'.repeat(16); // 32-hex opaque id shape
 
@@ -63,7 +65,6 @@ test('middleware maps an unloadable identity config to a typed 503, distinct fro
   // The JWKS must be one the verifier can actually load: since cail-identity
   // 5.0.0 an EMPTY key set is a configuration failure (503), not a loaded
   // config that happens to reject the token.
-  const { createTestIdentityIssuer } = await import('@cuny-ai-lab/cail-identity/testing');
   const loadableIssuer = await createTestIdentityIssuer({ kid: 'session-test-key' });
   const unauthorized = await app.request(
     '/api/session',
@@ -71,7 +72,7 @@ test('middleware maps an unloadable identity config to a typed 503, distinct fro
     {
       ...baseEnv,
       CAIL_IDENTITY_JWKS: loadableIssuer.jwksJson ?? JSON.stringify(loadableIssuer.jwks),
-      CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
     }
   );
   assert.equal(unauthorized.status, 401);
@@ -84,7 +85,7 @@ test('middleware maps an unloadable identity config to a typed 503, distinct fro
     {
       ...baseEnv,
       CAIL_IDENTITY_JWKS: '{not-json',
-      CAIL_IDENTITY_ISSUER: 'https://tools.ailab.gc.cuny.edu/cail-sso',
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
     }
   );
   assert.equal(misconfigured.status, 503);

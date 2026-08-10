@@ -88,7 +88,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Open in New Tab
+            Open or download file
           </button>
         </>
           );

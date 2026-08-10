@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createTestIdentityIssuer, TEST_SUBJECTS } from '@cuny-ai-lab/cail-identity/testing';
+import { createTestIdentityIssuer, TEST_SUBJECTS } from './helpers/identity.mjs';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
 

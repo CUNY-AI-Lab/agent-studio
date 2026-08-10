@@ -74,12 +74,12 @@ moves to the next page control; it does not rove among every tile.
   Tiles use a roving tabindex so standard browse-mode navigation still works and
   a screen reader can read tile labels normally. `application` would have
   suppressed browse mode for no benefit.
-- **Tiles = `role="group"`** with `aria-label` "`{title} ({type} tile)`" and
-  `aria-pressed` reflecting selection. A group is the right container role for a
-  labeled region that holds arbitrary artifact content and is itself
-  interactive via a documented key set.
+- **Tiles = `role="group"`** with `aria-label` "`{title} ({type} tile)`". A
+  group is the right container role for a labeled region that holds arbitrary
+  artifact content; workspace tiles are focusable and support the documented
+  keyboard actions.
 - **Group boundaries = `role="group"`**, focusable, labeled by the group name,
-  `aria-pressed` for the active state.
+  with active state conveyed in the accessible label when selected.
 - **Tile menu = `button` (with `aria-haspopup="menu"` / `aria-expanded`) opening
   a `role="menu"` with `role="menuitem"` items.** Simpler correct disclosure
   semantics than a full menubar.

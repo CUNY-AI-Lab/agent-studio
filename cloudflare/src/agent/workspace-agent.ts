@@ -515,8 +515,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (credentialCheck.status !== 'valid' || !identityJwt) {
       const errorText = JSON.stringify(canonicalError(
         'authentication_required',
-        'Sign in with CUNY Login at https://tools.ailab.gc.cuny.edu to use Agent Studio.',
-        { type: 'authentication_error', loginUrl: '/login', retryable: false },
+        'Sign in to continue.',
+        { type: 'authentication_error', loginUrl: '/agent-studio', retryable: false },
       ));
       return createUIMessageStreamResponse({
         stream: createUIMessageStream({

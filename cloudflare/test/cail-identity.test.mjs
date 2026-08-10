@@ -4,10 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SignJWT } from 'jose';
-import {
-  TEST_SUBJECTS,
-  createTestIdentityIssuer,
-} from '@cuny-ai-lab/cail-identity/testing';
+import { TEST_SUBJECTS, createTestIdentityIssuer } from './helpers/identity.mjs';
 import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
 
 /**
@@ -21,7 +18,7 @@ async function verifyWith(token, issuer, overrides = {}) {
     jwks: typeof issuer.jwksJson === 'string' ? issuer.jwksJson : JSON.stringify(issuer.jwks),
     issuer: overrides.issuer ?? CAIL_CANONICAL_ISSUER,
     expectedAudience: overrides.expectedAudience ?? CAIL_IDENTITY_AUDIENCE,
-    supportedIssuers: overrides.supportedIssuers ?? [CAIL_CANONICAL_ISSUER, CAIL_STAGING_ISSUER],
+    supportedIssuers: overrides.supportedIssuers ?? [CAIL_CANONICAL_ISSUER],
     ...(overrides.now === undefined ? {} : { now: overrides.now }),
   });
   if (!loaded.ok) return { configError: loaded.reason };
@@ -38,7 +35,6 @@ import {
   resolveKeyringGatewayJwt,
   sessionIdForSubject,
   CAIL_CANONICAL_ISSUER,
-  CAIL_STAGING_ISSUER,
   CAIL_APP_SLUG,
   CAIL_IDENTITY_HEADER,
   CAIL_IDENTITY_AUDIENCE,
@@ -156,7 +152,7 @@ test('unconfigured identity is anonymous; an unloadable config is a CONFIG error
 test('identity trust is one exact configured issuer and fails closed when ambiguous', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'issuer-key' });
   const productionToken = await mintValid(issuer);
-  const stagingToken = await mintValid(issuer, { issuer: CAIL_STAGING_ISSUER });
+  const otherToken = await mintValid(issuer, { issuer: 'https://identity.example.test/cail-sso' });
   const requestFor = (token) => new Request('https://agent-studio.example/api/session', {
     headers: { [CAIL_IDENTITY_HEADER]: token },
   });
@@ -166,19 +162,15 @@ test('identity trust is one exact configured issuer and fails closed when ambigu
     CAIL_IDENTITY_JWKS: jwks,
     CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
   }, NOW));
-  assert.equal(await getCailIdentityFromRequest(requestFor(stagingToken), {
+  assert.equal(await getCailIdentityFromRequest(requestFor(otherToken), {
     CAIL_IDENTITY_JWKS: jwks,
     CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
   }, NOW), null);
-  assert.ok(await getCailIdentityFromRequest(requestFor(stagingToken), {
-    CAIL_IDENTITY_JWKS: jwks,
-    CAIL_IDENTITY_ISSUER: CAIL_STAGING_ISSUER,
-  }, NOW));
   // A JWKS with no usable issuer is an unloadable CONFIG, not a bad token.
   for (const [issuer, reason] of [
     [undefined, 'issuer_missing'],
     ['', 'issuer_missing'],
-    [`${CAIL_CANONICAL_ISSUER},${CAIL_STAGING_ISSUER}`, 'issuer_unsupported'],
+    [`${CAIL_CANONICAL_ISSUER},https://identity.example.test/cail-sso`, 'issuer_unsupported'],
   ]) {
     assert.deepEqual(await getCailIdentityFromRequest(requestFor(productionToken), {
       CAIL_IDENTITY_JWKS: jwks,
@@ -416,7 +408,7 @@ test('cailAuthRequiredResponse is a 401 with the canonical nested envelope', asy
   assert.equal(response.status, 401);
   const body = await response.json();
   assert.equal(body.error.code, 'authentication_required');
-  assert.equal(body.error.cail.login_url, '/login');
+  assert.equal(body.error.cail.login_url, '/agent-studio');
 });
 
 test('resolveCailModelName honors the override and default', () => {

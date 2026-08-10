@@ -48,6 +48,35 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
     await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Workspace not found');
   });
 
+  it('redirects to sign-in when an export hits an expired session', async () => {
+    const { fetchWorkspaceExport } = await loadApi();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://studio.test',
+        pathname: '/agent-studio/',
+        search: '?workspace=ws-1',
+        assign,
+      },
+    });
+    mockFetch((input) => {
+      if (String(input).includes('/export')) {
+        return jsonResponse({
+          error: {
+            code: 'authentication_required',
+            message: 'Sign in to continue.',
+            type: 'authentication_error',
+            cail: { login_url: '/agent-studio' },
+          },
+        }, 401);
+      }
+      return jsonResponse({}, 200);
+    });
+
+    await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Sign in to continue.');
+    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?workspace=ws-1');
+  });
+
   it('uses a status fallback for a noncanonical JSON error body', async () => {
     const { fetchWorkspaceExport } = await loadApi();
     mockFetch((input) => {
@@ -113,6 +142,47 @@ describe('fetchModels quota errors', () => {
     const error = await fetchModels().catch((nextError: unknown) => nextError);
     expect(error).toBeInstanceOf(ModelsQuotaError);
     expect(error).toHaveProperty('message', 'You have used your $10 monthly AI budget.');
+  });
+
+  it('redirects expired model authentication to the standalone Doorway', async () => {
+    const { fetchModels, ModelsAuthError } = await loadApi();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        origin: 'https://agent-studio.workers.dev',
+        pathname: '/agent-studio/',
+        search: '?workspace=ws-1',
+        assign,
+      },
+    });
+    mockFetch(() => jsonResponse({
+      error: {
+        code: 'authentication_required',
+        message: 'Sign in to continue.',
+        type: 'authentication_error',
+        cail: { login_url: '/agent-studio' },
+      },
+    }, 401));
+
+    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(ModelsAuthError);
+    expect(error).toHaveProperty('message', 'Your sign-in expired. Sign in again to load models.');
+    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?workspace=ws-1');
+  });
+
+  it('keeps non-authentication 401s as plain model errors', async () => {
+    const { fetchModels, ModelsAuthError } = await loadApi();
+    mockFetch(() => jsonResponse({
+      error: {
+        code: 'invalid_token',
+        message: 'Model credential rejected.',
+      },
+    }, 401));
+
+    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(ModelsAuthError);
+    expect(error).toHaveProperty('message', 'Model credential rejected.');
   });
 
   it('throws typed ModelsUnavailableError for 5xx so a broken deployment surfaces', async () => {

@@ -5,7 +5,7 @@ import tailwindcss from '@tailwindcss/vite';
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const workerOrigin = env.VITE_WORKER_ORIGIN || 'http://127.0.0.1:8787';
-  const basePath = env.VITE_BASE_PATH?.trim() || '/';
+  const basePath = env.VITE_BASE_PATH?.trim() || '/agent-studio';
   const normalizedBase = basePath === '/' ? '/' : `${basePath.replace(/^\/*/, '/').replace(/\/+$/, '')}/`;
 
   const manualChunks = (id: string) => {
@@ -90,12 +90,12 @@ export default defineConfig(({ mode }) => {
       host: '127.0.0.1',
       port: 5173,
       proxy: {
-        '/api': workerOrigin,
-        '/agents': {
+        '/agent-studio/api': workerOrigin,
+        '/agent-studio/agents': {
           target: workerOrigin,
           ws: true,
         },
-        '/health': workerOrigin,
+        '/agent-studio/health': workerOrigin,
       },
     },
   };

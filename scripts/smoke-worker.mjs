@@ -48,7 +48,7 @@ function jsonRequest(body) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const baseUrl = args['base-url'] || process.env.AGENT_STUDIO_STAGING_URL || 'http://127.0.0.1:8787';
+  const baseUrl = args['base-url'] || process.env.AGENT_STUDIO_STAGING_URL || 'http://127.0.0.1:8787/agent-studio';
   const workspaceName = args.name || 'Agent Studio smoke workspace';
   const withChat = args['with-chat'] === 'true';
   const identity = assertIdentityCredentials(identityCredentialsFromEnv(), { withChat });

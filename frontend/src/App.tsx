@@ -42,6 +42,7 @@ import {
   fetchModels,
   refreshModelCredential,
   ModelsQuotaError,
+  ModelsAuthError,
   ModelsUnavailableError,
   importWorkspaceBundle,
   publishWorkspace,
@@ -236,7 +237,7 @@ function WorkspaceShell({
     },
     onError: (chatError) => {
       // A model-proxy authentication_required envelope can surface here as a
-      // stringified error body. Follow the /login?rt= redirect if so.
+      // stringified error body. Send the user to the standalone Doorway if so.
       const message = chatError instanceof Error ? chatError.message : String(chatError ?? '');
       if (message.includes('authentication_required')) {
         try {
@@ -345,15 +346,18 @@ function WorkspaceShell({
       })
       .catch((nextError) => {
         if (cancelled) return;
-        if (nextError instanceof ModelsQuotaError) {
-          setModelQuotaNotice("You've used your model time for now. Try again later.");
+        if (nextError instanceof ModelsAuthError) {
+          setModelQuotaNotice('Your sign-in expired. Sign in again to load models.');
+        } else if (nextError instanceof ModelsQuotaError) {
+          setModelQuotaNotice("You've used your AI allowance for now. Try again after it resets.");
         } else if (nextError instanceof ModelsUnavailableError) {
           // A 5xx catalog response (including the deliberate 502 for
           // config/secret drift) means a broken deployment — surface a plain
           // notice instead of silently hiding the picker.
           setModelQuotaNotice("Model choices aren't available right now.");
+        } else {
+          setModelQuotaNotice("Model choices couldn't load. Refresh the workspace to try again.");
         }
-        // Network-level failures remain non-fatal and leave the picker hidden.
       });
     return () => {
       cancelled = true;
@@ -1587,9 +1591,15 @@ function WorkspaceShell({
   }, [savePanelLayouts, visiblePanelIds, workspaceState.groups]);
 
   const removePanels = useCallback(async (panelIds: string[]) => {
+    if (panelIds.length === 0) return false;
+    const label = panelIds.length === 1 ? 'this tile' : `these ${panelIds.length} tiles`;
+    if (!window.confirm(`Remove ${label} from the canvas? Workspace files won't be deleted.`)) {
+      return false;
+    }
     for (const panelId of panelIds) {
       await removePanel(panelId);
     }
+    return true;
   }, [removePanel]);
 
   const minimizePanels = useCallback((panelIds: string[]) => {
@@ -2036,7 +2046,7 @@ function WorkspaceShell({
       onClearContextualDraft={clearContextualDraft}
       onSetMaximizedPanelId={setMaximizedPanelId}
       onRemovePanel={(panelId) => {
-        void removePanel(panelId);
+        void removePanels([panelId]);
       }}
     />
   ), [
@@ -2045,7 +2055,7 @@ function WorkspaceShell({
     maximizedPanelId,
     openContextualChatForPanel,
     revealFileInWorkspace,
-    removePanel,
+    removePanels,
     workspace.workspace.id,
   ]);
 
@@ -2110,6 +2120,9 @@ function WorkspaceShell({
 
   const handleUnpublish = useCallback(async () => {
     if (!workspace.workspace.galleryId) return;
+    if (!window.confirm('Remove this workspace from the gallery? Your workspace and files will stay private to you.')) {
+      return;
+    }
     setPublishing(true);
     setError(null);
     try {
@@ -2261,8 +2274,9 @@ function WorkspaceShell({
       if ((event.key === 'Delete' || event.key === 'Backspace') && selectedPanelIds.size > 0) {
         event.preventDefault();
         const panelIds = Array.from(selectedPanelIds);
-        clearSelection();
-        void removePanels(panelIds);
+        void removePanels(panelIds).then((removed) => {
+          if (removed) clearSelection();
+        });
         return;
       }
 
@@ -2618,8 +2632,12 @@ function WorkspaceShell({
 
         {isDrawerChatLayout ? (
           <div className="flex-shrink-0 flex items-center gap-1 px-4 py-1.5 border-b border-border/50 bg-card/40 backdrop-blur-sm">
-            <div className="inline-flex rounded-lg bg-muted/60 p-0.5">
+            <div className="inline-flex rounded-lg bg-muted/60 p-0.5" role="tablist" aria-label="Workspace view">
               <button
+                id="canvas-tab"
+                role="tab"
+                aria-selected={narrowActiveTab === 'canvas'}
+                aria-controls="canvas-panel"
                 onClick={() => setNarrowActiveTab('canvas')}
                 className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
                   narrowActiveTab === 'canvas'
@@ -2630,6 +2648,10 @@ function WorkspaceShell({
                 Canvas
               </button>
               <button
+                id="chat-tab"
+                role="tab"
+                aria-selected={narrowActiveTab === 'chat'}
+                aria-controls="chat-panel"
                 onClick={() => setNarrowActiveTab('chat')}
                 className={`relative px-3 py-1 rounded-md text-xs font-medium transition-all ${
                   narrowActiveTab === 'chat'
@@ -2648,7 +2670,12 @@ function WorkspaceShell({
 
         {fileShelf}
 
-        <div className="flex-1 flex flex-col min-h-0 relative">
+        <div
+          id="canvas-panel"
+          role="tabpanel"
+          aria-labelledby="canvas-tab"
+          className="flex-1 flex flex-col min-h-0 relative"
+        >
           <div className="canvas-header flex items-center justify-between px-4 py-2 z-10">
             <div />
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -2881,10 +2908,11 @@ function WorkspaceShell({
                 onRemoveFromGroup={toolbarSinglePanelGroup && toolbarPanel ? () => void removePanelFromGroup(toolbarPanel.id) : undefined}
                 onRemove={selectedPanelIds.size > 0 ? () => {
                   const panelIds = selectedPanels.map((panel) => panel.id);
-                  clearSelection();
-                  void removePanels(panelIds);
+                  void removePanels(panelIds).then((removed) => {
+                    if (removed) clearSelection();
+                  });
                 } : (toolbarPanel ? () => {
-                  void removePanel(toolbarPanel.id);
+                  void removePanels([toolbarPanel.id]);
                 } : undefined)}
                 onHoverChange={(hovering) => {
                   if (selectedPanelIds.size > 0 || !hoveredPanel) return;
@@ -2941,7 +2969,7 @@ function WorkspaceShell({
         </div>
       </main>
       {isDrawerChatLayout && narrowActiveTab === 'chat' ? (
-        <div className="flex-1 min-h-0 chat-panel flex flex-col">
+        <div id="chat-panel" role="tabpanel" aria-labelledby="chat-tab" className="flex-1 min-h-0 chat-panel flex flex-col">
           {chatPanelContent}
         </div>
       ) : null}
@@ -3024,6 +3052,15 @@ export default function App() {
     setGalleryItems(items);
   }, []);
 
+  const loadHome = useCallback(async () => {
+    setError(null);
+    try {
+      await Promise.all([loadWorkspaces(), loadGallery()]);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : "Agent Studio couldn't load. Try again.");
+    }
+  }, [loadGallery, loadWorkspaces]);
+
   const loadWorkspace = useCallback(async (workspaceId: string) => {
     setLoading(true);
     setError(null);
@@ -3039,9 +3076,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    void loadWorkspaces();
-    void loadGallery();
-  }, [loadGallery, loadWorkspaces]);
+    void loadHome();
+  }, [loadHome]);
 
   useEffect(() => {
     if (!selectedWorkspaceId) {
@@ -3088,14 +3124,16 @@ export default function App() {
       });
   }, [selectedGalleryId, selectedWorkspaceId]);
 
-  const handleDeleteWorkspace = useCallback(async () => {
-    if (!selectedWorkspaceId) return;
+  const handleDeleteWorkspace = useCallback(async (): Promise<boolean> => {
+    if (!selectedWorkspaceId) return false;
     setError(null);
     try {
       await deleteWorkspace(selectedWorkspaceId);
       await loadWorkspaces();
+      return true;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to delete workspace');
+      return false;
     }
   }, [loadWorkspaces, selectedWorkspaceId]);
 
@@ -3174,7 +3212,12 @@ export default function App() {
       <div className="grain h-screen flex flex-col canvas-bg">
         <div className="px-6 py-3 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
           {error}
-          <button className="ml-4 underline" onClick={handleGoHome}>Go home</button>
+          <button
+            className="ml-4 underline"
+            onClick={selectedWorkspaceId || selectedGalleryId ? handleGoHome : () => void loadHome()}
+          >
+            {selectedWorkspaceId || selectedGalleryId ? 'Go home' : 'Try again'}
+          </button>
         </div>
       </div>
     );
@@ -3214,8 +3257,14 @@ export default function App() {
             }}
             onGoHome={handleGoHome}
             onDelete={async () => {
-              await handleDeleteWorkspace();
-              handleGoHome();
+              const workspaceName = selectedWorkspace.workspace.name.trim() || 'Untitled workspace';
+              const confirmed = window.confirm(
+                `Delete “${workspaceName}”? This permanently removes its chat, files, and canvas. You can’t undo this.`
+              );
+              if (!confirmed) return;
+              if (await handleDeleteWorkspace()) {
+                handleGoHome();
+              }
             }}
             onWorkspaceRefresh={async (workspaceId) => {
               await loadWorkspace(workspaceId);

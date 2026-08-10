@@ -18,7 +18,7 @@ export function FilePreview({
   const isPdf = panel.type === 'pdf';
   const isHtml = /\.html?$/i.test(panel.filePath);
 
-  if (error) return <div className="panel-empty">{error}</div>;
+  if (error) return <div className="panel-empty">We couldn’t load this file. Try again or download it.</div>;
   if (!url) return <div className="panel-empty">Loading file…</div>;
 
   if (isImage) {
@@ -104,14 +104,14 @@ function ProtectedPreviewFrame({
     let created: string | null = null;
     setLoadError(null);
     void fetchWorkspacePanelPreview(fileSource.id, panel.id).then(async (response) => {
-      if (!response.ok) throw new Error(`Failed to load preview (${response.status})`);
+      if (!response.ok) throw new Error('We couldn’t load this file. Try again or download it.');
       created = URL.createObjectURL(await response.blob());
       if (active) setObjectUrl(created);
       else URL.revokeObjectURL(created);
-    }).catch((fetchError) => {
+    }).catch(() => {
       if (active) {
         setObjectUrl(null);
-        setLoadError(fetchError instanceof Error ? fetchError.message : 'Failed to load preview');
+        setLoadError('We couldn’t load this file. Try again or download it.');
       }
     });
     return () => {

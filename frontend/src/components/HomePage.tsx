@@ -54,7 +54,7 @@ export function HomePage({
       {/* Theme toggle */}
       <ThemeToggle className="fixed top-4 right-4 z-50" />
 
-      <div className="max-w-3xl mx-auto px-6 py-16">
+      <main className="max-w-3xl mx-auto px-6 py-16">
         {/* Header */}
         <header className="mb-12 animate-fade-in text-center">
           <div className="inline-flex items-center gap-2 mb-6">
@@ -84,6 +84,7 @@ export function HomePage({
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Ask anything or describe what you want to build..."
+                aria-label="What would you like to work on?"
                 className="w-full px-5 py-4 pr-14 text-base rounded-2xl border border-border bg-card transition-all focus:outline-none focus:border-primary/50 focus:shadow-lg focus:shadow-primary/5"
                 autoFocus
                 disabled={busy}
@@ -218,7 +219,7 @@ export function HomePage({
         <footer className="mt-16 pt-8 border-t border-border/30 text-center">
           <p className="text-xs text-muted-foreground/70">Built for the CUNY community</p>
         </footer>
-      </div>
+      </main>
     </div>
   );
 }

@@ -1,5 +1,4 @@
 import {
-  getToolName,
   isTextUIPart,
   isToolUIPart,
   type UIMessage,
@@ -23,7 +22,7 @@ export function extractMessageText(message: UIMessage): string {
   return message.parts
     .map((part) => {
       if (isTextUIPart(part)) return part.text;
-      if (isToolUIPart(part)) return `[tool:${getToolName(part)}]`;
+      if (isToolUIPart(part)) return '';
       return '';
     })
     .filter(Boolean)

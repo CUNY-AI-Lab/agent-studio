@@ -44,7 +44,7 @@ describe('PanelMenu', () => {
   it('offers file actions only for file-backed panels', () => {
     render(<PanelMenu {...makeProps(filePanel)} />);
     expect(screen.getByRole('menuitem', { name: 'Show in Workspace Files' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'Open in New Tab' })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: 'Open or download file' })).toBeInTheDocument();
   });
 
   it('does not show file actions for a non-file panel', () => {

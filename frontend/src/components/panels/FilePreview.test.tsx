@@ -40,7 +40,7 @@ describe('FilePreview failure surfacing', () => {
         panel={{ id: 'panel-1', type: 'editor', filePath: 'notes.md' }}
       />,
     );
-    expect(await screen.findByText('Failed to load file (404)')).toBeInTheDocument();
+    expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();
     expect(screen.queryByText('Loading file…')).not.toBeInTheDocument();
   });
 
@@ -52,7 +52,7 @@ describe('FilePreview failure surfacing', () => {
         panel={{ id: 'panel-1', type: 'editor', filePath: 'notes.md' }}
       />,
     );
-    expect(await screen.findByText('network down')).toBeInTheDocument();
+    expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();
   });
 
   it('surfaces a failed panel preview fetch instead of loading forever', async () => {
@@ -65,7 +65,7 @@ describe('FilePreview failure surfacing', () => {
         panel={{ id: 'panel-2', type: 'preview', content: '<p>hi</p>' }}
       />,
     );
-    expect(await screen.findByText('Failed to load preview (500)')).toBeInTheDocument();
+    expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();
     expect(screen.queryByText('Loading preview…')).not.toBeInTheDocument();
   });
 });

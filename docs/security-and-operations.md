@@ -21,16 +21,14 @@ Studio stores no provider key.
 ## CAIL identity
 
 Only `X-CAIL-Identity-JWT` is an application identity credential. The Worker
-verifies its RS256 signature against `CAIL_IDENTITY_JWKS`, accepts one exact
-configured issuer for the environment, and requires audience
-`cail:agent-studio`. The supported CUNY issuer values are selected in source;
-an operator configures exactly one of them for a deployment. The stable
+verifies its RS256 signature against `CAIL_IDENTITY_JWKS`, accepts CAIL's one
+canonical Doorway issuer, and requires audience `cail:agent-studio`. The stable
 pseudonymous CAIL subject is the ownership key. Email and bare identity
 headers are never authorization inputs.
 
-The production issuer is `https://tools.ailab.gc.cuny.edu/cail-sso`; staging
-uses `https://tools.cuny.qzz.io/cail-sso`. A deployment selects one exact
-issuer and never combines the two.
+Production and staging use the standalone Doorway issuer
+`https://cail-doorway.ailab-452.workers.dev/cail-sso` and canonical origin
+`https://cail-doorway.ailab-452.workers.dev`.
 
 Before a model call, the server may install the separate
 `X-CAIL-Gateway-Identity-JWT` credential into the workspace Durable Object.
@@ -142,21 +140,23 @@ bun run smoke:staging
 The smoke script never prints tokens, subjects, emails, identifiers, or user
 content. Keep its environment private.
 
-## Reviewed staging deploy
+## Reviewed deploys
 
-After reviewing source and running the checks, deploy only the named staging
-environment:
+After reviewing source and running the checks, deploy production or the named
+staging environment directly from the manifest:
 
 ```bash
 cd cloudflare
+wrangler deploy --strict
 wrangler deploy --env staging --strict
 ```
 
-The manifest supplies the staging CAIL Model API through both `GATEWAY` and
-`CAIL_API_BASE`, uses the staging issuer, and selects the isolated preview R2
-bucket. Do not override those bindings, identity settings, routes, or bucket
-names on the command line. Run the authenticated smoke after activation and
-confirm that the synthetic workspace was deleted.
+The production manifest binds the production CAIL Model API and `agent-studio`
+bucket. The staging environment binds the staging Model API and isolated
+`agent-studio-preview` bucket. Both use the canonical Doorway issuer. Do not
+override those bindings, identity settings, routes, or bucket names on the
+command line. Run the authenticated smoke after activation and confirm that
+the synthetic workspace was deleted.
 
 Keep `SESSION_SECRET`, `CAIL_IDENTITY_JWKS`, and optional tool credentials in
 the authorized secret store. Gallery ownership uses a private tag keyed by the

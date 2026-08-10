@@ -20,7 +20,7 @@ function makeProps(overrides: Partial<Parameters<typeof DraggablePanel>[0]> = {}
 }
 
 function getTile() {
-  return screen.getByRole('group', { name: 'Sales Report (Table tile)' });
+  return screen.getByRole('group', { name: /Sales Report \(Table tile\)/ });
 }
 
 describe('DraggablePanel keyboard interaction', () => {
@@ -128,10 +128,11 @@ describe('DraggablePanel keyboard interaction', () => {
     expect(screen.getByRole('menu', { name: 'Actions for Sales Report' })).toBeInTheDocument();
   });
 
-  it('reflects selection through aria-pressed', () => {
+  it('announces selection without applying an invalid pressed state to a group', () => {
     const { rerender } = render(<DraggablePanel {...makeProps({ isSelected: false })} />);
-    expect(getTile()).toHaveAttribute('aria-pressed', 'false');
+    expect(getTile()).toHaveAccessibleName('Sales Report (Table tile)');
+    expect(getTile()).not.toHaveAttribute('aria-pressed');
     rerender(<DraggablePanel {...makeProps({ isSelected: true })} />);
-    expect(getTile()).toHaveAttribute('aria-pressed', 'true');
+    expect(getTile()).toHaveAccessibleName('Sales Report (Table tile), selected');
   });
 });

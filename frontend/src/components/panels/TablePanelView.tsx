@@ -38,7 +38,12 @@ export function TablePanelView({ panel }: { panel: Extract<WorkspacePanel, { typ
         <thead>
           <tr>
             {panel.columns.map((column) => (
-              <th key={column.key}>
+              <th
+                key={column.key}
+                aria-sort={sortKey === column.key
+                  ? sortDirection === 'asc' ? 'ascending' : 'descending'
+                  : 'none'}
+              >
                 <button
                   className="panel-table-sort"
                   onClick={() => {

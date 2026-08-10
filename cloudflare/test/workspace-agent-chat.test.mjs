@@ -637,7 +637,7 @@ test('anonymous chat streams an authentication error instead of assistant JSON',
   assert.match(response.headers.get('content-type'), /text\/event-stream/);
   assert.equal(event.type, 'error');
   assert.equal(payload.error.code, 'authentication_required');
-  assert.equal(payload.error.cail.login_url, '/login');
+  assert.equal(payload.error.cail.login_url, '/agent-studio');
 });
 
 test('WebSocket chat admission uses the heavy rate-limit binding', async () => {

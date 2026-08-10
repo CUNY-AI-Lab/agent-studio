@@ -45,7 +45,7 @@ function sessionResponse() {
   });
 }
 
-function authRequiredPayload(loginUrl = '/login') {
+function authRequiredPayload(loginUrl = '/agent-studio') {
   return {
     error: {
       message: 'Sign in to continue.',
@@ -57,7 +57,7 @@ function authRequiredPayload(loginUrl = '/login') {
   };
 }
 
-function authRequiredResponse(loginUrl = '/login') {
+function authRequiredResponse(loginUrl = '/agent-studio') {
   return new Response(JSON.stringify(authRequiredPayload(loginUrl)), {
     status: 401,
     headers: { 'Content-Type': 'application/json' },
@@ -111,8 +111,8 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     vi.stubGlobal('window', {
       location: {
         origin: 'https://studio.test',
-        pathname: '/gallery',
-        search: '?id=abc',
+        pathname: '/agent-studio/',
+        search: '?gallery=abc',
         assign,
       },
     });
@@ -130,7 +130,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
 
     await expect(ensureCsrfToken()).rejects.toThrow('Sign in to continue.');
     expect(assign).toHaveBeenCalledOnce();
-    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?gallery=abc');
     expect(jsonSpy).toHaveBeenCalledOnce();
 
     const token = await ensureCsrfToken();
@@ -155,8 +155,8 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     vi.stubGlobal('window', {
       location: {
         origin: 'https://studio.test',
-        pathname: '/gallery',
-        search: '?id=abc',
+        pathname: '/agent-studio/',
+        search: '?gallery=abc',
         assign,
       },
     });
@@ -169,26 +169,26 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
-  it('rejects unsafe login paths and avoids redirecting the login route to itself', async () => {
+  it('always sends an auth challenge to the standalone Doorway', async () => {
     const { handleAuthRequired } = await loadApi();
     const assign = vi.fn();
     const location = {
       origin: 'https://studio.test',
-      pathname: '/gallery',
-      search: '?id=abc',
+      pathname: '/agent-studio/',
+      search: '?gallery=abc',
       assign,
     };
     vi.stubGlobal('window', { location });
 
     expect(handleAuthRequired(401, authRequiredPayload('//evil.test/login'))).toBe(true);
-    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?gallery=abc');
 
     assign.mockClear();
-    location.pathname = '/login';
+    location.pathname = '/agent-studio';
     expect(handleAuthRequired(401, {
-      error: { code: 'authentication_required', cail: { login_url: '/login' } },
-    })).toBe(false);
-    expect(assign).not.toHaveBeenCalled();
+      error: { code: 'authentication_required', cail: { login_url: '/agent-studio' } },
+    })).toBe(true);
+    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio?gallery=abc');
   });
 
   it('ignores flat and top-level legacy authentication fields', async () => {
@@ -197,8 +197,8 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     vi.stubGlobal('window', {
       location: {
         origin: 'https://studio.test',
-        pathname: '/gallery',
-        search: '?id=abc',
+        pathname: '/agent-studio/',
+        search: '?gallery=abc',
         assign,
       },
     });
@@ -208,7 +208,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
       error: { code: 'authentication_required' },
       login_url: '/legacy-login',
     })).toBe(true);
-    expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
+    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?gallery=abc');
   });
 
   it('mutatingFetch attaches the X-CSRF-Token header with the cookie token', async () => {

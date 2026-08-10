@@ -6,7 +6,7 @@ test('canonicalError emits the nested CAIL envelope directly', () => {
   assert.deepEqual(canonicalError('authentication_required', 'Sign in to continue.', {
     type: 'authentication_error',
     retryable: false,
-    loginUrl: '/login',
+    loginUrl: '/agent-studio',
     requestId: 'req-1',
   }), {
     error: {
@@ -14,7 +14,7 @@ test('canonicalError emits the nested CAIL envelope directly', () => {
       type: 'authentication_error',
       param: null,
       code: 'authentication_required',
-      cail: { login_url: '/login', request_id: 'req-1', retryable: false },
+      cail: { login_url: '/agent-studio', request_id: 'req-1', retryable: false },
     },
   });
 });

@@ -22,6 +22,15 @@ describe('extractMessageText', () => {
   it('returns empty string when parts are missing', () => {
     expect(extractMessageText({ id: 'm', role: 'user' } as unknown as UIMessage)).toBe('');
   });
+
+  it('omits tool parts from user-facing message text', () => {
+    const msg = {
+      id: 'm',
+      role: 'assistant',
+      parts: [{ type: 'tool-write_file', toolCallId: 't1', state: 'output-available', input: {}, output: {} }],
+    } as unknown as UIMessage;
+    expect(extractMessageText(msg)).toBe('');
+  });
 });
 
 describe('getContextualStatusLabel', () => {

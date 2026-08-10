@@ -27,9 +27,10 @@ use the direct AI SDK transport through `GATEWAY`, with `CAIL_API_BASE` as the
 CAIL Model API address and `X-CAIL-App: agent-studio`. Agent Studio stores no
 provider key.
 
-Use `https://tools.ailab.gc.cuny.edu/cail-sso` for the production issuer and
-`https://tools.cuny.qzz.io/cail-sso` for staging. Configure exactly one issuer
-with its matching JWKS.
+Production and staging use the standalone Doorway issuer
+`https://cail-doorway.ailab-452.workers.dev/cail-sso` and canonical origin
+`https://cail-doorway.ailab-452.workers.dev`. Configure that one issuer with
+its matching JWKS.
 
 Workspace state and chat messages live in the Durable Object. Workspace
 records and files live in R2. Dynamic Workers isolate code execution. Staging
@@ -73,8 +74,8 @@ wrangler deploy --env staging --strict
 ```
 
 The `staging` environment binds `GATEWAY` and `CAIL_API_BASE` to the staging
-CAIL Model API, requires the staging identity settings, and uses the isolated
-preview R2 bucket. After activation, run the authenticated smoke with
+CAIL Model API, requires the canonical Doorway identity settings, and uses the
+isolated preview R2 bucket. After activation, run the authenticated smoke with
 `AGENT_STUDIO_STAGING_URL`, `AGENT_STUDIO_APP_IDENTITY_JWT`, and
 `AGENT_STUDIO_GATEWAY_IDENTITY_JWT` supplied through the private environment.
 
