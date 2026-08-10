@@ -19,28 +19,44 @@ function parseRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? value as Record<string, unknown> : null;
 }
 
+function readHttpStatus(record: Record<string, unknown>): number | undefined {
+  try {
+    const status = record.statusCode;
+    return Number.isInteger(status) && Number(status) >= 100 && Number(status) <= 599
+      ? Number(status)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Extract only explicit nested `error.cail` evidence from SDK wrappers. */
 export function extractCanonicalCailError(error: unknown): CanonicalCailError | null {
-  const queue: unknown[] = [error];
+  const queue: Array<{ value: unknown; status?: number }> = [{ value: error }];
   const seen = new Set<object>();
   for (let visited = 0; queue.length > 0 && visited < 256; visited += 1) {
-    const record = parseRecord(queue.shift());
+    const current = queue.shift();
+    if (!current) continue;
+    const record = parseRecord(current.value);
     if (!record || seen.has(record)) continue;
     seen.add(record);
+    const status = readHttpStatus(record) ?? current.status;
     const nested = parseRecord(record.error);
     const cail = parseRecord(nested?.cail);
     if (nested && cail && typeof nested.code === 'string' && typeof nested.message === 'string') {
       return {
         code: nested.code,
         message: nested.message,
-        status: typeof record.statusCode === 'number' ? record.statusCode : undefined,
+        status,
         extras: cail,
       };
     }
     for (const child of [record.responseBody, record.cause, record.data, record.lastError, record.error]) {
-      if (child !== undefined) queue.push(child);
+      if (child !== undefined) queue.push({ value: child, status });
     }
-    if (Array.isArray(record.errors)) queue.push(...record.errors);
+    if (Array.isArray(record.errors)) {
+      queue.push(...record.errors.map((value) => ({ value, status })));
+    }
   }
   return null;
 }

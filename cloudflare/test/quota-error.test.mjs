@@ -1,7 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { quotaSignalFromError } from '../src/lib/quota-error.ts';
+import {
+  extractCanonicalCailError,
+  quotaSignalFromError,
+} from '../src/lib/quota-error.ts';
 
 const QUOTA_MESSAGE =
   'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
@@ -102,6 +105,49 @@ test('quotaSignalFromError extracts the canonical envelope from an AI SDK APICal
   assert.equal(parsed.error.code, 'quota_exceeded');
   assert.equal(parsed.error.message, QUOTA_MESSAGE);
   assert.equal(parsed.error.cail.retry_after_seconds, 1800);
+});
+
+test('extractCanonicalCailError preserves auth status from an AI SDK APICallError shape', () => {
+  const cail = extractCanonicalCailError({
+    name: 'AI_APICallError',
+    statusCode: 401,
+    responseBody: JSON.stringify({
+      error: {
+        message: 'Sign in to use CAIL models.',
+        type: 'authentication_error',
+        param: null,
+        code: 'authentication_required',
+        cail: { login_url: '/login' },
+      },
+    }),
+  });
+  assert.equal(cail?.code, 'authentication_required');
+  assert.equal(cail?.status, 401);
+  assert.equal(cail?.extras.login_url, '/login');
+});
+
+test('extractCanonicalCailError ignores unsafe wrapper status values', () => {
+  const responseBody = JSON.stringify({
+    error: {
+      message: 'Sign in to use CAIL models.',
+      code: 'authentication_required',
+      cail: { login_url: '/login' },
+    },
+  });
+  const throwingStatus = { responseBody };
+  Object.defineProperty(throwingStatus, 'statusCode', {
+    get() {
+      throw new Error('untrusted status getter');
+    },
+  });
+
+  assert.equal(extractCanonicalCailError(throwingStatus)?.status, undefined);
+  for (const statusCode of [Number.NaN, Number.POSITIVE_INFINITY, 99, 600]) {
+    assert.equal(
+      extractCanonicalCailError({ statusCode, responseBody })?.status,
+      undefined,
+    );
+  }
 });
 
 test('quotaSignalFromError ignores an ordinary provider quota-shaped error without CAIL evidence', () => {
