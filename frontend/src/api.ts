@@ -101,13 +101,13 @@ async function requestCsrfToken(): Promise<string> {
     // include the upstream body in the thrown bootstrap error.
     const { payload } = await readResponseError(response);
     if (handleAuthRequired(response.status, payload)) {
-      throw new Error('Authentication required');
+      throw new Error('Sign in to continue.');
     }
-    throw new Error(`Session bootstrap failed with ${response.status}`);
+    throw new Error("Agent Studio couldn't start. Reload the page and try again.");
   }
   const token = readCookie(CSRF_COOKIE_NAME);
   if (!token) {
-    throw new Error('Session bootstrap did not set the CSRF cookie');
+    throw new Error("Agent Studio couldn't start. Reload the page and try again.");
   }
   return token;
 }
@@ -202,7 +202,7 @@ async function readResponseError(
     payload,
     message: typeof message === 'string' && message.length > 0
       ? message
-      : `Request failed with ${response.status}`,
+      : "That didn't work. Try again.",
   };
 }
 
@@ -211,7 +211,7 @@ async function parseJson<T>(response: Response): Promise<T> {
     const { payload, message } = await readResponseError(response);
     if (handleAuthRequired(response.status, payload)) {
       // Redirecting to /login; reject with a benign message so callers stop.
-      throw new Error('Authentication required');
+      throw new Error('Sign in to continue.');
     }
     throw new Error(message);
   }
@@ -225,14 +225,14 @@ export async function refreshModelCredential(workspaceId: string): Promise<void>
   });
   if (response.ok) {
     if (response.status !== 204) {
-      throw new Error(`Request failed with ${response.status}`);
+      throw new Error("That didn't work. Try again.");
     }
     return;
   }
 
   const { payload, message } = await readResponseError(response);
   if (handleAuthRequired(response.status, payload)) {
-    throw new Error('Authentication required');
+    throw new Error('Sign in to continue.');
   }
   throw new Error(message);
 }
@@ -440,7 +440,7 @@ export async function fetchGalleryItems(): Promise<GalleryItem[]> {
     items.push(...payload.items);
     cursor = payload.nextCursor;
     if (cursor) {
-      if (seenCursors.has(cursor)) throw new Error('Gallery pagination cursor repeated');
+      if (seenCursors.has(cursor)) throw new Error("Couldn't load the gallery. Try again.");
       seenCursors.add(cursor);
     }
   } while (cursor);

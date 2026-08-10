@@ -346,14 +346,12 @@ function WorkspaceShell({
       .catch((nextError) => {
         if (cancelled) return;
         if (nextError instanceof ModelsQuotaError) {
-          setModelQuotaNotice(nextError.message || 'Model list unavailable: usage quota reached.');
+          setModelQuotaNotice("You've used your model time for now. Try again later.");
         } else if (nextError instanceof ModelsUnavailableError) {
           // A 5xx catalog response (including the deliberate 502 for
-          // config/secret drift) means a broken deployment — surface it
-          // instead of silently hiding the picker.
-          setModelQuotaNotice(
-            `Model list unavailable: ${nextError.message || 'the model catalog failed upstream.'}`
-          );
+          // config/secret drift) means a broken deployment — surface a plain
+          // notice instead of silently hiding the picker.
+          setModelQuotaNotice("Model choices aren't available right now.");
         }
         // Network-level failures remain non-fatal and leave the picker hidden.
       });
@@ -2154,7 +2152,7 @@ function WorkspaceShell({
       setContextualThreads((current) => {
         const thread = current[pending.scopeKey] || [];
         const lastMessage = thread[thread.length - 1];
-        if (lastMessage?.role === 'assistant' && lastMessage.content === 'Sorry, there was an error processing your request.') {
+        if (lastMessage?.role === 'assistant' && lastMessage.content === "That request didn't go through. Try again.") {
           return current;
         }
 
@@ -2165,7 +2163,7 @@ function WorkspaceShell({
             {
               id: makeClientId('context-assistant'),
               role: 'assistant',
-              content: 'Sorry, there was an error processing your request.',
+              content: "That request didn't go through. Try again.",
             },
           ],
         };

@@ -24,7 +24,7 @@ export function FileTreePanelView({
   );
 
   if (!files) {
-    return <div className="panel-empty">File tree data is only available inside editable workspaces.</div>;
+    return <div className="panel-empty">Files show up only in workspaces you can edit.</div>;
   }
 
   if (entries.length === 0) {

@@ -53,7 +53,7 @@ export function CanvasZoomControls({ zoom, viewportX, viewportY }: { zoom: numbe
         <button
           onClick={() => setTransform(0, 0, 1, 0)}
           className="rounded px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          title="Reset viewport"
+          title="Reset view"
           aria-label="Reset zoom and position"
         >
           Reset

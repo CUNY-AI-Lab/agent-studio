@@ -213,7 +213,7 @@ export const sessionMiddleware: MiddlewareHandler<{
     return c.json(
       canonicalError(
         'legacy_session_claimed',
-        'This previous session is being moved to the signed-in account. Sign in and retry.',
+        "We're moving your work to your account. Sign in and try again.",
         { type: 'conflict_error', retryable: true },
       ),
       409,

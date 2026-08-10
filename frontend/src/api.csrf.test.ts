@@ -128,7 +128,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
       return sessionResponse();
     });
 
-    await expect(ensureCsrfToken()).rejects.toThrow('Authentication required');
+    await expect(ensureCsrfToken()).rejects.toThrow('Sign in to continue.');
     expect(assign).toHaveBeenCalledOnce();
     expect(assign).toHaveBeenCalledWith('/login?rt=%2Fgallery%3Fid%3Dabc');
     expect(jsonSpy).toHaveBeenCalledOnce();
@@ -140,16 +140,16 @@ describe('CSRF fetch helper (cookie delivery)', () => {
   });
 
   it.each([
-    ['malformed 401', new Response('secret malformed body', { status: 401 }), 401],
+    ['malformed 401', new Response('secret malformed body', { status: 401 })],
     ['non-auth 401', new Response(JSON.stringify({ error: { code: 'invalid_token', message: 'secret details' } }), {
       status: 401,
       headers: { 'Content-Type': 'application/json' },
-    }), 401],
+    })],
     ['server failure', new Response(JSON.stringify({ error: { code: 'internal_error', message: 'secret details' } }), {
       status: 503,
       headers: { 'Content-Type': 'application/json' },
-    }), 503],
-  ])('does not redirect or leak the body for %s bootstrap failures', async (_label, response, status) => {
+    })],
+  ])('does not redirect or leak the body for %s bootstrap failures', async (_label, response) => {
     const { ensureCsrfToken } = await loadApi();
     const assign = vi.fn();
     vi.stubGlobal('window', {
@@ -164,7 +164,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
 
     const error = await ensureCsrfToken().catch((nextError: unknown) => nextError);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe(`Session bootstrap failed with ${status}`);
+    expect((error as Error).message).toBe("Agent Studio couldn't start. Reload the page and try again.");
     expect((error as Error).message).not.toContain('secret');
     expect(assign).not.toHaveBeenCalled();
   });

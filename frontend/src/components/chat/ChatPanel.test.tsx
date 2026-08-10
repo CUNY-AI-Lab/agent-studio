@@ -22,9 +22,18 @@ const baseProps = {
 };
 
 describe('ChatPanel', () => {
-  it('shows the current chat status', () => {
+  it('shows the current chat status in plain words', () => {
     render(<ChatPanel {...baseProps} status="ready" />);
-    expect(screen.getByText('ready')).toBeInTheDocument();
+    expect(screen.getByText('Ready')).toBeInTheDocument();
+    expect(screen.queryByText('ready')).not.toBeInTheDocument();
+  });
+
+  it('maps working states and unknown states to plain words', () => {
+    const { rerender } = render(<ChatPanel {...baseProps} status="streaming" />);
+    expect(screen.getByText('Working…')).toBeInTheDocument();
+    rerender(<ChatPanel {...baseProps} status="some-new-state" />);
+    expect(screen.getByText('Working…')).toBeInTheDocument();
+    expect(screen.queryByText('some-new-state')).not.toBeInTheDocument();
   });
 
   it('renders a user message', () => {

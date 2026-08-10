@@ -89,6 +89,6 @@ export function PanelBody({
         />
       );
     default:
-      return <div className="panel-file">Panel type not rendered yet.</div>;
+      return <div className="panel-file">Nothing to show here yet.</div>;
   }
 }

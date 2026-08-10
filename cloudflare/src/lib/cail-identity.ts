@@ -235,7 +235,7 @@ export function cailIdentityMisconfiguredResponse(): Response {
   return new Response(
     JSON.stringify(canonicalError(
       'identity_verification_misconfigured',
-      'CAIL identity verification is not configured on this service, which is a CAIL configuration problem. Please report this to ailab@gc.cuny.edu.',
+      "Agent Studio isn't set up correctly right now. Email ailab@gc.cuny.edu.",
       { type: 'api_error', retryable: true },
     )),
     { status: 503, headers: { 'Content-Type': 'application/json' } },

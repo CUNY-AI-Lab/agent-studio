@@ -56,7 +56,7 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
       }
       return jsonResponse({}, 200);
     });
-    await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Request failed with 500');
+    await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow("That didn't work. Try again.");
   });
 
   it('falls back to a status string when the error body is not JSON', async () => {
@@ -70,7 +70,7 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
       }
       return jsonResponse({}, 200);
     });
-    await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Request failed with 502');
+    await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow("That didn't work. Try again.");
   });
 
   it('returns the blob + parsed filename on success', async () => {
@@ -137,7 +137,7 @@ describe('fetchModels quota errors', () => {
     mockFetch(() => jsonResponse({
       error: {
         code: 'upstream_error',
-        message: 'Model catalog authentication failed',
+        message: "Couldn't load the model list.",
         type: 'api_error',
         retryable: false,
       },

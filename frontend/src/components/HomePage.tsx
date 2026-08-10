@@ -5,7 +5,7 @@ import type { GalleryItem, WorkspaceRecord } from '../types';
 const EXAMPLE_PROMPTS = [
   { label: 'Analyze a CSV', prompt: 'Upload and analyze a CSV data file with summary statistics and visualizations' },
   { label: 'Build a dashboard', prompt: 'Create an interactive dashboard with charts and key metrics' },
-  { label: 'Search an API', prompt: 'Search a public API and display the results in a structured table' },
+  { label: 'Search a public data source', prompt: 'Search a public data source and display the results in a structured table' },
   { label: 'Compare datasets', prompt: 'Compare two datasets and highlight differences and trends' },
 ];
 

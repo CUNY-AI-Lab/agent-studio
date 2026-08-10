@@ -91,8 +91,8 @@ export function WorkspaceHeader({
         />
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
-        <span className="text-xs text-muted-foreground font-mono mr-2">
-          {tileCount}T · {fileCount}F
+        <span className="text-xs text-muted-foreground mr-2">
+          {tileCount} {tileCount === 1 ? 'tile' : 'tiles'} · {fileCount} {fileCount === 1 ? 'file' : 'files'}
         </span>
         {modelCatalog ? (() => {
           const view = buildModelPickerView(modelCatalog, workspaceModel);
@@ -125,9 +125,9 @@ export function WorkspaceHeader({
             className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 transition-colors cursor-not-allowed opacity-60 outline-none focus-visible:ring-2 focus-visible:ring-ring"
             disabled
             title={modelQuotaNotice}
-            aria-label="Agent model (unavailable: quota reached)"
+            aria-label="Model choices paused"
           >
-            <option>Models unavailable — quota reached</option>
+            <option>Model choices paused</option>
           </select>
         ) : null}
         <button className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={onRefresh} title="Refresh" aria-label="Refresh workspace">

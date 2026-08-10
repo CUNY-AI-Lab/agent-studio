@@ -163,7 +163,7 @@ export function ContextualChatPopover({
         {messages.length === 0 ? (
           <div className="contextual-chat-empty">
             <p>Ask a question about this {typeLabel.toLowerCase()} tile.</p>
-            <p className="text-xs opacity-60 mt-1">New tiles created here will be connected to this one.</p>
+            <p className="text-xs opacity-60 mt-1">New tiles here will link to this one.</p>
           </div>
         ) : (
           messages.map((message) => {

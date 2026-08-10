@@ -6,6 +6,14 @@ import { extractMessageText } from '../../lib/messages';
 
 const LazyMarkdownRenderer = lazy(() => import('../renderers/MarkdownRenderer'));
 
+/** Plain-language labels for the machine chat states; never show the raw state. */
+const STATUS_LABELS: Record<string, string> = {
+  ready: 'Ready',
+  submitted: 'Working…',
+  streaming: 'Working…',
+  error: 'Something went wrong',
+};
+
 /**
  * Presentational main chat panel. All state (composer text, chat status,
  * messages, scope) is owned by WorkspaceShell and passed in as props so the
@@ -37,6 +45,8 @@ export function ChatPanel({
   selectedScopeLabel: string | null;
   onClearScope: () => void;
 }) {
+  const statusLabel = STATUS_LABELS[status] ?? 'Working…';
+
   const submitComposer = () => {
     const next = composer.trim();
     if (!next) return;
@@ -54,16 +64,16 @@ export function ChatPanel({
           <span
             role="status"
             aria-live="polite"
-            aria-label={`Chat status: ${status}`}
+            aria-label={`Chat status: ${statusLabel}`}
             className={cn(
-              'text-[10px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded',
+              'text-[10px] tracking-wide px-1.5 py-0.5 rounded',
               status === 'ready'
                 ? 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400'
                 : status === 'error'
                   ? 'text-destructive bg-destructive/10'
                   : 'text-accent bg-accent/10'
             )}
-          >{status}</span>
+          >{statusLabel}</span>
           <button className="text-xs text-muted-foreground hover:text-foreground transition-colors" onClick={onClear}>Clear</button>
         </div>
       </div>

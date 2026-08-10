@@ -121,18 +121,18 @@ function jsonError(
 // request-event emitter.
 app.onError((error, c) => {
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
-    return c.json(canonicalError('invalid_request', 'Invalid request body'), 400);
+    return c.json(canonicalError('invalid_request', "That didn't work."), 400);
   }
   if (error instanceof GalleryError) {
     return c.json(canonicalError(error.status === 404 ? 'not_found' : 'forbidden', error.message), error.status);
   }
   if (error instanceof ModelCatalogAuthError) {
-    return c.json(canonicalError('authentication_required', 'Model catalog authentication failed', { type: 'authentication_error', retryable: false }), 502);
+    return c.json(canonicalError('authentication_required', "Couldn't load the model list.", { type: 'authentication_error', retryable: false }), 502);
   }
   if (error instanceof ModelCatalogQuotaError) {
     return c.json(canonicalError('quota_exceeded', error.message, { type: 'rate_limit_error', retryable: false }), 429);
   }
-  return c.json(canonicalError('internal_error', 'Internal error', { type: 'api_error', retryable: true }), 500);
+  return c.json(canonicalError('internal_error', 'Something went wrong.', { type: 'api_error', retryable: true }), 500);
 });
 
 // AS-3-6 boundary checks. `import` is a literal POST sub-route of
@@ -693,7 +693,7 @@ app.patch('/api/workspaces/:id', async (c) => {
   // Empty/malformed body -> `{}` -> all-optional patch -> 200 no-op.
   const parsed = patchWorkspaceSchema.safeParse(await c.req.json());
   if (!parsed.success) {
-    return jsonError(c, 400, 'invalid_request', 'Invalid workspace update');
+    return jsonError(c, 400, 'invalid_request', "That didn't work.");
   }
   const patch = parsed.data;
 
@@ -708,7 +708,7 @@ app.patch('/api/workspaces/:id', async (c) => {
   if (!result.ok) {
     return result.reason === 'not-found'
       ? jsonError(c, 404, 'not_found', 'Workspace not found')
-      : jsonError(c, 409, 'conflict', 'Conflicting concurrent update; retry', { retryable: true });
+      : jsonError(c, 409, 'conflict', 'Someone else changed this. Reload and try again.', { retryable: true });
   }
   await syncedWorkspaceAgent(c, result.workspace);
 
@@ -795,7 +795,7 @@ app.post('/api/workspaces/:id/publish', async (c) => {
     }
     return !result.ok && result.reason === 'not-found'
       ? jsonError(c, 404, 'not_found', 'Workspace not found')
-      : jsonError(c, 409, 'conflict', 'Conflicting concurrent update; retry', { retryable: true });
+      : jsonError(c, 409, 'conflict', 'Someone else changed this. Reload and try again.', { retryable: true });
   }
   await agent.syncWorkspace(result.workspace, sessionId);
 
@@ -972,7 +972,7 @@ app.post('/api/workspaces/:id/panels', async (c) => {
   const body = await c.req.json<{ panel?: unknown } | null>();
   const parsed = panelSchema.safeParse(body?.panel);
   if (!parsed.success) {
-    return jsonError(c, 400, 'invalid_request', 'Invalid panel payload');
+    return jsonError(c, 400, 'invalid_request', "That tile couldn't be saved.");
   }
   const panel = parsed.data as WorkspacePanel;
   const { agent } = await syncedWorkspaceAgent(c, workspace);
@@ -1014,7 +1014,7 @@ export default {
     const config = await validateAgentStudioConfig(env);
     if (!config.ok && pathname !== '/health') {
       return Response.json(
-        canonicalError(config.errorCode, 'Service unavailable: invalid configuration', {
+        canonicalError(config.errorCode, "Agent Studio isn't available right now.", {
           type: 'api_error',
           retryable: false,
         }),
