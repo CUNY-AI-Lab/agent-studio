@@ -269,6 +269,133 @@ test('verified canonical token is stored and forwarded to the workspace agent', 
   assert.equal(agent.credential, gatewayToken);
 });
 
+test('model credential refresh installs a verified gateway leg and is idempotent', async () => {
+  const { env, agents } = makeEnv();
+  const { token, gatewayToken, jwks } = await makeRouteCredential();
+  configureRequiredIdentity(env, jwks);
+  const headers = keyringHeaders(token, gatewayToken);
+  const session = new Session(env);
+
+  await session.request(app, '/api/session', { headers });
+  const created = await session.request(
+    app,
+    '/api/workspaces',
+    { ...jsonInit('POST', { name: 'Refreshable workspace' }), headers },
+  );
+  assert.equal(created.status, 201);
+  const workspace = (await created.json()).workspace;
+  const agent = [...agents.values()][0];
+  assert.ok(agent);
+  agent.credential = null;
+
+  const refresh = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/model-credential`,
+    { method: 'POST', headers },
+  );
+  assert.equal(refresh.status, 204);
+  assert.equal(refresh.headers.get('cache-control'), 'no-store');
+  assert.equal(await refresh.text(), '');
+  assert.equal(agent.credential, gatewayToken);
+
+  const repeat = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/model-credential`,
+    { method: 'POST', headers },
+  );
+  assert.equal(repeat.status, 204);
+  assert.equal(await repeat.text(), '');
+  assert.equal(agent.credential, gatewayToken);
+});
+
+test('model credential refresh rejects a missing gateway leg before obtaining the DO', async () => {
+  const { env, agents } = makeEnv();
+  const { token, gatewayToken, jwks } = await makeRouteCredential();
+  configureRequiredIdentity(env, jwks);
+  const session = new Session(env);
+
+  await session.request(app, '/api/session', {
+    headers: keyringHeaders(token, gatewayToken),
+  });
+  const created = await session.request(
+    app,
+    '/api/workspaces',
+    {
+      ...jsonInit('POST', { name: 'Refresh auth boundary' }),
+      headers: keyringHeaders(token, gatewayToken),
+    },
+  );
+  assert.equal(created.status, 201);
+  const workspace = (await created.json()).workspace;
+  const agent = [...agents.values()][0];
+  assert.ok(agent);
+  const syncCount = agent.syncCount;
+  const credential = agent.credential;
+
+  const refresh = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/model-credential`,
+    { method: 'POST', headers: { [CAIL_IDENTITY_HEADER]: token } },
+  );
+  assert.equal(refresh.status, 401);
+  assert.equal((await readError(refresh)).code, 'authentication_required');
+  assert.equal(agent.syncCount, syncCount);
+  assert.equal(agent.credential, credential);
+});
+
+test('model credential refresh rejects expired and mismatched gateway legs before DO mutation', async () => {
+  const { env, agents } = makeEnv();
+  const issuer = await createTestIdentityIssuer({ kid: 'refresh-route-adverse-key' });
+  const { TEST_SUBJECTS } = await import('@cuny-ai-lab/cail-identity/testing');
+  const token = await issuer.mintIdentityJwt({
+    audience: CAIL_IDENTITY_AUDIENCE,
+    subject: TEST_SUBJECTS.alice,
+    entitlements: ['tools', 'agent-studio'],
+  });
+  const validGateway = await issuer.mintIdentityJwt({
+    audience: 'cail:gateway',
+    subject: TEST_SUBJECTS.alice,
+  });
+  const expiredGateway = await issuer.mintIdentityJwt({
+    audience: 'cail:gateway',
+    subject: TEST_SUBJECTS.alice,
+    now: Math.floor(Date.now() / 1000) - 4000,
+    expiresInSeconds: 3600,
+  });
+  const mismatchedGateway = await issuer.mintIdentityJwt({
+    audience: 'cail:gateway',
+    subject: TEST_SUBJECTS.bob,
+  });
+  configureRequiredIdentity(env, issuer.jwksJson);
+  const session = new Session(env);
+  const validHeaders = keyringHeaders(token, validGateway);
+
+  await session.request(app, '/api/session', { headers: validHeaders });
+  const created = await session.request(
+    app,
+    '/api/workspaces',
+    { ...jsonInit('POST', { name: 'Refresh adverse boundary' }), headers: validHeaders },
+  );
+  assert.equal(created.status, 201);
+  const workspace = (await created.json()).workspace;
+  const agent = [...agents.values()][0];
+  assert.ok(agent);
+  const syncCount = agent.syncCount;
+  const credential = agent.credential;
+
+  for (const gatewayToken of [expiredGateway, mismatchedGateway]) {
+    const refresh = await session.request(
+      app,
+      `/api/workspaces/${workspace.id}/model-credential`,
+      { method: 'POST', headers: keyringHeaders(token, gatewayToken) },
+    );
+    assert.equal(refresh.status, 401);
+    assert.equal((await readError(refresh)).code, 'authentication_required');
+    assert.equal(agent.syncCount, syncCount);
+    assert.equal(agent.credential, credential);
+  }
+});
+
 test('a keyring gateway leg for a different person fails the request closed', async () => {
   const { env } = makeEnv();
   const issuer = await createTestIdentityIssuer({ kid: 'route-key' });

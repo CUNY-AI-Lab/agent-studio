@@ -233,6 +233,23 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(mutationCall![1]?.credentials).toBe('include');
   });
 
+  it('refreshModelCredential posts through the CSRF fetch path and accepts an empty 204', async () => {
+    const { refreshModelCredential, CSRF_HEADER } = await loadApi();
+    const token = 'r'.repeat(64);
+    stubCookie(`${CSRF_COOKIE}=${token}`);
+    const spy = mockFetch(() => new Response(null, {
+      status: 204,
+      headers: { 'Cache-Control': 'no-store' },
+    }));
+
+    await expect(refreshModelCredential('workspace-1')).resolves.toBeUndefined();
+    const [input, init] = spy.mock.calls[0];
+    expect(String(input)).toContain('/api/workspaces/workspace-1/model-credential');
+    expect(init?.method).toBe('POST');
+    expect(new Headers(init?.headers).get(CSRF_HEADER)).toBe(token);
+    expect(init?.credentials).toBe('include');
+  });
+
   it('serializes concurrent workspace and gallery reads behind one session bootstrap', async () => {
     const { fetchGalleryItems, fetchWorkspaces } = await loadApi();
     const token = 'a'.repeat(64);

@@ -218,6 +218,25 @@ async function parseJson<T>(response: Response): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** Refresh the short-lived gateway credential stored by a workspace agent. */
+export async function refreshModelCredential(workspaceId: string): Promise<void> {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/model-credential`, {
+    method: 'POST',
+  });
+  if (response.ok) {
+    if (response.status !== 204) {
+      throw new Error(`Request failed with ${response.status}`);
+    }
+    return;
+  }
+
+  const { payload, message } = await readResponseError(response);
+  if (handleAuthRequired(response.status, payload)) {
+    throw new Error('Authentication required');
+  }
+  throw new Error(message);
+}
+
 function encodePath(filePath: string): string {
   return filePath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
 }

@@ -336,6 +336,86 @@ test('warm WorkspaceAgent re-verifies an expired Gateway leg before chat and pur
   assert.equal(storage.values.has('cail:subject'), false);
 });
 
+test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forwarding the stale token', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const issuer = await createTestIdentityIssuer({ kid: 'workspace-refresh-chat-key' });
+  const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  const installNowMs = Math.floor(Date.now() / 1000) * 1000;
+  let currentNowMs = installNowMs;
+  t.mock.method(Date, 'now', () => currentNowMs);
+
+  const wire = [];
+  const env = {
+    ...identityEnv(issuer),
+    CAIL_API_BASE: 'https://cail.test',
+    CAIL_REQUIRE_IDENTITY: 'true',
+    SESSION_SECRET: 'workspace-refresh-chat-secret',
+    GATEWAY: {
+      async fetch(_input, init) {
+        const headers = new Headers(init?.headers);
+        wire.push({
+          authorization: headers.get('authorization'),
+          app: headers.get('X-CAIL-App'),
+        });
+        return new Response(
+          'data: {"id":"chatcmpl-refresh","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}\n\n'
+          + 'data: {"id":"chatcmpl-refresh","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+          + 'data: [DONE]\n\n',
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      },
+    },
+  };
+  const storage = makeStorage();
+  const agent = await makeRealWorkspaceAgent(sessionId, env, storage);
+  const staleToken = await mintGateway(issuer, {
+    now: Math.floor(installNowMs / 1000),
+    expiresInSeconds: 1,
+  });
+  await agent.setCailCredential(staleToken);
+  currentNowMs = installNowMs + 62_000;
+
+  agent.requireWorkspace = () => ({
+    id: 'workspace-1',
+    model: '@cf/zai-org/glm-5.2',
+  });
+  agent.requireSessionId = () => sessionId;
+  agent.messages = [{
+    id: 'message-1',
+    role: 'user',
+    parts: [{ type: 'text', text: 'hello' }],
+  }];
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  const noopTool = tool({
+    description: 'noop',
+    inputSchema: z.object({}),
+    execute: async () => 'ok',
+  });
+  agent.buildHostTools = () => ({});
+  agent.createCodeModeTool = () => noopTool;
+  agent.buildModelTools = () => ({});
+
+  const staleResponse = await agent.onChatMessage(undefined, { requestId: 'stale-refresh' });
+  const staleBody = await staleResponse.text();
+  const staleEvent = JSON.parse(staleBody.split('\n')[0].slice('data: '.length));
+  assert.equal(JSON.parse(staleEvent.errorText).error.code, 'authentication_required');
+  assert.equal(wire.length, 0);
+
+  const freshToken = await mintGateway(issuer, {
+    now: Math.floor(currentNowMs / 1000),
+    expiresInSeconds: 120,
+  });
+  await agent.setCailCredential(freshToken);
+  const freshResponse = await agent.onChatMessage(undefined, { requestId: 'fresh-refresh' });
+  await freshResponse.text();
+
+  assert.deepEqual(wire, [{
+    authorization: `Bearer ${freshToken}`,
+    app: 'agent-studio',
+  }]);
+});
+
 test('warm WorkspaceAgent fails closed on verifier configuration loss without purging recovery state', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'workspace-warm-config-key' });
   const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);

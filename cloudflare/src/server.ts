@@ -36,6 +36,7 @@ import {
   ModelCatalogAuthError,
   ModelCatalogQuotaError,
 } from './lib/cail-models';
+import { cailAuthRequiredResponse } from './lib/cail-identity';
 import {
   layoutPatchSchema,
   patchWorkspaceSchema,
@@ -612,6 +613,26 @@ app.get('/api/workspaces/:id', async (c) => {
       className: 'WorkspaceAgent',
       name: agentName,
     },
+  });
+});
+
+/**
+ * Refresh the gateway credential held by the workspace Durable Object. The
+ * session middleware has already verified the app identity and its optional
+ * keyring gateway leg before this route runs; a missing leg is still an auth
+ * failure, and we must reject it before obtaining the DO stub.
+ */
+app.post('/api/workspaces/:id/model-credential', async (c) => {
+  const gatewayJwt = cailGatewayJwt(c);
+  if (!gatewayJwt) return cailAuthRequiredResponse();
+
+  const workspace = loadedWorkspace(c);
+  const agent = await getWorkspaceAgent(c.env, requireSession(c), workspace.id);
+  await primeAgentCredential(c, agent);
+
+  return new Response(null, {
+    status: 204,
+    headers: { 'Cache-Control': 'no-store' },
   });
 });
 

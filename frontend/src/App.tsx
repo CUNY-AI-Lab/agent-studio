@@ -40,6 +40,7 @@ import {
   fetchWorkspaceFiles,
   fetchWorkspaces,
   fetchModels,
+  refreshModelCredential,
   ModelsQuotaError,
   ModelsUnavailableError,
   importWorkspaceBundle,
@@ -229,6 +230,10 @@ function WorkspaceShell({
     body: () => selectedPanelIds.size > 0
       ? { scopePanelIds: Array.from(selectedPanelIds) }
       : {},
+    prepareSendMessagesRequest: async () => {
+      await refreshModelCredential(workspace.workspace.id);
+      return {};
+    },
     onError: (chatError) => {
       // A model-proxy authentication_required envelope can surface here as a
       // stringified error body. Follow the /login?rt= redirect if so.
