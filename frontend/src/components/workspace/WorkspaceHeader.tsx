@@ -63,7 +63,7 @@ export function WorkspaceHeader({
   onOpenShortcuts: () => void;
 }) {
   return (
-    <header className="canvas-header flex items-center gap-4 px-6 py-3">
+    <header className="canvas-header flex flex-wrap items-center gap-2 px-3 py-2 sm:flex-nowrap sm:gap-4 sm:px-6 sm:py-3">
       <button
         onClick={onGoHome}
         className="shrink-0 p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -74,7 +74,7 @@ export function WorkspaceHeader({
           <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
         </svg>
       </button>
-      <div className="flex-1 min-w-0">
+      <div className="min-w-0 flex-1 basis-[calc(100%-3rem)] sm:basis-auto">
         <input
           className="font-serif text-lg font-medium bg-transparent border-none outline-none w-full text-foreground placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring rounded"
           value={workspaceName}
@@ -90,7 +90,7 @@ export function WorkspaceHeader({
           aria-label="Workspace description"
         />
       </div>
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-1.5 sm:w-auto sm:flex-nowrap sm:shrink-0">
         <span className="text-xs text-muted-foreground mr-2">
           {tileCount} {tileCount === 1 ? 'tile' : 'tiles'} · {fileCount} {fileCount === 1 ? 'file' : 'files'}
         </span>

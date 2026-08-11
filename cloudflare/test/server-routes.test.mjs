@@ -557,6 +557,146 @@ test('DELETE workspace removes its separate runtime R2 prefix', async () => {
   assert.equal(await r2.get(runtimeKey), null);
 });
 
+test('DELETE workspace removes its public gallery item', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Published cleanup');
+  const published = await (
+    await session.request(
+      app,
+      `/api/workspaces/${workspace.id}/publish`,
+      jsonInit('POST', { title: 'Published cleanup', description: 'Temporary test item' }),
+    )
+  ).json();
+
+  assert.equal((await session.request(app, `/api/gallery/${published.item.id}`)).status, 200);
+
+  const deleted = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+
+  assert.equal(deleted.status, 200);
+  assert.equal((await session.request(app, `/api/gallery/${published.item.id}`)).status, 404);
+});
+
+test('DELETE workspace fences an in-flight first publish and removes its gallery item', async () => {
+  const { env, r2, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Concurrent publish cleanup');
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+
+  let releaseManifest;
+  const manifestReleased = new Promise((resolve) => { releaseManifest = resolve; });
+  let manifestStored;
+  const storedManifest = new Promise((resolve) => { manifestStored = resolve; });
+  let galleryId;
+  const originalPut = r2.put.bind(r2);
+  r2.put = async (key, value, options) => {
+    const result = await originalPut(key, value, options);
+    if (key.startsWith('agent-studio/gallery/items/') && key.endsWith('/manifest.json')) {
+      galleryId = key.split('/')[3];
+      manifestStored();
+      await manifestReleased;
+    }
+    return result;
+  };
+
+  let releaseDestroy;
+  const destroyReleased = new Promise((resolve) => { releaseDestroy = resolve; });
+  let destroyStarted;
+  const startedDestroy = new Promise((resolve) => { destroyStarted = resolve; });
+  const originalDestroy = agent.destroyWorkspaceState.bind(agent);
+  agent.destroyWorkspaceState = async () => {
+    destroyStarted();
+    await destroyReleased;
+    return originalDestroy();
+  };
+
+  const publishing = session.request(
+    app,
+    `/api/workspaces/${workspace.id}/publish`,
+    jsonInit('POST', { title: 'Racing publish', description: 'Must be rolled back' }),
+  );
+  await storedManifest;
+
+  const deleting = session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  await startedDestroy;
+  const duringDelete = await (await session.request(app, '/api/workspaces')).json();
+  assert.equal(duringDelete.workspaces.some((item) => item.id === workspace.id), false);
+  assert.equal(
+    (await session.request(app, `/api/workspaces/${workspace.id}`)).status,
+    404,
+  );
+  releaseManifest();
+
+  const publishResponse = await publishing;
+  assert.equal(publishResponse.status, 409);
+  releaseDestroy();
+  assert.equal((await deleting).status, 200);
+  assert.equal((await session.request(app, `/api/gallery/${galleryId}`)).status, 404);
+});
+
+test('DELETE workspace fences an in-flight idempotent publish retry', async () => {
+  const { env, r2, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Concurrent publish retry');
+  const operationId = '00000000-0000-4000-8000-000000000001';
+  const publishBody = {
+    title: 'Idempotent publish',
+    description: 'Must not outlive deletion',
+    operationId,
+  };
+  const published = await (
+    await session.request(
+      app,
+      `/api/workspaces/${workspace.id}/publish`,
+      jsonInit('POST', publishBody),
+    )
+  ).json();
+
+  let releaseLoadedWorkspace;
+  const loadedWorkspaceReleased = new Promise((resolve) => { releaseLoadedWorkspace = resolve; });
+  let workspaceLoaded;
+  const loadedWorkspace = new Promise((resolve) => { workspaceLoaded = resolve; });
+  const workspaceKey = `agent-studio/sessions/${sessionId}/workspaces/${workspace.id}/workspace.json`;
+  const originalGet = r2.get.bind(r2);
+  let interceptWorkspaceLoad = true;
+  r2.get = async (key) => {
+    const object = await originalGet(key);
+    if (interceptWorkspaceLoad && key === workspaceKey) {
+      interceptWorkspaceLoad = false;
+      workspaceLoaded();
+      await loadedWorkspaceReleased;
+    }
+    return object;
+  };
+
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+  let releaseDestroy;
+  const destroyReleased = new Promise((resolve) => { releaseDestroy = resolve; });
+  let destroyStarted;
+  const startedDestroy = new Promise((resolve) => { destroyStarted = resolve; });
+  const originalDestroy = agent.destroyWorkspaceState.bind(agent);
+  agent.destroyWorkspaceState = async () => {
+    destroyStarted();
+    await destroyReleased;
+    return originalDestroy();
+  };
+
+  const retryingPublish = session.request(
+    app,
+    `/api/workspaces/${workspace.id}/publish`,
+    jsonInit('POST', publishBody),
+  );
+  await loadedWorkspace;
+  const deleting = session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  await startedDestroy;
+  releaseLoadedWorkspace();
+
+  assert.equal((await retryingPublish).status, 409);
+  releaseDestroy();
+  assert.equal((await deleting).status, 200);
+  assert.equal((await session.request(app, `/api/gallery/${published.item.id}`)).status, 404);
+});
+
 test('GET missing workspace id -> 404', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
