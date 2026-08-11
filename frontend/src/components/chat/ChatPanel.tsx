@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import { MessageSquare, Send } from 'lucide-react';
+import { MessageSquare, Send, Square } from 'lucide-react';
 import { getToolName, isTextUIPart, isToolUIPart, type UIMessage } from 'ai';
 import { cn } from '../../lib/utils';
 import { extractMessageText } from '../../lib/messages';
@@ -38,10 +38,12 @@ function toolDisplayName(name: string): string {
  */
 export function ChatPanel({
   status,
+  isBusy,
   messages,
   composer,
   onComposerChange,
   onSubmit,
+  onStop,
   onClear,
   onRetry,
   canRetry,
@@ -50,10 +52,12 @@ export function ChatPanel({
   onClearScope,
 }: {
   status: string;
+  isBusy: boolean;
   messages: UIMessage[];
   composer: string;
   onComposerChange: (value: string) => void;
   onSubmit: (text: string) => void;
+  onStop: () => void;
   onClear: () => void;
   onRetry: () => void;
   canRetry: boolean;
@@ -61,9 +65,11 @@ export function ChatPanel({
   selectedScopeLabel: string | null;
   onClearScope: () => void;
 }) {
-  const statusLabel = STATUS_LABELS[status] ?? 'Working…';
+  const statusLabel = isBusy ? 'Working…' : STATUS_LABELS[status] ?? 'Working…';
+  const isWorking = isBusy;
 
   const submitComposer = () => {
+    if (isWorking) return;
     const next = composer.trim();
     if (!next) return;
     onSubmit(next);
@@ -97,13 +103,24 @@ export function ChatPanel({
                   : 'text-accent bg-accent/10'
             )}
           >{statusLabel}</span>
-          <button
-            className="text-xs text-muted-foreground hover:text-foreground transition-colors"
-            onClick={clearConversation}
-            aria-label="Clear conversation"
-          >
-            Clear conversation
-          </button>
+          {isWorking ? (
+            <button
+              className="inline-flex items-center gap-1.5 text-xs text-destructive hover:opacity-80 transition-opacity"
+              onClick={onStop}
+              aria-label="Stop response"
+            >
+              <Square size={11} aria-hidden="true" />
+              Stop response
+            </button>
+          ) : (
+            <button
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              onClick={clearConversation}
+              aria-label="Clear conversation"
+            >
+              Clear conversation
+            </button>
+          )}
         </div>
       </div>
       {selectedScopeLabel ? (
@@ -221,6 +238,7 @@ export function ChatPanel({
           onChange={(event) => onComposerChange(event.target.value)}
           placeholder={selectedScopeLabel ? 'Ask about the selected tile scope.' : 'Ask the agent to create files and panels.'}
           aria-label="Message the agent"
+          disabled={isWorking}
           rows={2}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
@@ -229,7 +247,12 @@ export function ChatPanel({
             }
           }}
         />
-        <button className="bg-primary text-primary-foreground rounded-xl px-3 py-2 hover:opacity-90 transition-opacity self-end focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" type="submit" aria-label="Send message">
+        <button
+          className="bg-primary text-primary-foreground rounded-xl px-3 py-2 hover:opacity-90 transition-opacity self-end focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          type="submit"
+          aria-label="Send message"
+          disabled={isWorking || !composer.trim()}
+        >
           <Send size={16} aria-hidden="true" />
         </button>
       </form>
