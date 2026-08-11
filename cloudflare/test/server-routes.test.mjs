@@ -99,6 +99,8 @@ test('health check is public and needs no session', async () => {
     ok: true,
     service: 'agent-studio',
   });
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
 });
 
 test('configured base path mounts assets, API, health, and sockets under one prefix', async () => {
@@ -125,6 +127,8 @@ test('health check reports unhealthy when SESSION_SECRET is missing', async () =
   delete env.SESSION_SECRET;
   const res = await app.fetch(new Request('https://studio.test/health'), env, {});
   assert.equal(res.status, 503);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
   assert.equal((await readError(res)).code, 'session_secret_missing');
 });
 
