@@ -2719,7 +2719,7 @@ function WorkspaceShell({
             role="region"
             aria-label={`Workspace canvas, ${visiblePanels.length} tile${visiblePanels.length === 1 ? '' : 's'}. Tab to a tile, then use arrow keys to move it. Press question mark for keyboard help.`}
             tabIndex={0}
-            className="canvas-bg canvas-wrapper flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+            className="canvas-bg canvas-wrapper relative flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
             onPointerDownCapture={handleCanvasPointerDown}
             onPointerMoveCapture={handleCanvasPointerMove}
             onPointerUpCapture={handleCanvasPointerUp}
@@ -2792,17 +2792,6 @@ function WorkspaceShell({
                 animatingConnectionIds={animatingConnectionIds}
                 panelTitles={panelTitles}
               />
-              {visiblePanels.length === 0 ? (
-                <div className="canvas-empty">
-                  <Sparkles className="canvas-empty-icon" />
-                  <h3>{minimizedPanels.length > 0 ? 'All Minimized' : 'Empty Canvas'}</h3>
-                  <p>
-                    {minimizedPanels.length > 0
-                      ? 'All visible tiles are minimized. Restore them from the dock to continue.'
-                      : 'Ask the agent to create files, markdown, tables, charts, and previews.'}
-                  </p>
-                </div>
-              ) : null}
               {visiblePanels.map((panel, index) => {
                 const layout = panelLayouts[panel.id] ?? inferPanelLayout(panel, index);
                 return (
@@ -2875,6 +2864,17 @@ function WorkspaceShell({
                 </div>
               </TransformComponent>
             </TransformWrapper>
+            {visiblePanels.length === 0 ? (
+              <div className="canvas-empty pointer-events-none absolute inset-0">
+                <Sparkles className="canvas-empty-icon" />
+                <h3>{minimizedPanels.length > 0 ? 'All Minimized' : 'Empty Canvas'}</h3>
+                <p>
+                  {minimizedPanels.length > 0
+                    ? 'All visible tiles are minimized. Restore them from the dock to continue.'
+                    : 'Ask the agent to create files, markdown, tables, charts, and previews.'}
+                </p>
+              </div>
+            ) : null}
             {isSelectingBox && selectionBoxStart && selectionBoxEnd ? (
               <SelectionBox start={selectionBoxStart} end={selectionBoxEnd} />
             ) : null}

@@ -68,6 +68,7 @@ import {
   getWorkspace,
   listWorkspaces,
   putWorkspace,
+  type StoredWorkspaceRecord,
   updateWorkspaceWithRetry,
 } from './lib/workspaces';
 
@@ -96,7 +97,7 @@ const app = new Hono<{
   Variables: AppVariables;
 }>();
 
-type AppVariables = SessionVariables & { workspace?: WorkspaceRecord };
+type AppVariables = SessionVariables & { workspace?: StoredWorkspaceRecord };
 
 type AppContext = Context<{
   Bindings: Env;
@@ -199,6 +200,9 @@ async function requireWorkspace(
   if (!workspace) {
     return jsonError(c, 404, 'not_found', 'Workspace not found');
   }
+  if (workspace.deleting && c.req.method !== 'DELETE') {
+    return jsonError(c, 404, 'not_found', 'Workspace not found');
+  }
   c.set('workspace', workspace);
   return next();
 }
@@ -225,7 +229,7 @@ async function syncedWorkspaceAgent(
   return { sessionId, workspaceId, agent };
 }
 
-function loadedWorkspace(c: AppContext): WorkspaceRecord {
+function loadedWorkspace(c: AppContext): StoredWorkspaceRecord {
   const workspace = c.get('workspace');
   if (!workspace) {
     throw new Error('loadedWorkspace: workspace not loaded');
@@ -777,6 +781,7 @@ app.post('/api/workspaces/:id/publish', async (c) => {
   // here would revert a PATCH (e.g. a model override) that landed while the
   // gallery item was being published.
   const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => {
+    if (current.deleting) return null;
     // One live publication per workspace. Concurrent distinct publish intents
     // race on this CAS; the loser observes the winner's id, makes no metadata
     // change, and compensates its deterministic gallery object below.
@@ -787,11 +792,15 @@ app.post('/api/workspaces/:id/publish', async (c) => {
       updatedAt: new Date().toISOString(),
     };
   });
-  if (!result.ok || result.workspace.galleryId !== item.id) {
+  if (!result.ok || result.workspace.deleting || result.workspace.galleryId !== item.id) {
     try {
       await unpublishGalleryItem(c.env, item.id, sessionId);
-    } catch {
-      throw new Error('publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed');
+    } catch (error) {
+      if (error instanceof GalleryError && error.status === 404) {
+        // Concurrent deletion already confirmed the public copy is absent.
+      } else {
+        throw new Error('publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed');
+      }
     }
     return !result.ok && result.reason === 'not-found'
       ? jsonError(c, 404, 'not_found', 'Workspace not found')
@@ -806,6 +815,27 @@ app.delete('/api/workspaces/:id', async (c) => {
   const sessionId = requireSession(c);
   const workspace = loadedWorkspace(c);
   const workspaceId = workspace.id;
+
+  const marked = await updateWorkspaceWithRetry(c.env, sessionId, workspaceId, (current) =>
+    current.deleting
+      ? null
+      : { ...current, deleting: true, updatedAt: new Date().toISOString() }
+  );
+  if (!marked.ok) {
+    return marked.reason === 'not-found'
+      ? jsonError(c, 404, 'not_found', 'Workspace not found')
+      : jsonError(c, 409, 'conflict', 'Someone else changed this. Reload and try again.', { retryable: true });
+  }
+
+  if (marked.workspace.galleryId) {
+    try {
+      await unpublishGalleryItem(c.env, marked.workspace.galleryId, sessionId);
+    } catch (error) {
+      // A prior attempt may have removed the public copy before a later
+      // workspace-cleanup step failed. Retrying deletion must finish cleanup.
+      if (!(error instanceof GalleryError) || error.status !== 404) throw error;
+    }
+  }
 
   // The destructive RPC fences writers and fails loud before the R2 records
   // are removed.

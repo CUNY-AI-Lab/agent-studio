@@ -24,8 +24,15 @@ describe('PublishDialog', () => {
 
   it('summarizes the shared tile and file counts with correct pluralization', () => {
     render(<PublishDialog {...baseProps} publishablePanelCount={2} fileCount={1} />);
-    expect(screen.getByText(/This makes 2 tile views and 1 file public/)).toBeInTheDocument();
+    expect(screen.getByText(/Publishing separately makes 2 tile views and 1 file public/)).toBeInTheDocument();
     expect(screen.getByText(/Don’t publish private or sensitive files/)).toBeInTheDocument();
+  });
+
+  it('distinguishes workspace storage from model-provider retention', () => {
+    render(<PublishDialog {...baseProps} />);
+    expect(screen.getByText(/Agent Studio saves this workspace privately/)).toBeInTheDocument();
+    expect(screen.getByText(/Model-provider routes are configured not to retain prompts or outputs/)).toBeInTheDocument();
+    expect(screen.getByText(/that setting does not cover Agent Studio storage/)).toBeInTheDocument();
   });
 
   it('disables Publish when the title is blank', () => {

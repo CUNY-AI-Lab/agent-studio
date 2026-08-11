@@ -3,11 +3,16 @@ import type { Env } from '../env';
 import { nextR2Cursor } from './r2-pagination';
 import { getWorkspacePrefix } from './files';
 
+export type StoredWorkspaceRecord = WorkspaceRecord & {
+  /** Internal deletion fence; outside the export schema and filtered from lists. */
+  deleting?: true;
+};
+
 function workspaceMetadataKey(sessionId: string, workspaceId: string): string {
   return `${getWorkspacePrefix(sessionId, workspaceId)}workspace.json`;
 }
 
-export async function listWorkspaces(env: Env, sessionId: string): Promise<WorkspaceRecord[]> {
+export async function listWorkspaces(env: Env, sessionId: string): Promise<StoredWorkspaceRecord[]> {
   const prefix = `agent-studio/sessions/${sessionId}/workspaces/`;
   const prefixes: string[] = [];
   let cursor: string | undefined;
@@ -24,29 +29,29 @@ export async function listWorkspaces(env: Env, sessionId: string): Promise<Works
       if (!workspaceId) return null;
       const value = await env.WORKSPACE_FILES.get(workspaceMetadataKey(sessionId, workspaceId));
       if (!value) return null;
-      return value.json<WorkspaceRecord>();
+      return value.json<StoredWorkspaceRecord>();
     })
   );
 
   return items
-    .filter((item): item is WorkspaceRecord => Boolean(item))
+    .filter((item): item is StoredWorkspaceRecord => item !== null && !item.deleting)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }
 
-export async function getWorkspace(env: Env, sessionId: string, workspaceId: string): Promise<WorkspaceRecord | null> {
+export async function getWorkspace(env: Env, sessionId: string, workspaceId: string): Promise<StoredWorkspaceRecord | null> {
   const value = await env.WORKSPACE_FILES.get(workspaceMetadataKey(sessionId, workspaceId));
-  return value ? value.json<WorkspaceRecord>() : null;
+  return value ? value.json<StoredWorkspaceRecord>() : null;
 }
 
 export async function getWorkspaceWithEtag(
   env: Env,
   sessionId: string,
   workspaceId: string
-): Promise<{ workspace: WorkspaceRecord; etag: string } | null> {
+): Promise<{ workspace: StoredWorkspaceRecord; etag: string } | null> {
   const value = await env.WORKSPACE_FILES.get(workspaceMetadataKey(sessionId, workspaceId));
   if (!value) return null;
   return {
-    workspace: await value.json<WorkspaceRecord>(),
+    workspace: await value.json<StoredWorkspaceRecord>(),
     etag: value.etag,
   };
 }
@@ -62,7 +67,7 @@ export async function putWorkspace(env: Env, sessionId: string, workspace: Works
 export async function putWorkspaceIfMatch(
   env: Env,
   sessionId: string,
-  workspace: WorkspaceRecord,
+  workspace: StoredWorkspaceRecord,
   etag: string
 ): Promise<boolean> {
   const result = await env.WORKSPACE_FILES.put(
@@ -77,7 +82,7 @@ export async function putWorkspaceIfMatch(
 }
 
 export type WorkspaceUpdateResult =
-  | { ok: true; workspace: WorkspaceRecord }
+  | { ok: true; workspace: StoredWorkspaceRecord }
   | { ok: false; reason: 'not-found' | 'conflict' };
 
 /**
@@ -94,7 +99,7 @@ export async function updateWorkspaceWithRetry(
   env: Env,
   sessionId: string,
   workspaceId: string,
-  mutate: (current: WorkspaceRecord) => WorkspaceRecord | null,
+  mutate: (current: StoredWorkspaceRecord) => StoredWorkspaceRecord | null,
   attempts = 3
 ): Promise<WorkspaceUpdateResult> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
