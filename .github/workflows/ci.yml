@@ -29,17 +29,8 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.CAIL_PACKAGES_TOKEN }}
         run: bun install --frozen-lockfile
 
-      - name: Lint
-        run: bun run lint
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Unit and route tests
-        run: bun run test
-
-      - name: Build
-        run: bun run build
+      - name: Repository check
+        run: bun run check
 
       - name: Write local Worker variables
         run: |
