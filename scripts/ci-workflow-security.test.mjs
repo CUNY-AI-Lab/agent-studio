@@ -13,6 +13,14 @@ test('CI protects action and package credentials in one validation job', async (
   assert.match(workflow, /^  validate:\n/m);
   const jobs = workflow.split(/^jobs:\n/m)[1] ?? '';
   assert.deepEqual(jobs.match(/^  [a-z][a-z-]*:\n/gm), ['  validate:\n'], 'CI should keep one validation job');
+  const repositoryCheckBlocks = workflow.match(
+    /      - name: Repository check\n        run: bun run check/g,
+  ) ?? [];
+  assert.equal(
+    repositoryCheckBlocks.length,
+    1,
+    'CI must run the authoritative repository check, including its strict Worker dry bundle',
+  );
 
   for (const action of [
     'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd',
