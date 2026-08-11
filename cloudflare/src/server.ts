@@ -281,6 +281,8 @@ app.use('/api/gallery/:id', validateGalleryIdParam);
 app.use('/api/gallery/:id/*', validateGalleryIdParam);
 
 app.get('/health', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('X-Content-Type-Options', 'nosniff');
   const config = await validateAgentStudioConfig(c.env);
   if (!config.ok) {
     return c.json(
