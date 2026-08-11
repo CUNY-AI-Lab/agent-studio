@@ -236,6 +236,7 @@ export function cailAuthRequiredResponse(loginPath = '/agent-studio'): Response 
       headers: {
         'Content-Type': 'application/json',
         'WWW-Authenticate': 'Bearer realm="CAIL"',
+        'Cache-Control': 'no-store',
       },
     },
   );

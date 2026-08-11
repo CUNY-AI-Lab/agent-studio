@@ -2541,10 +2541,12 @@ function WorkspaceShell({
   const chatPanelContent = (
     <ChatPanel
       status={chat.status}
+      isBusy={chat.status === 'submitted' || chat.isStreaming || chat.isRecovering}
       messages={chat.messages}
       composer={composer}
       onComposerChange={setComposer}
       onSubmit={(text) => void sendChatMessage(text)}
+      onStop={() => void chat.stop()}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
       canRetry={Boolean(lastUserPrompt)}

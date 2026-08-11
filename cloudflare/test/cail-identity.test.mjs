@@ -406,6 +406,7 @@ test('cailIdentityRequired only true for the literal "true"', () => {
 test('cailAuthRequiredResponse is a 401 with the canonical nested envelope', async () => {
   const response = cailAuthRequiredResponse();
   assert.equal(response.status, 401);
+  assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const body = await response.json();
   assert.equal(body.error.code, 'authentication_required');
   assert.equal(body.error.cail.login_url, '/agent-studio');

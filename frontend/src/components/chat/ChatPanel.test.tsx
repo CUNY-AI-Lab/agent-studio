@@ -10,10 +10,12 @@ function userMessage(text: string): UIMessage {
 
 const baseProps = {
   status: 'ready',
+  isBusy: false,
   messages: [] as UIMessage[],
   composer: '',
   onComposerChange: () => {},
   onSubmit: () => {},
+  onStop: () => {},
   onClear: () => {},
   onRetry: () => {},
   canRetry: false,
@@ -95,6 +97,30 @@ describe('ChatPanel', () => {
     await user.keyboard('{Enter}');
     expect(onSubmit).toHaveBeenCalledWith('do a thing');
     expect(onComposerChange).toHaveBeenCalledWith('');
+  });
+
+  it('prevents duplicate turns and offers server-side cancellation while working', async () => {
+    const onSubmit = vi.fn();
+    const onStop = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <ChatPanel
+        {...baseProps}
+		status="ready"
+		isBusy
+        composer="another request"
+        onSubmit={onSubmit}
+        onStop={onStop}
+      />
+    );
+
+    expect(screen.getByRole('textbox', { name: 'Message the agent' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Send message' })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Clear conversation' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Stop response' }));
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it('renders the scope banner and clears scope', async () => {
