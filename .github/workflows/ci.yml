@@ -29,6 +29,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.CAIL_PACKAGES_TOKEN }}
         run: bun install --frozen-lockfile
 
+      - name: Dependency audit
+        run: bun audit --audit-level high
+
       - name: Repository check
         run: bun run check
 
