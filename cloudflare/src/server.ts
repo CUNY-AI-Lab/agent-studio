@@ -298,7 +298,11 @@ app.get('/health', async (c) => {
       503
     );
   }
-  return c.json({ ok: true, service: 'agent-studio' });
+  return c.json({
+    ok: true,
+    service: 'agent-studio',
+    version_id: c.env.CF_VERSION_METADATA?.id ?? null,
+  });
 });
 
 // The session bootstrap the frontend hits first also delivers the per-session

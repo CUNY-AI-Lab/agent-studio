@@ -142,12 +142,12 @@ content. Keep its environment private.
 
 ## Reviewed deploys
 
-After reviewing source and running the checks, deploy production or the named
-staging environment directly from the manifest:
+Production releases run from the `main` CI workflow after the repository check.
+For the isolated staging environment, review source and run the direct
+manifest command:
 
 ```bash
 cd cloudflare
-wrangler deploy --strict
 wrangler deploy --env staging --strict
 ```
 
@@ -155,8 +155,8 @@ The production manifest binds the production CAIL Model API and `agent-studio`
 bucket. The staging environment binds the staging Model API and isolated
 `agent-studio-preview` bucket. Both use the canonical Doorway issuer. Do not
 override those bindings, identity settings, routes, or bucket names on the
-command line. Run the authenticated smoke after activation and confirm that
-the synthetic workspace was deleted.
+command line. Run the authenticated staging smoke after activation and confirm
+that the synthetic workspace was deleted.
 
 Keep `SESSION_SECRET`, `CAIL_IDENTITY_JWKS`, and optional tool credentials in
 the authorized secret store. Gallery ownership uses a private tag keyed by the

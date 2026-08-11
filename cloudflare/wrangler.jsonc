@@ -5,6 +5,9 @@
   "main": "src/server.ts",
   "compatibility_date": "2026-03-25",
   "compatibility_flags": ["nodejs_compat"],
+  "version_metadata": {
+    "binding": "CF_VERSION_METADATA"
+  },
   "build": {
     "command": "VITE_BASE_PATH=/agent-studio bun run --cwd ../frontend build",
     "cwd": ".",
@@ -55,6 +58,9 @@
   "env": {
     "staging": {
       "name": "agent-studio-staging",
+      "version_metadata": {
+        "binding": "CF_VERSION_METADATA"
+      },
       "secrets": {
         "required": [
           "SESSION_SECRET",

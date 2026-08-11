@@ -134,6 +134,12 @@ That bucket is separate from production `agent-studio`; staging validation
 must never mutate live workspace data. Do not add deployment flags that change
 identity, service bindings, routes, or the bucket.
 
+## CI and production deploy
+
+Merges to `main` release after the repository checks and a live health check.
+There is no pull-request production preview: use the isolated staging path for
+non-production validation.
+
 See [Security and operations](./docs/security-and-operations.md) for the
 current trust boundaries and [cloudflare/README.md](./cloudflare/README.md) for
 Worker-specific commands.
