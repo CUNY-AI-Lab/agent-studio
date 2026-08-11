@@ -43,6 +43,12 @@
   wrangler deploy --env staging --strict
   ```
 
+- Production release is CI-only: `.github/workflows/ci.yml` validates PRs and
+  main, then serializes the main deploy. Its exact-SHA readback and health,
+  root, and unauthenticated no-store-401 probes are release gates. Use the
+  direct `wrangler deploy --env staging --strict` command above only for the
+  isolated staging environment; there is no PR production preview.
+
 - Never expose JWTs, subjects, emails, workspace identifiers, prompts, files,
   credentials, or user data in logs, smoke output, command arguments, or
   documentation. Keep secrets in the authorized environment.

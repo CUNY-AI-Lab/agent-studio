@@ -16,10 +16,11 @@ Runtime skill instructions live under `cloudflare/src/skills/docs/` and are
 generated into `cloudflare/src/skills/docs.generated.ts`; edit the Markdown
 sources and run the existing build script when they change.
 
-The `.github/workflows/ci.yml` file is the executable CI contract. It runs one
+The `.github/workflows/ci.yml` file is the executable CI contract. It runs the
 validation job with the repository checks and a clearly labeled local Worker
-process integration smoke. The smoke is not an end-to-end claim and never
-prints identity or workspace values.
+process integration smoke; a `main` push then runs the production deploy job.
+The local smoke is not an end-to-end claim and never prints identity or
+workspace values.
 
 Git history is the change record; the current first-login import behavior is
 described only in [legacy-account-import.md](./legacy-account-import.md).

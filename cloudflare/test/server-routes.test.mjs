@@ -98,6 +98,7 @@ test('health check is public and needs no session', async () => {
   assert.deepEqual(await res.json(), {
     ok: true,
     service: 'agent-studio',
+    version_id: null,
   });
   assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
