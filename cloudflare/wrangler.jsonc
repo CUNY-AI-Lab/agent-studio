@@ -4,7 +4,11 @@
   "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
   "main": "src/server.ts",
   "compatibility_date": "2026-03-25",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat",
+    "enable_request_signal",
+    "request_signal_passthrough"
+  ],
   "observability": {
     "enabled": true,
     "logs": {
@@ -65,6 +69,11 @@
   "env": {
     "staging": {
       "name": "agent-studio-staging",
+      "compatibility_flags": [
+        "nodejs_compat",
+        "enable_request_signal",
+        "request_signal_passthrough"
+      ],
       "version_metadata": {
         "binding": "CF_VERSION_METADATA"
       },
