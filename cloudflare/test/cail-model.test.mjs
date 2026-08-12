@@ -165,6 +165,21 @@ test('buffered calls use one Bearer credential and only safe server-owned header
   assert.equal(JSON.parse(init.body).model, '@cf/zai-org/glm-5.2');
 });
 
+test('provider forwards the caller abort signal to the Gateway Fetcher', async () => {
+  const { createCailModel } = await import('../src/lib/cail-model.ts');
+  const capture = captureGateway();
+  const controller = new AbortController();
+  const model = createCailModel({
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: capture.gateway },
+    identityJwt: 'gateway-jwt',
+  });
+
+  await generateText({ model, prompt: 'hello', maxRetries: 0, abortSignal: controller.signal });
+
+  assert.equal(capture.calls.length, 1);
+  assert.equal(capture.calls[0].init.signal, controller.signal);
+});
+
 test('chat service bindings accept manual redirects and fail closed on 3xx', async () => {
   const { createCailModel } = await import('../src/lib/cail-model.ts');
   const calls = [];
