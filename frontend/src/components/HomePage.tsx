@@ -78,21 +78,21 @@ export function HomePage({
         {/* Main input */}
         <section className="mb-8 animate-fade-in-up" style={{ animationDelay: '100ms' }}>
           <form onSubmit={handleSubmit}>
-            <div className="relative">
+            <div className="relative composer-frame">
               <input
                 type="text"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Ask anything or describe what you want to build..."
                 aria-label="What would you like to work on?"
-                className="w-full px-5 py-4 pr-14 text-base rounded-2xl border border-border bg-card transition-all focus:outline-none focus:border-primary/50 focus:shadow-lg focus:shadow-primary/5"
+                className="w-full px-5 py-4 pr-14 text-base bg-card transition-all focus:outline-none"
                 autoFocus
                 disabled={busy}
               />
               <button
                 type="submit"
                 disabled={!prompt.trim() || busy}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-primary text-primary-foreground rounded-xl transition-all hover:opacity-90 disabled:opacity-40"
+                className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-primary text-primary-foreground transition-all hover:opacity-90 disabled:opacity-40"
                 aria-label="Start"
               >
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -117,7 +117,7 @@ export function HomePage({
                   type="button"
                   onClick={() => onCloneGalleryItem(item.id)}
                   disabled={busy}
-                  className="w-full text-left p-4 rounded-xl border border-border/50 bg-card/50 transition-all hover:border-primary/30 hover:bg-card group disabled:opacity-50"
+                  className="w-full text-left p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group disabled:opacity-50"
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <h3 className="font-medium text-sm group-hover:text-primary transition-colors line-clamp-1">
@@ -147,7 +147,7 @@ export function HomePage({
                   type="button"
                   onClick={() => handleExamplePrompt(example.prompt)}
                   disabled={busy}
-                  className="px-4 py-2 text-sm rounded-full border border-border bg-card/50 text-muted-foreground transition-all hover:border-primary/30 hover:text-foreground hover:bg-card disabled:opacity-50"
+                  className="px-4 py-2 text-sm border border-border bg-card/50 text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground hover:bg-card disabled:opacity-50"
                 >
                   {example.label}
                 </button>
@@ -162,11 +162,11 @@ export function HomePage({
             type="button"
             onClick={onStartBlank}
             disabled={busy}
-            className="px-4 py-2 text-sm rounded-full border border-dashed border-border/50 text-muted-foreground/70 transition-all hover:border-border hover:text-muted-foreground disabled:opacity-50"
+            className="px-4 py-2 text-sm border border-border text-muted-foreground/70 transition-all hover:border-border-strong hover:text-muted-foreground disabled:opacity-50"
           >
             Start blank
           </button>
-          <label className="px-4 py-2 text-sm rounded-full border border-dashed border-border/50 text-muted-foreground/70 transition-all hover:border-border hover:text-muted-foreground has-[:disabled]:opacity-50 has-[:disabled]:cursor-not-allowed cursor-pointer focus-within:ring-2 focus-within:ring-ring">
+          <label className="px-4 py-2 text-sm border border-border text-muted-foreground/70 transition-all hover:text-muted-foreground has-[:disabled]:opacity-50 has-[:disabled]:cursor-not-allowed cursor-pointer focus-within:ring-2 focus-within:ring-ring">
             {importing ? 'Importing…' : 'Import workspace'}
             <input
               className="sr-only"
@@ -194,7 +194,7 @@ export function HomePage({
                   key={ws.id}
                   type="button"
                   onClick={() => onSelectWorkspace(ws.id)}
-                  className="w-full text-left p-4 rounded-xl border border-border/50 bg-card/50 transition-all hover:border-primary/30 hover:bg-card group"
+                  className="w-full text-left p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">

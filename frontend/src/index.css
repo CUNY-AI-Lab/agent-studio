@@ -42,10 +42,24 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  /* Flat institutional chassis: sharp corners everywhere. rounded-full is
+     kept for status dots and fully circular icon buttons only. */
+  --radius-xs: 0rem;
+  --radius-sm: 0rem;
+  --radius-md: 0rem;
+  --radius-lg: 0rem;
+  --radius-xl: 0rem;
+  --radius-2xl: 0rem;
+  --radius-3xl: 0rem;
+  --radius-4xl: 0rem;
+  /* No elevation shadows in the flat system. */
+  --shadow-2xs: 0 0 #0000;
+  --shadow-xs: 0 0 #0000;
+  --shadow-sm: 0 0 #0000;
+  --shadow-md: 0 0 #0000;
+  --shadow-lg: 0 0 #0000;
+  --shadow-xl: 0 0 #0000;
+  --shadow-2xl: 0 0 #0000;
 }
 
 /*
@@ -53,7 +67,13 @@
  * ink, navy #1D3A83, action blue #2A6FB8, light-blue chip tints.
  */
 :root {
-  --radius: 0.5rem;
+  --radius: 0rem;
+
+  /* Fleet design-system accents: navy structural rules, a teal accent used
+     only in small lead slots, and CUNY gold for focus. */
+  --rule-navy: #1d3a83;
+  --accent-teal: #2fb8d6;
+  --focus-gold: #ffb81c;
 
   /* Warm cream background, per the website */
   --background: #fafcf8;
@@ -83,7 +103,7 @@
 
   --border: #e6e9ef;
   --input: #dbe1e9;
-  --ring: #2a6fb8;
+  --ring: #ffb81c;
 
   /* Chart colors - vibrant palette (raw oklch values for composability) */
   --chart-1: 0.55 0.22 250;
@@ -99,10 +119,14 @@
   --sidebar-accent: #e8f4fc;
   --sidebar-accent-foreground: #1d3a83;
   --sidebar-border: #e6e9ef;
-  --sidebar-ring: #2a6fb8;
+  --sidebar-ring: #ffb81c;
 }
 
 .dark {
+  /* Same flat accent logic on the dark navy base: the structural rule
+     lightens so it stays visible; teal and gold carry over. */
+  --rule-navy: oklch(0.65 0.12 255);
+
   /* Deep blue-black background */
   --background: oklch(0.14 0.02 250);
   --foreground: oklch(0.92 0.01 80);
@@ -129,7 +153,7 @@
 
   --border: oklch(0.28 0.02 250);
   --input: oklch(0.25 0.02 250);
-  --ring: oklch(0.65 0.12 255);
+  --ring: #ffb81c;
 
   /* Chart colors - bright and vibrant for dark mode (raw oklch values) */
   --chart-1: 0.7 0.2 250;
@@ -145,7 +169,7 @@
   --sidebar-accent: oklch(0.22 0.02 250);
   --sidebar-accent-foreground: oklch(0.92 0.01 80);
   --sidebar-border: oklch(0.28 0.02 250);
-  --sidebar-ring: oklch(0.65 0.12 255);
+  --sidebar-ring: #ffb81c;
 }
 
 @layer base {
@@ -163,20 +187,67 @@
   code, pre {
     font-family: var(--font-mono);
   }
+  /* Links carry thick underlines that thicken on hover. */
+  a {
+    text-decoration-thickness: 1.5px;
+    text-underline-offset: 3px;
+  }
+  a:hover {
+    text-decoration-thickness: 2.5px;
+  }
+  /* One focus treatment everywhere: 3px CUNY-gold outline, no offset. */
+  :focus-visible {
+    outline: 3px solid var(--focus-gold);
+    outline-offset: 0;
+  }
 }
 
-/* Subtle grain texture overlay */
-.grain::before {
+/* ---------------------------------------------------------------------------
+   Fleet design-system primitives: accent-lead rules, composer frames, and
+   flat chat blocks. The teal accent appears only in these small lead slots.
+   -------------------------------------------------------------------------- */
+
+/* Horizontal section rule with a 44px teal lead segment, then navy. */
+.accent-rule {
+  background: linear-gradient(90deg, var(--accent-teal) 0 44px, var(--rule-navy) 44px);
+}
+
+/* The composer is the strongest object on screen: 2px navy border, sharp
+   corners, a 44px teal lead bar on its top edge, gold outline on focus. */
+.composer-frame {
+  position: relative;
+  border: 2px solid var(--rule-navy);
+  border-radius: 0;
+  background: var(--card);
+}
+
+.composer-frame::before {
   content: '';
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  opacity: 0.03;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
-  z-index: 9999;
+  position: absolute;
+  top: -2px;
+  left: -2px;
+  width: 44px;
+  height: 4px;
+  background: var(--accent-teal);
+}
+
+.composer-frame:focus-within {
+  outline: 3px solid var(--focus-gold);
+  outline-offset: 0;
+}
+
+/* User chat messages: flat tinted blocks with a navy left rule, no bubbles. */
+.chat-user-block {
+  background: var(--secondary);
+  color: var(--secondary-foreground);
+  border-left: 3px solid var(--rule-navy);
+}
+
+/* Tool/activity cards: sharp surfaces with a navy left rule. */
+.chat-tool-block {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--rule-navy);
 }
 
 /* Refined animations */
@@ -221,15 +292,16 @@
 .stagger-children > *:nth-child(6) { animation-delay: 250ms; }
 
 /* Focus styles */
-.focus-ring {
-  @apply focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background;
+.focus-ring:focus-visible {
+  outline: 3px solid var(--focus-gold);
+  outline-offset: 0;
 }
 
 /* Editorial horizontal rule */
 hr.editorial {
   border: none;
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--border) 20%, var(--border) 80%, transparent);
+  background: var(--border);
   margin: 2rem 0;
 }
 
@@ -245,7 +317,6 @@ hr.editorial {
 
 ::-webkit-scrollbar-thumb {
   background: oklch(0.7 0.02 250 / 0.3);
-  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -272,46 +343,31 @@ hr.editorial {
   background-image: radial-gradient(circle, oklch(0.4 0.02 250 / 0.3) 1px, transparent 1px);
 }
 
-/* Artifact card - paper-like appearance */
+/* Artifact card - flat surface with a navy top rule (teal lead segment) */
 .artifact-card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow:
-    0 1px 2px oklch(0.2 0.02 250 / 0.04),
-    0 4px 12px oklch(0.2 0.02 250 / 0.06),
-    0 8px 24px oklch(0.2 0.02 250 / 0.04);
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  border-radius: 0;
   overflow: hidden;
 }
 
-.artifact-card:hover {
-  box-shadow:
-    0 2px 4px oklch(0.2 0.02 250 / 0.05),
-    0 8px 20px oklch(0.2 0.02 250 / 0.08),
-    0 16px 40px oklch(0.2 0.02 250 / 0.06);
-}
-
-.dark .artifact-card {
-  box-shadow:
-    0 1px 2px oklch(0 0 0 / 0.2),
-    0 4px 12px oklch(0 0 0 / 0.3),
-    0 8px 24px oklch(0 0 0 / 0.2);
-}
-
-.dark .artifact-card:hover {
-  box-shadow:
-    0 2px 4px oklch(0 0 0 / 0.25),
-    0 8px 20px oklch(0 0 0 / 0.4),
-    0 16px 40px oklch(0 0 0 / 0.3);
+/* The fleet signature: a 4px top rule, teal for the first 44px, then navy. */
+.artifact-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: linear-gradient(90deg, var(--accent-teal) 0 44px, var(--rule-navy) 44px);
+  pointer-events: none;
+  z-index: 5;
 }
 
 /* Artifact being dragged */
 .artifact-card.dragging {
-  box-shadow:
-    0 4px 8px oklch(0.2 0.02 250 / 0.1),
-    0 16px 32px oklch(0.2 0.02 250 / 0.15),
-    0 24px 48px oklch(0.2 0.02 250 / 0.1);
+  outline: 2px solid var(--rule-navy);
+  outline-offset: 0;
   transform: scale(1.02);
   z-index: 1000;
 }
@@ -320,16 +376,12 @@ hr.editorial {
 .artifact-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
-  background: oklch(0.98 0.003 80 / 0.5);
+  background: var(--card);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   cursor: grab;
-}
-
-.dark .artifact-header {
-  background: oklch(0.2 0.015 250 / 0.5);
 }
 
 .artifact-header:active {
@@ -356,7 +408,7 @@ hr.editorial {
   background: var(--muted);
   border: 1px solid var(--border);
   padding: 3px 8px;
-  border-radius: 4px;
+  border-radius: 0;
 }
 
 /* Artifact content area */
@@ -403,7 +455,6 @@ hr.editorial {
   height: 100%;
   min-height: 240px;
   border: 0;
-  border-radius: 10px;
   background: var(--background);
 }
 
@@ -490,23 +541,10 @@ hr.editorial {
   font-size: 0.75rem;
 }
 
-/* Floating chat panel - glass morphism */
+/* Chat panel - flat ruled surface */
 .chat-panel {
-  background: oklch(0.99 0.003 80 / 0.94);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border-left: 1px solid oklch(0.84 0.01 80 / 0.75);
-  box-shadow:
-    -4px 0 24px oklch(0.2 0.02 250 / 0.08),
-    -8px 0 48px oklch(0.2 0.02 250 / 0.04);
-}
-
-.dark .chat-panel {
-  background: oklch(0.16 0.02 250 / 0.85);
-  border-left: 1px solid oklch(0.3 0.02 250 / 0.6);
-  box-shadow:
-    -4px 0 24px oklch(0 0 0 / 0.3),
-    -8px 0 48px oklch(0 0 0 / 0.2);
+  background: var(--card);
+  border-left: 1px solid var(--border);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -533,7 +571,6 @@ hr.editorial {
 /* Smooth panel transitions when not dragging/resizing */
 .artifact-card {
   transition:
-    box-shadow 0.2s ease,
     left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
     top 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -542,23 +579,12 @@ hr.editorial {
 .artifact-card.dragging,
 .artifact-card.resizing,
 .artifact-card.group-dragging {
-  transition: box-shadow 0.2s ease;
+  transition: none;
 }
 
-/* Elevated state while dragging */
+/* Raised stacking while dragging (flat: outline instead of shadow) */
 .artifact-card.dragging {
   z-index: 1000;
-  box-shadow:
-    0 4px 8px oklch(0.2 0.02 250 / 0.1),
-    0 16px 32px oklch(0.2 0.02 250 / 0.15),
-    0 24px 48px oklch(0.2 0.02 250 / 0.1);
-}
-
-.dark .artifact-card.dragging {
-  box-shadow:
-    0 4px 8px oklch(0 0 0 / 0.3),
-    0 16px 32px oklch(0 0 0 / 0.4),
-    0 24px 48px oklch(0 0 0 / 0.3);
 }
 
 /* Custom resize handles - corners only */
@@ -567,8 +593,7 @@ hr.editorial {
   width: 12px;
   height: 12px;
   background: white;
-  border: 2px solid oklch(0.6 0.2 250);
-  border-radius: 2px;
+  border: 2px solid var(--primary);
   opacity: 0;
   transition: opacity 0.15s ease;
   z-index: 10;
@@ -621,7 +646,7 @@ hr.editorial {
 /* Dark mode resize handles */
 .dark .resize-handle {
   background: oklch(0.25 0.02 250);
-  border-color: oklch(0.7 0.13 253);
+  border-color: var(--rule-navy);
 }
 
 /* Prevent text selection during drag */
@@ -652,7 +677,7 @@ hr.editorial {
   gap: 8px;
   padding: 4px;
   background: var(--muted);
-  border-radius: 8px;
+  border-radius: 0;
 }
 
 .zoom-controls button {
@@ -720,9 +745,6 @@ hr.editorial {
   border-radius: 50%;
   background: var(--primary);
   color: var(--primary-foreground);
-  box-shadow:
-    0 4px 12px oklch(0.2 0.02 250 / 0.2),
-    0 8px 24px oklch(0.2 0.02 250 / 0.1);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -732,9 +754,6 @@ hr.editorial {
 
 .chat-toggle:hover {
   transform: scale(1.05);
-  box-shadow:
-    0 6px 16px oklch(0.2 0.02 250 / 0.25),
-    0 12px 32px oklch(0.2 0.02 250 / 0.15);
 }
 
 .chat-toggle svg {
@@ -757,7 +776,7 @@ hr.editorial {
 
 .tour-spotlight {
   position: fixed;
-  border-radius: 16px;
+  border-radius: 0;
   box-shadow: 0 0 0 9999px oklch(0.2 0.02 250 / 0.55);
   border: 1px solid oklch(0.95 0.01 250 / 0.4);
   pointer-events: none;
@@ -769,11 +788,9 @@ hr.editorial {
   max-width: 340px;
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 0;
   padding: 16px;
-  box-shadow:
-    0 6px 24px oklch(0.2 0.02 250 / 0.25),
-    0 16px 48px oklch(0.2 0.02 250 / 0.2);
+  border-top: 4px solid var(--rule-navy);
   --tour-arrow-offset: 24px;
 }
 
@@ -846,7 +863,7 @@ hr.editorial {
 .tour-primary,
 .tour-secondary {
   font-size: 0.8125rem;
-  border-radius: 10px;
+  border-radius: 0;
   padding: 6px 12px;
   transition: background 0.15s ease, color 0.15s ease, opacity 0.15s ease;
 }
@@ -890,11 +907,8 @@ hr.editorial {
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
   border: 1px solid oklch(0.88 0.01 80);
-  border-radius: 16px;
-  box-shadow:
-    0 4px 16px oklch(0.2 0.02 250 / 0.1),
-    0 8px 32px oklch(0.2 0.02 250 / 0.08),
-    0 0 0 1px oklch(1 0 0 / 0.5) inset;
+  border-radius: 0;
+  border-top: 4px solid var(--rule-navy);
   animation: popover-appear 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
   z-index: 200;
 }
@@ -902,10 +916,6 @@ hr.editorial {
 .dark .contextual-chat-popover {
   background: oklch(0.18 0.02 250 / 0.95);
   border-color: oklch(0.3 0.02 250);
-  box-shadow:
-    0 4px 16px oklch(0 0 0 / 0.3),
-    0 8px 32px oklch(0 0 0 / 0.2),
-    0 0 0 1px oklch(0.3 0.02 250 / 0.5) inset;
 }
 
 @keyframes popover-appear {
@@ -935,7 +945,7 @@ hr.editorial {
 .contextual-chat-icon {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: 0;
   background: oklch(0.6 0.12 253 / 0.15);
   color: oklch(0.5 0.12 253);
   display: flex;
@@ -1002,7 +1012,7 @@ hr.editorial {
 
 .contextual-chat-message {
   padding: 8px 12px;
-  border-radius: 12px;
+  border-radius: 0;
   font-size: 13px;
   line-height: 1.4;
   max-width: 85%;
@@ -1080,17 +1090,17 @@ hr.editorial {
   flex: 1;
   padding: 8px 12px;
   border: 1px solid oklch(0.88 0.01 80);
-  border-radius: 8px;
+  border-radius: 0;
   background: oklch(0.98 0.003 80);
   font-size: 13px;
   resize: none;
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color 0.15s ease;
 }
 
 .contextual-chat-input:focus {
-  border-color: oklch(0.6 0.12 253);
-  box-shadow: 0 0 0 3px oklch(0.6 0.12 253 / 0.15);
+  outline: 3px solid var(--focus-gold);
+  outline-offset: 0;
 }
 
 .dark .contextual-chat-input {
@@ -1105,7 +1115,7 @@ hr.editorial {
 .contextual-chat-send {
   width: 36px;
   height: 36px;
-  border-radius: 8px;
+  border-radius: 0;
   background: oklch(0.6 0.12 253);
   color: white;
   display: flex;
@@ -1226,7 +1236,7 @@ hr.editorial {
 .group-boundary {
   position: absolute;
   border: 2px dashed oklch(0.7 0.02 250 / 0.3);
-  border-radius: 16px;
+  border-radius: 0;
   background: oklch(0.94 0.01 80 / 0.15);
   /* Smooth transitions for position/size changes when panels move */
   transition:
@@ -1275,7 +1285,6 @@ hr.editorial {
   font-size: 12px;
   font-weight: 500;
   color: oklch(0.4 0.02 250);
-  box-shadow: 0 1px 3px oklch(0 0 0 / 0.1);
   pointer-events: auto;
 }
 
@@ -1370,10 +1379,7 @@ hr.editorial {
   backdrop-filter: blur(12px) saturate(1.4);
   -webkit-backdrop-filter: blur(12px) saturate(1.4);
   border: 1px solid oklch(0.88 0.01 80);
-  border-radius: 10px;
-  box-shadow:
-    0 2px 8px oklch(0 0 0 / 0.08),
-    0 4px 16px oklch(0 0 0 / 0.06);
+  border-radius: 0;
   animation: toolbar-appear 0.15s ease-out;
 }
 
@@ -1488,10 +1494,7 @@ hr.editorial {
   padding: 4px;
   background: oklch(0.995 0.002 80);
   border: 1px solid oklch(0.88 0.01 80);
-  border-radius: 8px;
-  box-shadow:
-    0 4px 12px oklch(0 0 0 / 0.1),
-    0 8px 24px oklch(0 0 0 / 0.06);
+  border-radius: 0;
   animation: dropdown-appear 0.12s ease-out;
   z-index: 10;
 }
@@ -1499,9 +1502,6 @@ hr.editorial {
 .dark .selection-toolbar .toolbar-dropdown-menu {
   background: oklch(0.18 0.02 250);
   border-color: oklch(0.3 0.02 250);
-  box-shadow:
-    0 4px 12px oklch(0 0 0 / 0.3),
-    0 8px 24px oklch(0 0 0 / 0.2);
 }
 
 @keyframes dropdown-appear {
@@ -1553,15 +1553,13 @@ hr.editorial {
   outline: none;
   box-shadow:
     0 0 0 2px var(--background),
-    0 0 0 4px var(--ring),
-    0 8px 24px oklch(0.2 0.02 250 / 0.12);
+    0 0 0 4px var(--ring);
 }
 
 .dark .artifact-card:focus-visible {
   box-shadow:
     0 0 0 2px var(--background),
-    0 0 0 4px var(--ring),
-    0 8px 24px oklch(0 0 0 / 0.35);
+    0 0 0 4px var(--ring);
 }
 
 /* Reveal resize handles when the tile has keyboard focus, matching the hover
