@@ -108,7 +108,7 @@ export default function ChartPanelView({
             </Pie>
           </PieChart>
         ) : (
-          <div className="text-muted-foreground">This chart type isn’t supported yet. Ask the agent to rebuild it as a bar, line, area, or pie chart.</div>
+          <div className="text-muted-foreground">Unknown chart type</div>
         )}
       </ChartContainer>
     </div>

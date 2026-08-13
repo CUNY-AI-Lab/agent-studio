@@ -31,7 +31,7 @@ export function extractMessageText(message: UIMessage): string {
 
 export function getContextualStatusLabel(status: string, assistantMessage: UIMessage | null): string | null {
   if (status === 'ready') return null;
-  if (status === 'submitted') return 'Thinking…';
+  if (status === 'submitted') return 'Thinking...';
   if (status === 'error') return null;
 
   if (assistantMessage && Array.isArray(assistantMessage.parts)) {
@@ -41,9 +41,9 @@ export function getContextualStatusLabel(status: string, assistantMessage: UIMes
       part.state !== 'output-error' &&
       part.state !== 'output-denied'
     );
-    if (hasRunningTool) return 'Working…';
-    if (extractMessageText(assistantMessage).trim()) return 'Responding…';
+    if (hasRunningTool) return 'Running tools...';
+    if (extractMessageText(assistantMessage).trim()) return 'Responding...';
   }
 
-  return 'Thinking…';
+  return 'Thinking...';
 }

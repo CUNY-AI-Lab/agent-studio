@@ -24,7 +24,7 @@ export function FileTreePanelView({
   );
 
   if (!files) {
-    return <div className="panel-empty">This shared workspace doesn’t include its files.</div>;
+    return <div className="panel-empty">Files show up only in workspaces you can edit.</div>;
   }
 
   if (entries.length === 0) {

@@ -507,8 +507,8 @@ function WorkspaceShell({
   const showToolbar = Boolean(toolbarBounds) && (selectedPanelIds.size > 0 || Boolean(hoveredPanel));
   const selectedScopeLabel = useMemo(() => {
     if (selectedPanels.length === 0) return null;
-    if (selectedPanels.length === 1) return `Asking about ${getPanelTitle(selectedPanels[0])}`;
-    return `Asking about ${selectedPanels.length} tiles`;
+    if (selectedPanels.length === 1) return `Scoped to ${getPanelTitle(selectedPanels[0])}`;
+    return `Scoped to ${selectedPanels.length} tiles`;
   }, [selectedPanels]);
   const lastUserMessage = useMemo(
     () => [...chat.messages].reverse().find((message) => message.role === 'user') || null,
@@ -1215,7 +1215,7 @@ function WorkspaceShell({
       await refreshWorkspaceFiles();
       showToast(`Uploaded ${files.length} file${files.length !== 1 ? 's' : ''}`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Your files didn’t upload. Check the file types and sizes, then try again.');
+      setError(nextError instanceof Error ? nextError.message : 'Upload failed');
     } finally {
       setUploading(false);
     }
@@ -1909,7 +1909,7 @@ function WorkspaceShell({
     }));
     setContextualStatus((current) => ({
       ...current,
-      [contextualChatTarget.key]: 'Thinking…',
+      [contextualChatTarget.key]: 'Thinking...',
     }));
     void sendChatMessage(next, {
       body: { scopePanelIds: contextualChatTarget.panelIds },
@@ -1938,7 +1938,7 @@ function WorkspaceShell({
   const downloadPanelAsPng = useCallback(async (panelId: string, title: string) => {
     const element = panelRefs.current[panelId];
     if (!element) {
-      setError('That tile is no longer on the canvas. Refresh the workspace and try again.');
+      setError('Tile not found');
       return;
     }
 
@@ -1963,7 +1963,7 @@ function WorkspaceShell({
       link.href = dataUrl;
       link.click();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'That image didn’t save. Try again.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to export tile image');
     }
   }, []);
 
@@ -2069,7 +2069,7 @@ function WorkspaceShell({
       });
       await refreshWorkspace();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The workspace didn’t save. Check your connection and try again.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to save workspace');
     } finally {
       setSavingWorkspace(false);
     }
@@ -2084,7 +2084,7 @@ function WorkspaceShell({
       await refreshWorkspace();
     } catch (nextError) {
       setWorkspaceModel(previous);
-      setError(nextError instanceof Error ? nextError.message : 'The model didn’t change. Try again, or pick a different model.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to change model');
     }
   }, [refreshWorkspace, workspace.workspace.id, workspaceModel]);
 
@@ -2112,7 +2112,7 @@ function WorkspaceShell({
       await refreshWorkspace();
       showToast('Published to gallery');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The workspace didn’t publish. Try again.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to publish workspace');
     } finally {
       setPublishing(false);
     }
@@ -2130,7 +2130,7 @@ function WorkspaceShell({
       await refreshWorkspace();
       showToast('Removed from gallery', 'info');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The workspace is still public. Try unpublishing again.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to unpublish workspace');
     } finally {
       setPublishing(false);
     }
@@ -2149,7 +2149,7 @@ function WorkspaceShell({
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The export didn’t finish. Try again.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to export workspace');
     }
   }, [workspace.workspace.id]);
 
@@ -2869,10 +2869,10 @@ function WorkspaceShell({
             {visiblePanels.length === 0 ? (
               <div className="canvas-empty pointer-events-none absolute inset-0">
                 <Sparkles className="canvas-empty-icon" />
-                <h3>{minimizedPanels.length > 0 ? 'Everything is minimized' : 'Nothing on the canvas yet'}</h3>
+                <h3>{minimizedPanels.length > 0 ? 'All Minimized' : 'Empty Canvas'}</h3>
                 <p>
                   {minimizedPanels.length > 0
-                    ? 'All visible tiles are minimized. Restore them from the bar at the bottom of the screen.'
+                    ? 'All visible tiles are minimized. Restore them from the dock to continue.'
                     : 'Ask the agent to create files, markdown, tables, charts, and previews.'}
                 </p>
               </div>
@@ -3071,7 +3071,7 @@ export default function App() {
       setSelectedWorkspace(response);
       setSelectedWorkspaceId(workspaceId);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'That workspace didn’t load. Try again, or go back home and reopen it.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to load workspace');
     } finally {
       setLoading(false);
     }
@@ -3121,7 +3121,7 @@ export default function App() {
         setLoading(false);
       })
       .catch((nextError) => {
-        setError(nextError instanceof Error ? nextError.message : 'That shared workspace didn’t load. Try again from the gallery.');
+        setError(nextError instanceof Error ? nextError.message : 'Failed to load gallery item');
         setLoading(false);
       });
   }, [selectedGalleryId, selectedWorkspaceId]);
@@ -3134,7 +3134,7 @@ export default function App() {
       await loadWorkspaces();
       return true;
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The workspace wasn’t deleted. Try again.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to delete workspace');
       return false;
     }
   }, [loadWorkspaces, selectedWorkspaceId]);
@@ -3149,7 +3149,7 @@ export default function App() {
       setSelectedGalleryId(null);
       setSelectedWorkspaceId(result.workspaceId);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The copy didn’t finish. Try again from the gallery.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to clone gallery item');
     }
   }, [loadGallery, loadWorkspaces]);
 
@@ -3165,7 +3165,7 @@ export default function App() {
       setSelectedGalleryId(null);
       setSelectedWorkspaceId(result.workspaceId);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Importing didn’t work. Make sure it’s a workspace file exported from Agent Studio.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to import workspace');
       setLoading(false);
     } finally {
       setImporting(false);
@@ -3182,7 +3182,7 @@ export default function App() {
       setSelectedGalleryId(null);
       setSelectedWorkspaceId(workspace.id);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The workspace wasn’t created. Try again.');
+      setError(nextError instanceof Error ? nextError.message : 'Failed to create workspace');
     } finally {
       setCreating(false);
     }

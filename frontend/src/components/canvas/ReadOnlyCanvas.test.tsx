@@ -55,7 +55,7 @@ describe('ReadOnlyCanvas', () => {
       />
     );
 
-    const tile = screen.getByRole('group', { name: 'Sales Report (Table tile)' });
+    const tile = screen.getByRole('group', { name: 'Sales Report (table tile)' });
     expect(tile).toHaveAttribute('tabindex', '0');
 
     tile.focus();

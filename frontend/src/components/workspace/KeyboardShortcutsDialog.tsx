@@ -54,8 +54,8 @@ export function KeyboardShortcutsDialog({
           </button>
         </div>
         <p className="mb-4 text-xs text-muted-foreground">
-          Tab to a tile on the canvas, then use these keys. Zoom keys work when
-          the canvas itself is focused.
+          Tab to a tile on the canvas, then use these keys. The canvas region
+          itself handles zoom keys when focused.
         </p>
         <div className="max-h-[60vh] space-y-5 overflow-y-auto pr-1">
           {KEYBOARD_SHORTCUT_GROUPS.map((group) => (
