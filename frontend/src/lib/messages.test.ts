@@ -40,14 +40,14 @@ describe('getContextualStatusLabel', () => {
   });
 
   it('reports Thinking for submitted', () => {
-    expect(getContextualStatusLabel('submitted', null)).toBe('Thinking...');
+    expect(getContextualStatusLabel('submitted', null)).toBe('Thinking…');
   });
 
   it('reports Responding when the assistant has produced text', () => {
-    expect(getContextualStatusLabel('streaming', textMessage('partial answer'))).toBe('Responding...');
+    expect(getContextualStatusLabel('streaming', textMessage('partial answer'))).toBe('Responding…');
   });
 
   it('defaults to Thinking with no assistant content', () => {
-    expect(getContextualStatusLabel('streaming', null)).toBe('Thinking...');
+    expect(getContextualStatusLabel('streaming', null)).toBe('Thinking…');
   });
 });

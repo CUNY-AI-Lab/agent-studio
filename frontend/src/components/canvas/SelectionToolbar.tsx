@@ -241,7 +241,7 @@ export function SelectionToolbar({
                       setOpenMenu(null);
                     }}
                   >
-                    {format === 'txt' ? 'Text' : format === 'png' ? 'PNG Snapshot' : format.toUpperCase()}
+                    {format === 'txt' ? 'Text' : format === 'png' ? 'Image (PNG)' : format.toUpperCase()}
                   </button>
                 ))}
               </div>
@@ -268,10 +268,10 @@ export function SelectionToolbar({
               <div className="toolbar-dropdown-menu" role="menu" aria-label="Align options">
                 {[
                   ['left', 'Left'],
-                  ['centerX', 'Center X'],
+                  ['centerX', 'Center horizontally'],
                   ['right', 'Right'],
                   ['top', 'Top'],
-                  ['centerY', 'Center Y'],
+                  ['centerY', 'Center vertically'],
                   ['bottom', 'Bottom'],
                 ].map(([mode, label]) => (
                   <button

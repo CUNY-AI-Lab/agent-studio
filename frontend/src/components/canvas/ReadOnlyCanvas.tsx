@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { Layout } from 'lucide-react';
 import { buildPanelLayouts, inferPanelLayout } from '../../lib/panelLayout';
-import { getPanelTitle } from '../../lib/panelFiles';
+import { getPanelTitle, getPanelTypeLabel } from '../../lib/panelFiles';
 import type { WorkspaceState } from '../../types';
 import { ConnectionLines } from './ConnectionLines';
 import { GroupBoundary } from './GroupBoundary';
@@ -67,8 +67,8 @@ export function ReadOnlyCanvas({
         {visiblePanels.length === 0 ? (
           <div className="canvas-empty">
             <Layout className="canvas-empty-icon" />
-            <h3>No Panels</h3>
-            <p>This gallery item has no visible panels yet.</p>
+            <h3>Nothing to show</h3>
+            <p>This shared workspace doesn’t have anything on its canvas yet.</p>
           </div>
         ) : null}
         {visiblePanels.map((panel, index) => {
@@ -77,7 +77,7 @@ export function ReadOnlyCanvas({
             <article
               key={panel.id}
               role="group"
-              aria-label={`${panel.title || panel.id} (${panel.type} tile)`}
+              aria-label={`${panel.title || panel.id} (${getPanelTypeLabel(panel)} tile)`}
               tabIndex={0}
               className="artifact-card absolute"
               style={{
@@ -89,7 +89,7 @@ export function ReadOnlyCanvas({
             >
               <header className="artifact-header">
                 <h3>{panel.title || panel.id}</h3>
-                <span className="artifact-type">{panel.type}</span>
+                <span className="artifact-type">{getPanelTypeLabel(panel)}</span>
               </header>
               <div className="artifact-content">
                 <PanelBody fileSource={{ kind: 'gallery', id: galleryId }} panel={panel} allPanels={visiblePanels} />

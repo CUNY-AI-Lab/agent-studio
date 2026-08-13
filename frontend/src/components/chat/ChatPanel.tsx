@@ -126,7 +126,7 @@ export function ChatPanel({
       {selectedScopeLabel ? (
         <div className="flex items-center justify-between px-4 py-2 bg-accent/5 border-b border-accent/20 text-xs">
           <span className="text-accent font-medium">{selectedScopeLabel}</span>
-          <button className="text-muted-foreground hover:text-foreground transition-colors" onClick={onClearScope}>Clear Scope</button>
+          <button className="text-muted-foreground hover:text-foreground transition-colors" onClick={onClearScope}>Clear selection</button>
         </div>
       ) : null}
       {status === 'error' ? (
@@ -137,7 +137,7 @@ export function ChatPanel({
                 {errorNotice ?? 'The last response failed before it finished.'}
               </p>
               <p className="text-xs text-muted-foreground">
-                Retry the last turn or clear the thread and continue.
+                Try again, or clear the conversation and start over.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -188,8 +188,8 @@ export function ChatPanel({
             <article key={message.id} className="max-w-[90%] self-start space-y-2">
               {toolParts.length > 0 && (
                 <div className="rounded-2xl border border-border/60 bg-card/80 px-3 py-2">
-                  <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                    Tool Activity
+                  <div className="mb-2 text-[11px] font-semibold text-muted-foreground">
+                    Agent activity
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                   {toolParts.map((tool, index) => (
@@ -236,7 +236,7 @@ export function ChatPanel({
           className="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-sm resize-none focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all placeholder:text-muted-foreground"
           value={composer}
           onChange={(event) => onComposerChange(event.target.value)}
-          placeholder={selectedScopeLabel ? 'Ask about the selected tile scope.' : 'Ask the agent to create files and panels.'}
+          placeholder={selectedScopeLabel ? 'Ask about the selected tiles.' : 'Ask the agent to create files and panels.'}
           aria-label="Message the agent"
           disabled={isWorking}
           rows={2}
