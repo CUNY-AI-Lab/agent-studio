@@ -126,9 +126,9 @@ describe('ChatPanel', () => {
   it('renders the scope banner and clears scope', async () => {
     const onClearScope = vi.fn();
     const user = userEvent.setup();
-    render(<ChatPanel {...baseProps} selectedScopeLabel="Scoped to 2 tiles" onClearScope={onClearScope} />);
-    expect(screen.getByText('Scoped to 2 tiles')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Clear Scope' }));
+    render(<ChatPanel {...baseProps} selectedScopeLabel="Asking about 2 tiles" onClearScope={onClearScope} />);
+    expect(screen.getByText('Asking about 2 tiles')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Clear selection' }));
     expect(onClearScope).toHaveBeenCalledOnce();
   });
 });

@@ -48,7 +48,7 @@ export function PanelMenu({
         }}
         className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
       >
-        Ask About This Tile
+        Ask about this tile
       </button>
       {'filePath' in panel && panel.filePath ? (
         (() => {
@@ -63,7 +63,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Show in Workspace Files
+            Show in workspace files
           </button>
           <button
         role="menuitem"
@@ -73,7 +73,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Download File
+            Download
           </button>
           <button
         role="menuitem"
@@ -88,7 +88,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Open or download file
+            Open in a new tab
           </button>
         </>
           );
@@ -104,7 +104,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Export Data as CSV
+            Export as CSV
           </button>
           <button
         role="menuitem"
@@ -114,7 +114,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Export Data as JSON
+            Export as JSON
           </button>
         </>
       ) : null}
@@ -128,7 +128,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Export Data as CSV
+            Export as CSV
           </button>
           <button
         role="menuitem"
@@ -138,7 +138,7 @@ export function PanelMenu({
             }}
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
-            Export Data as JSON
+            Export as JSON
           </button>
         </>
       ) : null}
@@ -151,7 +151,7 @@ export function PanelMenu({
           }}
           className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
         >
-          Export Data as JSON
+          Export as JSON
         </button>
       ) : null}
       {panel.type === 'markdown' ? (
@@ -176,7 +176,7 @@ export function PanelMenu({
           }}
           className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
         >
-          Download HTML Source
+          Download as HTML
         </button>
       ) : null}
       {canExportPanelSnapshot(panel) ? (
@@ -188,7 +188,7 @@ export function PanelMenu({
           }}
           className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
         >
-          Save Snapshot as PNG
+          Save as image (PNG)
         </button>
       ) : null}
       <button

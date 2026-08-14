@@ -507,8 +507,8 @@ function WorkspaceShell({
   const showToolbar = Boolean(toolbarBounds) && (selectedPanelIds.size > 0 || Boolean(hoveredPanel));
   const selectedScopeLabel = useMemo(() => {
     if (selectedPanels.length === 0) return null;
-    if (selectedPanels.length === 1) return `Scoped to ${getPanelTitle(selectedPanels[0])}`;
-    return `Scoped to ${selectedPanels.length} tiles`;
+    if (selectedPanels.length === 1) return `Asking about ${getPanelTitle(selectedPanels[0])}`;
+    return `Asking about ${selectedPanels.length} tiles`;
   }, [selectedPanels]);
   const lastUserMessage = useMemo(
     () => [...chat.messages].reverse().find((message) => message.role === 'user') || null,
@@ -1215,7 +1215,7 @@ function WorkspaceShell({
       await refreshWorkspaceFiles();
       showToast(`Uploaded ${files.length} file${files.length !== 1 ? 's' : ''}`);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Upload failed');
+      setError(nextError instanceof Error ? nextError.message : 'Your files didn’t upload. Try again.');
     } finally {
       setUploading(false);
     }
@@ -1938,7 +1938,7 @@ function WorkspaceShell({
   const downloadPanelAsPng = useCallback(async (panelId: string, title: string) => {
     const element = panelRefs.current[panelId];
     if (!element) {
-      setError('Tile not found');
+      setError('That tile is no longer on the canvas. Refresh the workspace and try again.');
       return;
     }
 
@@ -2130,7 +2130,7 @@ function WorkspaceShell({
       await refreshWorkspace();
       showToast('Removed from gallery', 'info');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to unpublish workspace');
+      setError(nextError instanceof Error ? nextError.message : 'The workspace is still public. Try unpublishing again.');
     } finally {
       setPublishing(false);
     }
@@ -3165,7 +3165,7 @@ export default function App() {
       setSelectedGalleryId(null);
       setSelectedWorkspaceId(result.workspaceId);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to import workspace');
+      setError(nextError instanceof Error ? nextError.message : 'Importing didn’t work. Make sure it’s a workspace file exported from Agent Studio.');
       setLoading(false);
     } finally {
       setImporting(false);
