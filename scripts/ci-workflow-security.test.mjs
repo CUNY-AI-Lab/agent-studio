@@ -29,7 +29,7 @@ test('CI protects action and package credentials in one validation job', async (
 
   for (const action of [
     'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd',
-    'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020',
+    'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
     'oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6',
   ]) {
     assert.equal(validationJob.split(action).length - 1, 1, `${action} must appear once in the validation job`);
