@@ -162,7 +162,7 @@ export function HomePage({
             type="button"
             onClick={onStartBlank}
             disabled={busy}
-            className="px-4 py-2 text-sm border border-border text-muted-foreground/70 transition-all hover:border-border-strong hover:text-muted-foreground disabled:opacity-50"
+            className="px-4 py-2 text-sm border border-border text-muted-foreground/70 transition-all hover:border-border hover:text-muted-foreground disabled:opacity-50"
           >
             Start blank
           </button>

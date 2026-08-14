@@ -70,10 +70,10 @@
   --radius: 0rem;
 
   /* Fleet design-system accents: navy structural rules, a teal accent used
-     only in small lead slots, and CUNY gold for focus. */
+     only in small lead slots, and accessible dark gold for focus. */
   --rule-navy: #1d3a83;
   --accent-teal: #2fb8d6;
-  --focus-gold: #ffb81c;
+  --focus-gold: #7a5300;
 
   /* Warm cream background, per the website */
   --background: #fafcf8;
@@ -103,7 +103,7 @@
 
   --border: #e6e9ef;
   --input: #dbe1e9;
-  --ring: #ffb81c;
+  --ring: #7a5300;
 
   /* Chart colors - vibrant palette (raw oklch values for composability) */
   --chart-1: 0.55 0.22 250;
@@ -119,13 +119,14 @@
   --sidebar-accent: #e8f4fc;
   --sidebar-accent-foreground: #1d3a83;
   --sidebar-border: #e6e9ef;
-  --sidebar-ring: #ffb81c;
+  --sidebar-ring: #7a5300;
 }
 
 .dark {
   /* Same flat accent logic on the dark navy base: the structural rule
-     lightens so it stays visible; teal and gold carry over. */
+     lightens so it stays visible; teal and bright gold carry over. */
   --rule-navy: oklch(0.65 0.12 255);
+  --focus-gold: #ffb81c;
 
   /* Deep blue-black background */
   --background: oklch(0.14 0.02 250);
