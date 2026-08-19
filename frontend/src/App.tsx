@@ -73,6 +73,7 @@ import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcut
 import { clampNumber, makeClientId } from './lib/format';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
+import { isFunction } from './lib/runtime';
 import {
   type ContextualChatTarget,
   type ContextualThreadMessage,
@@ -133,10 +134,10 @@ function WorkspaceShell({
   const [publishDescription, setPublishDescription] = useState(workspace.workspace.description);
   const [publishing, setPublishing] = useState(false);
   const [viewportWidth, setViewportWidth] = useState(
-    typeof window !== 'undefined' ? window.innerWidth : 1440
+    globalThis.window?.innerWidth ?? 1440
   );
   const [chatOpen, setChatOpen] = useState(
-    typeof window !== 'undefined' ? window.innerWidth >= 1400 : true
+    globalThis.window ? globalThis.window.innerWidth >= 1400 : true
   );
   const [narrowActiveTab, setNarrowActiveTab] = useState<'canvas' | 'chat'>('canvas');
   const [fileShelfCollapsed, setFileShelfCollapsed] = useState(false);
@@ -447,14 +448,14 @@ function WorkspaceShell({
   const selectedPanelsBounds = useMemo(() => {
     const layouts = selectedPanels
       .map((panel) => panelLayouts[panel.id])
-      .filter(Boolean) as CanvasPanelLayout[];
+      .filter((layout): layout is CanvasPanelLayout => layout !== undefined);
     return getLayoutsBounds(layouts);
   }, [panelLayouts, selectedPanels]);
   const contextualAnchor = useMemo(() => {
     if (!contextualChatTarget) return null;
     const layouts = contextualChatTarget.panelIds
       .map((panelId) => panelLayouts[panelId])
-      .filter(Boolean) as CanvasPanelLayout[];
+      .filter((layout): layout is CanvasPanelLayout => layout !== undefined);
     if (layouts.length === 0) return null;
     if (contextualChatTarget.typeLabel === 'Group') {
       let minX = Infinity;
@@ -565,11 +566,13 @@ function WorkspaceShell({
   useEffect(() => {
     const missingConnections = artifactPanels
       .filter((panel) => panel.sourcePanelId && panel.sourcePanelId !== panel.id)
-      .map((panel) => ({
-        id: `conn-${panel.sourcePanelId}-${panel.id}`,
-        sourceId: panel.sourcePanelId as string,
-        targetId: panel.id,
-      }))
+      .flatMap((panel) => panel.sourcePanelId && panel.sourcePanelId !== panel.id
+        ? [{
+          id: `conn-${panel.sourcePanelId}-${panel.id}`,
+          sourceId: panel.sourcePanelId,
+          targetId: panel.id,
+        }]
+        : [])
       .filter(
         (connection) =>
           !workspaceState.connections.some((current) => current.id === connection.id)
@@ -737,7 +740,7 @@ function WorkspaceShell({
     if (!activeFilePillPopover) return;
 
     const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
+      const target = event.target instanceof HTMLElement ? event.target : null;
       if (target?.closest('[data-file-pill-popover]') || target?.closest('[data-file-pill-trigger]')) return;
       setActiveFilePillPopover(null);
     };
@@ -825,7 +828,7 @@ function WorkspaceShell({
     if (!openMenuId) return;
 
     const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target as HTMLElement | null;
+      const target = event.target instanceof HTMLElement ? event.target : null;
       if (target?.closest('.panel-menu') || target?.closest('.panel-menu-trigger')) return;
       setOpenMenuId(null);
     };
@@ -851,7 +854,9 @@ function WorkspaceShell({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      const activeElement = document.activeElement as HTMLElement | null;
+      const activeElement = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
       if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.isContentEditable)) {
         return;
       }
@@ -913,7 +918,7 @@ function WorkspaceShell({
 
   const updateViewport = useCallback((updater: WorkspaceState['viewport'] | ((current: WorkspaceState['viewport']) => WorkspaceState['viewport'])) => {
     setWorkspaceState((current) => {
-      const nextViewport = typeof updater === 'function'
+      const nextViewport = isFunction(updater)
         ? updater(current.viewport)
         : updater;
       viewportRef.current = nextViewport;
@@ -949,7 +954,7 @@ function WorkspaceShell({
 
     const layouts = contextualChatTarget.panelIds
       .map((panelId) => panelLayouts[panelId])
-      .filter(Boolean) as CanvasPanelLayout[];
+      .filter((layout): layout is CanvasPanelLayout => layout !== undefined);
     const bounds = getLayoutsBounds(layouts);
     if (!bounds) return;
 
@@ -1281,10 +1286,10 @@ function WorkspaceShell({
       groups,
     }));
     if (upserts.length === 0 && removeIds.length === 0) return;
-    await agent.call('applyLayoutPatch', [{
-      ...(upserts.length > 0 ? { groups: upserts } : {}),
-      ...(removeIds.length > 0 ? { removeGroups: removeIds } : {}),
-    }]);
+    const patch: Parameters<WorkspaceAgentClient['applyLayoutPatch']>[0] = {};
+    if (upserts.length > 0) patch.groups = upserts;
+    if (removeIds.length > 0) patch.removeGroups = removeIds;
+    await agent.call('applyLayoutPatch', [patch]);
   }, [agent, workspaceState.groups]);
 
   const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
@@ -1428,7 +1433,7 @@ function WorkspaceShell({
 
       const readyLayouts = pendingIds
         .map((panelId) => panelLayouts[panelId])
-        .filter(Boolean) as CanvasPanelLayout[];
+        .filter((layout): layout is CanvasPanelLayout => layout !== undefined);
       const missingIds = pendingIds.filter((panelId) => !panelLayouts[panelId]);
 
       pendingAutoFocusRef.current = new Set(missingIds);
@@ -1925,7 +1930,7 @@ function WorkspaceShell({
 
   const handleChatRetry = useCallback(() => {
     setChatErrorNotice(null);
-    if ('regenerate' in chat && typeof chat.regenerate === 'function') {
+    if ('regenerate' in chat && isFunction(chat.regenerate)) {
       chat.clearError();
       void chat.regenerate();
       return;
@@ -2251,7 +2256,9 @@ function WorkspaceShell({
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      const activeElement = document.activeElement as HTMLElement | null;
+      const activeElement = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
       if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.isContentEditable)) {
         return;
       }
@@ -2345,7 +2352,8 @@ function WorkspaceShell({
     // If space-panning, let TransformWrapper handle it
     if (spacePanning) return;
 
-    const target = event.target as HTMLElement;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (!target) return;
     if (target.closest('.contextual-chat-popover')) return;
     if (target.closest('.group-boundary')) return;
     if (target.closest('button')) return;
@@ -3026,11 +3034,12 @@ function WorkspaceShell({
 }
 
 export default function App() {
-  const initialWorkspaceId = typeof window !== 'undefined'
-    ? new URL(window.location.href).searchParams.get('workspace')
+  const browserLocation = globalThis.window?.location;
+  const initialWorkspaceId = browserLocation
+    ? new URL(browserLocation.href).searchParams.get('workspace')
     : null;
-  const initialGalleryId = typeof window !== 'undefined'
-    ? new URL(window.location.href).searchParams.get('gallery')
+  const initialGalleryId = browserLocation
+    ? new URL(browserLocation.href).searchParams.get('gallery')
     : null;
   const [workspaces, setWorkspaces] = useState<WorkspaceResponse['workspace'][]>([]);
   const [galleryItems, setGalleryItems] = useState<GalleryItem[]>([]);

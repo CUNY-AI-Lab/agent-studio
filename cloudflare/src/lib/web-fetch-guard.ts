@@ -90,6 +90,12 @@ export interface WebFetchAllowlistEnv {
   CAIL_WEBFETCH_ALLOWLIST?: string;
 }
 
+interface FetchRequestHeaders {
+  'User-Agent': string;
+  Authorization?: string;
+  Accept?: string;
+}
+
 /**
  * Parse and normalize the allowlist once. Returns null when unset/empty (=>
  * open-web mode). Each entry is lowercased and trimmed; a leading-dot entry is
@@ -324,7 +330,7 @@ async function fetchFollowingRedirects(
   let finalProvider: TokenProvider | null = null;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    const headers: Record<string, string> = {
+    const headers: FetchRequestHeaders = {
       'User-Agent': 'agent-studio/0.1 (CUNY AI Lab research assistant)',
     };
     const provider = bearerProviderForHost(url.hostname, env);
@@ -337,7 +343,10 @@ async function fetchFollowingRedirects(
     }
     finalProvider = provider;
 
-    response = await fetchImpl(url.toString(), { redirect: 'manual', headers });
+    response = await fetchImpl(url.toString(), {
+      redirect: 'manual',
+      headers: new Headers(Object.entries(headers)),
+    });
     const location = response.headers.get('location');
     if (response.status >= 300 && response.status < 400 && location) {
       if (hop === MAX_REDIRECTS) {

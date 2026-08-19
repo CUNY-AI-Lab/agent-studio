@@ -24,7 +24,6 @@ test('quotaSignalFromError forwards a thrown quota CailError verbatim', () => {
   const signal = quotaSignalFromError(
     quotaError({ retry_after_seconds: 1800 }),
   );
-  assert.equal(typeof signal, 'string');
   const parsed = JSON.parse(signal);
   assert.equal(parsed.error.code, 'quota_exceeded');
   assert.equal(parsed.error.message, QUOTA_MESSAGE);
@@ -79,7 +78,6 @@ test('quotaSignalFromError unwraps a quota CailError buried in a RetryError', ()
       quotaError({ retry_after_seconds: 1800 }),
     ],
   });
-  assert.equal(typeof signal, 'string');
   const parsed = JSON.parse(signal);
   assert.equal(parsed.error.code, 'quota_exceeded');
   assert.equal(parsed.error.message, QUOTA_MESSAGE);

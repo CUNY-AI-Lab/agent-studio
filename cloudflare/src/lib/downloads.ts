@@ -1,6 +1,7 @@
 import { deleteByPrefix, getWorkspacePrefix } from './files';
 import { nextR2Cursor } from './r2-pagination';
 import type { Env } from '../env';
+import { z } from 'zod';
 
 export interface DownloadRequest {
   filename: string;
@@ -24,6 +25,16 @@ interface StoredDownload {
   download: DownloadRequest;
 }
 
+const storedDownloadSchema = z.object({
+  seq: z.number(),
+  createdAt: z.string(),
+  download: z.object({
+    filename: z.string(),
+    data: z.json(),
+    format: z.enum(['csv', 'json', 'txt']),
+  }).strict(),
+}).strict();
+
 export interface ReadDownloadsOptions {
   /** Import uses `throw` so corrupt legacy content remains retryable. */
   onCorrupt?: 'skip' | 'throw';
@@ -31,7 +42,7 @@ export interface ReadDownloadsOptions {
 
 function reportCorruptDownloadObject(
   key: string,
-  error: unknown,
+  error: Error,
   onCorrupt: 'skip' | 'throw',
 ): void {
   if (onCorrupt === 'throw') {
@@ -83,15 +94,11 @@ export async function getWorkspaceDownloads(
         if (!body) return null;
         let parsed: StoredDownload;
         try {
-          parsed = await body.json<StoredDownload>();
+          parsed = storedDownloadSchema.parse(await body.json());
         } catch (error) {
-          reportCorruptDownloadObject(object.key, error, onCorrupt);
-          return null;
-        }
-        if (!(parsed && typeof parsed === 'object' && parsed.download)) {
           reportCorruptDownloadObject(
             object.key,
-            new Error('missing download payload'),
+            error instanceof Error ? error : new Error('invalid stored download object'),
             onCorrupt,
           );
           return null;

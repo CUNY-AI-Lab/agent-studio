@@ -14,13 +14,14 @@ import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
  * while using the current contract.
  */
 async function verifyWith(token, issuer, overrides = {}) {
-  const loaded = await loadIdentityVerifierConfig({
-    jwks: typeof issuer.jwksJson === 'string' ? issuer.jwksJson : JSON.stringify(issuer.jwks),
+  const verifierOptions = {
+    jwks: issuer.jwksJson ?? JSON.stringify(issuer.jwks),
     issuer: overrides.issuer ?? CAIL_CANONICAL_ISSUER,
     expectedAudience: overrides.expectedAudience ?? CAIL_IDENTITY_AUDIENCE,
     supportedIssuers: overrides.supportedIssuers ?? [CAIL_CANONICAL_ISSUER],
-    ...(overrides.now === undefined ? {} : { now: overrides.now }),
-  });
+  };
+  if (overrides.now !== undefined) verifierOptions.now = overrides.now;
+  const loaded = await loadIdentityVerifierConfig(verifierOptions);
   if (!loaded.ok) return { configError: loaded.reason };
   return verifyIdentityJwt(token, loaded.config);
 }
@@ -172,10 +173,11 @@ test('identity trust is one exact configured issuer and fails closed when ambigu
     ['', 'issuer_missing'],
     [`${CAIL_CANONICAL_ISSUER},https://identity.example.test/cail-sso`, 'issuer_unsupported'],
   ]) {
-    assert.deepEqual(await getCailIdentityFromRequest(requestFor(productionToken), {
+    const testEnv = {
       CAIL_IDENTITY_JWKS: jwks,
-      ...(issuer === undefined ? {} : { CAIL_IDENTITY_ISSUER: issuer }),
-    }, NOW), { configError: reason });
+    };
+    if (issuer !== undefined) testEnv.CAIL_IDENTITY_ISSUER = issuer;
+    assert.deepEqual(await getCailIdentityFromRequest(requestFor(productionToken), testEnv, NOW), { configError: reason });
   }
 });
 

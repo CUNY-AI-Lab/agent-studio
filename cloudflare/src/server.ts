@@ -3,7 +3,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { WorkspaceAgent } from './agent/workspace-agent';
 import { MigrationRegistry } from './migration-registry';
-import type { WorkspaceFileInfo, WorkspacePanel, WorkspaceRecord } from './domain/workspace';
+import type { WorkspaceFileInfo, WorkspaceRecord } from './domain/workspace';
 import { validateAgentStudioConfig, type Env } from './env';
 import {
   cloneGalleryItem,
@@ -161,14 +161,7 @@ async function validateGalleryIdParam(
 }
 
 function getWorkspaceAgent(env: Env, sessionId: string, workspaceId: string) {
-  // workers-types v5 adds facet-only private members to its generic DO stub.
-  // The current Agents SDK runtime accepts this namespace, but its public
-  // helper declaration still models the pre-facet structural constraint.
-  const getWorkspaceByName = getAgentByName as unknown as (
-    namespace: DurableObjectNamespace<WorkspaceAgent>,
-    name: string,
-  ) => Promise<DurableObjectStub<WorkspaceAgent>>;
-  return getWorkspaceByName(
+  return getAgentByName<Env, WorkspaceAgent>(
     env.WorkspaceAgent,
     createWorkspaceAgentName(sessionId, workspaceId)
   );
@@ -375,7 +368,7 @@ app.get('/api/gallery/:id/panels/:panelId/preview', async (c) => {
 
   return new Response(panel.content, {
     status: 200,
-    headers: previewServingHeaders(),
+    headers: new Headers(Object.entries(previewServingHeaders())),
   });
 });
 
@@ -557,15 +550,15 @@ app.post('/api/workspaces/import', async (c) => {
 
   const workspaceId = createOpaqueId();
   const now = new Date().toISOString();
-  const workspace = {
+  const workspace: WorkspaceRecord = {
     id: workspaceId,
     name: bundle.workspace.name.trim() || 'Imported Workspace',
     description: bundle.workspace.description,
     createdAt: now,
     updatedAt: now,
-    // Preserve a per-workspace model override across the export/import round-trip.
-    ...(bundle.workspace.model ? { model: bundle.workspace.model } : {}),
   };
+  // Preserve a per-workspace model override across the export/import round-trip.
+  if (bundle.workspace.model) workspace.model = bundle.workspace.model;
 
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
@@ -657,7 +650,7 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
 
   return new Response(panel.content, {
     status: 200,
-    headers: previewServingHeaders(),
+    headers: new Headers(Object.entries(previewServingHeaders())),
   });
 });
 
@@ -708,13 +701,13 @@ app.patch('/api/workspaces/:id', async (c) => {
   const patch = parsed.data;
 
   // CAS retry so two concurrent field edits don't clobber each other (A12).
-  const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => ({
-    ...current,
-    ...(patch.name !== undefined ? { name: patch.name } : {}),
-    ...(patch.description !== undefined ? { description: patch.description } : {}),
-    ...(patch.model !== undefined ? { model: patch.model } : {}),
-    updatedAt: new Date().toISOString(),
-  }));
+  const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => {
+    const next: WorkspaceRecord = { ...current, updatedAt: new Date().toISOString() };
+    if (patch.name !== undefined) next.name = patch.name;
+    if (patch.description !== undefined) next.description = patch.description;
+    if (patch.model !== undefined) next.model = patch.model;
+    return next;
+  });
   if (!result.ok) {
     return result.reason === 'not-found'
       ? jsonError(c, 404, 'not_found', 'Workspace not found')
@@ -1010,7 +1003,7 @@ app.post('/api/workspaces/:id/panels', async (c) => {
   if (!parsed.success) {
     return jsonError(c, 400, 'invalid_request', "That tile couldn't be saved.");
   }
-  const panel = parsed.data as WorkspacePanel;
+  const panel = parsed.data;
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.addPanel(panel);
 
@@ -1091,11 +1084,7 @@ export default {
         return new Response('Forbidden: missing or invalid connection token', { status: 403 });
       }
     }
-    const routeRequest = routeAgentRequest as unknown as (
-      request: Request,
-      routeEnv: Env,
-    ) => Promise<Response | null>;
-    const agentResponse = await routeRequest(request, env);
+    const agentResponse = await routeAgentRequest(request, env);
     if (agentResponse) {
       return agentResponse;
     }

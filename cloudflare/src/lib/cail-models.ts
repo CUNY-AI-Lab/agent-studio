@@ -50,11 +50,11 @@ const modelEntrySchema = z.object({
 
 const modelListSchema = z.object({
   object: z.literal('list'),
-  data: z.array(z.unknown()).min(1),
+  data: z.array(modelEntrySchema).min(1),
 });
 
 function canonicalBase(value: string): string {
-  if (value.trim() !== value || /[\u0000-\u001f\u007f\\\s]/.test(value)) {
+  if (value.trim() !== value || /[\s\\]/.test(value)) {
     throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
   }
   let parsed: URL;
@@ -93,8 +93,9 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
   const { env, identityJwt } = options;
   if (!identityJwt) throw new ModelCatalogAuthError('CAIL authentication is required to list models.');
   const apiBase = canonicalBase(env.CAIL_API_BASE ?? '');
+  const gateway = env.GATEWAY;
   const fetchImpl = options.fetchImpl
-    ?? (env.GATEWAY ? env.GATEWAY.fetch.bind(env.GATEWAY) as typeof fetch : null);
+    ?? (gateway ? (input: RequestInfo | URL, init?: RequestInit) => gateway.fetch(input, init) : null);
   if (!fetchImpl) throw new Error('GATEWAY service binding is required for model catalog calls.');
 
   const response = await fetchImpl(`${apiBase}/v1/models`, {
@@ -121,12 +122,7 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
 
   const parsed = modelListSchema.safeParse(await response.json());
   if (!parsed.success) throw new Error('Model catalog response did not match the CAIL schema.');
-  const entries = parsed.data.data
-    .map((entry) => modelEntrySchema.safeParse(entry))
-    .filter((result): result is { success: true; data: z.infer<typeof modelEntrySchema> } => result.success)
-    .map((result) => result.data);
-  if (entries.length === 0) throw new Error('Model catalog contains no in-policy models.');
-  return { models: entries.map(normalizeEntry) };
+  return { models: parsed.data.data.map(normalizeEntry) };
 }
 
 export { resolveCailModelName };

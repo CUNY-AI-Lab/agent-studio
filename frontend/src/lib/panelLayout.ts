@@ -19,7 +19,7 @@ export function buildPanelLayouts(panels: WorkspacePanel[]): Record<string, Canv
   );
 }
 
-export function collectLayouts(layouts: Record<string, CanvasPanelLayout>, panelIds: Iterable<string>): LayoutMap {
+export function collectLayouts(layouts: LayoutMap, panelIds: Iterable<string>) {
   const visibleLayouts: LayoutMap = {};
   for (const panelId of panelIds) {
     const layout = layouts[panelId];
@@ -152,7 +152,7 @@ export function getGroupBounds(
   const groupLayouts = group.panelIds
     .filter((groupPanelId) => groupPanelId !== excludedPanelId)
     .map((groupPanelId) => layouts[groupPanelId])
-    .filter(Boolean) as CanvasPanelLayout[];
+    .filter((layout): layout is CanvasPanelLayout => layout !== undefined);
 
   if (groupLayouts.length === 0) return null;
 

@@ -27,6 +27,7 @@ import {
   type CailIdentity,
   type IdentityVerifierConfig,
 } from '@cuny-ai-lab/cail-identity';
+import { z } from 'zod';
 
 /**
  * cail-identity 5.0.0 replaced the synchronous `parseIdentityConfig` + per-call
@@ -72,8 +73,17 @@ export interface CailIdentityConfigError {
   configError: IdentityConfigErrorReason;
 }
 
-export function isCailIdentityConfigError(value: unknown): value is CailIdentityConfigError {
-  return typeof value === 'object' && value !== null && 'configError' in value;
+const identityConfigErrorSchema = z.object({ configError: z.string() }).strict();
+type IdentityConfigValue =
+  | CailIdentityConfigError
+  | { ok: true; config: IdentityVerifierConfig }
+  | CailIdentity
+  | VerifiedCailIdentity
+  | null;
+type IdentityLoaderOptions = { now?: number };
+
+export function isCailIdentityConfigError(value: IdentityConfigValue): value is CailIdentityConfigError {
+  return identityConfigErrorSchema.safeParse(value).success;
 }
 
 const encoder = new TextEncoder();
@@ -95,8 +105,8 @@ async function loadIdentityConfig(
   env: CailIdentityEnv,
   now?: number,
 ): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError | null> {
-  const jwksConfigured = typeof env.CAIL_IDENTITY_JWKS === 'string' && env.CAIL_IDENTITY_JWKS.trim() !== '';
-  const issuerConfigured = typeof env.CAIL_IDENTITY_ISSUER === 'string' && env.CAIL_IDENTITY_ISSUER !== '';
+  const jwksConfigured = Boolean(env.CAIL_IDENTITY_JWKS?.trim());
+  const issuerConfigured = Boolean(env.CAIL_IDENTITY_ISSUER);
   if (!jwksConfigured && !issuerConfigured && !cailIdentityRequired(env)) return null;
   // A pinned clock (tests, replay analysis) must never be served from — or
   // written to — the shared snapshot cache.
@@ -105,11 +115,13 @@ async function loadIdentityConfig(
     const cached = verifierCache.get(cacheKey);
     if (cached) return { ok: true, config: cached };
   }
+  const loaderOptions: IdentityLoaderOptions = {};
+  if (now !== undefined) loaderOptions.now = now;
   const loaded = await loadIdentityVerifierConfig({
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
-    ...(now === undefined ? {} : { now }),
+    ...loaderOptions,
   });
   if (!loaded.ok) return { configError: loaded.reason };
   if (now === undefined) verifierCache.set(cacheKey, loaded.config);
@@ -256,11 +268,13 @@ async function loadGatewayLegConfig(
     const cached = verifierCache.get(cacheKey);
     if (cached) return { ok: true, config: cached };
   }
+  const loaderOptions: IdentityLoaderOptions = {};
+  if (now !== undefined) loaderOptions.now = now;
   const loaded = await loadIdentityVerifierConfig({
     jwks: env.CAIL_IDENTITY_JWKS,
     issuer: env.CAIL_IDENTITY_ISSUER,
     expectedAudience: CAIL_GATEWAY_AUDIENCE,
-    ...(now === undefined ? {} : { now }),
+    ...loaderOptions,
   });
   if (!loaded.ok) return { configError: loaded.reason };
   if (now === undefined) verifierCache.set(cacheKey, loaded.config);

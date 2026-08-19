@@ -29,16 +29,14 @@ export function getFocusableElements(container: HTMLElement): HTMLElement[] {
     // Skip elements that are not rendered (display:none / detached). In jsdom
     // offsetParent is null for many valid elements, so fall back to rect checks
     // only when layout data is available.
-    if (typeof node.getClientRects === 'function') {
-      const hasRects = node.getClientRects().length > 0;
-      const isConnected = node.isConnected;
-      if (isConnected && !hasRects && node.offsetParent === null) {
-        // In real browsers this reliably means hidden; jsdom returns 0 rects for
-        // everything, so also require offsetParent to be null before excluding.
-        const style = typeof window !== 'undefined' ? window.getComputedStyle(node) : null;
-        if (style && (style.display === 'none' || style.visibility === 'hidden')) {
-          return false;
-        }
+    const hasRects = node.getClientRects().length > 0;
+    const isConnected = node.isConnected;
+    if (isConnected && !hasRects && node.offsetParent === null) {
+      // In real browsers this reliably means hidden; jsdom returns 0 rects for
+      // everything, so also require offsetParent to be null before excluding.
+      const style = globalThis.window?.getComputedStyle(node) ?? null;
+      if (style && (style.display === 'none' || style.visibility === 'hidden')) {
+        return false;
       }
     }
     return true;
@@ -102,7 +100,7 @@ export function createFocusTrap(
 
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
-    const active = document.activeElement as HTMLElement | null;
+    const active = document.activeElement;
 
     if (event.shiftKey) {
       if (active === first || active === container || !container.contains(active)) {
@@ -121,7 +119,7 @@ export function createFocusTrap(
   return {
     release: () => {
       container.removeEventListener('keydown', handleKeyDown);
-      if (previouslyFocused && typeof previouslyFocused.focus === 'function') {
+      if (previouslyFocused) {
         previouslyFocused.focus();
       }
     },

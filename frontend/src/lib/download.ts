@@ -1,4 +1,5 @@
 import type { DownloadRequest } from '../types';
+import { isString } from './runtime';
 
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -27,7 +28,7 @@ export function triggerQueuedDownload(download: DownloadRequest) {
     return;
   }
 
-  const content = typeof download.data === 'string'
+  const content = isString(download.data)
     ? download.data
     : download.data == null
       ? ''

@@ -5,13 +5,13 @@ import type { UIMessage } from 'ai';
 import { ChatPanel } from './ChatPanel';
 
 function userMessage(text: string): UIMessage {
-  return { id: 'u1', role: 'user', parts: [{ type: 'text', text }] } as unknown as UIMessage;
+  return { id: 'u1', role: 'user', parts: [{ type: 'text', text }] };
 }
 
 const baseProps = {
   status: 'ready',
   isBusy: false,
-  messages: [] as UIMessage[],
+  messages: [],
   composer: '',
   onComposerChange: () => {},
   onSubmit: () => {},
@@ -44,11 +44,11 @@ describe('ChatPanel', () => {
   });
 
   it('shows tool progress in plain words instead of raw SDK states', () => {
-    const message = {
+    const message: UIMessage = {
       id: 'a1',
       role: 'assistant',
       parts: [{ type: 'tool-write_file', toolCallId: 't1', state: 'output-available', input: {}, output: {} }],
-    } as unknown as UIMessage;
+    };
     render(<ChatPanel {...baseProps} messages={[message]} />);
     expect(screen.getByText('Write file')).toBeInTheDocument();
     expect(screen.getByText('Done')).toBeInTheDocument();

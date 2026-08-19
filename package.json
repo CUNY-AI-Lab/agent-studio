@@ -15,7 +15,10 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.4",
-    "agents": "0.20.1"
+    "@oxlint/plugins": "1.79.0",
+    "agents": "0.20.1",
+    "oxlint": "1.79.0",
+    "zod": "4.4.3"
   },
   "scripts": {
     "dev": "bun run --cwd cloudflare dev",
@@ -23,7 +26,7 @@
     "dev:frontend": "bun run --cwd frontend dev",
     "build": "bun run --cwd frontend build && bun run --cwd cloudflare typecheck",
     "typecheck": "bun run --cwd cloudflare typecheck && bun run --cwd frontend typecheck",
-    "lint": "biome lint .",
+    "lint": "oxlint . && biome lint .",
     "check": "bun run lint && bun run typecheck && bun run test && bun run build && (cd cloudflare && bunx wrangler deploy --env staging --strict --dry-run --outdir /tmp/agent-studio-wrangler-dry-run)",
     "test": "bun run test:backend && bun run test:frontend && bun run test:tools",
     "test:backend": "bun run --cwd cloudflare test",

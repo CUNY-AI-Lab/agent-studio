@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 
 function getTheme(): 'light' | 'dark' {
-  if (typeof window === 'undefined') return 'light';
-  return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+  const documentElement = globalThis.document?.documentElement;
+  if (!documentElement) return 'light';
+  return documentElement.classList.contains('dark') ? 'dark' : 'light';
 }
 
 export function ThemeToggle({ className = '' }: { className?: string }) {

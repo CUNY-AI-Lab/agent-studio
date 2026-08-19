@@ -597,7 +597,7 @@ test('codemode execution is held inside the migration mutation fence', async () 
   };
 
   const codeTool = WorkspaceAgent.prototype.createCodeModeTool.call(agent, {});
-  assert.equal(typeof codeTool.execute, 'function');
+  assert.ok(codeTool.execute);
   const result = await codeTool.execute(
     { code: 'return { ok: true };' },
     { toolCallId: 'tool-call-1', messages: [] },

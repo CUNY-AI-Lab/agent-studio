@@ -4,6 +4,12 @@ import { useMemo } from 'react';
 
 type CanvasPanelLayout = { x: number; y: number; width: number; height: number };
 type PanelConnection = { id: string; sourceId: string; targetId: string };
+type ConnectionPath = {
+  id: string;
+  path: string;
+  isAnimating: boolean;
+  sourceTitle: string;
+};
 
 interface ConnectionLinesProps {
   connections: PanelConnection[];
@@ -103,12 +109,7 @@ export function ConnectionLines({
           sourceTitle: panelTitles[connection.sourceId] || connection.sourceId,
         };
       })
-      .filter(Boolean) as Array<{
-      id: string;
-      path: string;
-      isAnimating: boolean;
-      sourceTitle: string;
-    }>;
+      .filter((path): path is ConnectionPath => path !== null);
   }, [animatingConnectionIds, connections, panelLayouts, panelTitles]);
 
   const svgBounds = useMemo(() => {

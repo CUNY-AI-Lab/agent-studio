@@ -31,13 +31,15 @@ export function parseDelimitedLine(line: string, delimiter = ','): string[] {
   return values;
 }
 
-export function parseCsvPreview(content: string, limit = 50) {
+export type CsvPreview = { headers: string[]; rows: string[][]; truncated: boolean };
+
+export function parseCsvPreview(content: string, limit = 50): CsvPreview {
   const lines = content
     .split(/\r?\n/)
     .filter((line, index, source) => line.trim().length > 0 || (index === 0 && source.length === 1));
 
   if (lines.length === 0) {
-    return { headers: [] as string[], rows: [] as string[][], truncated: false };
+    return { headers: [], rows: [], truncated: false };
   }
 
   const headers = parseDelimitedLine(lines[0]);
@@ -49,7 +51,7 @@ export function parseCsvPreview(content: string, limit = 50) {
   };
 }
 
-export function escapeCsvCell(value: unknown): string {
+export function escapeCsvCell<T>(value: T): string {
   const normalized = String(value ?? '');
   if (/[",\n]/.test(normalized)) {
     return `"${normalized.replace(/"/g, '""')}"`;

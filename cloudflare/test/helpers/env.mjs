@@ -13,6 +13,7 @@
 // routes invoke (getAgentByName -> idFromName/get/stub.fetch).
 
 import { register } from 'node:module';
+import { z } from 'zod';
 
 // Mirror the DO's own path sanitization so the fake agent rejects traversal the
 // same way `writeWorkspaceFileContent`/`sanitizeRelativePath` do in production.
@@ -126,14 +127,15 @@ export class MockR2 {
     }
 
     let bytes;
-    if (typeof value === 'string') {
-      bytes = new TextEncoder().encode(value);
+    const stringValue = z.string().safeParse(value).data;
+    if (stringValue !== undefined) {
+      bytes = new TextEncoder().encode(stringValue);
     } else if (value instanceof ArrayBuffer) {
       bytes = new Uint8Array(value);
     } else if (ArrayBuffer.isView(value)) {
       bytes = new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
     } else {
-      bytes = new TextEncoder().encode(String(value));
+      bytes = new TextEncoder().encode(JSON.stringify(value));
     }
     const etag = String(this.etagCounter += 1);
     const uploaded = new Date(0);
@@ -153,7 +155,7 @@ export class MockR2 {
     }
   }
 
-  async list({ prefix = '', delimiter, cursor } = {}) {
+  async list({ prefix = '', delimiter, _cursor } = {}) {
     const keys = [...this.store.keys()].filter((key) => key.startsWith(prefix)).sort();
     const toObject = (key) => {
       const entry = this.store.get(key);
@@ -304,14 +306,15 @@ export class FakeWorkspaceAgent {
   async writeWorkspaceFileContent(filePath, data, contentType) {
     const key = sanitizeRelativePath(filePath);
     let bytes;
-    if (typeof data === 'string') {
-      bytes = new TextEncoder().encode(data);
+    const stringData = z.string().safeParse(data).data;
+    if (stringData !== undefined) {
+      bytes = new TextEncoder().encode(stringData);
     } else if (data instanceof ArrayBuffer) {
       bytes = new Uint8Array(data);
     } else if (ArrayBuffer.isView(data)) {
       bytes = new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
     } else {
-      bytes = new TextEncoder().encode(String(data));
+      bytes = new TextEncoder().encode(data);
     }
     this.files.set(key, { bytes, contentType: contentType || 'application/octet-stream' });
     return { ok: true, filePath: key };
@@ -379,8 +382,8 @@ export class FakeWorkspaceAgent {
       panels,
       groups,
       connections,
-      ...(patch.viewport ? { viewport: patch.viewport } : {}),
     };
+    if (patch.viewport) this.state.viewport = patch.viewport;
     return this.state;
   }
 }
@@ -414,7 +417,6 @@ export function makeMigrationRegistryNamespace() {
       let claim = null;
       registries.set(name, {
         active,
-        get claim() { return claim; },
         async beginAnonymousRequest(requestId) {
           if (claim) return false;
           active.add(requestId);
@@ -501,10 +503,7 @@ export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
  * comma-joined .get('set-cookie').
  */
 export function csrfCookieFrom(response) {
-  const headers =
-    typeof response.headers.getSetCookie === 'function'
-      ? response.headers.getSetCookie()
-      : [response.headers.get('set-cookie') || ''];
+  const headers = response.headers.getSetCookie?.() ?? [response.headers.get('set-cookie') || ''];
   for (const header of headers) {
     const match = header.match(new RegExp(`${CSRF_COOKIE_NAME}=([^;,\\s]+)`));
     if (match) return decodeURIComponent(match[1]);

@@ -1,15 +1,28 @@
+import { z } from 'zod';
+
+type ClientStateIdentity = {
+  sessionId?: string | null;
+  workspace?: { id?: string | null } | null;
+} | null | undefined;
+
 export function parseAgentName(name: string): { sessionId: string; workspaceId: string } | null {
   const match = /^([0-9a-f]{32})-([0-9a-f]{32})$/.exec(name);
   if (!match) return null;
   return { sessionId: match[1], workspaceId: match[2] };
 }
 
-export function assertClientStateIdentity(name: string, nextState: unknown): void {
-  const ids = parseAgentName(name);
-  if (typeof nextState !== 'object' || nextState === null) return;
+const clientStateIdentitySchema = z.object({
+  sessionId: z.string().nullable().optional(),
+  workspace: z.object({ id: z.string().nullable().optional() }).optional(),
+}).passthrough();
 
-  const sid = (nextState as any).sessionId;
-  const wid = (nextState as any).workspace?.id;
+export function assertClientStateIdentity(name: string, nextState: ClientStateIdentity): void {
+  const ids = parseAgentName(name);
+  const parsed = clientStateIdentitySchema.safeParse(nextState);
+  if (!parsed.success) return;
+
+  const sid = parsed.data.sessionId;
+  const wid = parsed.data.workspace?.id;
   if (ids) {
     if (sid != null && sid !== ids.sessionId) {
       throw new Error('client state cannot change sessionId');

@@ -1,38 +1,60 @@
+import { z } from 'zod';
 import { canonicalError } from './error-envelope';
+
+const recordSchema = z.object({}).passthrough();
+const candidateSchema = z.union([
+  z.string(),
+  recordSchema,
+  z.null(),
+  z.undefined(),
+]);
+const stringSchema = z.string();
+const statusSchema = z.number().int().min(100).max(599);
+const candidateArraySchema = z.array(candidateSchema);
+
+type ParsedRecord = z.infer<typeof recordSchema>;
+type Candidate = z.infer<typeof candidateSchema>;
+type InputValue = Candidate | Error;
 
 export interface CanonicalCailError {
   code: string;
   message: string;
   status?: number;
-  extras: Record<string, unknown>;
+  extras: ParsedRecord;
 }
 
-function parseRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value === 'string') {
-    if (value.length > 64 * 1024) return null;
+function parseRecord(value: InputValue): ParsedRecord | null {
+  if (value instanceof Error) {
+    const parsedError = recordSchema.safeParse(value);
+    return parsedError.success ? parsedError.data : null;
+  }
+  const stringValue = stringSchema.safeParse(value).data;
+  if (stringValue !== undefined) {
+    if (stringValue.length > 64 * 1024) return null;
     try {
-      value = JSON.parse(value);
+      const parsed = candidateSchema.safeParse(JSON.parse(stringValue));
+      if (!parsed.success) return null;
+      const record = recordSchema.safeParse(parsed.data);
+      return record.success ? record.data : null;
     } catch {
       return null;
     }
   }
-  return value && typeof value === 'object' ? value as Record<string, unknown> : null;
+  const record = recordSchema.safeParse(value);
+  return record.success ? record.data : null;
 }
 
-function readHttpStatus(record: Record<string, unknown>): number | undefined {
+function readHttpStatus(record: ParsedRecord): number | undefined {
   try {
-    const status = record.statusCode;
-    return Number.isInteger(status) && Number(status) >= 100 && Number(status) <= 599
-      ? Number(status)
-      : undefined;
+    return statusSchema.safeParse(record.statusCode).data;
   } catch {
     return undefined;
   }
 }
 
 /** Extract only explicit nested `error.cail` evidence from SDK wrappers. */
-export function extractCanonicalCailError(error: unknown): CanonicalCailError | null {
-  const queue: Array<{ value: unknown; status?: number }> = [{ value: error }];
+export function extractCanonicalCailError(error: InputValue): CanonicalCailError | null {
+  const queue: Array<{ value: InputValue; status?: number }> = [{ value: error }];
   const seen = new Set<object>();
   for (let visited = 0; queue.length > 0 && visited < 256; visited += 1) {
     const current = queue.shift();
@@ -41,39 +63,43 @@ export function extractCanonicalCailError(error: unknown): CanonicalCailError | 
     if (!record || seen.has(record)) continue;
     seen.add(record);
     const status = readHttpStatus(record) ?? current.status;
-    const nested = parseRecord(record.error);
-    const cail = parseRecord(nested?.cail);
-    if (nested && cail && typeof nested.code === 'string' && typeof nested.message === 'string') {
-      return {
-        code: nested.code,
-        message: nested.message,
-        status,
-        extras: cail,
-      };
+    const nestedCandidate = candidateSchema.safeParse(record.error);
+    const nested = nestedCandidate.success ? parseRecord(nestedCandidate.data) : null;
+    const cailCandidate = candidateSchema.safeParse(nested?.cail);
+    const cail = cailCandidate.success ? parseRecord(cailCandidate.data) : null;
+    const code = nested ? stringSchema.safeParse(nested.code).data : undefined;
+    const message = nested ? stringSchema.safeParse(nested.message).data : undefined;
+    if (nested && cail && code !== undefined && message !== undefined) {
+      return { code, message, status, extras: cail };
     }
     for (const child of [record.responseBody, record.cause, record.data, record.lastError, record.error]) {
-      if (child !== undefined) queue.push({ value: child, status });
+      const parsedChild = candidateSchema.safeParse(child);
+      if (parsedChild.success) queue.push({ value: parsedChild.data, status });
     }
-    if (Array.isArray(record.errors)) {
-      queue.push(...record.errors.map((value) => ({ value, status })));
+    const errors = candidateArraySchema.safeParse(record.errors);
+    if (errors.success) {
+      for (const value of errors.data) queue.push({ value, status });
     }
   }
   return null;
 }
 
-export function quotaSignalFromError(error: unknown, extracted?: CanonicalCailError | null): string | null {
+export function quotaSignalFromError(
+  error: InputValue,
+  extracted?: CanonicalCailError | null,
+): string | null {
   const cail = extracted === undefined ? extractCanonicalCailError(error) : extracted;
   if (!cail || cail.code !== 'quota_exceeded') return null;
   const envelope = canonicalError('quota_exceeded', cail.message, {
     type: 'rate_limit_error',
     retryable: false,
   });
-  const retryAfter = cail.extras.retry_after_seconds;
+  const retryAfter = z.number().finite().safeParse(cail.extras.retry_after_seconds).data;
   if (retryAfter === undefined) return JSON.stringify(envelope);
   return JSON.stringify({
     error: {
       ...envelope.error,
-      cail: { ...envelope.error.cail, retry_after_seconds: Number(retryAfter) },
+      cail: { ...envelope.error.cail, retry_after_seconds: retryAfter },
     },
   });
 }

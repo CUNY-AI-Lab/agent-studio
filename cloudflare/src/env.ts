@@ -83,6 +83,25 @@ export type AgentStudioConfigValidation =
   | { ok: true }
   | { ok: false; errorCode: AgentStudioConfigErrorCode };
 
+export interface AgentStudioConfigInput {
+  SESSION_SECRET?: string;
+  CAIL_REQUIRE_IDENTITY?: string;
+  CAIL_IDENTITY_JWKS?: string;
+  CAIL_IDENTITY_ISSUER?: string;
+  CAIL_API_BASE?: string;
+  CAIL_MODEL?: string;
+  GATEWAY?: { fetch?: typeof fetch };
+  CAIL_CANONICAL_ORIGIN?: string;
+  CAIL_BASE_PATH?: string;
+}
+
+function containsForbiddenControl(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+}
+
 function validHttpsBase(value: string | undefined): boolean {
   try {
     const parsed = new URL(value ?? '');
@@ -94,7 +113,8 @@ function validHttpsBase(value: string | undefined): boolean {
       && !parsed.hostname.endsWith('.invalid')
       && !parsed.href.includes('REPLACE')
       && value === value?.trim()
-      && !/[\u0000-\u001f\u007f\\\s]/.test(value ?? '');
+      && !containsForbiddenControl(value ?? '')
+      && !/[\s\\]/.test(value ?? '');
   } catch {
     return false;
   }
@@ -115,18 +135,8 @@ function validCanonicalOrigin(value: string | undefined): boolean {
 }
 
 /** Validate configuration that the worker actually consumes. */
-export async function validateAgentStudioConfig(env: {
-  SESSION_SECRET?: unknown;
-  CAIL_REQUIRE_IDENTITY?: string;
-  CAIL_IDENTITY_JWKS?: string;
-  CAIL_IDENTITY_ISSUER?: string;
-  CAIL_API_BASE?: string;
-  CAIL_MODEL?: string;
-  GATEWAY?: { fetch?: unknown };
-  CAIL_CANONICAL_ORIGIN?: string;
-  CAIL_BASE_PATH?: string;
-}): Promise<AgentStudioConfigValidation> {
-  if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
+export async function validateAgentStudioConfig(env: AgentStudioConfigInput): Promise<AgentStudioConfigValidation> {
+  if (!env.SESSION_SECRET) {
     return { ok: false, errorCode: 'session_secret_missing' };
   }
   if (env.SESSION_SECRET.length < MIN_REQUIRED_SESSION_SECRET_LENGTH) {
@@ -141,10 +151,8 @@ export async function validateAgentStudioConfig(env: {
   }
 
   const required = env.CAIL_REQUIRE_IDENTITY === 'true';
-  const issuerConfigured = typeof env.CAIL_IDENTITY_ISSUER === 'string'
-    && env.CAIL_IDENTITY_ISSUER !== '';
-  const jwksConfigured = typeof env.CAIL_IDENTITY_JWKS === 'string'
-    && env.CAIL_IDENTITY_JWKS.trim() !== '';
+  const issuerConfigured = Boolean(env.CAIL_IDENTITY_ISSUER);
+  const jwksConfigured = Boolean(env.CAIL_IDENTITY_JWKS?.trim());
   const identityConfigured = required || issuerConfigured || jwksConfigured;
   if (required && !issuerConfigured) {
     return { ok: false, errorCode: 'cail_identity_issuer_missing' };
@@ -173,7 +181,7 @@ export async function validateAgentStudioConfig(env: {
     if (!validHttpsBase(env.CAIL_API_BASE)) {
       return { ok: false, errorCode: 'cail_api_base_invalid' };
     }
-    if (typeof env.GATEWAY?.fetch !== 'function') {
+    if (!env.GATEWAY?.fetch) {
       return { ok: false, errorCode: 'production_gateway_binding_missing' };
     }
     if (!validCanonicalOrigin(env.CAIL_CANONICAL_ORIGIN)) {

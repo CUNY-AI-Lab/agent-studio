@@ -11,6 +11,8 @@
  * Never log token or secret values.
  */
 
+import { z } from 'zod';
+
 export interface TokenBrokerEnv {
   // OCLC WorldCat Metadata/Search API (client-credentials, HTTP Basic auth).
   OCLC_CLIENT_ID?: string;
@@ -42,8 +44,13 @@ const tokenCache = new Map<TokenProvider, CachedToken>();
 const OCLC_TOKEN_URL = 'https://oauth.oclc.org/token';
 const OCLC_SCOPE = 'WorldCatMetadataAPI';
 
-function ttlFromExpiresIn(expiresIn: unknown): number {
-  const seconds = typeof expiresIn === 'number' ? expiresIn : Number(expiresIn);
+const tokenResponseSchema = z.object({
+  access_token: z.string().optional(),
+  expires_in: z.union([z.number(), z.string()]).optional(),
+}).strict();
+
+function ttlFromExpiresIn(expiresIn: number | string | undefined): number {
+  const seconds = Number(expiresIn ?? NaN);
   if (!Number.isFinite(seconds) || seconds <= 0) return DEFAULT_TOKEN_TTL_MS;
   return Math.max(seconds * 1000 - EXPIRY_SAFETY_MARGIN_MS, 0);
 }
@@ -65,7 +72,7 @@ async function acquireWorldCatToken(
   if (!res.ok) {
     throw new Error(`worldcat token request failed (${res.status})`);
   }
-  const data = (await res.json()) as { access_token?: string; expires_in?: number };
+  const data = tokenResponseSchema.parse(await res.json());
   if (!data.access_token) {
     throw new Error('worldcat token response missing access_token');
   }
@@ -94,7 +101,7 @@ async function acquireLibGuidesToken(
   if (!res.ok) {
     throw new Error(`libguides token request failed (${res.status})`);
   }
-  const data = (await res.json()) as { access_token?: string; expires_in?: number };
+  const data = tokenResponseSchema.parse(await res.json());
   if (!data.access_token) {
     throw new Error('libguides token response missing access_token');
   }

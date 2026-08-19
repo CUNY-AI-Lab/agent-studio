@@ -61,7 +61,7 @@ describe('escapeCsvCell', () => {
 
 describe('serializeTableAsCsv', () => {
   it('emits a header row followed by data rows', () => {
-    const panel = {
+    const panel: Extract<WorkspacePanel, { type: 'table' }> = {
       id: 't',
       type: 'table',
       columns: [
@@ -72,7 +72,7 @@ describe('serializeTableAsCsv', () => {
         { name: 'Ada', city: 'London' },
         { name: 'Bo', city: 'São, Paulo' },
       ],
-    } as Extract<WorkspacePanel, { type: 'table' }>;
+    };
     expect(serializeTableAsCsv(panel)).toBe('Name,City\nAda,London\nBo,"São, Paulo"');
   });
 });

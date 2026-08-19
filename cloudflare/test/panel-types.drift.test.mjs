@@ -21,7 +21,8 @@ function zodDiscriminatorLiterals(schema) {
   const literals = [];
   for (const option of def.options) {
     const optionDef = option.def ?? option._def;
-    const typeField = optionDef.shape.type;
+    const fields = optionDef['shape'];
+    const typeField = fields.type;
     const typeDef = typeField.def ?? typeField._def;
     // z.literal('x') stores its value(s) under `values` in zod v4.
     literals.push(...typeDef.values);

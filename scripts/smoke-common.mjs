@@ -1,4 +1,5 @@
 import { AgentClient } from 'agents/client';
+import { z } from 'zod';
 
 const CHAT_MESSAGE_TYPE = {
   REQUEST: 'cf_agent_use_chat_request',
@@ -13,7 +14,7 @@ export const APP_IDENTITY_JWT_HEADER = 'X-CAIL-Identity-JWT';
 export const GATEWAY_IDENTITY_JWT_HEADER = 'X-CAIL-Gateway-Identity-JWT';
 
 function normalizeIdentityJwt(value) {
-  if (typeof value !== 'string') return undefined;
+  if (!z.string().safeParse(value).success) return undefined;
   const token = value.trim();
   return token || undefined;
 }
@@ -46,6 +47,10 @@ export function redactSensitiveText(value, credentials = {}) {
     .replace(/\bcail-[A-Za-z0-9_-]+\b/g, '[subject redacted]')
     .replace(/\b[A-Fa-f0-9]{24,}\b/g, '[id redacted]')
     .replace(/\b[^\s@]+@[^\s@]+\b/g, '[email redacted]');
+}
+
+function isString(value) {
+  return z.string().safeParse(value).success;
 }
 
 /** Credentialed chat needs both the app and gateway identity legs. */
@@ -162,7 +167,7 @@ export class SessionClient {
     const response = await this.fetch(path, init, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload.error === 'string'
+      const detail = isString(payload.error)
         ? payload.error
         : payload.error ? JSON.stringify(payload.error) : '';
       const message = `Request failed with ${response.status}${detail ? `: ${detail}` : ''}`;
@@ -257,10 +262,10 @@ export function sendChatTurn({ client, messages, prompt }) {
           fail(new Error(data.body || 'Chat stream error'));
           return;
         }
-        if (typeof data.body === 'string' && data.body.trim()) {
+        if (isString(data.body) && data.body.trim()) {
           const chunk = JSON.parse(data.body);
           chunks.push(chunk);
-          if (chunk.type === 'text-delta' && typeof chunk.delta === 'string') {
+          if (chunk.type === 'text-delta' && isString(chunk.delta)) {
             textParts.push(chunk.delta);
           }
         }

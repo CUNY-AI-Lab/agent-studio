@@ -4,30 +4,30 @@ import { nextR2Cursor } from './r2-pagination';
 
 const APP_PREFIX = 'agent-studio';
 
-const MIME_TYPES: Record<string, string> = {
-  '.pdf': 'application/pdf',
-  '.txt': 'text/plain; charset=utf-8',
-  '.csv': 'text/csv; charset=utf-8',
-  '.md': 'text/markdown; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.ts': 'text/plain; charset=utf-8',
-  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  '.xls': 'application/vnd.ms-excel',
-  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.png': 'image/png',
-  '.gif': 'image/gif',
-  '.webp': 'image/webp',
-  '.svg': 'image/svg+xml',
-  '.xml': 'application/xml; charset=utf-8',
-  '.yaml': 'text/yaml; charset=utf-8',
-  '.yml': 'text/yaml; charset=utf-8',
-  '.zip': 'application/zip',
-};
+const MIME_TYPES = new Map([
+  ['.pdf', 'application/pdf'],
+  ['.txt', 'text/plain; charset=utf-8'],
+  ['.csv', 'text/csv; charset=utf-8'],
+  ['.md', 'text/markdown; charset=utf-8'],
+  ['.json', 'application/json; charset=utf-8'],
+  ['.html', 'text/html; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'],
+  ['.js', 'text/javascript; charset=utf-8'],
+  ['.ts', 'text/plain; charset=utf-8'],
+  ['.xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['.xls', 'application/vnd.ms-excel'],
+  ['.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['.jpg', 'image/jpeg'],
+  ['.jpeg', 'image/jpeg'],
+  ['.png', 'image/png'],
+  ['.gif', 'image/gif'],
+  ['.webp', 'image/webp'],
+  ['.svg', 'image/svg+xml'],
+  ['.xml', 'application/xml; charset=utf-8'],
+  ['.yaml', 'text/yaml; charset=utf-8'],
+  ['.yml', 'text/yaml; charset=utf-8'],
+  ['.zip', 'application/zip'],
+]);
 
 function normalizeRelativePath(path: string): string {
   const normalized = path.replace(/^\/+/, '').replace(/\/+/g, '/');
@@ -196,5 +196,5 @@ export async function deleteByPrefix(env: Env, prefix: string): Promise<void> {
 export function getMimeType(filePath: string): string {
   const dotIndex = filePath.lastIndexOf('.');
   const ext = dotIndex >= 0 ? filePath.slice(dotIndex).toLowerCase() : '';
-  return MIME_TYPES[ext] || 'application/octet-stream';
+  return MIME_TYPES.get(ext) ?? 'application/octet-stream';
 }

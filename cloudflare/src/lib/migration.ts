@@ -11,6 +11,7 @@
  */
 
 import type { UIMessage } from 'ai';
+import { z } from 'zod';
 import type { WorkspaceRecord, WorkspaceState } from '../domain/workspace';
 import type { Env } from '../env';
 import {
@@ -24,6 +25,12 @@ import { reassignGalleryAuthor } from './gallery';
 import { getWorkspace, listWorkspaces, putWorkspace } from './workspaces';
 
 const IMPORT_MARKER_PREFIX = 'agent-studio/account-import/v1/';
+
+const legacyDownloadSchema = z.object({
+  filename: z.string(),
+  data: z.json(),
+  format: z.enum(['csv', 'json', 'txt']),
+}).strict();
 
 export type MigratableAgent = {
   syncWorkspace(workspace: WorkspaceRecord, sessionId: string): Promise<void>;
@@ -94,9 +101,9 @@ async function readLegacyDownloads(
 ): Promise<DownloadRequest[]> {
   const object = await env.WORKSPACE_FILES.get(`${getWorkspacePrefix(sessionId, workspaceId)}downloads.json`);
   if (!object) return [];
-  const value = await object.json<unknown>();
-  if (!Array.isArray(value)) throw new Error('account import found an invalid download queue');
-  return value as DownloadRequest[];
+  const value = z.array(legacyDownloadSchema).safeParse(await object.json());
+  if (!value.success) throw new Error('account import found an invalid download queue');
+  return value.data;
 }
 
 async function copyWorkspace(
@@ -228,11 +235,7 @@ export async function runFirstLoginMigration(
     }
     const { getAgentByName } = await import('agents');
     const { createWorkspaceAgentName } = await import('./ids');
-    const getWorkspaceByName = getAgentByName as unknown as (
-      namespace: Env['WorkspaceAgent'],
-      name: string,
-    ) => Promise<MigratableAgent>;
-    const getAgent: AgentFactory = async (sessionId, workspaceId) => getWorkspaceByName(
+    const getAgent: AgentFactory = async (sessionId, workspaceId) => getAgentByName(
       env.WorkspaceAgent,
       createWorkspaceAgentName(sessionId, workspaceId),
     );

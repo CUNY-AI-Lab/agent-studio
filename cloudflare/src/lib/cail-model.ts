@@ -59,11 +59,15 @@ export interface CreateCailModelOptions {
   model?: string;
 }
 
+function containsForbiddenControl(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+}
+
 function canonicalCailApiBase(apiBase: string): string {
-  if (
-    apiBase.trim() !== apiBase
-    || /[\u0000-\u001f\u007f\s\\]/.test(apiBase)
-  ) {
+  if (apiBase.trim() !== apiBase || containsForbiddenControl(apiBase) || /[\s\\]/.test(apiBase)) {
     throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
   }
 
@@ -111,11 +115,12 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
   // Trim all trailing slashes once so the provider's `/chat/completions`
   // suffix resolves to the one canonical gateway endpoint.
   const canonicalBase = canonicalCailApiBase(apiBase);
-  if (typeof env.GATEWAY?.fetch !== 'function') {
+  const gateway = env.GATEWAY;
+  if (!gateway?.fetch) {
     throw new Error('GATEWAY service binding is required for CAIL model calls.');
   }
-  const headers: Record<string, string> = { 'X-CAIL-App': CAIL_APP_SLUG };
-  const upstreamFetch = env.GATEWAY.fetch.bind(env.GATEWAY) as typeof globalThis.fetch;
+  const headers = { 'X-CAIL-App': CAIL_APP_SLUG };
+  const upstreamFetch: typeof globalThis.fetch = (input, init) => gateway.fetch(input, init);
   const safeFetch: typeof globalThis.fetch = (input, init) => upstreamFetch(input, {
     ...init,
     headers: (() => {
@@ -135,9 +140,6 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
       // stamp these last so options.headers cannot replace or add authority.
       safeHeaders.set('authorization', `Bearer ${identityJwt}`);
       safeHeaders.set('x-cail-app', CAIL_APP_SLUG);
-      for (const [name, value] of Object.entries(headers)) {
-        safeHeaders.set(name, value);
-      }
       return safeHeaders;
     })(),
     // Model requests never need browser cookies or other ambient credentials.

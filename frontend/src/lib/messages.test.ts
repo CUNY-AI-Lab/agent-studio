@@ -3,32 +3,34 @@ import type { UIMessage } from 'ai';
 import { extractMessageText, getContextualStatusLabel } from './messages';
 
 function textMessage(text: string): UIMessage {
-  return { id: 'm', role: 'assistant', parts: [{ type: 'text', text }] } as unknown as UIMessage;
+  return { id: 'm', role: 'assistant', parts: [{ type: 'text', text }] };
 }
 
 describe('extractMessageText', () => {
   it('joins text parts', () => {
-    const msg = {
+    const msg: UIMessage = {
       id: 'm',
       role: 'assistant',
       parts: [
         { type: 'text', text: 'hello' },
         { type: 'text', text: 'world' },
       ],
-    } as unknown as UIMessage;
+    };
     expect(extractMessageText(msg)).toBe('hello\nworld');
   });
 
   it('returns empty string when parts are missing', () => {
-    expect(extractMessageText({ id: 'm', role: 'user' } as unknown as UIMessage)).toBe('');
+    // SAFETY: this deliberately malformed fixture exercises the runtime guard
+    // for a persisted message whose parts field is missing.
+    expect(extractMessageText({ id: 'm', role: 'user' } as UIMessage)).toBe('');
   });
 
   it('omits tool parts from user-facing message text', () => {
-    const msg = {
+    const msg: UIMessage = {
       id: 'm',
       role: 'assistant',
       parts: [{ type: 'tool-write_file', toolCallId: 't1', state: 'output-available', input: {}, output: {} }],
-    } as unknown as UIMessage;
+    };
     expect(extractMessageText(msg)).toBe('');
   });
 });

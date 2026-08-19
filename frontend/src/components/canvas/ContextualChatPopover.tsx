@@ -24,6 +24,7 @@ interface ContextualChatPopoverProps {
 }
 
 type Placement = 'right' | 'left' | 'bottom';
+type PopoverPosition = { x: number; y: number; placement: Placement };
 
 export function ContextualChatPopover({
   anchor,
@@ -47,9 +48,9 @@ export function ContextualChatPopover({
   const popoverHeight = 300;
   const gap = 12;
 
-  const position = useMemo(() => {
-    const viewportWidth = viewportSize?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1920);
-    const viewportHeight = viewportSize?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 1080);
+  const position = useMemo<PopoverPosition>(() => {
+    const viewportWidth = viewportSize?.width ?? globalThis.window?.innerWidth ?? 1920;
+    const viewportHeight = viewportSize?.height ?? globalThis.window?.innerHeight ?? 1080;
     const screenRight = (anchor.x + anchor.width) * viewport.zoom + viewport.x;
     const screenLeft = anchor.x * viewport.zoom + viewport.x;
     const screenTop = anchor.y * viewport.zoom + viewport.y;
@@ -65,7 +66,7 @@ export function ContextualChatPopover({
       return {
         x: (screenX - viewport.x) / viewport.zoom,
         y: (screenY - viewport.y) / viewport.zoom,
-        placement: 'right' as Placement,
+        placement: 'right',
       };
     }
 
@@ -75,7 +76,7 @@ export function ContextualChatPopover({
       return {
         x: (screenX - viewport.x) / viewport.zoom,
         y: (screenY - viewport.y) / viewport.zoom,
-        placement: 'left' as Placement,
+        placement: 'left',
       };
     }
 
@@ -84,7 +85,7 @@ export function ContextualChatPopover({
     return {
       x: (screenX - viewport.x) / viewport.zoom,
       y: (screenY - viewport.y) / viewport.zoom,
-      placement: 'bottom' as Placement,
+      placement: 'bottom',
     };
   }, [anchor, viewport, viewportSize]);
 
@@ -99,7 +100,9 @@ export function ContextualChatPopover({
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) {
+      const eventTarget = event.target;
+      const targetNode = eventTarget instanceof Node ? eventTarget : null;
+      if (popoverRef.current && targetNode && !popoverRef.current.contains(targetNode)) {
         onClose();
       }
     };

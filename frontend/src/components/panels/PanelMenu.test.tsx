@@ -23,8 +23,8 @@ function makeProps(panel: WorkspacePanel, overrides: Partial<Parameters<typeof P
   };
 }
 
-const tablePanel = { id: 'p1', type: 'table', columns: [], rows: [] } as WorkspacePanel;
-const filePanel = { id: 'p2', type: 'editor', filePath: 'doc.md' } as WorkspacePanel;
+const tablePanel: Extract<WorkspacePanel, { type: 'table' }> = { id: 'p1', type: 'table', columns: [], rows: [] };
+const filePanel: Extract<WorkspacePanel, { type: 'editor' }> = { id: 'p2', type: 'editor', filePath: 'doc.md' };
 
 describe('PanelMenu', () => {
   it('always offers ask/minimize/maximize/remove', () => {

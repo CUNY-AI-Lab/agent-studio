@@ -5,7 +5,7 @@ import { TablePanelView } from './TablePanelView';
 import type { WorkspacePanel } from '../../types';
 
 function tablePanel(): Extract<WorkspacePanel, { type: 'table' }> {
-  return {
+  const panel: Extract<WorkspacePanel, { type: 'table' }> = {
     id: 't',
     type: 'table',
     columns: [
@@ -17,7 +17,8 @@ function tablePanel(): Extract<WorkspacePanel, { type: 'table' }> {
       { name: 'Alice', score: 10 },
       { name: 'Bob', score: 5 },
     ],
-  } as Extract<WorkspacePanel, { type: 'table' }>;
+  };
+  return panel;
 }
 
 function bodyRowOrder() {

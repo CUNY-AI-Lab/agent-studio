@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { WorkspacePanel } from '../../types';
+import { isNumber } from '../../lib/runtime';
 
 export function TablePanelView({ panel }: { panel: Extract<WorkspacePanel, { type: 'table' }> }) {
   const [sortKey, setSortKey] = useState<string | null>(null);
@@ -16,7 +17,7 @@ export function TablePanelView({ panel }: { panel: Extract<WorkspacePanel, { typ
       if (leftValue == null) return sortDirection === 'asc' ? 1 : -1;
       if (rightValue == null) return sortDirection === 'asc' ? -1 : 1;
 
-      if (typeof leftValue === 'number' && typeof rightValue === 'number') {
+      if (isNumber(leftValue) && isNumber(rightValue)) {
         return sortDirection === 'asc' ? leftValue - rightValue : rightValue - leftValue;
       }
 

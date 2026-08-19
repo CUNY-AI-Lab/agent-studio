@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { GalleryItem, GalleryItemFull } from '../domain/gallery';
 import type { WorkspaceRecord, WorkspaceState } from '../domain/workspace';
 import type { Env } from '../env';
@@ -32,6 +33,18 @@ interface GalleryOwnerRecord {
   tag: string;
 }
 
+interface GalleryListOptions {
+  prefix: string;
+  delimiter: string;
+  limit?: number;
+  cursor?: string;
+}
+
+interface GalleryItemsPage {
+  items: GalleryItem[];
+  nextCursor?: string;
+}
+
 async function galleryOwnerRecord(env: Env, sessionId: string): Promise<GalleryOwnerRecord> {
   return {
     tag: await galleryOwnerTag(sessionId, env.SESSION_SECRET),
@@ -39,8 +52,9 @@ async function galleryOwnerRecord(env: Env, sessionId: string): Promise<GalleryO
 }
 
 async function ownerRecordMatches(env: Env, record: GalleryOwnerRecord, sessionId: string): Promise<boolean> {
-  return typeof record.tag === 'string'
-    && timingSafeEqual(record.tag, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
+  const tag = z.string().safeParse(record.tag).data;
+  return tag !== undefined
+    && timingSafeEqual(tag, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
 }
 
 function publicGalleryItem(item: GalleryItem): GalleryItem {
@@ -52,11 +66,12 @@ async function listGalleryIds(env: Env): Promise<string[]> {
   const ids = new Set<string>();
   let cursor: string | undefined;
   do {
-    const listing = await env.WORKSPACE_FILES.list({
+    const listOptions: GalleryListOptions = {
       prefix: getGalleryPrefix(),
       delimiter: '/',
-      ...(cursor ? { cursor } : {}),
-    });
+    };
+    if (cursor) listOptions.cursor = cursor;
+    const listing = await env.WORKSPACE_FILES.list(listOptions);
     for (const prefix of listing.delimitedPrefixes) {
       const id = prefix.slice(getGalleryPrefix().length).replace(/\/$/, '');
       if (id) ids.add(id);
@@ -69,14 +84,15 @@ async function listGalleryIds(env: Env): Promise<string[]> {
 export async function listGalleryItemsPage(
   env: Env,
   options: { cursor?: string; limit?: number } = {},
-): Promise<{ items: GalleryItem[]; nextCursor?: string }> {
+): Promise<GalleryItemsPage> {
   const limit = Math.min(Math.max(options.limit ?? 50, 1), 100);
-  const listing = await env.WORKSPACE_FILES.list({
+  const listOptions: GalleryListOptions = {
     prefix: getGalleryPrefix(),
     delimiter: '/',
     limit,
-    ...(options.cursor ? { cursor: options.cursor } : {}),
-  });
+  };
+  if (options.cursor) listOptions.cursor = options.cursor;
+  const listing = await env.WORKSPACE_FILES.list(listOptions);
   const nextCursor = nextR2Cursor(listing, 'gallery page');
   const items = await Promise.all(listing.delimitedPrefixes.map(async (prefix) => {
     const id = prefix.slice(getGalleryPrefix().length).replace(/\/$/, '');
@@ -84,10 +100,11 @@ export async function listGalleryItemsPage(
     const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
     return object ? publicGalleryItem(await object.json<GalleryItem>()) : null;
   }));
-  return {
+  const result: GalleryItemsPage = {
     items: items.filter((item): item is GalleryItem => Boolean(item)),
-    ...(nextCursor ? { nextCursor } : {}),
   };
+  if (nextCursor) result.nextCursor = nextCursor;
+  return result;
 }
 
 /**
@@ -304,8 +321,8 @@ export async function reassignGalleryAuthor(
     if (!manifestObject) continue;
     const item = await manifestObject.json<GalleryItem>();
     const owner = ownerObject ? await ownerObject.json<GalleryOwnerRecord>() : null;
-    const legacyMatches = Boolean(item.authorId)
-      && timingSafeEqual(item.authorId as string, legacyFromTag);
+    const legacyMatches = item.authorId !== undefined
+      && timingSafeEqual(item.authorId, legacyFromTag);
     const matches = owner
       ? await ownerRecordMatches(env, owner, fromSessionId)
         // Retry a prior attempt that switched the private owner but failed

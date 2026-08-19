@@ -24,8 +24,9 @@ export function formatRelativeTime(value?: string): string {
 }
 
 export function makeClientId(prefix: string) {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return `${prefix}-${crypto.randomUUID()}`;
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) {
+    return `${prefix}-${randomUuid}`;
   }
   return `${prefix}-${Math.random().toString(36).slice(2, 10)}`;
 }

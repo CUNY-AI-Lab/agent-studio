@@ -35,7 +35,10 @@ function stubbedFetch({ apiHandler }) {
         headers: { 'content-type': 'application/json' },
       });
     }
-    apiCalls.push({ url, authorization: init.headers?.Authorization });
+    const authorization = init.headers instanceof Headers
+      ? init.headers.get('Authorization') ?? undefined
+      : init.headers?.Authorization;
+    apiCalls.push({ url, authorization });
     return apiHandler(url, init, apiCalls.length);
   };
   return { fetchImpl, apiCalls };
@@ -281,7 +284,7 @@ test('guardedWebFetch does not attach a bearer when creds are unconfigured', asy
 test('a redirect off the allowlisted host drops the Authorization header', async () => {
   __resetTokenCacheForTests();
   const { fetchImpl, apiCalls } = stubbedFetch({
-    apiHandler: (url) => {
+    apiHandler: () => {
       if (apiCalls.length === 1) {
         return new Response(null, { status: 302, headers: { location: 'https://example.org/final' } });
       }
@@ -396,7 +399,10 @@ test('a 401 from the API invalidates the token and retries exactly once', async 
         headers: { 'content-type': 'application/json' },
       });
     }
-    apiCalls.push(init.headers?.Authorization);
+    const authorization = init.headers instanceof Headers
+      ? init.headers.get('Authorization') ?? undefined
+      : init.headers?.Authorization;
+    apiCalls.push(authorization);
     // Always 401 => broker should retry exactly once, then give up.
     return new Response('{}', { status: 401, headers: { 'content-type': 'application/json' } });
   };

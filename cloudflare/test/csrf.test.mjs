@@ -361,10 +361,7 @@ test('route: /api/session CSRF cookie has the pinned attributes (name/path/sames
   const { env } = makeEnv();
   const res = await new Session(env).request(app, '/api/session');
   // Locate the specific Set-Cookie line for our cookie, unmerged when possible.
-  const lines =
-    typeof res.headers.getSetCookie === 'function'
-      ? res.headers.getSetCookie()
-      : [res.headers.get('set-cookie') || ''];
+  const lines = res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie') || ''];
   const line = lines.find((l) => l.includes(`${CSRF_COOKIE_NAME}=`)) || '';
   assert.ok(line, 'CSRF Set-Cookie header is present');
   assert.match(line, new RegExp(`(^|,\\s*)${CSRF_COOKIE_NAME}=v1\\.anonymous\\.`));
@@ -392,10 +389,7 @@ test('route: CSRF cookie Path follows CAIL_BASE_PATH when set', async () => {
   const { env } = makeEnv();
   env.CAIL_BASE_PATH = '/agent-studio';
   const res = await new Session(env).request(app, '/api/session');
-  const lines =
-    typeof res.headers.getSetCookie === 'function'
-      ? res.headers.getSetCookie()
-      : [res.headers.get('set-cookie') || ''];
+  const lines = res.headers.getSetCookie?.() ?? [res.headers.get('set-cookie') || ''];
   const line = lines.find((l) => l.includes(`${CSRF_COOKIE_NAME}=`)) || '';
   assert.match(line, /;\s*Path=\/agent-studio(?:;|$|,)/i);
 });

@@ -117,7 +117,8 @@ export function GroupBoundary({
   }, [editValue, group.id, onGroupRename]);
 
   const handlePointerDown = useCallback((event: React.PointerEvent) => {
-    if ((event.target as HTMLElement).closest('.group-boundary-label')) return;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (!target || target.closest('.group-boundary-label')) return;
 
     if (clickTimeoutRef.current) {
       clearTimeout(clickTimeoutRef.current);
@@ -129,7 +130,7 @@ export function GroupBoundary({
     setIsDragging(true);
     didDragRef.current = false;
     dragStartRef.current = { x: event.clientX, y: event.clientY };
-    (event.target as HTMLElement).setPointerCapture(event.pointerId);
+    target.setPointerCapture(event.pointerId);
   }, []);
 
   const handlePointerMove = useCallback((event: React.PointerEvent) => {
@@ -150,7 +151,9 @@ export function GroupBoundary({
     if (!isDragging) return;
     event.preventDefault();
     setIsDragging(false);
-    (event.target as HTMLElement).releasePointerCapture(event.pointerId);
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (!target) return;
+    target.releasePointerCapture(event.pointerId);
     onGroupDragEnd?.(group.id);
     setTimeout(() => {
       didDragRef.current = false;
@@ -159,7 +162,8 @@ export function GroupBoundary({
 
   const handleContainerKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (isEditing) return;
-    const target = event.target as HTMLElement;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (!target) return;
     if (target.closest('.group-boundary-label')) return;
 
     if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {

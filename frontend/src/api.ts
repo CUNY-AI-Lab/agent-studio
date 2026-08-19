@@ -7,24 +7,30 @@ import type {
   WorkspaceResponse,
 } from './types';
 import { appPath } from './base-path';
+import { z } from 'zod';
 
 type CanonicalError = {
-  code?: unknown;
-  message?: unknown;
+  code?: string;
+  message?: string;
   cail?: {
-    login_url?: unknown;
+    login_url?: string;
   };
 };
+
+const canonicalErrorPayloadSchema = z.object({
+  error: z.object({
+    code: z.string().optional(),
+    message: z.string().optional(),
+    cail: z.object({ login_url: z.string().optional() }).optional(),
+  }),
+});
 
 const CAIL_DOORWAY_ORIGIN = 'https://cail-doorway.ailab-452.workers.dev';
 const AGENT_STUDIO_PATH = '/agent-studio';
 
-function canonicalErrorFromPayload(payload: unknown): CanonicalError | null {
-  if (typeof payload !== 'object' || payload === null) return null;
-  const error = (payload as { error?: unknown }).error;
-  return typeof error === 'object' && error !== null
-    ? error as CanonicalError
-    : null;
+function canonicalErrorFromPayload<T>(payload: T): CanonicalError | null {
+  const parsed = canonicalErrorPayloadSchema.safeParse(payload);
+  return parsed.success ? parsed.data.error : null;
 }
 
 /**
@@ -34,7 +40,7 @@ function canonicalErrorFromPayload(payload: unknown): CanonicalError | null {
  * re-authenticates and returns here. Returns true when it handled (and is
  * redirecting).
  */
-export function handleAuthRequired(status: number, payload: unknown): boolean {
+export function handleAuthRequired<T>(status: number, payload: T): boolean {
   if (status !== 401) return false;
   const nested = canonicalErrorFromPayload(payload);
   if (nested?.code !== 'authentication_required') return false;
@@ -190,8 +196,8 @@ async function readResponseError(
   const message = canonicalErrorFromPayload(payload)?.message;
   return {
     payload,
-    message: typeof message === 'string' && message.length > 0
-      ? message
+    message: z.string().safeParse(message).data?.trim()
+      ? z.string().parse(message)
       : "That didn't work. Try again.",
   };
 }
@@ -205,7 +211,10 @@ async function parseJson<T>(response: Response): Promise<T> {
     }
     throw new Error(message);
   }
-  return response.json() as Promise<T>;
+  const payload = await response.json();
+  // SAFETY: each caller selects the response type for a fixed Worker route;
+  // this helper never crosses an external origin or accepts caller-provided JSON.
+  return payload as T;
 }
 
 /** Refresh the short-lived gateway credential stored by a workspace agent. */

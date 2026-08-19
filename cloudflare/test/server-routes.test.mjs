@@ -47,9 +47,9 @@ async function createWorkspace(session, name = 'Workspace') {
 
 async function readError(response) {
   const body = await response.json();
-  assert.equal(typeof body.error, 'object');
-  assert.equal(typeof body.error.code, 'string');
-  assert.equal(typeof body.error.message, 'string');
+  assert.ok(body.error);
+  assert.match(body.error.code, /^[a-z_]+$/);
+  assert.match(body.error.message, /\S/);
   return body.error;
 }
 
@@ -61,10 +61,9 @@ async function makeRouteCredential(overrides = {}) {
     ...overrides,
   });
   // Keyring gateway leg (identity-keyring-v1): same person, gateway audience.
-  const gatewayToken = await issuer.mintIdentityJwt({
-    audience: 'cail:gateway',
-    ...(overrides.subject === undefined ? {} : { subject: overrides.subject }),
-  });
+  const gatewayClaims = { audience: 'cail:gateway' };
+  if (overrides.subject !== undefined) gatewayClaims.subject = overrides.subject;
+  const gatewayToken = await issuer.mintIdentityJwt(gatewayClaims);
   return { token, gatewayToken, jwks: issuer.jwksJson };
 }
 

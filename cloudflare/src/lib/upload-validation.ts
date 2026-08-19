@@ -31,7 +31,7 @@ const ALLOWED_UPLOAD_EXTENSIONS = new Set([
 
 export type UploadFileLike = { name: string; type?: string };
 
-export function isAllowedUpload(file: UploadFileLike): { allowed: boolean; reason?: string } {
+export function isAllowedUpload(file: UploadFileLike) {
   const dot = file.name.lastIndexOf('.');
   const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
   if (!ALLOWED_UPLOAD_EXTENSIONS.has(ext)) {
