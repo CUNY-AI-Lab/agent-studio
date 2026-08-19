@@ -7,7 +7,7 @@ const workflowUrl = new URL('../.github/workflows/ci.yml', import.meta.url);
 test('CI protects action and package credentials in one validation job', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
-  assert.match(workflow, /^permissions:\n  contents: read$/m);
+  assert.match(workflow, /^permissions:\n  contents: read\n  packages: read$/m);
   assert.doesNotMatch(workflow, /^\s{4}env:/m, 'jobs must not have shared environments');
   assert.doesNotMatch(workflow, /uses:\s+\S+@v\d+/);
   assert.match(workflow, /^  validate:\n/m);
@@ -42,7 +42,7 @@ test('CI protects action and package credentials in one validation job', async (
   );
 
   const installBlocks = workflow.match(
-    /      - name: Install dependencies\n        env:\n          NODE_AUTH_TOKEN: \$\{\{ secrets\.CAIL_PACKAGES_TOKEN \}\}\n        run: bun install --frozen-lockfile/g,
+    /      - name: Install dependencies\n        env:\n          NODE_AUTH_TOKEN: \$\{\{ github\.token \}\}\n        run: bun install --frozen-lockfile/g,
   ) ?? [];
   assert.equal(installBlocks.length, 2, 'validation and deploy jobs must scope the token to frozen installs');
   assert.equal(
@@ -53,6 +53,7 @@ test('CI protects action and package credentials in one validation job', async (
 
   const deployJob = workflow.split(/^  deploy:\n/m)[1] ?? '';
   assert.match(deployJob, /^    needs: validate$/m);
+  assert.match(deployJob, /^    permissions:\n      contents: read\n      packages: read$/m);
   assert.match(deployJob, /^      group: agent-studio-production$/m);
   assert.match(deployJob, /versions list --name agent-studio --json/);
   assert.match(deployJob, /deployments list --name agent-studio --json/);

@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   validate:
@@ -26,7 +27,7 @@ jobs:
 
       - name: Install dependencies
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.CAIL_PACKAGES_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
         run: bun install --frozen-lockfile
 
       - name: Dependency audit
@@ -95,6 +96,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      packages: read
     steps:
       - name: Check out main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -109,7 +111,7 @@ jobs:
 
       - name: Install dependencies
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.CAIL_PACKAGES_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
         run: bun install --frozen-lockfile
 
       - name: Confirm main has not advanced
