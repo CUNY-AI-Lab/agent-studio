@@ -110,7 +110,11 @@ class FakeAgent {
       this.failWriteOnce = null;
       throw new Error('simulated target write failure');
     }
-    const text = typeof data === 'string' ? data : new TextDecoder().decode(data);
+    const text = data instanceof ArrayBuffer
+      ? new TextDecoder().decode(data)
+      : ArrayBuffer.isView(data)
+        ? new TextDecoder().decode(data)
+        : data;
     this.files.set(filePath, { text, contentType });
     return { ok: true, filePath };
   }

@@ -6,23 +6,29 @@ import { extractMessageText } from '../../lib/messages';
 
 const LazyMarkdownRenderer = lazy(() => import('../renderers/MarkdownRenderer'));
 
-/** Plain-language labels for the machine chat states; never show the raw state. */
-const STATUS_LABELS: Record<string, string> = {
-  ready: 'Ready',
-  submitted: 'Working…',
-  streaming: 'Working…',
-  error: 'Something went wrong',
-};
+/** Plain-language labels for machine states; never show the raw state. */
+function statusLabelFor(status: string): string {
+  switch (status) {
+    case 'ready': return 'Ready';
+    case 'submitted':
+    case 'streaming': return 'Working…';
+    case 'error': return 'Something went wrong';
+    default: return 'Working…';
+  }
+}
 
-const TOOL_STATE_LABELS: Record<string, string> = {
-  'input-streaming': 'Starting',
-  'input-available': 'Running',
-  'approval-requested': 'Needs approval',
-  'approval-responded': 'Continuing',
-  'output-available': 'Done',
-  'output-error': 'Failed',
-  'output-denied': 'Not run',
-};
+function toolStateLabelFor(state: string): string {
+  switch (state) {
+    case 'input-streaming': return 'Starting';
+    case 'input-available': return 'Running';
+    case 'approval-requested': return 'Needs approval';
+    case 'approval-responded': return 'Continuing';
+    case 'output-available': return 'Done';
+    case 'output-error': return 'Failed';
+    case 'output-denied': return 'Not run';
+    default: return 'Working';
+  }
+}
 
 function toolDisplayName(name: string): string {
   const words = name.replace(/^(ui_|tool_)/, '').replaceAll('_', ' ').trim();
@@ -65,7 +71,7 @@ export function ChatPanel({
   selectedScopeLabel: string | null;
   onClearScope: () => void;
 }) {
-  const statusLabel = isBusy ? 'Working…' : STATUS_LABELS[status] ?? 'Working…';
+  const statusLabel = isBusy ? 'Working…' : statusLabelFor(status);
   const isWorking = isBusy;
 
   const submitComposer = () => {
@@ -205,7 +211,7 @@ export function ChatPanel({
                       )}
                     >
                       {toolDisplayName(tool.name)}
-                      <span className="opacity-60">{TOOL_STATE_LABELS[tool.state] ?? 'Working'}</span>
+                      <span className="opacity-60">{toolStateLabelFor(tool.state)}</span>
                     </span>
                   ))}
                   </div>

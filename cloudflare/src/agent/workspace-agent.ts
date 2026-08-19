@@ -21,6 +21,8 @@ import {
   stepCountIs,
   streamText,
   tool,
+  type StreamTextOnFinishCallback,
+  type ToolSet,
   type UIMessage,
 } from 'ai';
 import { z } from 'zod';
@@ -48,8 +50,6 @@ import {
   buildDocx,
   MAX_PDF_PAGES,
   MAX_XLSX_ROWS,
-  type XlsxCell,
-  type DocxBlock,
 } from '../lib/document-tools';
 import { getSkillContent, SKILLS } from '../skills';
 import { buildWorkspaceAgentSystemPrompt } from './instructions';
@@ -102,12 +102,42 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.slice().buffer;
 }
 
-type SerializedPanelContext = Record<string, unknown>;
+interface SerializedPanelContextBase {
+  id: string;
+  title?: string;
+  sourcePanelId?: string;
+  layout?: WorkspacePanel['layout'];
+}
+
+type TablePanel = Extract<WorkspacePanel, { type: 'table' }>;
+type CardsPanel = Extract<WorkspacePanel, { type: 'cards' }>;
+
+type SerializedPanelContext =
+  | (SerializedPanelContextBase & { type: 'chat' })
+  | (SerializedPanelContextBase & { type: 'markdown'; content: string })
+  | (SerializedPanelContextBase & {
+    type: 'table';
+    columns: TablePanel['columns'];
+    rows: TablePanel['rows'];
+  })
+  | (SerializedPanelContextBase & {
+    type: 'chart';
+    chartType: 'bar' | 'line' | 'pie' | 'area';
+    data: Array<Record<string, string | number | boolean | null>>;
+  })
+  | (SerializedPanelContextBase & { type: 'cards'; items: CardsPanel['items'] })
+  | (SerializedPanelContextBase & { type: 'preview'; filePath?: string; content?: string })
+  | (SerializedPanelContextBase & { type: 'pdf' | 'editor' | 'file'; filePath: string })
+  | (SerializedPanelContextBase & { type: 'fileTree'; kind: 'workspace-files' })
+  | (SerializedPanelContextBase & {
+    type: 'detail';
+    linkedTo?: string;
+    linkedPanel: SerializedPanelContext | null;
+  });
 
 function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePanel[]): SerializedPanelContext {
   const base = {
     id: panel.id,
-    type: panel.type,
     title: panel.title,
     sourcePanelId: panel.sourcePanelId,
     layout: panel.layout,
@@ -117,28 +147,33 @@ function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePan
     case 'markdown':
       return {
         ...base,
+        type: 'markdown',
         content: panel.content,
       };
     case 'table':
       return {
         ...base,
+        type: 'table',
         columns: panel.columns,
         rows: panel.rows,
       };
     case 'chart':
       return {
         ...base,
+        type: 'chart',
         chartType: panel.chartType,
         data: panel.data,
       };
     case 'cards':
       return {
         ...base,
+        type: 'cards',
         items: panel.items,
       };
     case 'preview':
       return {
         ...base,
+        type: 'preview',
         filePath: panel.filePath,
         content: panel.content,
       };
@@ -147,11 +182,13 @@ function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePan
     case 'file':
       return {
         ...base,
+        type: panel.type,
         filePath: panel.filePath,
       };
     case 'fileTree':
       return {
         ...base,
+        type: 'fileTree',
         kind: 'workspace-files',
       };
     case 'detail': {
@@ -160,12 +197,13 @@ function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePan
         : null;
       return {
         ...base,
+        type: 'detail',
         linkedTo: panel.linkedTo,
         linkedPanel: linkedPanel ? serializePanelForContext(linkedPanel, allPanels) : null,
       };
     }
     case 'chat':
-      return base;
+      return { ...base, type: 'chat' };
   }
 }
 
@@ -196,7 +234,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
     if (this.cailIdentityJwt === null) {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
-      if (typeof stored === 'string') {
+      if (stored) {
         const expectedSessionId = this.csrfSessionId();
         if (expectedSessionId) {
           // Re-verify credentials restored after hibernation/eviction. This
@@ -505,7 +543,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
-  async onChatMessage(_onFinish?: unknown, options?: OnChatMessageOptions) {
+  async onChatMessage(
+    _onFinish?: StreamTextOnFinishCallback<ToolSet>,
+    options?: OnChatMessageOptions,
+  ) {
     this.assertNotFrozen();
     const workspace = this.requireWorkspace();
     const sessionId = this.requireSessionId();
@@ -539,9 +580,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
 
     try {
-      const scopedPanelIds = Array.isArray(options?.body?.scopePanelIds)
-        ? options.body.scopePanelIds.filter((value): value is string => typeof value === 'string')
-        : [];
+      const scopedPanelIds = z.array(z.string()).safeParse(options?.body?.scopePanelIds).data ?? [];
       const scopedPanels = scopedPanelIds
         .map((panelId) => this.state.panels.find((panel) => panel.id === panelId))
         .filter((panel): panel is WorkspacePanel => Boolean(panel));
@@ -591,8 +630,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
       return result.toUIMessageStreamResponse({
         onError: (error) => {
-          const cail = extractCanonicalCailError(error);
-          const quota = quotaSignalFromError(error, cail);
+          const errorCandidate = error instanceof Error ? error : null;
+          const cail = extractCanonicalCailError(errorCandidate);
+          const quota = quotaSignalFromError(errorCandidate, cail);
           return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
       });
@@ -678,10 +718,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.withMutationFence(async () => {
       const runtime = this.getRuntimeWorkspace();
       const relativePath = sanitizeRelativePath(filePath);
-      if (typeof data === 'string') {
-        await runtime.writeFile(toRuntimePath(relativePath), data, contentType || getMimeType(relativePath));
+      const textData = z.string().safeParse(data).data;
+      if (textData !== undefined) {
+        await runtime.writeFile(toRuntimePath(relativePath), textData, contentType || getMimeType(relativePath));
       } else {
-        await runtime.writeFileBytes(toRuntimePath(relativePath), data, contentType || getMimeType(relativePath));
+        const binaryData = z.union([
+          z.instanceof(ArrayBuffer),
+          z.instanceof(Uint8Array),
+        ]).parse(data);
+        await runtime.writeFileBytes(toRuntimePath(relativePath), binaryData, contentType || getMimeType(relativePath));
       }
       return { ok: true, filePath: relativePath };
     });
@@ -738,19 +783,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   async applyLayoutPatch(patch: LayoutPatch): Promise<WorkspaceState> {
     this.assertNotFrozen();
     this.assertAuthorizedRpc();
-    patch = layoutPatchSchema.parse(patch) as LayoutPatch;
+    const parsedPatch = layoutPatchSchema.parse(patch);
     const panels = this.state.panels.map((panel) => {
-      const nextLayout = patch.panels?.[panel.id];
+      const nextLayout = parsedPatch.panels?.[panel.id];
       if (!nextLayout) return panel;
+      const layout = { ...panel.layout };
+      if (nextLayout.x !== undefined) layout.x = clamp(nextLayout.x, 0, 100000);
+      if (nextLayout.y !== undefined) layout.y = clamp(nextLayout.y, 0, 100000);
+      if (nextLayout.width !== undefined) layout.width = clamp(nextLayout.width, 100, 10000);
+      if (nextLayout.height !== undefined) layout.height = clamp(nextLayout.height, 60, 10000);
       return {
         ...panel,
-        layout: {
-          ...panel.layout,
-          ...(Number.isFinite(nextLayout.x) ? { x: clamp(nextLayout.x as number, 0, 100000) } : {}),
-          ...(Number.isFinite(nextLayout.y) ? { y: clamp(nextLayout.y as number, 0, 100000) } : {}),
-          ...(Number.isFinite(nextLayout.width) ? { width: clamp(nextLayout.width as number, 100, 10000) } : {}),
-          ...(Number.isFinite(nextLayout.height) ? { height: clamp(nextLayout.height as number, 60, 10000) } : {}),
-        },
+        layout,
       };
     });
 
@@ -765,7 +809,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const panelIds = new Set(panels.map((panel) => panel.id));
 
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
-    for (const connection of patch.connections ?? []) {
+    for (const connection of parsedPatch.connections ?? []) {
       connectionsById.set(connection.id, connection);
     }
     const connections = [...connectionsById.values()].filter(
@@ -773,10 +817,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     );
 
     const groupsById = new Map(this.state.groups.map((group) => [group.id, group]));
-    for (const group of patch.groups ?? []) {
+    for (const group of parsedPatch.groups ?? []) {
       groupsById.set(group.id, group);
     }
-    for (const groupId of patch.removeGroups ?? []) {
+    for (const groupId of parsedPatch.removeGroups ?? []) {
       groupsById.delete(groupId);
     }
     const groups = [...groupsById.values()]
@@ -788,7 +832,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       panels,
       groups,
       connections,
-      viewport: patch.viewport ?? this.state.viewport,
+      viewport: parsedPatch.viewport ?? this.state.viewport,
     });
     return this.state;
   }
@@ -825,6 +869,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
     codemode.execute = (input, options) => this.withMutationFence(async () => {
       const output = await execute(input, options);
+      // SAFETY: createCodeTool's concrete executor always returns CodeOutput;
+      // the AI SDK Tool type also permits streaming results for other tools.
       return output as CodeOutput;
     });
     return codemode;
@@ -1001,7 +1047,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           })).min(1),
         }),
         execute: async ({ filePath, sheets }) => {
-          const bytes = buildXlsx(sheets as { name: string; rows: XlsxCell[][] }[]);
+          const bytes = buildXlsx(sheets);
           const relativePath = await this.writeRuntimeFileBytes(filePath, bytes);
           return { ok: true, filePath: relativePath, bytes: bytes.byteLength, sheets: sheets.length };
         },
@@ -1023,7 +1069,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           ])).min(1),
         }),
         execute: async ({ filePath, content }) => {
-          const bytes = await buildDocx(content as DocxBlock[]);
+          const bytes = await buildDocx(content);
           const relativePath = await this.writeRuntimeFileBytes(filePath, bytes);
           return { ok: true, filePath: relativePath, bytes: bytes.byteLength, blocks: content.length };
         },
@@ -1160,14 +1206,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         inputSchema: z.object({
           filename: z.string().min(1),
           format: z.enum(['csv', 'json', 'txt']),
-          data: z.union([
-            z.string(),
-            z.number(),
-            z.boolean(),
-            z.null(),
-            z.array(z.unknown()),
-            z.record(z.string(), z.unknown()),
-          ]),
+          data: z.json(),
         }),
         execute: async ({ filename, format, data }) => {
           await addWorkspaceDownload(this.env, sessionId, workspace.id, {
@@ -1211,7 +1250,21 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // A migration freeze may interleave at any await boundary. Track every
     // host-side mutation as one fenced unit: freeze refuses while a unit is
     // active, and once frozen no later tool can begin.
-    const mutationToolNames = [
+    type MutationTool = { execute?: (...args: never[]) => Promise<never> };
+    interface MutationToolSet {
+      write_file?: MutationTool;
+      write_xlsx?: MutationTool;
+      write_docx?: MutationTool;
+      ui_markdown?: MutationTool;
+      ui_detail?: MutationTool;
+      ui_table?: MutationTool;
+      ui_chart?: MutationTool;
+      ui_cards?: MutationTool;
+      ui_show_file?: MutationTool;
+      ui_download?: MutationTool;
+      ui_workspace?: MutationTool;
+    }
+    const mutationToolNames: Array<keyof MutationToolSet> = [
       'write_file',
       'write_xlsx',
       'write_docx',
@@ -1224,13 +1277,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       'ui_download',
       'ui_workspace',
     ];
-    const mutableTools = tools as unknown as Record<string, {
-      execute?: (...args: unknown[]) => unknown;
-    }>;
+    // SAFETY: these are the exact mutation tools returned by buildHostTools;
+    // only their execute callbacks are wrapped below, preserving each tool's
+    // validated input schema and public name.
+    const mutableTools = tools as MutationToolSet;
     for (const name of mutationToolNames) {
-      const original = mutableTools[name]?.execute;
+      const toolDefinition = mutableTools[name];
+      const original = toolDefinition?.execute;
       if (!original) continue;
-      mutableTools[name].execute = (...args: unknown[]) =>
+      toolDefinition.execute = (...args: never[]) =>
         this.withMutationFence(() => original(...args));
     }
 
@@ -1409,9 +1464,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         layout: panel.layout ? { ...current.layout, ...panel.layout } : current.layout,
         sourcePanelId: panel.sourcePanelId ?? current.sourcePanelId,
       };
-      panels[index] = current.type === panel.type
-        ? { ...current, ...panel, ...preserved } as WorkspacePanel
-        : { ...panel, ...preserved } as WorkspacePanel;
+      const merged = current.type === panel.type
+        ? { ...current, ...panel, ...preserved }
+        : { ...panel, ...preserved };
+      panels[index] = panelSchema.parse(merged);
     } else {
       panels.push(panel);
     }

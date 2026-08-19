@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { fetchWorkspacePanelPreview, getGalleryPanelPreviewUrl } from '../../api';
-import { type FileSource, useFileObjectUrl } from '../../lib/fileUrls';
+import { fetchWorkspaceFile, fetchWorkspacePanelPreview, getGalleryPanelPreviewUrl } from '../../api';
+import { type FileSource, type WorkspaceFileFetcher, useFileObjectUrl } from '../../lib/fileUrls';
 import type { WorkspacePanel } from '../../types';
 import { TextFilePreview } from './TextFilePreview';
 
@@ -8,12 +8,14 @@ export function FilePreview({
   fileSource,
   panel,
   cacheKey,
+  fetchFile = fetchWorkspaceFile,
 }: {
   fileSource: FileSource;
   panel: Extract<WorkspacePanel, { type: 'pdf' | 'editor' | 'file' }>;
   cacheKey?: string | null;
+  fetchFile?: WorkspaceFileFetcher;
 }) {
-  const { url, error } = useFileObjectUrl(fileSource, panel.filePath, cacheKey);
+  const { url, error } = useFileObjectUrl(fileSource, panel.filePath, cacheKey, fetchFile);
   const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(panel.filePath);
   const isPdf = panel.type === 'pdf';
   const isHtml = /\.html?$/i.test(panel.filePath);
@@ -64,10 +66,14 @@ export function PreviewPanelView({
   fileSource,
   panel,
   cacheKey,
+  fetchFile = fetchWorkspaceFile,
+  fetchPreview = fetchWorkspacePanelPreview,
 }: {
   fileSource: FileSource;
   panel: Extract<WorkspacePanel, { type: 'preview' }>;
   cacheKey?: string | null;
+  fetchFile?: WorkspaceFileFetcher;
+  fetchPreview?: WorkspaceFileFetcher;
 }) {
   if (panel.filePath) {
     return (
@@ -75,12 +81,13 @@ export function PreviewPanelView({
         fileSource={fileSource}
         panel={{ ...panel, type: 'editor', filePath: panel.filePath }}
         cacheKey={cacheKey}
+        fetchFile={fetchFile}
       />
     );
   }
 
   if (panel.content) {
-    return <ProtectedPreviewFrame fileSource={fileSource} panel={panel} />;
+    return <ProtectedPreviewFrame fileSource={fileSource} panel={panel} fetchPreview={fetchPreview} />;
   }
 
   return <div className="panel-empty">No preview content yet.</div>;
@@ -89,9 +96,11 @@ export function PreviewPanelView({
 function ProtectedPreviewFrame({
   fileSource,
   panel,
+  fetchPreview,
 }: {
   fileSource: FileSource;
   panel: Extract<WorkspacePanel, { type: 'preview' }>;
+  fetchPreview: WorkspaceFileFetcher;
 }) {
   const publicUrl = fileSource.kind === 'gallery'
     ? getGalleryPanelPreviewUrl(fileSource.id, panel.id)
@@ -103,7 +112,7 @@ function ProtectedPreviewFrame({
     let active = true;
     let created: string | null = null;
     setLoadError(null);
-    void fetchWorkspacePanelPreview(fileSource.id, panel.id).then(async (response) => {
+    void fetchPreview(fileSource.id, panel.id).then(async (response) => {
       if (!response.ok) throw new Error('We couldn’t load this file. Try again or download it.');
       created = URL.createObjectURL(await response.blob());
       if (active) setObjectUrl(created);
@@ -118,7 +127,7 @@ function ProtectedPreviewFrame({
       active = false;
       if (created) URL.revokeObjectURL(created);
     };
-  }, [fileSource.kind, fileSource.id, panel.id]);
+  }, [fileSource.kind, fileSource.id, panel.id, fetchPreview]);
   const previewUrl = publicUrl ?? objectUrl;
   if (!previewUrl && loadError) return <div className="panel-empty">{loadError}</div>;
   if (!previewUrl) return <div className="panel-empty">Loading preview…</div>;

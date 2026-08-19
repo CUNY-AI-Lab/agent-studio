@@ -64,7 +64,7 @@ const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
  * the browser-visible application origin.
  */
 export function canonicalOrigin(c: Context<{ Bindings: Env; Variables: SessionVariables }>): string {
-  const override = (c.env as { CAIL_CANONICAL_ORIGIN?: string }).CAIL_CANONICAL_ORIGIN;
+  const override = c.env.CAIL_CANONICAL_ORIGIN;
   if (override) return override.replace(/\/+$/, '');
   return new URL(c.req.url).origin;
 }

@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { z } from 'zod';
 import type { WorkspacePanel } from '../../types';
 
 export function TablePanelView({ panel }: { panel: Extract<WorkspacePanel, { type: 'table' }> }) {
@@ -16,8 +17,10 @@ export function TablePanelView({ panel }: { panel: Extract<WorkspacePanel, { typ
       if (leftValue == null) return sortDirection === 'asc' ? 1 : -1;
       if (rightValue == null) return sortDirection === 'asc' ? -1 : 1;
 
-      if (typeof leftValue === 'number' && typeof rightValue === 'number') {
-        return sortDirection === 'asc' ? leftValue - rightValue : rightValue - leftValue;
+      const leftNumber = z.number().safeParse(leftValue).data;
+      const rightNumber = z.number().safeParse(rightValue).data;
+      if (leftNumber !== undefined && rightNumber !== undefined) {
+        return sortDirection === 'asc' ? leftNumber - rightNumber : rightNumber - leftNumber;
       }
 
       const leftString = String(leftValue).toLowerCase();

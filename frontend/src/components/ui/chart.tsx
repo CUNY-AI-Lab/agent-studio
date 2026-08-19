@@ -2,6 +2,7 @@
 
 import * as React from 'react';
 import * as RechartsPrimitive from 'recharts';
+import { z } from 'zod';
 
 import { cn } from '../../lib/utils';
 
@@ -85,10 +86,11 @@ const SAFE_CSS_COLOR = /^(?:#[0-9A-Fa-f]{3,8}|(?:rgb|hsl)a?\([0-9.% ,+-]+\)|var\
 /** Build chart CSS only from bounded identifiers and inert color tokens. */
 export function buildChartStyleText(id: string, config: ChartConfig): string {
   if (!/^chart-[A-Za-z0-9_-]+$/.test(id)) return '';
-  return Object.entries(THEMES)
-    .map(([theme, prefix]) => {
+  return (['light', 'dark'] as const)
+    .map((theme) => {
+      const prefix = THEMES[theme];
       const declarations = Object.entries(config).flatMap(([key, itemConfig]) => {
-        const color = itemConfig.theme?.[theme as keyof typeof itemConfig.theme] || itemConfig.color;
+        const color = itemConfig.theme?.[theme] || itemConfig.color;
         if (!SAFE_CSS_IDENTIFIER.test(key) || !color || !SAFE_CSS_COLOR.test(color)) return [];
         return [`  --color-${key}: ${color};`];
       });
@@ -136,9 +138,10 @@ function ChartTooltipContent({
     const [item] = payload;
     const key = `${labelKey || item?.dataKey || item?.name || 'value'}`;
     const itemConfig = getPayloadConfigFromPayload(config, item, key);
+    const parsedLabel = z.string().safeParse(label).data;
     const value =
-      !labelKey && typeof label === 'string'
-        ? config[label as keyof typeof config]?.label || label
+      !labelKey && parsedLabel
+        ? config[parsedLabel]?.label || parsedLabel
         : itemConfig?.label;
 
     if (labelFormatter) {
@@ -204,6 +207,9 @@ function ChartTooltipContent({
                               'my-0.5': nestLabel && indicator === 'dashed',
                             }
                           )}
+                          // SAFETY: React accepts CSS custom properties in this
+                          // inline style object; both values are validated color
+                          // tokens from the chart payload/config boundary.
                           style={
                             {
                               '--color-bg': indicatorColor,
@@ -239,33 +245,25 @@ function ChartTooltipContent({
   );
 }
 
-function getPayloadConfigFromPayload(config: ChartConfig, payload: unknown, key: string) {
-  if (typeof payload !== 'object' || payload === null) {
-    return undefined;
-  }
-
-  const payloadPayload =
-    'payload' in payload &&
-    typeof payload.payload === 'object' &&
-    payload.payload !== null
-      ? payload.payload
-      : undefined;
+function getPayloadConfigFromPayload<T>(config: ChartConfig, payload: T, key: string) {
+  const parsedPayload = z.object({
+    payload: z.object({}).passthrough().optional(),
+  }).passthrough().safeParse(payload).data;
+  if (!parsedPayload) return undefined;
 
   let configLabelKey = key;
 
-  if (key in payload && typeof payload[key as keyof typeof payload] === 'string') {
-    configLabelKey = payload[key as keyof typeof payload] as string;
-  } else if (
-    payloadPayload &&
-    key in payloadPayload &&
-    typeof payloadPayload[key as keyof typeof payloadPayload] === 'string'
-  ) {
-    configLabelKey = payloadPayload[key as keyof typeof payloadPayload] as string;
+  const payloadLabel = z.string().safeParse(parsedPayload[key]).data;
+  if (payloadLabel) {
+    configLabelKey = payloadLabel;
+  } else {
+    const nestedPayloadLabel = z.string().safeParse(parsedPayload.payload?.[key]).data;
+    if (nestedPayloadLabel) configLabelKey = nestedPayloadLabel;
   }
 
   return configLabelKey in config
     ? config[configLabelKey]
-    : config[key as keyof typeof config];
+    : config[key];
 }
 
 export {

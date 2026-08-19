@@ -2,6 +2,14 @@ import { getWorkspaceFileUrl, getGalleryFileUrl } from '../api';
 import { fetchWorkspaceFile } from '../api';
 import { useEffect, useState } from 'react';
 import type { WorkspaceFileInfo } from '../types';
+import { z } from 'zod';
+
+export interface FileObjectUrlState {
+  url: string | null;
+  error: string | null;
+}
+
+export type WorkspaceFileFetcher = (workspaceId: string, filePath: string) => Promise<Response>;
 
 export type FileSource =
   | { kind: 'workspace'; id: string }
@@ -24,7 +32,8 @@ export function getWorkspaceFileCacheKey(
 ): string | null {
   const file = workspaceFiles?.find((entry) => !entry.isDirectory && entry.path === filePath);
   if (!file) return null;
-  return file.etag || file.modifiedAt || file.uploadedAt || (typeof file.size === 'number' ? String(file.size) : null);
+  const size = z.number().safeParse(file.size).data;
+  return file.etag || file.modifiedAt || file.uploadedAt || (size !== undefined ? String(size) : null);
 }
 
 /**
@@ -37,7 +46,8 @@ export function useFileObjectUrl(
   source: FileSource,
   filePath: string,
   cacheKey?: string | null,
-): { url: string | null; error: string | null } {
+  fetcher: WorkspaceFileFetcher = fetchWorkspaceFile,
+): FileObjectUrlState {
   const publicUrl = source.kind === 'gallery'
     ? withCacheKey(getGalleryFileUrl(source.id, filePath), cacheKey)
     : null;
@@ -53,7 +63,7 @@ export function useFileObjectUrl(
     let active = true;
     let created: string | null = null;
     setError(null);
-    void fetchWorkspaceFile(source.id, filePath)
+    void fetcher(source.id, filePath)
       .then(async (response) => {
         if (!response.ok) throw new Error(`Failed to load file (${response.status})`);
         created = URL.createObjectURL(await response.blob());
@@ -70,7 +80,7 @@ export function useFileObjectUrl(
       active = false;
       if (created) URL.revokeObjectURL(created);
     };
-  }, [source.kind, source.id, filePath, cacheKey]);
+  }, [source.kind, source.id, filePath, cacheKey, fetcher]);
 
   return { url: publicUrl ?? objectUrl, error: publicUrl ? null : error };
 }

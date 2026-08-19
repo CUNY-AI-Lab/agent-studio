@@ -24,8 +24,8 @@ const LIBGUIDES_ENV = {
   LIBGUIDES_SITE_ID: '999',
 };
 
-function tokenResponse(token, expiresIn) {
-  return new Response(JSON.stringify({ access_token: token, expires_in: expiresIn }), {
+function tokenResponse(token, expiresIn, extensions = {}) {
+  return new Response(JSON.stringify({ access_token: token, expires_in: expiresIn, ...extensions }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
@@ -89,6 +89,40 @@ test('libguides token request posts form-encoded credentials to {base}/oauth/tok
   assert.equal(body.get('grant_type'), 'client_credentials');
   assert.equal(body.get('client_id'), 'lg-id');
   assert.equal(body.get('client_secret'), 'lg-secret');
+});
+
+test('worldcat accepts the provider response extensions alongside consumed fields', async () => {
+  __resetTokenCacheForTests();
+  const fetchImpl = async () => tokenResponse('wc-token', 1200, {
+    token_type: 'Bearer',
+    scope: 'WorldCatMetadataAPI',
+  });
+  assert.equal(await getAccessToken('worldcat', WORLDCAT_ENV, fetchImpl), 'wc-token');
+});
+
+test('libguides accepts the provider response extensions alongside consumed fields', async () => {
+  __resetTokenCacheForTests();
+  const fetchImpl = async () => tokenResponse('lg-token', 3600, {
+    token_type: 'Bearer',
+    scope: 'site:999',
+  });
+  assert.equal(await getAccessToken('libguides', LIBGUIDES_ENV, fetchImpl), 'lg-token');
+});
+
+test('malformed consumed token fields fail closed', async () => {
+  __resetTokenCacheForTests();
+  const malformedAccessToken = async () => tokenResponse(42, 1200, { token_type: 'Bearer' });
+  await assert.rejects(
+    getAccessToken('worldcat', WORLDCAT_ENV, malformedAccessToken),
+    /invalid_type|expected string/i,
+  );
+
+  __resetTokenCacheForTests();
+  const malformedExpiry = async () => tokenResponse('wc-token', { seconds: 1200 }, { token_type: 'Bearer' });
+  await assert.rejects(
+    getAccessToken('worldcat', WORLDCAT_ENV, malformedExpiry),
+    /invalid_type|expected number|string/i,
+  );
 });
 
 test('a fresh token is cached: the second call does not refetch', async () => {

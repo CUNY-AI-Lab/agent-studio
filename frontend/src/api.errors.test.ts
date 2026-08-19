@@ -14,7 +14,7 @@ function mockFetch(impl: (input: RequestInfo | URL, init?: RequestInit) => Respo
   return spy;
 }
 
-function jsonResponse(body: unknown, status: number) {
+function jsonResponse<T>(body: T, status: number) {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'Content-Type': 'application/json' },
@@ -24,9 +24,10 @@ function jsonResponse(body: unknown, status: number) {
 describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
-    vi.stubGlobal('document', {
+    const documentStub = {
       cookie: `cail_csrf_agentstudio=${'a'.repeat(64)}`,
-    } as Document);
+    } satisfies Pick<Document, 'cookie'>;
+    vi.stubGlobal('document', documentStub);
   });
   afterEach(() => vi.unstubAllGlobals());
 
@@ -139,7 +140,7 @@ describe('fetchModels quota errors', () => {
       },
     }, 429));
 
-    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    const error = await fetchModels().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(ModelsQuotaError);
     expect(error).toHaveProperty('message', 'You have used your $10 monthly AI budget.');
   });
@@ -164,7 +165,7 @@ describe('fetchModels quota errors', () => {
       },
     }, 401));
 
-    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    const error = await fetchModels().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(ModelsAuthError);
     expect(error).toHaveProperty('message', 'Your sign-in expired. Sign in again to load models.');
     expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?workspace=ws-1');
@@ -179,7 +180,7 @@ describe('fetchModels quota errors', () => {
       },
     }, 401));
 
-    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    const error = await fetchModels().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(ModelsAuthError);
     expect(error).toHaveProperty('message', 'Model credential rejected.');
@@ -196,7 +197,7 @@ describe('fetchModels quota errors', () => {
       },
     }, 500));
 
-    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    const error = await fetchModels().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(ModelsUnavailableError);
     expect(error).not.toBeInstanceOf(ModelsQuotaError);
     expect(error).toHaveProperty('message', 'Catalog failed upstream');
@@ -213,7 +214,7 @@ describe('fetchModels quota errors', () => {
       },
     }, 502));
 
-    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    const error = await fetchModels().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(ModelsUnavailableError);
   });
 
@@ -221,7 +222,7 @@ describe('fetchModels quota errors', () => {
     const { fetchModels, ModelsQuotaError, ModelsUnavailableError } = await loadApi();
     mockFetch(() => jsonResponse({ message: 'Not found' }, 404));
 
-    const error = await fetchModels().catch((nextError: unknown) => nextError);
+    const error = await fetchModels().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(Error);
     expect(error).not.toBeInstanceOf(ModelsQuotaError);
     expect(error).not.toBeInstanceOf(ModelsUnavailableError);

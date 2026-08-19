@@ -12,26 +12,30 @@ import {
   resolveVisibleLayoutCollisions,
   type LayoutMap,
 } from './panelLayout';
-import type { WorkspacePanel, WorkspaceState } from '../types';
+import type { MarkdownPanel, TablePanel, WorkspaceState } from '../types';
 
-function panel(id: string, extra: Partial<WorkspacePanel> = {}): WorkspacePanel {
-  return { id, type: 'markdown', content: '', ...extra } as WorkspacePanel;
+function markdownPanel(id: string, extra: Partial<MarkdownPanel> = {}): MarkdownPanel {
+  return { id, type: 'markdown', content: '', ...extra };
+}
+
+function tablePanel(id: string, extra: Partial<TablePanel> = {}): TablePanel {
+  return { id, type: 'table', columns: [], rows: [], ...extra };
 }
 
 describe('inferPanelLayout', () => {
   it('uses explicit layout values when present', () => {
-    const p = panel('a', { layout: { x: 10, y: 20, width: 100, height: 50 } });
+    const p = markdownPanel('a', { layout: { x: 10, y: 20, width: 100, height: 50 } });
     expect(inferPanelLayout(p, 0)).toEqual({ x: 10, y: 20, width: 100, height: 50 });
   });
 
   it('falls back to a grid position based on index', () => {
-    expect(inferPanelLayout(panel('a'), 0)).toEqual({ x: 32, y: 32, width: 360, height: 220 });
+    expect(inferPanelLayout(markdownPanel('a'), 0)).toEqual({ x: 32, y: 32, width: 360, height: 220 });
     // index 4 => column 1, row 1
-    expect(inferPanelLayout(panel('e'), 4)).toEqual({ x: 32 + 392, y: 32 + 252, width: 360, height: 220 });
+    expect(inferPanelLayout(markdownPanel('e'), 4)).toEqual({ x: 32 + 392, y: 32 + 252, width: 360, height: 220 });
   });
 
   it('gives tables a taller default height', () => {
-    const t = panel('t', { type: 'table', columns: [], rows: [] });
+    const t = tablePanel('t');
     expect(inferPanelLayout(t, 0).height).toBe(300);
   });
 });
@@ -127,7 +131,7 @@ describe('getLayoutsBounds', () => {
 
 describe('getGroupBounds', () => {
   it('applies padding around the member layouts', () => {
-    const group = { id: 'g', panelIds: ['a', 'b'] } as WorkspaceState['groups'][number];
+    const group: WorkspaceState['groups'][number] = { id: 'g', panelIds: ['a', 'b'] };
     const layouts: LayoutMap = {
       a: { x: 0, y: 0, width: 100, height: 100 },
       b: { x: 200, y: 0, width: 100, height: 100 },
@@ -136,7 +140,7 @@ describe('getGroupBounds', () => {
   });
 
   it('can exclude a panel from the bounds', () => {
-    const group = { id: 'g', panelIds: ['a', 'b'] } as WorkspaceState['groups'][number];
+    const group: WorkspaceState['groups'][number] = { id: 'g', panelIds: ['a', 'b'] };
     const layouts: LayoutMap = {
       a: { x: 0, y: 0, width: 100, height: 100 },
       b: { x: 200, y: 0, width: 100, height: 100 },
@@ -155,7 +159,7 @@ describe('layoutOverlapsBounds', () => {
 
 describe('buildPanelLayouts', () => {
   it('keys layouts by panel id', () => {
-    const layouts = buildPanelLayouts([panel('a'), panel('b')]);
+    const layouts = buildPanelLayouts([markdownPanel('a'), markdownPanel('b')]);
     expect(Object.keys(layouts)).toEqual(['a', 'b']);
   });
 });

@@ -45,6 +45,7 @@ interface DraggablePanelProps {
 }
 
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
+const RESIZE_CORNERS: readonly ResizeCorner[] = ['nw', 'ne', 'sw', 'se'];
 
 export function DraggablePanel({
   id,
@@ -79,8 +80,9 @@ export function DraggablePanel({
   const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0, layoutX: 0, layoutY: 0 });
 
   const handleDragStart = useCallback((e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest('.panel-menu-trigger') ||
-        (e.target as HTMLElement).closest('.panel-menu')) {
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    if (target.closest('.panel-menu-trigger') || target.closest('.panel-menu')) {
       return;
     }
 
@@ -97,7 +99,7 @@ export function DraggablePanel({
     };
 
     onDragStart?.(id);
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    target.setPointerCapture(e.pointerId);
   }, [layout.x, layout.y, id, onDragStart]);
 
   const handleDragMove = useCallback((e: React.PointerEvent) => {
@@ -125,7 +127,9 @@ export function DraggablePanel({
 
     e.preventDefault();
     setIsDragging(false);
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    target.releasePointerCapture(e.pointerId);
     onDragEnd(id);
 
     setTimeout(() => setDidMove(false), 0);
@@ -146,7 +150,9 @@ export function DraggablePanel({
       layoutY: layout.y,
     };
 
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    target.setPointerCapture(e.pointerId);
   }, [layout]);
 
   const handleResizeMove = useCallback((e: React.PointerEvent) => {
@@ -198,20 +204,24 @@ export function DraggablePanel({
     e.preventDefault();
     setIsResizing(false);
     setResizeCorner(null);
-    (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
+    target.releasePointerCapture(e.pointerId);
     onDragEnd(id);
   }, [isResizing, id, onDragEnd]);
 
   const handleContentClick = useCallback((e: React.MouseEvent) => {
     if (didMove) return;
-    if ((e.target as HTMLElement).closest('.no-zoom-scroll')) {
+    const target = e.target instanceof Element ? e.target : null;
+    if (target?.closest('.no-zoom-scroll')) {
       onPanelClick?.(id, e);
     }
   }, [didMove, id, onPanelClick]);
 
   const handleContentDoubleClick = useCallback((e: React.MouseEvent) => {
     if (didMove) return;
-    if ((e.target as HTMLElement).closest('.no-zoom-scroll')) {
+    const target = e.target instanceof Element ? e.target : null;
+    if (target?.closest('.no-zoom-scroll')) {
       e.stopPropagation();
       onPanelDoubleClick?.(id, e);
     }
@@ -221,7 +231,8 @@ export function DraggablePanel({
     // Ignore keystrokes originating in the tile body (inputs, editable content,
     // the menu). The tile-level shortcuts only apply when the card chrome itself
     // holds focus.
-    const target = e.target as HTMLElement;
+    const target = e.target instanceof Element ? e.target : null;
+    if (!target) return;
     if (target !== e.currentTarget) {
       if (
         target.closest('.artifact-content') ||
@@ -327,13 +338,13 @@ export function DraggablePanel({
         onPointerCancel={handleDragEnd}
         onClick={(e) => {
           if (!didMove) {
-            onPanelClick?.(id, e as unknown as React.MouseEvent);
+            onPanelClick?.(id, e);
           }
         }}
         onDoubleClick={(e) => {
           if (!didMove) {
             e.stopPropagation();
-            onPanelDoubleClick?.(id, e as unknown as React.MouseEvent);
+            onPanelDoubleClick?.(id, e);
           }
         }}
       >
@@ -379,7 +390,7 @@ export function DraggablePanel({
         {children}
       </div>
 
-      {(['nw', 'ne', 'sw', 'se'] as ResizeCorner[]).map((corner) => (
+      {RESIZE_CORNERS.map((corner) => (
         <div
           key={corner}
           aria-hidden="true"

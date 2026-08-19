@@ -47,7 +47,7 @@ export function renderSkillDocs(entries) {
     '// Source of truth: cloudflare/src/skills/docs/*.md',
     '// Regenerate with: node scripts/build-skill-docs.mjs',
     '',
-    'export const SKILL_DOCS: Record<string, string> = {',
+    'export const SKILL_DOCS = {',
   ];
   for (const { name, content } of entries) {
     lines.push(`  ${JSON.stringify(name)}: ${JSON.stringify(content)},`);

@@ -30,6 +30,7 @@ import {
   TableCell,
   WidthType,
 } from 'docx';
+import { z } from 'zod';
 
 /** Cap on characters returned from PDF text extraction. */
 export const MAX_PDF_TEXT_CHARS = 200_000;
@@ -210,7 +211,7 @@ async function inflateCounting(
     // Cast: our ZIP bytes are always backed by a plain ArrayBuffer, but a
     // subarray's generic type widens to ArrayBufferLike (which includes
     // SharedArrayBuffer) and DecompressionStream's writer wants BufferSource.
-    await writer.write(compressed as unknown as Uint8Array<ArrayBuffer>);
+    await writer.write(Uint8Array.from(compressed));
     await writer.close();
   })().catch(() => {});
 
@@ -483,7 +484,7 @@ export function buildXlsx(sheets: XlsxSheetSpec[]): Uint8Array {
   const usedNames = new Set<string>();
 
   for (const spec of sheets) {
-    if (!spec || typeof spec.name !== 'string' || spec.name.length === 0) {
+    if (!spec || !z.string().safeParse(spec.name).data) {
       throw new Error('Each sheet needs a non-empty name');
     }
     if (!Array.isArray(spec.rows)) {
@@ -525,20 +526,24 @@ export type DocxBlock =
   | { type: 'list'; ordered?: boolean; items: string[] }
   | { type: 'table'; rows: string[][] };
 
-const HEADING_LEVELS: Record<number, (typeof HeadingLevel)[keyof typeof HeadingLevel]> = {
-  1: HeadingLevel.HEADING_1,
-  2: HeadingLevel.HEADING_2,
-  3: HeadingLevel.HEADING_3,
-  4: HeadingLevel.HEADING_4,
-  5: HeadingLevel.HEADING_5,
-  6: HeadingLevel.HEADING_6,
-};
+function headingLevelFor(level: number): (typeof HeadingLevel)[keyof typeof HeadingLevel] {
+  switch (level) {
+    case 1: return HeadingLevel.HEADING_1;
+    case 2: return HeadingLevel.HEADING_2;
+    case 3: return HeadingLevel.HEADING_3;
+    case 4: return HeadingLevel.HEADING_4;
+    case 5: return HeadingLevel.HEADING_5;
+    case 6: return HeadingLevel.HEADING_6;
+    default: return HeadingLevel.HEADING_1;
+  }
+}
 
-function assertString(value: unknown, context: string): string {
-  if (typeof value !== 'string') {
+function assertString(value: string | undefined, context: string): string {
+  const parsed = z.string().safeParse(value);
+  if (!parsed.success) {
     throw new Error(`${context} must be a string`);
   }
-  return value;
+  return parsed.data;
 }
 
 /** Build a .docx (bytes) from the declarative block schema. */
@@ -550,13 +555,13 @@ export async function buildDocx(content: DocxBlock[]): Promise<Uint8Array> {
   const children: (Paragraph | Table)[] = [];
 
   content.forEach((block, index) => {
-    if (!block || typeof block !== 'object' || typeof block.type !== 'string') {
+    if (!block) {
       throw new Error(`Content block ${index} is missing a "type"`);
     }
     switch (block.type) {
       case 'heading': {
         const level = Number(block.level ?? 1);
-        const heading = HEADING_LEVELS[level] ?? HeadingLevel.HEADING_1;
+        const heading = headingLevelFor(level);
         children.push(
           new Paragraph({ text: assertString(block.text, `heading ${index}`), heading }),
         );
@@ -614,7 +619,7 @@ export async function buildDocx(content: DocxBlock[]): Promise<Uint8Array> {
         break;
       }
       default:
-        throw new Error(`Unknown content block type at ${index}: ${(block as { type: string }).type}`);
+        throw new Error(`Unknown content block type at index ${index}`);
     }
   });
 

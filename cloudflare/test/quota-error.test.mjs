@@ -24,7 +24,6 @@ test('quotaSignalFromError forwards a thrown quota CailError verbatim', () => {
   const signal = quotaSignalFromError(
     quotaError({ retry_after_seconds: 1800 }),
   );
-  assert.equal(typeof signal, 'string');
   const parsed = JSON.parse(signal);
   assert.equal(parsed.error.code, 'quota_exceeded');
   assert.equal(parsed.error.message, QUOTA_MESSAGE);
@@ -79,11 +78,30 @@ test('quotaSignalFromError unwraps a quota CailError buried in a RetryError', ()
       quotaError({ retry_after_seconds: 1800 }),
     ],
   });
-  assert.equal(typeof signal, 'string');
   const parsed = JSON.parse(signal);
   assert.equal(parsed.error.code, 'quota_exceeded');
   assert.equal(parsed.error.message, QUOTA_MESSAGE);
   assert.equal(parsed.error.cail.retry_after_seconds, 1800);
+});
+
+test('quotaSignalFromError traverses a canonical envelope in Error.cause', () => {
+  const signal = quotaSignalFromError(new Error('outer', {
+    cause: quotaError({ retry_after_seconds: 1800 }),
+  }));
+  const parsed = JSON.parse(signal);
+  assert.equal(parsed.error.code, 'quota_exceeded');
+  assert.equal(parsed.error.cail.retry_after_seconds, 1800);
+});
+
+test('extractCanonicalCailError ignores malformed and cyclic causes safely', () => {
+  const malformed = new Error('outer', {
+    cause: { error: { code: 42, message: 'not valid', cail: {} } },
+  });
+  assert.equal(extractCanonicalCailError(malformed), null);
+
+  const cyclic = {};
+  cyclic.cause = cyclic;
+  assert.equal(extractCanonicalCailError(new Error('outer', { cause: cyclic })), null);
 });
 
 test('quotaSignalFromError extracts the canonical envelope from an AI SDK APICallError shape', () => {

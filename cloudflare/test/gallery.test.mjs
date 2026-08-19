@@ -5,9 +5,10 @@ import {
   getGalleryItem,
   listGalleryItems,
   publishWorkspace,
+  reassignGalleryAuthor,
   unpublishGalleryItem,
 } from '../src/lib/gallery.ts';
-import { MockR2 } from './helpers/env.mjs';
+import { MockR2, seedGalleryItem } from './helpers/env.mjs';
 
 const SESSION = 'a'.repeat(32);
 const WORKSPACE = {
@@ -110,4 +111,16 @@ test('gallery listing follows every R2 delimiter page', async () => {
   await publish(targetEnv, 'page-one');
   await publish(targetEnv, 'page-two');
   assert.equal((await listGalleryItems(targetEnv)).length, 2);
+});
+
+test('gallery reassignment skips malformed legacy author ids', async () => {
+  const r2 = new MockR2();
+  const targetEnv = env(r2);
+  const galleryId = 'c'.repeat(24);
+  seedGalleryItem(r2, galleryId, null);
+  const result = await reassignGalleryAuthor(targetEnv, SESSION, 'd'.repeat(32));
+  assert.equal(result, 0);
+  const manifest = await (await r2.get(`agent-studio/gallery/items/${galleryId}/manifest.json`)).json();
+  assert.equal(manifest.authorId, null);
+  assert.equal(await r2.get(`agent-studio/gallery/items/${galleryId}/owner.json`), null);
 });

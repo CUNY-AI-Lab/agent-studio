@@ -1,12 +1,14 @@
 import { act, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const hookState = vi.hoisted(() => ({
-  result: null as Record<string, any> | null,
-}));
-
 import { useAgentChat } from '@cloudflare/ai-chat/react';
 import { refreshModelCredential } from './api';
+import { z } from 'zod';
+
+let hookResult: ReturnType<typeof useAgentChat> | null = null;
+const chatRequestSchema = z.object({
+  id: z.string().optional(),
+  type: z.string().optional(),
+});
 
 const csrfToken = 't'.repeat(64);
 const documentCookieDescriptor = Object.getOwnPropertyDescriptor(document, 'cookie');
@@ -14,8 +16,8 @@ const documentCookieDescriptor = Object.getOwnPropertyDescriptor(document, 'cook
 function fakeAgent() {
   const listeners = new Map<string, Set<(event: MessageEvent) => void>>();
   const send = vi.fn((payload: string) => {
-    const request = JSON.parse(payload) as { id?: string; type?: string };
-    if (request.type !== 'cf_agent_use_chat_request' || !request.id) return;
+    const request = chatRequestSchema.safeParse(JSON.parse(payload)).data;
+    if (request?.type !== 'cf_agent_use_chat_request' || !request.id) return;
     queueMicrotask(() => {
       const event = new MessageEvent('message', {
         data: JSON.stringify({
@@ -48,7 +50,7 @@ function fakeAgent() {
 }
 
 function Harness({ agent }: { agent: ReturnType<typeof fakeAgent> }) {
-  hookState.result = useAgentChat({
+  hookResult = useAgentChat({
     agent,
     getInitialMessages: null,
     resume: false,
@@ -63,7 +65,7 @@ function Harness({ agent }: { agent: ReturnType<typeof fakeAgent> }) {
 
 describe('useAgentChat credential refresh preparation', () => {
   it('loads the real hook', () => {
-    expect(typeof useAgentChat).toBe('function');
+    expect(useAgentChat).toBeDefined();
   });
 
   beforeEach(() => {
@@ -80,19 +82,19 @@ describe('useAgentChat credential refresh preparation', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     if (documentCookieDescriptor) Object.defineProperty(document, 'cookie', documentCookieDescriptor);
-    hookState.result = null;
+    hookResult = null;
   });
 
   it('refreshes immediately before submit and regenerate transport sends', async () => {
     const agent = fakeAgent();
     render(<Harness agent={agent} />);
-    await waitFor(() => expect(hookState.result).toBeTruthy());
+    await waitFor(() => expect(hookResult).toBeTruthy());
 
     await act(async () => {
-      await hookState.result?.sendMessage({ text: 'hello' });
+      await hookResult?.sendMessage({ text: 'hello' });
     });
     await act(async () => {
-      await hookState.result?.regenerate();
+      await hookResult?.regenerate();
     });
 
     const calls = vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes('/model-credential'));
@@ -112,10 +114,10 @@ describe('useAgentChat credential refresh preparation', () => {
       error: { code: 'internal_error', message: 'refresh failed' },
     }, { status: 503 })));
     render(<Harness agent={agent} />);
-    await waitFor(() => expect(hookState.result).toBeTruthy());
+    await waitFor(() => expect(hookResult).toBeTruthy());
 
     await act(async () => {
-      await hookState.result?.sendMessage({ text: 'hello' });
+      await hookResult?.sendMessage({ text: 'hello' });
     });
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       '/api/workspaces/workspace-1/model-credential',

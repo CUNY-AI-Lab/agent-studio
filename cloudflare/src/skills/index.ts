@@ -138,7 +138,7 @@ export function getSkill(name: string): Skill | null {
 export function getSkillContent(name: string): string | null {
   const skill = getSkill(name);
   if (!skill) return null;
-  const doc = SKILL_DOCS[name];
+  const doc = Object.entries(SKILL_DOCS).find(([key]) => key === name)?.[1];
   return doc ?? `# ${skill.name}\n\n${skill.description}`;
 }
 

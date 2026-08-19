@@ -31,7 +31,7 @@ describe('KeyboardShortcutsDialog', () => {
 
   it('moves initial focus into the dialog on open', () => {
     render(<KeyboardShortcutsDialog open onClose={() => {}} />);
-    const active = document.activeElement as HTMLElement | null;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     expect(active?.getAttribute('aria-label')).toBe('Close keyboard shortcuts');
   });
 

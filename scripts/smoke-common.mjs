@@ -1,4 +1,5 @@
 import { AgentClient } from 'agents/client';
+import { z } from 'zod';
 
 const CHAT_MESSAGE_TYPE = {
   REQUEST: 'cf_agent_use_chat_request',
@@ -13,7 +14,7 @@ export const APP_IDENTITY_JWT_HEADER = 'X-CAIL-Identity-JWT';
 export const GATEWAY_IDENTITY_JWT_HEADER = 'X-CAIL-Gateway-Identity-JWT';
 
 function normalizeIdentityJwt(value) {
-  if (typeof value !== 'string') return undefined;
+  if (!z.string().safeParse(value).success) return undefined;
   const token = value.trim();
   return token || undefined;
 }
@@ -162,8 +163,9 @@ export class SessionClient {
     const response = await this.fetch(path, init, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = typeof payload.error === 'string'
-        ? payload.error
+      const errorText = z.string().safeParse(payload.error).data;
+      const detail = errorText !== undefined
+        ? errorText
         : payload.error ? JSON.stringify(payload.error) : '';
       const message = `Request failed with ${response.status}${detail ? `: ${detail}` : ''}`;
       throw new Error(redactSensitiveText(message, this.identity));
@@ -257,11 +259,13 @@ export function sendChatTurn({ client, messages, prompt }) {
           fail(new Error(data.body || 'Chat stream error'));
           return;
         }
-        if (typeof data.body === 'string' && data.body.trim()) {
-          const chunk = JSON.parse(data.body);
+        const body = z.string().safeParse(data.body).data;
+        if (body?.trim()) {
+          const chunk = JSON.parse(body);
           chunks.push(chunk);
-          if (chunk.type === 'text-delta' && typeof chunk.delta === 'string') {
-            textParts.push(chunk.delta);
+          const delta = z.string().safeParse(chunk.delta).data;
+          if (chunk.type === 'text-delta' && delta !== undefined) {
+            textParts.push(delta);
           }
         }
         if (data.done) {

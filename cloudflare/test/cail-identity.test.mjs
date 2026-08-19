@@ -14,13 +14,14 @@ import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
  * while using the current contract.
  */
 async function verifyWith(token, issuer, overrides = {}) {
-  const loaded = await loadIdentityVerifierConfig({
-    jwks: typeof issuer.jwksJson === 'string' ? issuer.jwksJson : JSON.stringify(issuer.jwks),
+  const verifierOptions = {
+    jwks: issuer.jwksJson ?? JSON.stringify(issuer.jwks),
     issuer: overrides.issuer ?? CAIL_CANONICAL_ISSUER,
     expectedAudience: overrides.expectedAudience ?? CAIL_IDENTITY_AUDIENCE,
     supportedIssuers: overrides.supportedIssuers ?? [CAIL_CANONICAL_ISSUER],
-    ...(overrides.now === undefined ? {} : { now: overrides.now }),
-  });
+  };
+  if (overrides.now !== undefined) verifierOptions.now = overrides.now;
+  const loaded = await loadIdentityVerifierConfig(verifierOptions);
   if (!loaded.ok) return { configError: loaded.reason };
   return verifyIdentityJwt(token, loaded.config);
 }
@@ -149,6 +150,24 @@ test('unconfigured identity is anonymous; an unloadable config is a CONFIG error
   );
 });
 
+test('malformed identity binding values fail as configuration errors', async () => {
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
+  const token = await mintValid(issuer);
+  const request = new Request('https://agent-studio.example/api/session', {
+    headers: { [CAIL_IDENTITY_HEADER]: token },
+  });
+
+  for (const jwks of [123, {}, true]) {
+    assert.deepEqual(
+      await getCailIdentityFromRequest(request, {
+        CAIL_IDENTITY_JWKS: jwks,
+        CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+      }, NOW),
+      { configError: 'jwks_malformed' },
+    );
+  }
+});
+
 test('identity trust is one exact configured issuer and fails closed when ambiguous', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'issuer-key' });
   const productionToken = await mintValid(issuer);
@@ -172,10 +191,11 @@ test('identity trust is one exact configured issuer and fails closed when ambigu
     ['', 'issuer_missing'],
     [`${CAIL_CANONICAL_ISSUER},https://identity.example.test/cail-sso`, 'issuer_unsupported'],
   ]) {
-    assert.deepEqual(await getCailIdentityFromRequest(requestFor(productionToken), {
+    const testEnv = {
       CAIL_IDENTITY_JWKS: jwks,
-      ...(issuer === undefined ? {} : { CAIL_IDENTITY_ISSUER: issuer }),
-    }, NOW), { configError: reason });
+    };
+    if (issuer !== undefined) testEnv.CAIL_IDENTITY_ISSUER = issuer;
+    assert.deepEqual(await getCailIdentityFromRequest(requestFor(productionToken), testEnv, NOW), { configError: reason });
   }
 });
 

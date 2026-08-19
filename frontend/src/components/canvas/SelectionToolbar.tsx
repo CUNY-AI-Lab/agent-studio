@@ -15,6 +15,21 @@ import {
 } from 'lucide-react';
 
 type ToolbarDownloadFormat = 'file' | 'csv' | 'json' | 'txt' | 'png';
+type AlignMode = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom';
+type DistributeAxis = 'horizontal' | 'vertical';
+
+const ALIGN_OPTIONS: ReadonlyArray<readonly [AlignMode, string]> = [
+  ['left', 'Left'],
+  ['centerX', 'Center X'],
+  ['right', 'Right'],
+  ['top', 'Top'],
+  ['centerY', 'Center Y'],
+  ['bottom', 'Bottom'],
+];
+const DISTRIBUTE_OPTIONS: ReadonlyArray<readonly [DistributeAxis, string]> = [
+  ['horizontal', 'Horizontal'],
+  ['vertical', 'Vertical'],
+];
 
 interface SelectionToolbarProps {
   selectedPanelId?: string | null;
@@ -35,8 +50,8 @@ interface SelectionToolbarProps {
   onGroup?: () => void;
   onUngroup?: () => void;
   onRemoveFromGroup?: () => void;
-  onAlign?: (mode: 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom') => void;
-  onDistribute?: (axis: 'horizontal' | 'vertical') => void;
+  onAlign?: (mode: AlignMode) => void;
+  onDistribute?: (axis: DistributeAxis) => void;
   isInGroup?: boolean;
   canDownload?: boolean;
   downloadFormats?: ToolbarDownloadFormat[];
@@ -78,8 +93,10 @@ export function SelectionToolbar({
     if (!openMenu) return;
 
     const handleClickOutside = (event: MouseEvent) => {
-      const withinToolbar = toolbarRef.current?.contains(event.target as Node);
-      const withinDownload = downloadRef.current?.contains(event.target as Node);
+      const eventTarget = event.target;
+      const targetNode = eventTarget instanceof Node ? eventTarget : null;
+      const withinToolbar = targetNode ? toolbarRef.current?.contains(targetNode) : false;
+      const withinDownload = targetNode ? downloadRef.current?.contains(targetNode) : false;
       if (!withinToolbar && !withinDownload) {
         setOpenMenu(null);
       }
@@ -131,8 +148,8 @@ export function SelectionToolbar({
 
   const offsetX = viewportOffset?.x ?? 0;
   const offsetY = viewportOffset?.y ?? 0;
-  const viewportWidth = viewportSize?.width ?? (typeof window !== 'undefined' ? window.innerWidth : 1920);
-  const viewportHeight = viewportSize?.height ?? (typeof window !== 'undefined' ? window.innerHeight : 1080);
+  const viewportWidth = viewportSize?.width ?? globalThis.window?.innerWidth ?? 1920;
+  const viewportHeight = viewportSize?.height ?? globalThis.window?.innerHeight ?? 1080;
 
   const computedWidth = toolbarSize.width || 200;
   let screenX = initialCanvasX * canvasScale + offsetX;
@@ -266,19 +283,12 @@ export function SelectionToolbar({
             </button>
             {openMenu === 'align' ? (
               <div className="toolbar-dropdown-menu" role="menu" aria-label="Align options">
-                {[
-                  ['left', 'Left'],
-                  ['centerX', 'Center X'],
-                  ['right', 'Right'],
-                  ['top', 'Top'],
-                  ['centerY', 'Center Y'],
-                  ['bottom', 'Bottom'],
-                ].map(([mode, label]) => (
+                {ALIGN_OPTIONS.map(([mode, label]) => (
                   <button
                     key={mode}
                     role="menuitem"
                     onClick={() => {
-                      onAlign?.(mode as 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom');
+                      onAlign?.(mode);
                       setOpenMenu(null);
                     }}
                   >
@@ -307,15 +317,12 @@ export function SelectionToolbar({
             </button>
             {openMenu === 'distribute' ? (
               <div className="toolbar-dropdown-menu" role="menu" aria-label="Distribute options">
-                {[
-                  ['horizontal', 'Horizontal'],
-                  ['vertical', 'Vertical'],
-                ].map(([axis, label]) => (
+                {DISTRIBUTE_OPTIONS.map(([axis, label]) => (
                   <button
                     key={axis}
                     role="menuitem"
                     onClick={() => {
-                      onDistribute?.(axis as 'horizontal' | 'vertical');
+                      onDistribute?.(axis);
                       setOpenMenu(null);
                     }}
                   >

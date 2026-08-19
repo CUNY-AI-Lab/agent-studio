@@ -43,6 +43,22 @@ const ACTIVE_DOCUMENT_TYPES = new Set([
   'application/xhtml+xml',
 ]);
 
+interface FileServingHeaders {
+  'X-Content-Type-Options': string;
+  'Content-Security-Policy': string;
+  'Content-Disposition'?: string;
+}
+
+interface PreviewServingHeaders {
+  'Content-Type': string;
+  'Cross-Origin-Embedder-Policy': string;
+  'Cross-Origin-Resource-Policy': string;
+  'Cross-Origin-Opener-Policy': string;
+  'Content-Security-Policy': string;
+  'Referrer-Policy': string;
+  'Cache-Control': string;
+}
+
 function isActiveDocumentType(contentType: string): boolean {
   const base = contentType.split(';', 1)[0]?.trim().toLowerCase() || '';
   return ACTIVE_DOCUMENT_TYPES.has(base);
@@ -54,8 +70,8 @@ function isActiveDocumentType(contentType: string): boolean {
  *
  * @param contentType the resolved content-type the response will carry.
  */
-export function fileServingHeaders(contentType: string): Record<string, string> {
-  const headers: Record<string, string> = {
+export function fileServingHeaders(contentType: string): FileServingHeaders {
+  const headers: FileServingHeaders = {
     // Never let the browser sniff a different (possibly active) type.
     'X-Content-Type-Options': 'nosniff',
     // Opaque origin + scripting disabled: the primary containment.
@@ -97,7 +113,7 @@ const PREVIEW_CSP_SOURCE_DIRECTIVES = [
  * bytes are MEANT to run — so we keep scripting and instead force an opaque
  * origin via `sandbox allow-scripts` (no allow-same-origin). See the §3¾ note.
  */
-export function previewServingHeaders(): Record<string, string> {
+export function previewServingHeaders(): PreviewServingHeaders {
   return {
     'Content-Type': 'text/html; charset=utf-8',
     'Cross-Origin-Embedder-Policy': 'unsafe-none',

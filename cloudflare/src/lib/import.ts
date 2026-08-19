@@ -146,17 +146,33 @@ const workspaceExportFileSchema = z.object({
   content: z.string(),
 }).strict();
 
+const uiMessageSchema = z.object({
+  id: z.string().min(1),
+  role: z.enum(['system', 'user', 'assistant']),
+  metadata: z.json().optional(),
+  // UIMessage parts are a versioned AI SDK JSON contract. Keep the complete
+  // JSON value so new SDK part variants survive an export/import round-trip;
+  // the message envelope above still rejects malformed IDs and roles.
+  parts: z.array(z.json()),
+}).strict();
+
 const workspaceImportBundleSchema = z.object({
   version: z.literal(1),
   exportedAt: z.string(),
   workspace: workspaceRecordSchema,
   state: workspaceStateSchema,
-  messages: z.array(z.any()),
+  messages: z.array(uiMessageSchema),
   files: z.array(workspaceExportFileSchema),
 }).strict();
 
-export function parseWorkspaceImportBundle(payload: unknown): WorkspaceExportBundle {
-  return workspaceImportBundleSchema.parse(payload) as WorkspaceExportBundle;
+type WorkspaceImportPayload = z.input<typeof workspaceImportBundleSchema>;
+
+export function parseWorkspaceImportBundle(payload: WorkspaceImportPayload): WorkspaceExportBundle {
+  const parsed = workspaceImportBundleSchema.parse(payload);
+  // SAFETY: the schema validates the complete serialized UIMessage envelope;
+  // AI SDK parts are intentionally preserved as JSON for forward-compatible
+  // tool/data variants and are consumed only by the AI SDK message boundary.
+  return parsed as WorkspaceExportBundle;
 }
 
 export function decodeWorkspaceImportFile(file: WorkspaceExportBundle['files'][number]): string | Uint8Array {

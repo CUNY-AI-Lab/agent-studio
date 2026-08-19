@@ -1,43 +1,40 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FilePreview, PreviewPanelView } from './FilePreview';
-import { fetchWorkspaceFile, fetchWorkspacePanelPreview } from '../../api';
+import type { WorkspaceFileFetcher } from '../../lib/fileUrls';
 
-vi.mock('../../api', () => ({
-  fetchWorkspaceFile: vi.fn(),
-  fetchWorkspacePanelPreview: vi.fn(),
-  getWorkspaceFileUrl: (id: string, path: string) => `/api/workspaces/${id}/files/${path}`,
-  getGalleryFileUrl: (id: string, path: string) => `/api/gallery/${id}/files/${path}`,
-  getGalleryPanelPreviewUrl: (id: string, panelId: string) => `/api/gallery/${id}/preview/${panelId}`,
-}));
+const fetchFile = vi.fn<WorkspaceFileFetcher>();
+const fetchPreview = vi.fn<WorkspaceFileFetcher>();
 
 const workspaceSource = { kind: 'workspace', id: 'ws-1' } as const;
 
 describe('FilePreview failure surfacing', () => {
   beforeEach(() => {
-    vi.mocked(fetchWorkspaceFile).mockReset();
-    vi.mocked(fetchWorkspacePanelPreview).mockReset();
+    fetchFile.mockReset();
+    fetchPreview.mockReset();
   });
 
   it('shows the loading state while the file fetch is pending', () => {
-    vi.mocked(fetchWorkspaceFile).mockReturnValue(new Promise<Response>(() => {}));
+    fetchFile.mockReturnValue(new Promise<Response>(() => {}));
     render(
       <FilePreview
         fileSource={workspaceSource}
         panel={{ id: 'panel-1', type: 'editor', filePath: 'notes.md' }}
+        fetchFile={fetchFile}
       />,
     );
     expect(screen.getByText('Loading file…')).toBeInTheDocument();
   });
 
   it('surfaces a failed workspace file fetch instead of loading forever', async () => {
-    vi.mocked(fetchWorkspaceFile).mockResolvedValue(
+    fetchFile.mockResolvedValue(
       new Response('not found', { status: 404 }),
     );
     render(
       <FilePreview
         fileSource={workspaceSource}
         panel={{ id: 'panel-1', type: 'editor', filePath: 'notes.md' }}
+        fetchFile={fetchFile}
       />,
     );
     expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();
@@ -45,24 +42,26 @@ describe('FilePreview failure surfacing', () => {
   });
 
   it('surfaces a rejected workspace file fetch instead of loading forever', async () => {
-    vi.mocked(fetchWorkspaceFile).mockRejectedValue(new Error('network down'));
+    fetchFile.mockRejectedValue(new Error('network down'));
     render(
       <FilePreview
         fileSource={workspaceSource}
         panel={{ id: 'panel-1', type: 'editor', filePath: 'notes.md' }}
+        fetchFile={fetchFile}
       />,
     );
     expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();
   });
 
   it('surfaces a failed panel preview fetch instead of loading forever', async () => {
-    vi.mocked(fetchWorkspacePanelPreview).mockResolvedValue(
+    fetchPreview.mockResolvedValue(
       new Response('boom', { status: 500 }),
     );
     render(
       <PreviewPanelView
         fileSource={workspaceSource}
         panel={{ id: 'panel-2', type: 'preview', content: '<p>hi</p>' }}
+        fetchPreview={fetchPreview}
       />,
     );
     expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();

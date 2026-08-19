@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { DraggablePanel } from './DraggablePanel';
 
@@ -134,5 +134,26 @@ describe('DraggablePanel keyboard interaction', () => {
     expect(getTile()).not.toHaveAttribute('aria-pressed');
     rerender(<DraggablePanel {...makeProps({ isSelected: true })} />);
     expect(getTile()).toHaveAccessibleName('Sales Report (Table tile), selected');
+  });
+
+  it('keeps SVG descendants inside the panel content clickable', () => {
+    const onPanelClick = vi.fn();
+    render(
+      <DraggablePanel
+        {...makeProps({
+          onPanelClick,
+          children: (
+            <svg aria-label="Chart" data-testid="chart" viewBox="0 0 10 10">
+              <path d="M0 0L10 10" />
+            </svg>
+          ),
+        })}
+      />,
+    );
+
+    const path = screen.getByTestId('chart').querySelector('path');
+    if (!path) throw new Error('expected chart path');
+    fireEvent.click(path);
+    expect(onPanelClick).toHaveBeenCalledWith('p1', expect.anything());
   });
 });

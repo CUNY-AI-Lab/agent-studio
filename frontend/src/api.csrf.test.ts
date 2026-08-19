@@ -20,14 +20,15 @@ function mockFetch(impl: (input: RequestInfo | URL, init?: RequestInit) => Respo
  */
 function stubCookie(initial = '') {
   let jar = initial;
-  vi.stubGlobal('document', {
+  const documentStub = {
     get cookie() {
       return jar;
     },
     set cookie(value: string) {
       jar = value;
     },
-  } as unknown as Document);
+  } satisfies Pick<Document, 'cookie'>;
+  vi.stubGlobal('document', documentStub);
   return {
     set: (value: string) => {
       jar = value;
@@ -162,10 +163,12 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     });
     mockFetch(() => response);
 
-    const error = await ensureCsrfToken().catch((nextError: unknown) => nextError);
+    const error = await ensureCsrfToken().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toBe("Agent Studio couldn't start. Reload the page and try again.");
-    expect((error as Error).message).not.toContain('secret');
+    if (error instanceof Error) {
+      expect(error.message).toBe("Agent Studio couldn't start. Reload the page and try again.");
+      expect(error.message).not.toContain('secret');
+    }
     expect(assign).not.toHaveBeenCalled();
   });
 

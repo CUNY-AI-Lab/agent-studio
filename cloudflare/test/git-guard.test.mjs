@@ -77,3 +77,16 @@ test('guardGitToken leaves an unconfigured provider unchanged', () => {
     provider,
   );
 });
+
+test('guardGitToken leaves malformed non-callable tools untouched', () => {
+  const provider = {
+    tools: {
+      clone: { execute: 'not-callable' },
+    },
+  };
+  const guarded = guardGitToken(provider, {
+    token: 'secret-token',
+    allowedHosts: ['github.com'],
+  });
+  assert.equal(guarded.tools.clone.execute, 'not-callable');
+});

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import {
   identityCredentialsFromEnv,
   parseArgs,
@@ -21,7 +22,10 @@ export function assertStagingCredentials(argv = [], env = process.env) {
     throw new Error(`${STAGING_URL_ENV} must be supplied through the environment, not --base-url`);
   }
 
-  const stagingUrl = typeof env[STAGING_URL_ENV] === 'string' ? env[STAGING_URL_ENV].trim() : '';
+  const stagingValue = env[STAGING_URL_ENV];
+  const stagingUrl = z.string().safeParse(stagingValue).success
+    ? stagingValue.trim()
+    : '';
   if (!stagingUrl) {
     throw new Error(`${STAGING_URL_ENV} is required`);
   }

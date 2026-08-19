@@ -12,17 +12,20 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { z } from 'zod';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '../ui/chart';
 import type { WorkspacePanel } from '../../types';
 
-function inferChartKeys(data: Array<Record<string, string | number | boolean | null>>) {
+type ChartDatum = Record<string, string | number | boolean | null>;
+
+function inferChartKeys(data: ChartDatum[]) {
   const sample = data.find((row) => row && Object.keys(row).length > 0);
   if (!sample) {
     return { labelKey: null, valueKey: null };
   }
 
   const entries = Object.entries(sample);
-  const numericEntry = entries.find(([, value]) => typeof value === 'number');
+  const numericEntry = entries.find(([, value]) => z.number().safeParse(value).success);
   const labelEntry = entries.find(([key]) => key !== numericEntry?.[0]) || entries[0];
 
   return {
@@ -46,7 +49,7 @@ export default function ChartPanelView({
   const colors = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6'];
   const reservedProps = ['style', 'className', 'key', 'ref', 'children'];
   const sanitizedData = panel.data.map((item) => {
-    const clean: Record<string, unknown> = {};
+    const clean: ChartDatum = {};
     for (const [key, value] of Object.entries(item)) {
       if (!reservedProps.includes(key)) {
         clean[key] = value;

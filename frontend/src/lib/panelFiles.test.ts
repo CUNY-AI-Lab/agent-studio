@@ -12,7 +12,33 @@ import {
   inferWorkspaceFilePanelType,
   isPanelContextualChatCapable,
 } from './panelFiles';
-import type { WorkspacePanel } from '../types';
+import type {
+  ChartPanel,
+  FilePanel,
+  FileTreePanel,
+  MarkdownPanel,
+  TablePanel,
+} from '../types';
+
+function markdownPanel(id: string, extra: Partial<MarkdownPanel> = {}): MarkdownPanel {
+  return { id, type: 'markdown', content: '', ...extra };
+}
+
+function tablePanel(id: string, extra: Partial<TablePanel> = {}): TablePanel {
+  return { id, type: 'table', columns: [], rows: [], ...extra };
+}
+
+function chartPanel(id: string, extra: Partial<ChartPanel> = {}): ChartPanel {
+  return { id, type: 'chart', chartType: 'bar', data: [], ...extra };
+}
+
+function filePanel(type: FilePanel['type'], id: string, filePath: string, extra: Partial<FilePanel> = {}): FilePanel {
+  return { id, type, filePath, ...extra };
+}
+
+function fileTreePanel(id: string, extra: Partial<FileTreePanel> = {}): FileTreePanel {
+  return { id, type: 'fileTree', ...extra };
+}
 
 describe('file classification', () => {
   it('recognizes openable file extensions', () => {
@@ -51,27 +77,27 @@ describe('file classification', () => {
 
 describe('getPanelTitle', () => {
   it('prefers explicit title, then filename, then fallback', () => {
-    expect(getPanelTitle({ id: 'p', type: 'markdown', title: 'Hi', content: '' } as WorkspacePanel)).toBe('Hi');
-    expect(getPanelTitle({ id: 'p', type: 'editor', filePath: 'x/y.txt' } as WorkspacePanel)).toBe('y.txt');
-    expect(getPanelTitle({ id: 'p', type: 'fileTree' } as WorkspacePanel)).toBe('Workspace Files');
+    expect(getPanelTitle(markdownPanel('p', { title: 'Hi' }))).toBe('Hi');
+    expect(getPanelTitle(filePanel('editor', 'p', 'x/y.txt'))).toBe('y.txt');
+    expect(getPanelTitle(fileTreePanel('p'))).toBe('Workspace Files');
   });
 });
 
 describe('getPanelTypeLabel', () => {
   it('labels by type', () => {
-    expect(getPanelTypeLabel({ id: 'p', type: 'chart' } as WorkspacePanel)).toBe('Chart');
-    expect(getPanelTypeLabel({ id: 'p', type: 'pdf', filePath: 'a.pdf' } as WorkspacePanel)).toBe('PDF');
+    expect(getPanelTypeLabel(chartPanel('p'))).toBe('Chart');
+    expect(getPanelTypeLabel(filePanel('pdf', 'p', 'a.pdf'))).toBe('PDF');
   });
 });
 
 describe('isPanelContextualChatCapable', () => {
   it('allows data panels', () => {
-    expect(isPanelContextualChatCapable({ id: 'p', type: 'table', columns: [], rows: [] } as WorkspacePanel)).toBe(true);
+    expect(isPanelContextualChatCapable(tablePanel('p'))).toBe(true);
   });
 
   it('gates editor panels by queryable extension', () => {
-    expect(isPanelContextualChatCapable({ id: 'p', type: 'editor', filePath: 'a.md' } as WorkspacePanel)).toBe(true);
-    expect(isPanelContextualChatCapable({ id: 'p', type: 'editor', filePath: 'a.png' } as WorkspacePanel)).toBe(false);
+    expect(isPanelContextualChatCapable(filePanel('editor', 'p', 'a.md'))).toBe(true);
+    expect(isPanelContextualChatCapable(filePanel('editor', 'p', 'a.png'))).toBe(false);
   });
 });
 
@@ -81,29 +107,29 @@ describe('getPanelDownloadFormats', () => {
   });
 
   it('offers csv/json/png for a table', () => {
-    const formats = getPanelDownloadFormats({ id: 't', type: 'table', columns: [], rows: [] } as WorkspacePanel);
+    const formats = getPanelDownloadFormats(tablePanel('t'));
     expect(formats).toEqual(['csv', 'json', 'png']);
   });
 
   it('includes file download when a filePath is present', () => {
-    const formats = getPanelDownloadFormats({ id: 'e', type: 'editor', filePath: 'a.md' } as WorkspacePanel);
+    const formats = getPanelDownloadFormats(filePanel('editor', 'e', 'a.md'));
     expect(formats).toContain('file');
     expect(formats).toContain('png');
   });
 
   it('deduplicates formats', () => {
-    const formats = getPanelDownloadFormats({ id: 'm', type: 'markdown', content: '' } as WorkspacePanel);
+    const formats = getPanelDownloadFormats(markdownPanel('m'));
     expect(new Set(formats).size).toBe(formats.length);
   });
 });
 
 describe('canExportPanelSnapshot', () => {
   it('always allows chart/table/cards/markdown/fileTree', () => {
-    expect(canExportPanelSnapshot({ id: 'c', type: 'chart' } as WorkspacePanel)).toBe(true);
+    expect(canExportPanelSnapshot(chartPanel('c'))).toBe(true);
   });
 
   it('gates file-backed panels by extension', () => {
-    expect(canExportPanelSnapshot({ id: 'e', type: 'editor', filePath: 'a.md' } as WorkspacePanel)).toBe(true);
-    expect(canExportPanelSnapshot({ id: 'e', type: 'editor', filePath: 'a.pdf' } as WorkspacePanel)).toBe(false);
+    expect(canExportPanelSnapshot(filePanel('editor', 'e', 'a.md'))).toBe(true);
+    expect(canExportPanelSnapshot(filePanel('editor', 'e', 'a.pdf'))).toBe(false);
   });
 });

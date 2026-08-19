@@ -3,12 +3,12 @@ import { z } from 'zod';
 // Agent Studio's current CAIL gateway path is Cloudflare-native Workers AI.
 // Retired external-provider namespaces must not be persisted as workspace
 // overrides even if an old or misconfigured catalog happens to return them.
-export const CAIL_MODEL_ID_PATTERN = /^@cf\/[\w.\/-]+$/;
+export const CAIL_MODEL_ID_PATTERN = /^@cf\/[\w./-]+$/;
 
-export function isAllowedCailModelId(value: unknown): value is string {
-  return typeof value === 'string'
-    && value.length <= 200
-    && CAIL_MODEL_ID_PATTERN.test(value);
+const allowedModelIdSchema = z.string().max(200).regex(CAIL_MODEL_ID_PATTERN);
+
+export function isAllowedCailModelId(value: string | null | undefined): value is string {
+  return allowedModelIdSchema.safeParse(value).success;
 }
 
 export const patchWorkspaceSchema = z.object({

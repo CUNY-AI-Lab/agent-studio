@@ -1,6 +1,7 @@
 import type { WorkspaceAgent } from './agent/workspace-agent';
 import type { MigrationRegistry } from './migration-registry';
 import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
+import { z } from 'zod';
 import { isValidBasePath, normalizeBasePath } from './lib/base-path';
 import { CAIL_CANONICAL_ISSUER, CAIL_IDENTITY_AUDIENCE } from './lib/cail-identity';
 import { isAllowedCailModelId } from './lib/workspace-validation';
@@ -83,9 +84,33 @@ export type AgentStudioConfigValidation =
   | { ok: true }
   | { ok: false; errorCode: AgentStudioConfigErrorCode };
 
+export interface AgentStudioConfigInput {
+  SESSION_SECRET?: string;
+  CAIL_REQUIRE_IDENTITY?: string;
+  CAIL_IDENTITY_JWKS?: string;
+  CAIL_IDENTITY_ISSUER?: string;
+  CAIL_API_BASE?: string;
+  CAIL_MODEL?: string;
+  GATEWAY?: { fetch?: typeof fetch };
+  CAIL_CANONICAL_ORIGIN?: string;
+  CAIL_BASE_PATH?: string;
+}
+
+const stringSchema = z.string();
+const gatewayBindingSchema = z.object({ fetch: z.function() });
+
+function containsForbiddenControl(value: string): boolean {
+  return Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+}
+
 function validHttpsBase(value: string | undefined): boolean {
+  const candidate = stringSchema.safeParse(value).data;
+  if (candidate === undefined) return false;
   try {
-    const parsed = new URL(value ?? '');
+    const parsed = new URL(candidate);
     return parsed.protocol === 'https:'
       && parsed.username === ''
       && parsed.password === ''
@@ -93,16 +118,19 @@ function validHttpsBase(value: string | undefined): boolean {
       && parsed.hash === ''
       && !parsed.hostname.endsWith('.invalid')
       && !parsed.href.includes('REPLACE')
-      && value === value?.trim()
-      && !/[\u0000-\u001f\u007f\\\s]/.test(value ?? '');
+      && candidate === candidate.trim()
+      && !containsForbiddenControl(candidate)
+      && !/[\s\\]/.test(candidate);
   } catch {
     return false;
   }
 }
 
 function validCanonicalOrigin(value: string | undefined): boolean {
+  const candidate = stringSchema.safeParse(value).data;
+  if (candidate === undefined) return false;
   try {
-    const parsed = new URL(value ?? '');
+    const parsed = new URL(candidate);
     return parsed.protocol === 'https:'
       && parsed.origin === parsed.href.replace(/\/$/, '')
       && parsed.username === ''
@@ -115,21 +143,13 @@ function validCanonicalOrigin(value: string | undefined): boolean {
 }
 
 /** Validate configuration that the worker actually consumes. */
-export async function validateAgentStudioConfig(env: {
-  SESSION_SECRET?: unknown;
-  CAIL_REQUIRE_IDENTITY?: string;
-  CAIL_IDENTITY_JWKS?: string;
-  CAIL_IDENTITY_ISSUER?: string;
-  CAIL_API_BASE?: string;
-  CAIL_MODEL?: string;
-  GATEWAY?: { fetch?: unknown };
-  CAIL_CANONICAL_ORIGIN?: string;
-  CAIL_BASE_PATH?: string;
-}): Promise<AgentStudioConfigValidation> {
-  if (typeof env.SESSION_SECRET !== 'string' || env.SESSION_SECRET.length === 0) {
+export async function validateAgentStudioConfig(env: AgentStudioConfigInput): Promise<AgentStudioConfigValidation> {
+  const sessionSecretResult = stringSchema.safeParse(env.SESSION_SECRET);
+  const sessionSecret = sessionSecretResult.data;
+  if (!sessionSecret) {
     return { ok: false, errorCode: 'session_secret_missing' };
   }
-  if (env.SESSION_SECRET.length < MIN_REQUIRED_SESSION_SECRET_LENGTH) {
+  if (sessionSecret.length < MIN_REQUIRED_SESSION_SECRET_LENGTH) {
     return { ok: false, errorCode: 'session_secret_too_short' };
   }
 
@@ -140,22 +160,33 @@ export async function validateAgentStudioConfig(env: {
     return { ok: false, errorCode: 'cail_api_base_invalid' };
   }
 
-  const required = env.CAIL_REQUIRE_IDENTITY === 'true';
-  const issuerConfigured = typeof env.CAIL_IDENTITY_ISSUER === 'string'
-    && env.CAIL_IDENTITY_ISSUER !== '';
-  const jwksConfigured = typeof env.CAIL_IDENTITY_JWKS === 'string'
-    && env.CAIL_IDENTITY_JWKS.trim() !== '';
+  const requireIdentity = stringSchema.safeParse(env.CAIL_REQUIRE_IDENTITY).data;
+  const issuerResult = stringSchema.safeParse(env.CAIL_IDENTITY_ISSUER);
+  const jwksResult = stringSchema.safeParse(env.CAIL_IDENTITY_JWKS);
+  const issuer = issuerResult.data;
+  const jwks = jwksResult.data;
+  const canonicalOrigin = stringSchema.safeParse(env.CAIL_CANONICAL_ORIGIN).data;
+  const basePath = stringSchema.safeParse(env.CAIL_BASE_PATH).data;
+  if (env.CAIL_IDENTITY_ISSUER !== undefined && !issuerResult.success) {
+    return { ok: false, errorCode: 'cail_identity_issuer_invalid' };
+  }
+  if (env.CAIL_IDENTITY_JWKS !== undefined && !jwksResult.success) {
+    return { ok: false, errorCode: 'cail_identity_jwks_invalid' };
+  }
+  const required = requireIdentity === 'true';
+  const issuerConfigured = Boolean(issuer);
+  const jwksConfigured = Boolean(jwks?.trim());
   const identityConfigured = required || issuerConfigured || jwksConfigured;
   if (required && !issuerConfigured) {
     return { ok: false, errorCode: 'cail_identity_issuer_missing' };
   }
-  if (issuerConfigured && env.CAIL_IDENTITY_ISSUER !== CAIL_CANONICAL_ISSUER) {
+  if (issuerConfigured && issuer !== CAIL_CANONICAL_ISSUER) {
     return { ok: false, errorCode: 'cail_identity_issuer_invalid' };
   }
   if (identityConfigured) {
     const identityConfig = await loadSharedIdentityConfig(
-      env.CAIL_IDENTITY_JWKS,
-      env.CAIL_IDENTITY_ISSUER,
+      jwks,
+      issuer,
     );
     if (!identityConfig.ok) {
       return {
@@ -173,19 +204,19 @@ export async function validateAgentStudioConfig(env: {
     if (!validHttpsBase(env.CAIL_API_BASE)) {
       return { ok: false, errorCode: 'cail_api_base_invalid' };
     }
-    if (typeof env.GATEWAY?.fetch !== 'function') {
+    if (!gatewayBindingSchema.safeParse(env.GATEWAY).success) {
       return { ok: false, errorCode: 'production_gateway_binding_missing' };
     }
-    if (!validCanonicalOrigin(env.CAIL_CANONICAL_ORIGIN)) {
+    if (!validCanonicalOrigin(canonicalOrigin)) {
       return { ok: false, errorCode: 'production_canonical_origin_invalid' };
     }
-    if (!env.CAIL_BASE_PATH?.trim()) {
+    if (!basePath?.trim()) {
       return { ok: false, errorCode: 'production_base_path_missing' };
     }
-    if (!isValidBasePath(env.CAIL_BASE_PATH)) {
+    if (!isValidBasePath(basePath)) {
       return { ok: false, errorCode: 'production_base_path_invalid' };
     }
-    if (normalizeBasePath(env.CAIL_BASE_PATH) === '/') {
+    if (normalizeBasePath(basePath) === '/') {
       return { ok: false, errorCode: 'production_base_path_root' };
     }
   }

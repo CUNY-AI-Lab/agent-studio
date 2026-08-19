@@ -36,6 +36,25 @@ test('anonymous local configuration needs only a usable session secret', async (
   });
 });
 
+test('malformed runtime configuration values fail closed without throwing', async () => {
+  for (const SESSION_SECRET of [123, {}, true]) {
+    assert.deepEqual(await validateAgentStudioConfig({ SESSION_SECRET }), {
+      ok: false,
+      errorCode: 'session_secret_missing',
+    });
+  }
+  for (const CAIL_IDENTITY_JWKS of [123, {}, true]) {
+    assert.deepEqual(await validateAgentStudioConfig({
+      SESSION_SECRET: SECRET,
+      CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+      CAIL_IDENTITY_JWKS,
+    }), {
+      ok: false,
+      errorCode: 'cail_identity_jwks_invalid',
+    });
+  }
+});
+
 test('model id and API base validation reject unsafe or placeholder values', async () => {
   for (const CAIL_MODEL of ['openai/gpt', 'cail/gpt-4.1', '@cf/']) {
     assert.deepEqual(
@@ -86,6 +105,7 @@ test('deployed identity profile requires the real route and gateway boundaries',
   assert.deepEqual(await validateAgentStudioConfig(DEPLOYED), { ok: true });
   const cases = [
     ['GATEWAY', undefined, 'production_gateway_binding_missing'],
+    ['GATEWAY', { fetch: 'not-callable' }, 'production_gateway_binding_missing'],
     ['CAIL_API_BASE', undefined, 'cail_api_base_invalid'],
     ['CAIL_CANONICAL_ORIGIN', undefined, 'production_canonical_origin_invalid'],
     ['CAIL_CANONICAL_ORIGIN', 'https://tools.example.edu/path', 'production_canonical_origin_invalid'],
