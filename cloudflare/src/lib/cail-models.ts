@@ -54,7 +54,11 @@ const modelListSchema = z.object({
 });
 
 function canonicalBase(value: string): string {
-  if (value.trim() !== value || /[\s\\]/.test(value)) {
+  const containsForbiddenControl = Array.from(value).some((character) => {
+    const code = character.charCodeAt(0);
+    return code <= 0x1f || code === 0x7f;
+  });
+  if (value.trim() !== value || containsForbiddenControl || /[\s\\]/.test(value)) {
     throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
   }
   let parsed: URL;

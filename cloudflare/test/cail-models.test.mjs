@@ -88,6 +88,23 @@ test('catalog requires verified authentication, base URL, and service binding', 
   );
 });
 
+test('catalog rejects control characters in CAIL_API_BASE before any request', async () => {
+  for (const CAIL_API_BASE of [
+    'https://proxy.example/\u0000',
+    'https://proxy.example/\u001f',
+    'https://proxy.example/\u007f',
+  ]) {
+    const capture = captureGateway(() => response([
+      { id: '@cf/zai-org/glm-5.2', object: 'model' },
+    ]));
+    await assert.rejects(fetchCailModels({
+      env: { CAIL_API_BASE, GATEWAY: capture.gateway },
+      identityJwt: JWT,
+    }), /CAIL_API_BASE/);
+    assert.equal(capture.calls.length, 0);
+  }
+});
+
 test('catalog reports auth and quota failures without retry or fallback', async () => {
   for (const [status, ErrorType] of [
     [401, ModelCatalogAuthError],

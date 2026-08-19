@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const GIT_AUTH_COMMANDS = new Set(['clone', 'fetch', 'pull', 'push']);
+const callableSchema = z.function();
 
 export function parseGitAllowedHosts(env: { GIT_AUTH_ALLOWED_HOSTS?: string }): string[] {
   return (env.GIT_AUTH_ALLOWED_HOSTS ?? '')
@@ -50,10 +51,14 @@ export function guardGitToken<T extends GitToolProvider>(
   // only named tool entries and their optional execute functions are wrapped.
   for (const [name, tool] of Object.entries(provider.tools as Record<string, GitTool>)) {
     const execute = tool.execute;
-    if (!GIT_AUTH_COMMANDS.has(name) || !execute) {
+    const parsedExecute = callableSchema.safeParse(execute);
+    if (!GIT_AUTH_COMMANDS.has(name) || !parsedExecute.success) {
       tools[name] = tool;
       continue;
     }
+    // SAFETY: callableSchema.success proves the tool entry is executable; this
+    // cast restores the variadic signature owned by the provider contract.
+    const executeFn = parsedExecute.data as NonNullable<GitTool['execute']>;
     tools[name] = {
       ...tool,
       execute: (...args: any[]) => {
@@ -65,7 +70,7 @@ export function guardGitToken<T extends GitToolProvider>(
         ) {
           commandOpts = { ...commandOpts, token: opts.token };
         }
-        return execute(commandOpts, ...args.slice(1));
+        return executeFn(commandOpts, ...args.slice(1));
       },
     };
   }

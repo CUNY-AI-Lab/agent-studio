@@ -1,5 +1,5 @@
 import type { DownloadRequest } from '../types';
-import { isString } from './runtime';
+import { z } from 'zod';
 
 export function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
@@ -28,8 +28,9 @@ export function triggerQueuedDownload(download: DownloadRequest) {
     return;
   }
 
-  const content = isString(download.data)
-    ? download.data
+  const stringData = z.string().safeParse(download.data).data;
+  const content = stringData !== undefined
+    ? stringData
     : download.data == null
       ? ''
       : String(download.data);

@@ -73,7 +73,6 @@ import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcut
 import { clampNumber, makeClientId } from './lib/format';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
-import { isFunction } from './lib/runtime';
 import {
   type ContextualChatTarget,
   type ContextualThreadMessage,
@@ -740,7 +739,7 @@ function WorkspaceShell({
     if (!activeFilePillPopover) return;
 
     const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target instanceof HTMLElement ? event.target : null;
+      const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('[data-file-pill-popover]') || target?.closest('[data-file-pill-trigger]')) return;
       setActiveFilePillPopover(null);
     };
@@ -828,7 +827,7 @@ function WorkspaceShell({
     if (!openMenuId) return;
 
     const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target instanceof HTMLElement ? event.target : null;
+      const target = event.target instanceof Element ? event.target : null;
       if (target?.closest('.panel-menu') || target?.closest('.panel-menu-trigger')) return;
       setOpenMenuId(null);
     };
@@ -916,11 +915,9 @@ function WorkspaceShell({
     }, 180);
   }, [agent]);
 
-  const updateViewport = useCallback((updater: WorkspaceState['viewport'] | ((current: WorkspaceState['viewport']) => WorkspaceState['viewport'])) => {
+  const updateViewport = useCallback((updater: (current: WorkspaceState['viewport']) => WorkspaceState['viewport']) => {
     setWorkspaceState((current) => {
-      const nextViewport = isFunction(updater)
-        ? updater(current.viewport)
-        : updater;
+      const nextViewport = updater(current.viewport);
       viewportRef.current = nextViewport;
       persistViewport(nextViewport);
       return {
@@ -929,6 +926,10 @@ function WorkspaceShell({
       };
     });
   }, [persistViewport]);
+
+  const setViewport = useCallback((nextViewport: WorkspaceState['viewport']) => {
+    updateViewport(() => nextViewport);
+  }, [updateViewport]);
 
   const focusCanvasBounds = useCallback((bounds: { x: number; y: number; width: number; height: number }) => {
     if (!canvasViewportRef.current) return;
@@ -1930,7 +1931,7 @@ function WorkspaceShell({
 
   const handleChatRetry = useCallback(() => {
     setChatErrorNotice(null);
-    if ('regenerate' in chat && isFunction(chat.regenerate)) {
+    if (chat.regenerate) {
       chat.clearError();
       void chat.regenerate();
       return;
@@ -2352,7 +2353,7 @@ function WorkspaceShell({
     // If space-panning, let TransformWrapper handle it
     if (spacePanning) return;
 
-    const target = event.target instanceof HTMLElement ? event.target : null;
+    const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
     if (target.closest('.contextual-chat-popover')) return;
     if (target.closest('.group-boundary')) return;
@@ -2496,8 +2497,8 @@ function WorkspaceShell({
   }, [handleCanvasPointerUp, isSelectingBox]);
 
   const handleResetViewport = useCallback(() => {
-    updateViewport({ x: 0, y: 0, zoom: 1 });
-  }, [updateViewport]);
+    setViewport({ x: 0, y: 0, zoom: 1 });
+  }, [setViewport]);
 
   const zoomBy = useCallback((factor: number) => {
     const element = canvasViewportRef.current;

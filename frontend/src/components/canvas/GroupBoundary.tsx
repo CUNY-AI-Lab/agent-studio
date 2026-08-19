@@ -117,7 +117,7 @@ export function GroupBoundary({
   }, [editValue, group.id, onGroupRename]);
 
   const handlePointerDown = useCallback((event: React.PointerEvent) => {
-    const target = event.target instanceof HTMLElement ? event.target : null;
+    const target = event.target instanceof Element ? event.target : null;
     if (!target || target.closest('.group-boundary-label')) return;
 
     if (clickTimeoutRef.current) {
@@ -151,7 +151,7 @@ export function GroupBoundary({
     if (!isDragging) return;
     event.preventDefault();
     setIsDragging(false);
-    const target = event.target instanceof HTMLElement ? event.target : null;
+    const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
     target.releasePointerCapture(event.pointerId);
     onGroupDragEnd?.(group.id);
@@ -162,7 +162,7 @@ export function GroupBoundary({
 
   const handleContainerKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (isEditing) return;
-    const target = event.target instanceof HTMLElement ? event.target : null;
+    const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
     if (target.closest('.group-boundary-label')) return;
 

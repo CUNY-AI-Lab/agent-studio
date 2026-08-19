@@ -2,7 +2,7 @@ import { getWorkspaceFileUrl, getGalleryFileUrl } from '../api';
 import { fetchWorkspaceFile } from '../api';
 import { useEffect, useState } from 'react';
 import type { WorkspaceFileInfo } from '../types';
-import { isNumber } from './runtime';
+import { z } from 'zod';
 
 export interface FileObjectUrlState {
   url: string | null;
@@ -32,7 +32,8 @@ export function getWorkspaceFileCacheKey(
 ): string | null {
   const file = workspaceFiles?.find((entry) => !entry.isDirectory && entry.path === filePath);
   if (!file) return null;
-  return file.etag || file.modifiedAt || file.uploadedAt || (isNumber(file.size) ? String(file.size) : null);
+  const size = z.number().safeParse(file.size).data;
+  return file.etag || file.modifiedAt || file.uploadedAt || (size !== undefined ? String(size) : null);
 }
 
 /**

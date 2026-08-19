@@ -47,7 +47,9 @@ const OCLC_SCOPE = 'WorldCatMetadataAPI';
 const tokenResponseSchema = z.object({
   access_token: z.string().optional(),
   expires_in: z.union([z.number(), z.string()]).optional(),
-}).strict();
+  // OAuth providers add standard fields such as token_type and scope. They
+  // are not consumed here, so preserve the external protocol extension set.
+}).passthrough();
 
 function ttlFromExpiresIn(expiresIn: number | string | undefined): number {
   const seconds = Number(expiresIn ?? NaN);

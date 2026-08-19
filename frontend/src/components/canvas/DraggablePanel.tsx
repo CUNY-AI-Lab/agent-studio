@@ -80,7 +80,7 @@ export function DraggablePanel({
   const resizeStartRef = useRef({ x: 0, y: 0, width: 0, height: 0, layoutX: 0, layoutY: 0 });
 
   const handleDragStart = useCallback((e: React.PointerEvent) => {
-    const target = e.target instanceof HTMLElement ? e.target : null;
+    const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     if (target.closest('.panel-menu-trigger') || target.closest('.panel-menu')) {
       return;
@@ -127,7 +127,7 @@ export function DraggablePanel({
 
     e.preventDefault();
     setIsDragging(false);
-    const target = e.target instanceof HTMLElement ? e.target : null;
+    const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     target.releasePointerCapture(e.pointerId);
     onDragEnd(id);
@@ -150,7 +150,7 @@ export function DraggablePanel({
       layoutY: layout.y,
     };
 
-    const target = e.target instanceof HTMLElement ? e.target : null;
+    const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     target.setPointerCapture(e.pointerId);
   }, [layout]);
@@ -204,7 +204,7 @@ export function DraggablePanel({
     e.preventDefault();
     setIsResizing(false);
     setResizeCorner(null);
-    const target = e.target instanceof HTMLElement ? e.target : null;
+    const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     target.releasePointerCapture(e.pointerId);
     onDragEnd(id);
@@ -212,7 +212,7 @@ export function DraggablePanel({
 
   const handleContentClick = useCallback((e: React.MouseEvent) => {
     if (didMove) return;
-    const target = e.target instanceof HTMLElement ? e.target : null;
+    const target = e.target instanceof Element ? e.target : null;
     if (target?.closest('.no-zoom-scroll')) {
       onPanelClick?.(id, e);
     }
@@ -220,7 +220,7 @@ export function DraggablePanel({
 
   const handleContentDoubleClick = useCallback((e: React.MouseEvent) => {
     if (didMove) return;
-    const target = e.target instanceof HTMLElement ? e.target : null;
+    const target = e.target instanceof Element ? e.target : null;
     if (target?.closest('.no-zoom-scroll')) {
       e.stopPropagation();
       onPanelDoubleClick?.(id, e);
@@ -231,7 +231,7 @@ export function DraggablePanel({
     // Ignore keystrokes originating in the tile body (inputs, editable content,
     // the menu). The tile-level shortcuts only apply when the card chrome itself
     // holds focus.
-    const target = e.target instanceof HTMLElement ? e.target : null;
+    const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     if (target !== e.currentTarget) {
       if (

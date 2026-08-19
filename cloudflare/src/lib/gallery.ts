@@ -321,8 +321,9 @@ export async function reassignGalleryAuthor(
     if (!manifestObject) continue;
     const item = await manifestObject.json<GalleryItem>();
     const owner = ownerObject ? await ownerObject.json<GalleryOwnerRecord>() : null;
-    const legacyMatches = item.authorId !== undefined
-      && timingSafeEqual(item.authorId, legacyFromTag);
+    const authorId = z.string().min(1).safeParse(item.authorId).data;
+    const legacyMatches = authorId !== undefined
+      && timingSafeEqual(authorId, legacyFromTag);
     const matches = owner
       ? await ownerRecordMatches(env, owner, fromSessionId)
         // Retry a prior attempt that switched the private owner but failed

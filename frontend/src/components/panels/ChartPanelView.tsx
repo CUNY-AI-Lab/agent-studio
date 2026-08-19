@@ -12,9 +12,9 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import { z } from 'zod';
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '../ui/chart';
 import type { WorkspacePanel } from '../../types';
-import { isNumber } from '../../lib/runtime';
 
 type ChartDatum = Record<string, string | number | boolean | null>;
 
@@ -25,7 +25,7 @@ function inferChartKeys(data: ChartDatum[]) {
   }
 
   const entries = Object.entries(sample);
-  const numericEntry = entries.find(([, value]) => isNumber(value));
+  const numericEntry = entries.find(([, value]) => z.number().safeParse(value).success);
   const labelEntry = entries.find(([key]) => key !== numericEntry?.[0]) || entries[0];
 
   return {

@@ -150,6 +150,24 @@ test('unconfigured identity is anonymous; an unloadable config is a CONFIG error
   );
 });
 
+test('malformed identity binding values fail as configuration errors', async () => {
+  const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
+  const token = await mintValid(issuer);
+  const request = new Request('https://agent-studio.example/api/session', {
+    headers: { [CAIL_IDENTITY_HEADER]: token },
+  });
+
+  for (const jwks of [123, {}, true]) {
+    assert.deepEqual(
+      await getCailIdentityFromRequest(request, {
+        CAIL_IDENTITY_JWKS: jwks,
+        CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
+      }, NOW),
+      { configError: 'jwks_malformed' },
+    );
+  }
+});
+
 test('identity trust is one exact configured issuer and fails closed when ambiguous', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'issuer-key' });
   const productionToken = await mintValid(issuer);

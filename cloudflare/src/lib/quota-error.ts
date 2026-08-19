@@ -5,12 +5,24 @@ const recordSchema = z.object({}).passthrough();
 const candidateSchema = z.union([
   z.string(),
   recordSchema,
+  z.instanceof(Error),
   z.null(),
   z.undefined(),
 ]);
 const stringSchema = z.string();
 const statusSchema = z.number().int().min(100).max(599);
 const candidateArraySchema = z.array(candidateSchema);
+const canonicalCailFieldsSchema = z.object({
+  retry_after_seconds: z.number().finite().optional(),
+  login_url: z.string().optional(),
+  request_id: z.string().optional(),
+  retryable: z.boolean().optional(),
+}).passthrough();
+const canonicalEnvelopeSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  cail: canonicalCailFieldsSchema,
+}).passthrough();
 
 type ParsedRecord = z.infer<typeof recordSchema>;
 type Candidate = z.infer<typeof candidateSchema>;
@@ -65,12 +77,22 @@ export function extractCanonicalCailError(error: InputValue): CanonicalCailError
     const status = readHttpStatus(record) ?? current.status;
     const nestedCandidate = candidateSchema.safeParse(record.error);
     const nested = nestedCandidate.success ? parseRecord(nestedCandidate.data) : null;
-    const cailCandidate = candidateSchema.safeParse(nested?.cail);
-    const cail = cailCandidate.success ? parseRecord(cailCandidate.data) : null;
-    const code = nested ? stringSchema.safeParse(nested.code).data : undefined;
-    const message = nested ? stringSchema.safeParse(nested.message).data : undefined;
-    if (nested && cail && code !== undefined && message !== undefined) {
-      return { code, message, status, extras: cail };
+    const envelope = nested ? canonicalEnvelopeSchema.safeParse(nested) : null;
+    if (envelope?.success) {
+      return {
+        code: envelope.data.code,
+        message: envelope.data.message,
+        status,
+        extras: envelope.data.cail,
+      };
+    }
+    if (current.value instanceof Error) {
+      try {
+        const cause = candidateSchema.safeParse(current.value.cause);
+        if (cause.success && cause.data !== undefined) queue.push({ value: cause.data, status });
+      } catch {
+        // Error.cause can be an accessor supplied by an untrusted provider.
+      }
     }
     for (const child of [record.responseBody, record.cause, record.data, record.lastError, record.error]) {
       const parsedChild = candidateSchema.safeParse(child);

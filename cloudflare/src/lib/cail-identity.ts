@@ -56,6 +56,12 @@ export interface CailIdentityEnv {
   CAIL_REQUIRE_IDENTITY?: string;
 }
 
+const identityConfigStringSchema = z.string();
+
+function readIdentityConfigString(value: string | undefined): string | undefined {
+  return identityConfigStringSchema.safeParse(value).data;
+}
+
 export interface VerifiedCailIdentity {
   token: string;
   identity: CailIdentity;
@@ -89,7 +95,7 @@ export function isCailIdentityConfigError(value: IdentityConfigValue): value is 
 const encoder = new TextEncoder();
 
 export function resolveCailIdentityIssuer(env: CailIdentityEnv): string | null {
-  const issuer = env.CAIL_IDENTITY_ISSUER;
+  const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
   return issuer === CAIL_CANONICAL_ISSUER ? CAIL_CANONICAL_ISSUER : null;
 }
 
@@ -105,12 +111,18 @@ async function loadIdentityConfig(
   env: CailIdentityEnv,
   now?: number,
 ): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError | null> {
-  const jwksConfigured = Boolean(env.CAIL_IDENTITY_JWKS?.trim());
-  const issuerConfigured = Boolean(env.CAIL_IDENTITY_ISSUER);
+  const jwks = readIdentityConfigString(env.CAIL_IDENTITY_JWKS);
+  const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
+  const requireIdentity = readIdentityConfigString(env.CAIL_REQUIRE_IDENTITY);
+  if (env.CAIL_IDENTITY_JWKS !== undefined && jwks === undefined) return { configError: 'jwks_malformed' };
+  if (env.CAIL_IDENTITY_ISSUER !== undefined && issuer === undefined) return { configError: 'issuer_unsupported' };
+  if (env.CAIL_REQUIRE_IDENTITY !== undefined && requireIdentity === undefined) return { configError: 'required_flag_invalid' };
+  const jwksConfigured = Boolean(jwks?.trim());
+  const issuerConfigured = Boolean(issuer);
   if (!jwksConfigured && !issuerConfigured && !cailIdentityRequired(env)) return null;
   // A pinned clock (tests, replay analysis) must never be served from — or
   // written to — the shared snapshot cache.
-  const cacheKey = `${env.CAIL_IDENTITY_ISSUER ?? ''}\u0000${env.CAIL_IDENTITY_JWKS ?? ''}`;
+  const cacheKey = `${issuer ?? ''}\u0000${jwks ?? ''}`;
   if (now === undefined) {
     const cached = verifierCache.get(cacheKey);
     if (cached) return { ok: true, config: cached };
@@ -118,8 +130,8 @@ async function loadIdentityConfig(
   const loaderOptions: IdentityLoaderOptions = {};
   if (now !== undefined) loaderOptions.now = now;
   const loaded = await loadIdentityVerifierConfig({
-    jwks: env.CAIL_IDENTITY_JWKS,
-    issuer: env.CAIL_IDENTITY_ISSUER,
+    jwks,
+    issuer,
     expectedAudience: CAIL_IDENTITY_AUDIENCE,
     ...loaderOptions,
   });
@@ -214,7 +226,7 @@ export async function getCailIdentityFromRequest(
  * those paths close rather than opening through misconfiguration.
  */
 export function cailIdentityRequired(env: CailIdentityEnv): boolean {
-  return env.CAIL_REQUIRE_IDENTITY === 'true';
+  return readIdentityConfigString(env.CAIL_REQUIRE_IDENTITY) === 'true';
 }
 
 /**
@@ -263,7 +275,11 @@ async function loadGatewayLegConfig(
   env: CailIdentityEnv,
   now?: number,
 ): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError> {
-  const cacheKey = `gateway-leg\u0000${env.CAIL_IDENTITY_ISSUER ?? ''}\u0000${env.CAIL_IDENTITY_JWKS ?? ''}`;
+  const jwks = readIdentityConfigString(env.CAIL_IDENTITY_JWKS);
+  const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
+  if (env.CAIL_IDENTITY_JWKS !== undefined && jwks === undefined) return { configError: 'jwks_malformed' };
+  if (env.CAIL_IDENTITY_ISSUER !== undefined && issuer === undefined) return { configError: 'issuer_unsupported' };
+  const cacheKey = `gateway-leg\u0000${issuer ?? ''}\u0000${jwks ?? ''}`;
   if (now === undefined) {
     const cached = verifierCache.get(cacheKey);
     if (cached) return { ok: true, config: cached };
@@ -271,8 +287,8 @@ async function loadGatewayLegConfig(
   const loaderOptions: IdentityLoaderOptions = {};
   if (now !== undefined) loaderOptions.now = now;
   const loaded = await loadIdentityVerifierConfig({
-    jwks: env.CAIL_IDENTITY_JWKS,
-    issuer: env.CAIL_IDENTITY_ISSUER,
+    jwks,
+    issuer,
     expectedAudience: CAIL_GATEWAY_AUDIENCE,
     ...loaderOptions,
   });

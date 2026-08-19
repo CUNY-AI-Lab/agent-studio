@@ -49,10 +49,6 @@ export function redactSensitiveText(value, credentials = {}) {
     .replace(/\b[^\s@]+@[^\s@]+\b/g, '[email redacted]');
 }
 
-function isString(value) {
-  return z.string().safeParse(value).success;
-}
-
 /** Credentialed chat needs both the app and gateway identity legs. */
 export function assertIdentityCredentials(credentials = {}, { withChat = false } = {}) {
   const appIdentityJwt = normalizeIdentityJwt(credentials.appIdentityJwt);
@@ -167,8 +163,9 @@ export class SessionClient {
     const response = await this.fetch(path, init, options);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const detail = isString(payload.error)
-        ? payload.error
+      const errorText = z.string().safeParse(payload.error).data;
+      const detail = errorText !== undefined
+        ? errorText
         : payload.error ? JSON.stringify(payload.error) : '';
       const message = `Request failed with ${response.status}${detail ? `: ${detail}` : ''}`;
       throw new Error(redactSensitiveText(message, this.identity));
@@ -262,11 +259,13 @@ export function sendChatTurn({ client, messages, prompt }) {
           fail(new Error(data.body || 'Chat stream error'));
           return;
         }
-        if (isString(data.body) && data.body.trim()) {
-          const chunk = JSON.parse(data.body);
+        const body = z.string().safeParse(data.body).data;
+        if (body?.trim()) {
+          const chunk = JSON.parse(body);
           chunks.push(chunk);
-          if (chunk.type === 'text-delta' && isString(chunk.delta)) {
-            textParts.push(chunk.delta);
+          const delta = z.string().safeParse(chunk.delta).data;
+          if (chunk.type === 'text-delta' && delta !== undefined) {
+            textParts.push(delta);
           }
         }
         if (data.done) {
