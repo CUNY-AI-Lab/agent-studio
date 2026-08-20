@@ -61,8 +61,8 @@
   "vars": {
     "CAIL_API_BASE": "https://cail-model-api.ailab-452.workers.dev",
     "CAIL_MODEL": "@cf/zai-org/glm-5.2",
-    "CAIL_IDENTITY_ISSUER": "https://cail-doorway.ailab-452.workers.dev/cail-sso",
-    "CAIL_CANONICAL_ORIGIN": "https://cail-doorway.ailab-452.workers.dev",
+    "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
+    "CAIL_CANONICAL_ORIGIN": "https://tools.ailab.gc.cuny.edu",
     "CAIL_BASE_PATH": "/agent-studio",
     "CAIL_REQUIRE_IDENTITY": "true"
   },
@@ -112,8 +112,8 @@
       "vars": {
         "CAIL_API_BASE": "https://cail-model-api-staging.ailab-452.workers.dev",
         "CAIL_MODEL": "@cf/zai-org/glm-5.2",
-        "CAIL_IDENTITY_ISSUER": "https://cail-doorway.ailab-452.workers.dev/cail-sso",
-        "CAIL_CANONICAL_ORIGIN": "https://cail-doorway.ailab-452.workers.dev",
+        "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
+        "CAIL_CANONICAL_ORIGIN": "https://tools.ailab.gc.cuny.edu",
         "CAIL_BASE_PATH": "/agent-studio",
         "CAIL_REQUIRE_IDENTITY": "true"
       }

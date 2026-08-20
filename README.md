@@ -45,8 +45,8 @@ subject, never email. The app identity is the exact slug `agent-studio` and
 model requests carry `X-CAIL-App: agent-studio`.
 
 Both production and staging use the standalone Doorway issuer
-`https://cail-doorway.ailab-452.workers.dev/cail-sso` and canonical origin
-`https://cail-doorway.ailab-452.workers.dev`.
+`https://tools.ailab.gc.cuny.edu/cail-sso` and canonical origin
+`https://tools.ailab.gc.cuny.edu`.
 
 Credentialed model work uses the separate gateway leg in
 `X-CAIL-Gateway-Identity-JWT`, whose audience is `cail:gateway`. The Worker

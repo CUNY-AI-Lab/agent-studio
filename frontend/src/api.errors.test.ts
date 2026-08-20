@@ -75,7 +75,7 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
     });
 
     await expect(fetchWorkspaceExport('ws-1')).rejects.toThrow('Sign in to continue.');
-    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?workspace=ws-1');
+    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?workspace=ws-1');
   });
 
   it('uses a status fallback for a noncanonical JSON error body', async () => {
@@ -168,7 +168,7 @@ describe('fetchModels quota errors', () => {
     const error = await fetchModels().catch((nextError) => nextError);
     expect(error).toBeInstanceOf(ModelsAuthError);
     expect(error).toHaveProperty('message', 'Your sign-in expired. Sign in again to load models.');
-    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?workspace=ws-1');
+    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?workspace=ws-1');
   });
 
   it('keeps non-authentication 401s as plain model errors', async () => {
