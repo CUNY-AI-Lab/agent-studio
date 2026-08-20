@@ -25,7 +25,7 @@ const canonicalErrorPayloadSchema = z.object({
   }),
 });
 
-const CAIL_DOORWAY_ORIGIN = 'https://cail-doorway.ailab-452.workers.dev';
+const CAIL_TOOLS_ORIGIN = 'https://tools.ailab.gc.cuny.edu';
 const AGENT_STUDIO_PATH = '/agent-studio';
 
 function canonicalErrorFromPayload<T>(payload: T): CanonicalError | null {
@@ -50,7 +50,7 @@ export function handleAuthRequired<T>(status: number, payload: T): boolean {
     || window.location.pathname.startsWith(`${AGENT_STUDIO_PATH}/`)
     ? currentPath
     : `${AGENT_STUDIO_PATH}${window.location.search}`;
-  window.location.assign(`${CAIL_DOORWAY_ORIGIN}${returnPath}`);
+  window.location.assign(`${CAIL_TOOLS_ORIGIN}${returnPath}`);
   return true;
 }
 

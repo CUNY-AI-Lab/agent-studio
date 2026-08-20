@@ -28,8 +28,8 @@ CAIL Model API address and `X-CAIL-App: agent-studio`. Agent Studio stores no
 provider key.
 
 Production and staging use the standalone Doorway issuer
-`https://cail-doorway.ailab-452.workers.dev/cail-sso` and canonical origin
-`https://cail-doorway.ailab-452.workers.dev`. Configure that one issuer with
+`https://tools.ailab.gc.cuny.edu/cail-sso` and canonical origin
+`https://tools.ailab.gc.cuny.edu`. Configure that one issuer with
 its matching JWKS.
 
 Workspace state and chat messages live in the Durable Object. Workspace

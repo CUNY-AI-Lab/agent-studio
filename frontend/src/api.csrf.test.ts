@@ -131,7 +131,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
 
     await expect(ensureCsrfToken()).rejects.toThrow('Sign in to continue.');
     expect(assign).toHaveBeenCalledOnce();
-    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?gallery=abc');
+    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?gallery=abc');
     expect(jsonSpy).toHaveBeenCalledOnce();
 
     const token = await ensureCsrfToken();
@@ -184,14 +184,14 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     vi.stubGlobal('window', { location });
 
     expect(handleAuthRequired(401, authRequiredPayload('//evil.test/login'))).toBe(true);
-    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?gallery=abc');
+    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?gallery=abc');
 
     assign.mockClear();
     location.pathname = '/agent-studio';
     expect(handleAuthRequired(401, {
       error: { code: 'authentication_required', cail: { login_url: '/agent-studio' } },
     })).toBe(true);
-    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio?gallery=abc');
+    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio?gallery=abc');
   });
 
   it('ignores flat and top-level legacy authentication fields', async () => {
@@ -211,7 +211,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
       error: { code: 'authentication_required' },
       login_url: '/legacy-login',
     })).toBe(true);
-    expect(assign).toHaveBeenCalledWith('https://cail-doorway.ailab-452.workers.dev/agent-studio/?gallery=abc');
+    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?gallery=abc');
   });
 
   it('mutatingFetch attaches the X-CSRF-Token header with the cookie token', async () => {

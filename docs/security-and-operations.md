@@ -27,8 +27,8 @@ pseudonymous CAIL subject is the ownership key. Email and bare identity
 headers are never authorization inputs.
 
 Production and staging use the standalone Doorway issuer
-`https://cail-doorway.ailab-452.workers.dev/cail-sso` and canonical origin
-`https://cail-doorway.ailab-452.workers.dev`.
+`https://tools.ailab.gc.cuny.edu/cail-sso` and canonical origin
+`https://tools.ailab.gc.cuny.edu`.
 
 Before a model call, the server may install the separate
 `X-CAIL-Gateway-Identity-JWT` credential into the workspace Durable Object.
