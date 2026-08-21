@@ -75,7 +75,7 @@ async function makeRealWorkspaceAgent(sessionId, env, storage) {
   return agent;
 }
 
-test('constructed WorkspaceAgent credential boundary installs a same-subject gateway leg and persists it', async () => {
+test('constructed WorkspaceAgent credential boundary persists only the verified gateway leg', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'workspace-gateway-key' });
   const env = identityEnv(issuer);
   const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
@@ -89,11 +89,10 @@ test('constructed WorkspaceAgent credential boundary installs a same-subject gat
   assert.equal(agent.cailIdentityJwt, token);
   assert.equal(agent.cailSubject, TEST_SUBJECTS.alice);
   assert.deepEqual(storage.values.get('cail:identity-jwt'), token);
-  assert.deepEqual(storage.values.get('cail:subject'), TEST_SUBJECTS.alice);
+  assert.equal(storage.values.has('cail:subject'), false);
   assert.equal(storage.values.has('cail:operational-subject'), false);
   assert.deepEqual(storage.writes.slice(writesBeforeCredential).map(([kind, key]) => [kind, key]), [
     ['put', 'cail:identity-jwt'],
-    ['put', 'cail:subject'],
   ]);
 });
 
@@ -163,10 +162,7 @@ test('WorkspaceAgent does not revive persisted app-audience or cross-session cre
   const foreignGatewayToken = await mintGateway(issuer, { subject: TEST_SUBJECTS.carol });
 
   for (const token of [legacyAppToken, foreignGatewayToken]) {
-    const storage = makeStorage([
-      ['cail:identity-jwt', token],
-      ['cail:subject', TEST_SUBJECTS.alice],
-    ]);
+    const storage = makeStorage([['cail:identity-jwt', token]]);
     const resumed = await makeRealWorkspaceAgent(sessionId, env, storage);
 
     assert.equal(resumed.cailIdentityJwt, null);
@@ -189,6 +185,7 @@ test('WorkspaceAgent credential survives the onStart storage hydration path', as
   const resumed = await makeRealWorkspaceAgent(sessionId, env, firstStorage);
   assert.equal(resumed.cailIdentityJwt, token);
   assert.equal(resumed.cailSubject, TEST_SUBJECTS.alice);
+  assert.equal(firstStorage.values.has('cail:subject'), false);
 });
 
 test('server credential RPC reaches a constructed WorkspaceAgent chat/model boundary with the verified gateway leg', async (t) => {
@@ -441,7 +438,7 @@ test('warm WorkspaceAgent fails closed on verifier configuration loss without pu
   assert.equal(payload.error.code, 'authentication_required');
   assert.equal(agent.cailIdentityJwt, token);
   assert.equal(storage.values.get('cail:identity-jwt'), token);
-  assert.equal(storage.values.get('cail:subject'), TEST_SUBJECTS.alice);
+  assert.equal(storage.values.has('cail:subject'), false);
 });
 
 test('constructed WorkspaceAgent denies the actual chat boundary when the optional gateway leg is absent', async () => {
