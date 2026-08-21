@@ -36,9 +36,9 @@ export const DEFAULT_CAIL_MODEL = '@cf/zai-org/glm-5.2';
 
 export interface CailModelEnv {
   /**
-   * Public base URL of the CAIL model proxy (serves /v1/… and /keys). Set at
-   * launch against the institutional Cloudflare account — see
-   * the authorized deployment configuration. Trailing slashes are normalized.
+   * Public origin of the CAIL Gateway. Set this without the `/v1` path; the
+   * transport appends the canonical OpenAI-compatible `/v1` route. Trailing
+   * slashes are normalized.
    */
   CAIL_API_BASE?: string;
   /** Optional model override; defaults to DEFAULT_CAIL_MODEL. */

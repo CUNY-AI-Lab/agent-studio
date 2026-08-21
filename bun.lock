@@ -20,7 +20,8 @@
         "@cloudflare/ai-chat": "0.9.3",
         "@cloudflare/codemode": "0.5.1",
         "@cloudflare/shell": "0.4.1",
-        "@cuny-ai-lab/cail-identity": "5.2.4",
+        "@cuny-ai-lab/cail-client": "6.0.0",
+        "@cuny-ai-lab/cail-identity": "5.2.5",
         "@modelcontextprotocol/sdk": "1.30.0",
         "agents": "0.20.1",
         "ai": "6.0.225",
@@ -44,6 +45,7 @@
       "dependencies": {
         "@ai-sdk/react": "3.0.227",
         "@cloudflare/ai-chat": "0.9.3",
+        "@cuny-ai-lab/cail-identity": "5.2.5",
         "@tailwindcss/typography": "0.5.20",
         "@tailwindcss/vite": "4.3.2",
         "agents": "0.20.1",
@@ -217,7 +219,9 @@
 
     "@csstools/css-tokenizer": ["@csstools/css-tokenizer@4.0.0", "", {}, "sha512-QxULHAm7cNu72w97JUNCBFODFaXpbDg+dP8b/oWFAZ2MTRppA3U00Y2L1HqaS4J6yBqxwa/Y3nMBaxVKbB/NsA=="],
 
-    "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@5.2.4", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.2.4/490b795a23962fc8ac32bdc3392e136e5344e02d", { "dependencies": { "jose": "6.2.3", "zod": "4.4.3" } }, "sha512-/A0z1tpuadk/P1JQhVuduFu/Skw+qxTfg/6OjhlMyM9P3P2Y/jMKd0ZoXnze3FcVrRM6i9P1JxmNO/WwQZvl1g=="],
+    "@cuny-ai-lab/cail-client": ["@cuny-ai-lab/cail-client@6.0.0", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-client/6.0.0/64ad481bee8426cfe99494c7a638272026e10624", { "dependencies": { "zod": "4.4.3" } }, "sha512-/3oqsdunTg3QDnolyVIPPZzzQvSZ3O3aFe/qtHRoz3BJVxqfCZRoYdsMorb7oUV0FCT5L5v55QAggSV2Z5atRA=="],
+
+    "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@5.2.5", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.2.5/6c3b216acc750451eabb9ed9b32179460a8445d0", { "dependencies": { "jose": "6.2.3", "zod": "4.4.3" } }, "sha512-MqCXFwDCp2fO/m7RLPeKLg4mZSa/ArBoXt52Gl29YlWxiqM9YZMKdieV46/mrHPGbZkTEHHljZgHLUzvdnoGYQ=="],
 
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
 

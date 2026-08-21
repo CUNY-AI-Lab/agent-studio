@@ -128,7 +128,7 @@ app.onError((error, c) => {
     return c.json(canonicalError(error.status === 404 ? 'not_found' : 'forbidden', error.message), error.status);
   }
   if (error instanceof ModelCatalogAuthError) {
-    return c.json(canonicalError('authentication_required', "Couldn't load the model list.", { type: 'authentication_error', retryable: false }), 502);
+    return cailAuthRequiredResponse('/agent-studio', 502, "Couldn't load the model list.");
   }
   if (error instanceof ModelCatalogQuotaError) {
     return c.json(canonicalError('quota_exceeded', error.message, { type: 'rate_limit_error', retryable: false }), 429);

@@ -20,7 +20,9 @@
 import {
   CAIL_CANONICAL_ISSUER,
   CAIL_GATEWAY_AUDIENCE,
+  createCailAuthError,
   readIdentityKeyring,
+  serializeCailAuthError,
   verifyKeyringGatewayJwt,
   loadIdentityVerifierConfig,
   verifyIdentityJwt,
@@ -37,7 +39,6 @@ import { z } from 'zod';
  */
 type IdentityConfigErrorReason = string;
 const verifierCache = new Map<string, IdentityVerifierConfig>();
-import { canonicalError } from './error-envelope';
 
 export {
   verifyIdentityJwt,
@@ -230,33 +231,29 @@ export function cailIdentityRequired(env: CailIdentityEnv): boolean {
 }
 
 /**
- * Canonical CAIL 401 envelope consumed by every Studio client surface.
- */
-/**
  * Typed 503 for an identity verification config the worker could not load.
  * Deliberately distinct from cailAuthRequiredResponse's 401: a bad token is
  * the caller's problem, an unloadable config is ours.
  */
 export function cailIdentityMisconfiguredResponse(): Response {
   return new Response(
-    JSON.stringify(canonicalError(
+    serializeCailAuthError(createCailAuthError(
       'identity_verification_misconfigured',
       "Agent Studio isn't set up correctly right now. Email ailab@gc.cuny.edu.",
-      { type: 'api_error', retryable: true },
     )),
     { status: 503, headers: { 'Content-Type': 'application/json' } },
   );
 }
 
-export function cailAuthRequiredResponse(loginPath = '/agent-studio'): Response {
+export function cailAuthRequiredResponse(
+  loginPath = '/agent-studio',
+  status = 401,
+  message = 'Sign in to continue.',
+): Response {
   return new Response(
-    JSON.stringify(canonicalError(
-      'authentication_required',
-      'Sign in to continue.',
-      { type: 'authentication_error', loginUrl: loginPath, retryable: false },
-    )),
+    serializeCailAuthError(createCailAuthError('authentication_required', message, loginPath)),
     {
-      status: 401,
+      status,
       headers: {
         'Content-Type': 'application/json',
         'WWW-Authenticate': 'Bearer realm="CAIL"',

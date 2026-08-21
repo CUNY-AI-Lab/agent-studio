@@ -183,9 +183,9 @@ test('identity-required session bootstrap returns the canonical login challenge'
   assert.equal(res.status, 401);
   const body = await res.json();
   assert.equal(body.error.code, 'authentication_required');
-  assert.equal(body.error.type, 'authentication_error');
-  assert.equal(body.error.cail.login_url, '/agent-studio');
-  assert.equal(body.error.cail.retryable, false);
+  assert.equal(body.error.message, 'Sign in to continue.');
+  assert.equal(body.error.launch, '/agent-studio');
+  assert.equal(Object.keys(body.error).sort().join(','), 'code,launch,message');
 });
 
 test('no cookie -> a signed session cookie is issued and reused', async () => {

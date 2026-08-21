@@ -66,8 +66,7 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
           error: {
             code: 'authentication_required',
             message: 'Sign in to continue.',
-            type: 'authentication_error',
-            cail: { login_url: '/agent-studio' },
+            launch: '/agent-studio',
           },
         }, 401);
       }
@@ -160,8 +159,7 @@ describe('fetchModels quota errors', () => {
       error: {
         code: 'authentication_required',
         message: 'Sign in to continue.',
-        type: 'authentication_error',
-        cail: { login_url: '/agent-studio' },
+        launch: '/agent-studio',
       },
     }, 401));
 

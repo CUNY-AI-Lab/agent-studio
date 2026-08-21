@@ -2,13 +2,11 @@ export interface CanonicalErrorOptions {
   type?: string;
   param?: string | null;
   requestId?: string;
-  loginUrl?: string;
   retryable?: boolean;
 }
 
 interface CanonicalCailFields {
   request_id?: string;
-  login_url?: string;
   retryable?: boolean;
 }
 
@@ -20,7 +18,6 @@ export function canonicalError(
 ) {
   const cail: CanonicalCailFields = {};
   if (options.requestId) cail.request_id = options.requestId;
-  if (options.loginUrl) cail.login_url = options.loginUrl;
   if (options.retryable !== undefined) cail.retryable = options.retryable;
   return {
     error: {
