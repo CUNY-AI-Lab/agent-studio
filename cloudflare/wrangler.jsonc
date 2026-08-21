@@ -59,7 +59,7 @@
   },
   "services": [{ "binding": "GATEWAY", "service": "cail-model-api" }],
   "vars": {
-    "CAIL_API_BASE": "https://cail-model-api.ailab-452.workers.dev",
+    "CAIL_API_BASE": "https://tools.ailab.gc.cuny.edu",
     "CAIL_MODEL": "@cf/zai-org/glm-5.2",
     "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
     "CAIL_CANONICAL_ORIGIN": "https://tools.ailab.gc.cuny.edu",
@@ -110,7 +110,7 @@
       },
       "services": [{ "binding": "GATEWAY", "service": "cail-model-api-staging" }],
       "vars": {
-        "CAIL_API_BASE": "https://cail-model-api-staging.ailab-452.workers.dev",
+        "CAIL_API_BASE": "https://tools.ailab.gc.cuny.edu",
         "CAIL_MODEL": "@cf/zai-org/glm-5.2",
         "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
         "CAIL_CANONICAL_ORIGIN": "https://tools.ailab.gc.cuny.edu",

@@ -49,11 +49,9 @@ function sessionResponse() {
 function authRequiredPayload(loginUrl = '/agent-studio') {
   return {
     error: {
-      message: 'Sign in to continue.',
-      type: 'authentication_error',
-      param: null,
       code: 'authentication_required',
-      cail: { login_url: loginUrl, retryable: false },
+      message: 'Sign in to continue.',
+      launch: loginUrl,
     },
   };
 }
@@ -172,7 +170,7 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
-  it('always sends an auth challenge to the standalone Doorway', async () => {
+  it('only redirects a validated shared auth envelope', async () => {
     const { handleAuthRequired } = await loadApi();
     const assign = vi.fn();
     const location = {
@@ -183,18 +181,15 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     };
     vi.stubGlobal('window', { location });
 
-    expect(handleAuthRequired(401, authRequiredPayload('//evil.test/login'))).toBe(true);
-    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?gallery=abc');
+    expect(handleAuthRequired(401, authRequiredPayload('//evil.test/login'))).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
 
-    assign.mockClear();
     location.pathname = '/agent-studio';
-    expect(handleAuthRequired(401, {
-      error: { code: 'authentication_required', cail: { login_url: '/agent-studio' } },
-    })).toBe(true);
+    expect(handleAuthRequired(401, authRequiredPayload())).toBe(true);
     expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio?gallery=abc');
   });
 
-  it('ignores flat and top-level legacy authentication fields', async () => {
+  it('rejects flat, generic, and top-level legacy authentication fields', async () => {
     const { handleAuthRequired } = await loadApi();
     const assign = vi.fn();
     vi.stubGlobal('window', {
@@ -208,10 +203,18 @@ describe('CSRF fetch helper (cookie delivery)', () => {
 
     expect(handleAuthRequired(401, { error: 'authentication_required' })).toBe(false);
     expect(handleAuthRequired(401, {
+      error: {
+        code: 'authentication_required',
+        message: 'Sign in to continue.',
+        type: 'authentication_error',
+        cail: { login_url: '/agent-studio' },
+      },
+    })).toBe(false);
+    expect(handleAuthRequired(401, {
       error: { code: 'authentication_required' },
       login_url: '/legacy-login',
-    })).toBe(true);
-    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?gallery=abc');
+    })).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it('mutatingFetch attaches the X-CSRF-Token header with the cookie token', async () => {

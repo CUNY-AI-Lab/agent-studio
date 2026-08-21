@@ -6,43 +6,40 @@ import type {
   WorkspaceRecord,
   WorkspaceResponse,
 } from './types';
+import { parseCailAuthErrorEnvelope } from '@cuny-ai-lab/cail-identity';
 import { appPath } from './base-path';
 import { z } from 'zod';
 
-type CanonicalError = {
+type CanonicalApiError = {
   code?: string;
   message?: string;
-  cail?: {
-    login_url?: string;
-  };
 };
 
 const canonicalErrorPayloadSchema = z.object({
   error: z.object({
     code: z.string().optional(),
     message: z.string().optional(),
-    cail: z.object({ login_url: z.string().optional() }).optional(),
   }),
 });
 
 const CAIL_TOOLS_ORIGIN = 'https://tools.ailab.gc.cuny.edu';
 const AGENT_STUDIO_PATH = '/agent-studio';
 
-function canonicalErrorFromPayload<T>(payload: T): CanonicalError | null {
+function canonicalApiErrorFromPayload<T>(payload: T): CanonicalApiError | null {
   const parsed = canonicalErrorPayloadSchema.safeParse(payload);
   return parsed.success ? parsed.data.error : null;
 }
 
 /**
- * CAIL 401 handling (see docs/security-and-operations.md). When the SSO
- * gate / model proxy returns `authentication_required`, redirect the browser
- * to the standalone Doorway at the current Agent Studio path so the user
- * re-authenticates and returns here. Returns true when it handled (and is
- * redirecting).
+ * CAIL 401 handling (see docs/security-and-operations.md). When an
+ * Agent-owned response carries the strict cail-identity
+ * `authentication_required` envelope, redirect the browser to the standalone
+ * Doorway at the current Agent Studio path so the user re-authenticates and
+ * returns here. Returns true when it handled (and is redirecting).
  */
 export function handleAuthRequired<T>(status: number, payload: T): boolean {
   if (status !== 401) return false;
-  const nested = canonicalErrorFromPayload(payload);
+  const nested = parseCailAuthErrorEnvelope(payload)?.error ?? null;
   if (nested?.code !== 'authentication_required') return false;
 
   const currentPath = `${window.location.pathname}${window.location.search}`;
@@ -158,7 +155,7 @@ async function protectedFetch(input: string, init: RequestInit): Promise<Respons
   if (response.status !== 403) return response;
 
   const payload = await response.clone().json().catch(() => null);
-  const code = canonicalErrorFromPayload(payload)?.code;
+  const code = canonicalApiErrorFromPayload(payload)?.code;
   if (code !== 'csrf_token_invalid' && code !== 'csrf_token_missing') {
     return response;
   }
@@ -193,7 +190,7 @@ async function readResponseError(
   response: Response,
 ): Promise<{ payload: unknown; message: string }> {
   const payload = await response.json().catch(() => null);
-  const message = canonicalErrorFromPayload(payload)?.message;
+  const message = canonicalApiErrorFromPayload(payload)?.message;
   return {
     payload,
     message: z.string().safeParse(message).data?.trim()

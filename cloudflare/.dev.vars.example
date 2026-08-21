@@ -2,9 +2,10 @@
 # Deployed Workers use their environment secret instead.
 SESSION_SECRET=agent-studio-local-development-session-secret
 
-# CAIL Model API base URL. Leave it unset for anonymous local work. A local
-# authenticated model path also needs a real GATEWAY-compatible binding.
-# CAIL_API_BASE=https://cail-model-api.example.edu
+# CAIL Gateway origin (without /v1). Leave it unset for anonymous local work.
+# The transport appends /v1; a local authenticated model path also needs a real
+# GATEWAY-compatible binding.
+# CAIL_API_BASE=https://tools.ailab.gc.cuny.edu
 # Optional model override; the proxy/AI Gateway resolves this slug.
 # CAIL policy: Workers AI catalog (@cf/...) ids only.
 CAIL_MODEL=@cf/zai-org/glm-5.2

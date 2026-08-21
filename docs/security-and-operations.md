@@ -13,10 +13,11 @@ execution boundary. A workspace record is published only after its state and
 required files are ready.
 
 The Worker uses the direct CAIL Model API transport supplied by the Vercel AI
-SDK's OpenAI-compatible provider. `CAIL_API_BASE` names the API and the
-`GATEWAY` service binding supplies the same-account request path. Model calls
-carry the verified gateway credential and `X-CAIL-App: agent-studio`; Agent
-Studio stores no provider key.
+SDK's OpenAI-compatible provider. `CAIL_API_BASE` is the public Gateway origin
+`https://tools.ailab.gc.cuny.edu`; the transport appends the canonical `/v1`
+path, while the `GATEWAY` service binding supplies the same-account request
+path. Model calls carry the verified gateway credential and
+`X-CAIL-App: agent-studio`; Agent Studio stores no provider key.
 
 ## CAIL identity
 
@@ -40,6 +41,11 @@ When identity is required, `CAIL_REQUIRE_IDENTITY=true`, a complete issuer/JWKS
 pair, and the mounted base path are mandatory. Local development may leave
 identity disabled, but a partial identity configuration is rejected rather
 than treated as anonymous.
+
+Agent-owned auth failures use cail-identity 5.2.5's strict nested envelope,
+`{ "error": { "code", "message", "launch"? } }`. OpenAI-compatible
+`type`/`param`/`cail` errors are parsed only at the upstream Gateway boundary;
+they are not accepted as browser login challenges.
 
 ## Sessions, CSRF, and sockets
 

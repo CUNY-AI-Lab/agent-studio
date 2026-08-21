@@ -16,7 +16,10 @@ import {
   sessionMiddleware,
 } from '../src/lib/session.ts';
 import { createTestIdentityIssuer } from './helpers/identity.mjs';
-import { CAIL_CANONICAL_ISSUER } from '../src/lib/cail-identity.ts';
+import {
+  CAIL_CANONICAL_ISSUER,
+} from '../src/lib/cail-identity.ts';
+import { parseCailAuthErrorEnvelope } from '@cuny-ai-lab/cail-identity';
 
 const SESSION_ID = 'ab'.repeat(16); // 32-hex opaque id shape
 
@@ -89,7 +92,9 @@ test('middleware maps an unloadable identity config to a typed 503, distinct fro
     }
   );
   assert.equal(misconfigured.status, 503);
-  assert.equal((await misconfigured.json()).error.code, 'identity_verification_misconfigured');
+  const misconfiguredBody = await misconfigured.json();
+  assert.equal(misconfiguredBody.error.code, 'identity_verification_misconfigured');
+  assert.deepEqual(parseCailAuthErrorEnvelope(misconfiguredBody), misconfiguredBody);
 });
 
 test('middleware issues and honors a cookie under a non-hex secret', async () => {

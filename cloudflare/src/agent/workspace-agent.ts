@@ -25,6 +25,10 @@ import {
   type ToolSet,
   type UIMessage,
 } from 'ai';
+import {
+  createCailAuthError,
+  serializeCailAuthError,
+} from '@cuny-ai-lab/cail-identity';
 import { z } from 'zod';
 import {
   DEFAULT_WORKSPACE_STATE,
@@ -554,11 +558,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const credentialCheck = await this.verifyCurrentGatewayCredential(sessionId);
     const identityJwt = this.cailIdentityJwt;
     if (credentialCheck.status !== 'valid' || !identityJwt) {
-      const errorText = JSON.stringify(canonicalError(
-        'authentication_required',
-        'Sign in to continue.',
-        { type: 'authentication_error', loginUrl: '/agent-studio', retryable: false },
-      ));
+      const errorText = serializeCailAuthError(
+        createCailAuthError('authentication_required', 'Sign in to continue.', '/agent-studio'),
+      );
       return createUIMessageStreamResponse({
         stream: createUIMessageStream({
           execute: ({ writer }) => writer.write({ type: 'error', errorText }),

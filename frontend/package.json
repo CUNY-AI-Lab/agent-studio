@@ -13,6 +13,7 @@
   "dependencies": {
     "@ai-sdk/react": "3.0.227",
     "@cloudflare/ai-chat": "0.9.3",
+    "@cuny-ai-lab/cail-identity": "5.2.5",
     "@tailwindcss/typography": "0.5.20",
     "@tailwindcss/vite": "4.3.2",
     "agents": "0.20.1",

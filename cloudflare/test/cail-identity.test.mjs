@@ -5,7 +5,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SignJWT } from 'jose';
 import { TEST_SUBJECTS, createTestIdentityIssuer } from './helpers/identity.mjs';
-import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
+import {
+  loadIdentityVerifierConfig,
+  parseCailAuthErrorEnvelope,
+} from '@cuny-ai-lab/cail-identity';
 
 /**
  * cail-identity 5.0.0 verifies against a snapshot from
@@ -429,7 +432,16 @@ test('cailAuthRequiredResponse is a 401 with the canonical nested envelope', asy
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const body = await response.json();
   assert.equal(body.error.code, 'authentication_required');
-  assert.equal(body.error.cail.login_url, '/agent-studio');
+  assert.equal(body.error.launch, '/agent-studio');
+  assert.deepEqual(parseCailAuthErrorEnvelope(body), body);
+  assert.equal(parseCailAuthErrorEnvelope({
+    error: {
+      code: 'authentication_required',
+      message: 'Sign in to continue.',
+      type: 'authentication_error',
+      cail: { login_url: '/agent-studio' },
+    },
+  }), null);
 });
 
 test('resolveCailModelName honors the override and default', () => {

@@ -236,7 +236,7 @@ function WorkspaceShell({
       return {};
     },
     onError: (chatError) => {
-      // A model-proxy authentication_required envelope can surface here as a
+      // An Agent-owned authentication_required envelope can surface here as a
       // stringified error body. Send the user to the standalone Doorway if so.
       const message = chatError instanceof Error ? chatError.message : String(chatError ?? '');
       if (message.includes('authentication_required')) {

@@ -51,10 +51,17 @@ Both production and staging use the standalone Doorway issuer
 Credentialed model work uses the separate gateway leg in
 `X-CAIL-Gateway-Identity-JWT`, whose audience is `cail:gateway`. The Worker
 installs that verified credential into the workspace Durable Object before a
-chat request. `CAIL_API_BASE` identifies the CAIL Model API and the `GATEWAY`
-Cloudflare service binding carries the direct Vercel AI SDK OpenAI-compatible
-transport. Agent Studio stores no provider key and does not select a second
-model path.
+chat request. `CAIL_API_BASE` is the public Gateway origin
+`https://tools.ailab.gc.cuny.edu`; the transport appends the canonical `/v1`
+path. The `GATEWAY` Cloudflare service binding carries the direct Vercel AI SDK
+OpenAI-compatible transport. Agent Studio stores no provider key and does not
+select a second model path.
+
+Agent-owned authentication challenges use the strict cail-identity 5.2.5
+envelope `{ "error": { "code", "message", "launch"? } }`. The
+OpenAI-compatible `type`/`param`/`cail` envelope remains scoped to errors
+received from the upstream Gateway and is not treated as an Agent Studio login
+challenge.
 
 ## What the app provides
 
@@ -128,11 +135,13 @@ cd cloudflare
 wrangler deploy --env staging --strict
 ```
 
-The checked-in staging environment binds `GATEWAY` and `CAIL_API_BASE` to the
-staging CAIL Model API and binds `WORKSPACE_FILES` to `agent-studio-preview`.
-That bucket is separate from production `agent-studio`; staging validation
-must never mutate live workspace data. Do not add deployment flags that change
-identity, service bindings, routes, or the bucket.
+The checked-in staging environment binds `GATEWAY` to the staging CAIL Model
+API and `CAIL_API_BASE` to the canonical Gateway origin
+(`https://tools.ailab.gc.cuny.edu`); it binds `WORKSPACE_FILES` to
+`agent-studio-preview`. That bucket is separate from production
+`agent-studio`; staging validation must never mutate live workspace data. Do
+not add deployment flags that change identity, service bindings, routes, or the
+bucket.
 
 ## CI and production deploy
 

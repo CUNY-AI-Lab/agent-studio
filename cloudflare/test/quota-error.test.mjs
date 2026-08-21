@@ -44,6 +44,16 @@ test('quotaSignalFromError ignores non-quota CailErrors', () => {
     ),
     null,
   );
+  assert.equal(
+    quotaSignalFromError({
+      error: {
+        code: 'authentication_required',
+        message: 'Sign in to continue.',
+        launch: '/agent-studio',
+      },
+    }),
+    null,
+  );
   assert.equal(quotaSignalFromError({ error: { code: 'network_error', message: 'fetch failed' } }), null);
 });
 
