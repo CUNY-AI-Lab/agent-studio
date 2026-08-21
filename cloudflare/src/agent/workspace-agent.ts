@@ -212,7 +212,6 @@ function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePan
 }
 
 const CAIL_CREDENTIAL_STORAGE_KEY = 'cail:identity-jwt';
-const CAIL_SUBJECT_STORAGE_KEY = 'cail:subject';
 
 type CurrentGatewayCredentialCheck =
   | { status: 'valid' | 'missing' | 'invalid' }
@@ -252,15 +251,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           if (!isCailIdentityConfigError(identity) && identity) {
             this.cailIdentityJwt = stored;
             this.cailSubject = identity.subject;
-            // Rewrite the derived fields from the verified token so a stale
-            // or hand-edited companion value cannot survive a restart.
-            await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
           } else if (!isCailIdentityConfigError(identity)) {
             // Invalid, expired, wrong-audience, or cross-session credentials
             // must never remain available to a later model call. A config
             // error is retained for a later retry after operator repair.
             await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
-            await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
           }
         }
       }
@@ -394,7 +389,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.cailIdentityJwt = identityJwt;
     this.cailSubject = identity.subject;
     await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
-    await this.ctx.storage.put(CAIL_SUBJECT_STORAGE_KEY, identity.subject);
   }
 
   /**
@@ -426,7 +420,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.cailIdentityJwt = null;
       this.cailSubject = null;
       await this.ctx.storage.delete(CAIL_CREDENTIAL_STORAGE_KEY);
-      await this.ctx.storage.delete(CAIL_SUBJECT_STORAGE_KEY);
       return { status: 'invalid' };
     }
 
