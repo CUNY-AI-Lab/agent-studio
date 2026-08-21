@@ -66,13 +66,9 @@ export function HomePage({
             <span className="text-sm font-medium tracking-wide text-muted-foreground">Agent Studio</span>
           </div>
 
-          <h1 className="text-3xl font-medium tracking-tight mb-3">
+          <h1 className="text-3xl font-medium tracking-tight">
             What would you like to work on?
           </h1>
-
-          <p className="text-muted-foreground mb-4">
-            Search APIs, analyze data, create visualizations, or build tools.
-          </p>
         </header>
 
         {/* Main input */}
@@ -214,11 +210,6 @@ export function HomePage({
             </div>
           </section>
         )}
-
-        {/* Footer */}
-        <footer className="mt-16 pt-8 border-t border-border/30 text-center">
-          <p className="text-xs text-muted-foreground/70">Built for the CUNY community</p>
-        </footer>
       </main>
     </div>
   );
