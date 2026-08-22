@@ -7,6 +7,11 @@ const workflowUrl = new URL('../.github/workflows/ci.yml', import.meta.url);
 test('CI protects action and package credentials in one validation job', async () => {
   const workflow = await readFile(workflowUrl, 'utf8');
 
+  assert.match(
+    workflow,
+    /^on:\n  push:\n    branches:\n      - main\n  pull_request:\n/m,
+    'CI should validate pull requests and main pushes without duplicating PR branch push runs',
+  );
   assert.match(workflow, /^permissions:\n  contents: read\n  packages: read$/m);
   assert.doesNotMatch(workflow, /^\s{4}env:/m, 'jobs must not have shared environments');
   assert.doesNotMatch(workflow, /uses:\s+\S+@v\d+/);
