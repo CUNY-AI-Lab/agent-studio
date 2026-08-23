@@ -124,6 +124,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Verify production route and custom-domain read access
+        # The read-only preflight requires Zone Read, Workers Routes Read, and
+        # Workers Scripts Read. It must stay before deployment so a missing
+        # permission fails without mutating the production Worker.
+        run: bun scripts/agent-studio-route-gate.mjs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Deploy the exact main commit
         working-directory: cloudflare
         run: |
@@ -218,43 +226,9 @@ jobs:
             and .result.previews_enabled == false
           ' <<<"$subdomain" >/dev/null
 
-          route_inventory="$(mktemp)"
-          trap 'rm -f "$route_inventory"' EXIT
-          zone_page=1
-          while :; do
-            zones="$(curl --fail --silent --show-error \
-              "${api}/zones?account.id=${account_id}&type=full,partial,secondary,internal&per_page=50&page=${zone_page}" \
-              --header "$auth")"
-            jq -e '
-              .success == true
-              and (.result | type) == "array"
-              and ((.result_info.total_pages // 1) | type) == "number"
-            ' <<<"$zones" >/dev/null
-            zone_total_pages="$(jq -r '.result_info.total_pages // 1' <<<"$zones")"
-            [[ "$zone_total_pages" =~ ^[1-9][0-9]*$ ]]
-            while IFS=$'\t' read -r zone_id zone_name; do
-              routes="$(curl --fail --silent --show-error \
-                "${api}/zones/${zone_id}/workers/routes" \
-                --header "$auth")"
-              jq -e '
-                .success == true
-                and (.result | type) == "array"
-              ' <<<"$routes" >/dev/null
-              jq -r --arg zone_id "$zone_id" --arg zone_name "$zone_name" '
-                .result[]?
-                | select(.script == "agent-studio")
-                | [$zone_id, $zone_name, .id, .pattern, .script]
-                | @tsv
-              ' <<<"$routes" >> "$route_inventory"
-            done < <(jq -r '.result[] | [.id, .name] | @tsv' <<<"$zones")
-            (( zone_page >= zone_total_pages )) && break
-            (( zone_page += 1 ))
-          done
-          if [[ -s "$route_inventory" ]]; then
-            echo 'Agent Studio must not own a production custom route; route inventory found:' >&2
-            cat "$route_inventory" >&2
-            exit 1
-          fi
+          # Re-run the route and custom-domain inventory after deployment. The
+          # helper is fail-closed and emits only its fixed bounded failure.
+          bun ../scripts/agent-studio-route-gate.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
