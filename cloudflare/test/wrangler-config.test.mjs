@@ -46,7 +46,10 @@ test('production has no public Worker or preview URL while staging keeps its iso
   assert.equal(config.preview_urls, false);
   assert.equal(config.env?.staging?.workers_dev, true);
   assert.equal(config.env?.staging?.preview_urls, false);
+  assert.equal(config.route, undefined);
   assert.equal(config.routes, undefined);
+  assert.equal(config.env?.staging?.route, undefined);
+  assert.equal(config.env?.staging?.routes, undefined);
   assert.equal(config.exports?.AgentStudioReadiness?.type, 'worker');
   assert.equal(config.env?.staging?.exports?.AgentStudioReadiness?.type, 'worker');
 });

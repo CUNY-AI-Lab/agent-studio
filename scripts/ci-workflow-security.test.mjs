@@ -65,6 +65,10 @@ test('CI protects action and package credentials in one validation job', async (
   assert.ok(deployJob.includes('workers/message'));
   assert.match(deployJob, /versions view "\$version_id" --name agent-studio --json/);
   assert.match(deployJob, /\.versions\[0\]\.version_id == \$id and \.versions\[0\]\.percentage == 100/);
+  assert.match(deployJob, /\/zones\?account\.id=\$\{account_id\}/);
+  assert.match(deployJob, /\/zones\/\$\{zone_id\}\/workers\/routes"/);
+  assert.match(deployJob, /select\(\.script == "agent-studio"\)/);
+  assert.match(deployJob, /Agent Studio must not own a production custom route/);
   assert.match(deployJob, /select\(\.annotations\["workers\/message"\] == \$message\)/);
   assert.match(deployJob, /AgentStudioReadiness/);
   assert.match(deployJob, /release-readiness-wrangler\.jsonc/);
