@@ -21,35 +21,19 @@ function jsonResponse(value, status = 200) {
   });
 }
 
-function zonesPage(page, totalPages, totalCount, result) {
+function scriptsResponse(result) {
   return {
     errors: [],
     messages: [],
     result,
-    result_info: {
-      count: result.length,
-      page,
-      per_page: 50,
-      total_count: totalCount,
-      total_pages: totalPages,
-    },
     success: true,
   };
 }
 
-function emptyRoutes() {
-  return { errors: [], messages: [], result: [], success: true };
-}
-
-function bypassRoutes() {
+function agentStudioScript(routes = []) {
   return {
-    errors: [],
-    messages: [],
-    result: [
-      { id: 'bypass', pattern: 'example.test/*', script: null },
-      { id: 'unbound', pattern: 'unbound.example.test/*' },
-    ],
-    success: true,
+    id: 'agent-studio',
+    routes,
   };
 }
 
@@ -82,60 +66,62 @@ function fetchFor(handler) {
   return { calls, fetchImpl };
 }
 
-test('route gate fails closed when zone pagination metadata is absent', async () => {
-  const { calls, fetchImpl } = fetchFor(() => jsonResponse({
-    errors: [],
-    messages: [],
-    result: [],
-    success: true,
-  }));
-
-  await assert.rejects(
-    verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl),
-    (error) => error instanceof Error && error.message === FAILURE_MESSAGE,
-  );
-  assert.equal(calls.length, 1);
-});
-
-test('route gate visits every declared zone page before checking domains', async () => {
-  const firstPage = Array.from({ length: 50 }, (_, index) => index === 0
-    ? {
-      id: `zone-${index}`,
-      name: `zone-${index}.example`,
-      account: { id: ACCOUNT_ID },
-      status: 'active',
-    }
-    : {
-      id: `zone-${index}`,
-      name: `zone-${index}.example`,
-    });
+test('route gate reads the account-level script and filtered custom-domain inventories', async () => {
   const { calls, fetchImpl } = fetchFor((url) => {
-    if (url.pathname === '/client/v4/zones') {
-      const page = Number(url.searchParams.get('page'));
-      return jsonResponse(page === 1
-        ? zonesPage(1, 2, 51, firstPage)
-        : zonesPage(2, 2, 51, [{ id: 'zone-50', name: 'zone-50.example' }]));
-    }
-    if (/^\/client\/v4\/zones\/zone-[0-9]+\/workers\/routes$/u.test(url.pathname)) {
-      return jsonResponse(url.pathname.endsWith('/zone-0/workers/routes')
-        ? bypassRoutes()
-        : emptyRoutes());
+    if (url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
+      return jsonResponse(scriptsResponse([agentStudioScript()]));
     }
     if (url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/workers/domains`) {
+      assert.equal(url.search, '?service=agent-studio');
       return jsonResponse(emptyDomains());
     }
     throw new Error('unexpected test URL');
   });
 
   await verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl);
-  const paths = calls.map((url) => `${url.pathname}${url.search}`);
-  assert.equal(paths[0], '/client/v4/zones?account.id=account-id&type=full%2Cpartial%2Csecondary%2Cinternal&per_page=50&page=1');
-  assert.equal(paths[51], '/client/v4/zones?account.id=account-id&type=full%2Cpartial%2Csecondary%2Cinternal&per_page=50&page=2');
-  assert.equal(paths.at(-1), '/client/v4/accounts/account-id/workers/domains?service=agent-studio');
-  assert.equal(paths.filter((path) => path.endsWith('/workers/routes')).length, 51);
+  assert.deepEqual(
+    calls.map((url) => `${url.pathname}${url.search}`),
+    [
+      '/client/v4/accounts/account-id/workers/scripts',
+      '/client/v4/accounts/account-id/workers/domains?service=agent-studio',
+    ],
+  );
 });
 
-test('route gate stops on a permissions 403 before route or domain reads', async () => {
+test('route gate requires exactly one Agent Studio script with an explicit empty route list', async () => {
+  const cases = [
+    ['no scripts', []],
+    ['another script', [
+      { id: 'another-script', routes: [] },
+    ]],
+    ['multiple scripts', [
+      agentStudioScript(),
+      { id: 'another-script', routes: [] },
+    ]],
+    ['an associated route', [agentStudioScript([
+      { id: 'route-id', pattern: 'example.test/*', script: 'agent-studio' },
+    ])]],
+    ['missing routes', [{ id: 'agent-studio' }]],
+    ['null routes', [{ id: 'agent-studio', routes: null }]],
+  ];
+
+  for (const [name, result] of cases) {
+    const { calls, fetchImpl } = fetchFor((url) => {
+      if (url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
+        return jsonResponse(scriptsResponse(result));
+      }
+      throw new Error(`the custom-domain inventory must not be read for ${name}`);
+    });
+
+    await assert.rejects(
+      verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl),
+      (error) => error instanceof Error && error.message === FAILURE_MESSAGE,
+    );
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('route gate stops on a permissions 403 before custom-domain reads', async () => {
   const { calls, fetchImpl } = fetchFor(() => new Response(null, { status: 403 }));
 
   await assert.rejects(
@@ -145,88 +131,76 @@ test('route gate stops on a permissions 403 before route or domain reads', async
   assert.equal(calls.length, 1);
 });
 
-test('route gate rejects an exact Agent Studio route with only the generic failure', async () => {
-  const sensitive = {
-    id: 'secret-route-id',
-    pattern: 'secret.example.test/*',
-    script: 'agent-studio',
-  };
-  const { fetchImpl } = fetchFor((url) => {
-    if (url.pathname === '/client/v4/zones') {
-      return jsonResponse(zonesPage(1, 1, 1, [{ id: 'zone-1', name: 'zone.example.test' }]));
-    }
-    if (url.pathname === '/client/v4/zones/zone-1/workers/routes') {
-      return jsonResponse({ errors: null, messages: null, result: [sensitive], success: true });
-    }
-    throw new Error('unexpected test URL');
-  });
+test('route gate rejects malformed script-list responses', async () => {
+  const cases = [
+    ['missing result', {
+      errors: [],
+      messages: [],
+      success: true,
+    }],
+    ['malformed result', {
+      errors: null,
+      messages: null,
+      result: {},
+      success: true,
+    }],
+    ['malformed route', scriptsResponse([agentStudioScript([
+      { id: '', pattern: 'example.test/*', script: 'agent-studio' },
+    ])])],
+  ];
 
-  await assert.rejects(
-    verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl),
-    (error) => error instanceof Error
-      && error.message === FAILURE_MESSAGE
-      && !error.message.includes('secret'),
-  );
-});
-
-test('route gate rejects malformed zone identifiers while accepting extra zone fields', async (t) => {
-  for (const field of ['id', 'name']) {
-    await t.test(`empty ${field}`, async () => {
-      const malformed = field === 'id'
-        ? { id: '', name: 'zone.example.test' }
-        : { id: 'zone-1', name: '' };
-      const { calls, fetchImpl } = fetchFor((url) => {
-        if (url.pathname === '/client/v4/zones') {
-          return jsonResponse(zonesPage(1, 1, 1, [malformed]));
-        }
-        throw new Error('unexpected test URL');
-      });
-
-      await assert.rejects(
-        verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl),
-        (error) => error instanceof Error && error.message === FAILURE_MESSAGE,
-      );
-      assert.equal(calls.length, 1);
-    });
+  for (const [name, payload] of cases) {
+    const { calls, fetchImpl } = fetchFor(() => jsonResponse(payload));
+    await assert.rejects(
+      verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl),
+      (error) => error instanceof Error && error.message === FAILURE_MESSAGE,
+    );
+    assert.equal(calls.length, 1, `${name} should stop after the script list`);
   }
 });
 
-test('route gate fails closed on malformed or forbidden custom-domain results', async (t) => {
-  await t.test('single-page result_info may be omitted', async () => {
+test('route gate fails closed on malformed or non-empty custom-domain results', async () => {
+  {
     const { fetchImpl } = fetchFor((url) => {
-      if (url.pathname === '/client/v4/zones') return jsonResponse(zonesPage(1, 1, 0, []));
+      if (url.pathname.endsWith('/workers/scripts')) {
+        return jsonResponse(scriptsResponse([agentStudioScript()]));
+      }
       return jsonResponse(emptyDomainsWithoutPagination());
     });
     await verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl);
-  });
+  }
 
-  await t.test('malformed result', async () => {
+  {
     const { fetchImpl } = fetchFor((url) => {
-      if (url.pathname === '/client/v4/zones') return jsonResponse(zonesPage(1, 1, 0, []));
+      if (url.pathname.endsWith('/workers/scripts')) {
+        return jsonResponse(scriptsResponse([agentStudioScript()]));
+      }
       return jsonResponse({ errors: null, messages: null, result: {}, success: true });
     });
     await assert.rejects(verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl));
-  });
+  }
 
-  await t.test('permissions 403', async () => {
+  {
     const { fetchImpl } = fetchFor((url) => {
-      if (url.pathname === '/client/v4/zones') return jsonResponse(zonesPage(1, 1, 0, []));
+      if (url.pathname.endsWith('/workers/scripts')) {
+        return jsonResponse(scriptsResponse([agentStudioScript()]));
+      }
       return new Response(null, { status: 403 });
     });
     await assert.rejects(verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl));
-  });
+  }
 
-  await t.test('forbidden result has no sensitive error detail', async () => {
+  {
     const sensitive = {
       cert_id: 'secret-cert',
       hostname: 'secret.example.test',
       id: 'secret-domain',
-      service: 'agent-studio',
-      zone_id: 'secret-zone-id',
-      zone_name: 'secret-zone.example.test',
+      service: 'different-service',
     };
     const { fetchImpl } = fetchFor((url) => {
-      if (url.pathname === '/client/v4/zones') return jsonResponse(zonesPage(1, 1, 0, []));
+      if (url.pathname.endsWith('/workers/scripts')) {
+        return jsonResponse(scriptsResponse([agentStudioScript()]));
+      }
       return jsonResponse({ errors: null, messages: null, result: [sensitive], success: true });
     });
     await assert.rejects(
@@ -235,14 +209,14 @@ test('route gate fails closed on malformed or forbidden custom-domain results', 
         && error.message === FAILURE_MESSAGE
         && !error.message.includes('secret'),
     );
-  });
+  }
 });
 
 test('CLI emits only the fixed route-gate failure for a forbidden custom domain', async () => {
   const server = createServer((request, response) => {
-    if (request.url?.startsWith('/client/v4/zones?')) {
+    if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(zonesPage(1, 1, 0, [])));
+      response.end(JSON.stringify(scriptsResponse([agentStudioScript()])));
       return;
     }
     if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/domains?service=agent-studio`) {
@@ -291,25 +265,17 @@ test('CLI emits only the fixed route-gate failure for a forbidden custom domain'
   assert.doesNotMatch(Buffer.concat(stderr).toString(), /secret|hostname|zone/i);
 });
 
-test('CLI emits only the fixed route-gate failure for a forbidden route', async () => {
+test('CLI emits only the fixed route-gate failure for an associated route', async () => {
   const server = createServer((request, response) => {
-    if (request.url?.startsWith('/client/v4/zones?')) {
+    if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
       response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(zonesPage(1, 1, 1, [{ id: 'zone-1', name: 'zone.example.test' }])));
-      return;
-    }
-    if (request.url === '/client/v4/zones/zone-1/workers/routes') {
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({
-        errors: null,
-        messages: null,
-        result: [{
+      response.end(JSON.stringify(scriptsResponse([agentStudioScript([
+        {
           id: 'secret-route-id',
           pattern: 'secret.example.test/*',
           script: 'agent-studio',
-        }],
-        success: true,
-      }));
+        },
+      ])])));
       return;
     }
     response.statusCode = 404;

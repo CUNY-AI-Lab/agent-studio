@@ -124,10 +124,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
-      - name: Verify production route and custom-domain read access
-        # The token must be account-scoped across every production-account zone.
-        # The read-only preflight requires Zone Read, Workers Routes Read, and
-        # Workers Scripts Read, before deployment can mutate the Worker.
+      - name: Verify production Worker and custom-domain read access
+        # The token must be scoped to the production account. The read-only
+        # preflight uses the account-level Workers Scripts Read API; deployment
+        # retains its existing Workers Scripts Write permission.
         run: bun scripts/agent-studio-route-gate.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -227,8 +227,9 @@ jobs:
             and .result.previews_enabled == false
           ' <<<"$subdomain" >/dev/null
 
-          # Re-run the route and custom-domain inventory after deployment. The
-          # helper is fail-closed and emits only its fixed bounded failure.
+          # Re-run the account-level Worker and custom-domain inventories after
+          # exact readback. The helper is fail-closed and emits only its fixed
+          # bounded failure.
           bun ../scripts/agent-studio-route-gate.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

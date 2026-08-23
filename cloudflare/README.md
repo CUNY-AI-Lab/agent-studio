@@ -94,16 +94,15 @@ WorkerEntrypoint through the local release helper. The helper uses Wrangler's
 per-binding `remote: true` service binding; it does not use legacy full remote
 development and is never deployed.
 
-The production Cloudflare token must use an account-wide resource scope covering
-the entire production account and every zone in that account; a single-zone
-resource scope is insufficient because CI checks every production-account zone.
-It must retain its deploy permissions and include the exact read scopes
-`Zone Read`, `Workers Routes Read`, and `Workers Scripts Read`. CI checks zone
-routes through `/zones/{zone_id}/workers/routes` and custom domains through
-`/accounts/{account_id}/workers/domains?service=agent-studio`
-before and after deployment. A missing read scope fails the preflight before
-the Worker is mutated. Production has no direct custom domain, zone route, or
-workers.dev coordinate; staging keeps its isolated workers.dev smoke URL.
+The production Cloudflare token must use an account-wide resource scope for the
+production account and retain its existing deploy permissions, including
+`Workers Scripts Write`. CI's read-only preflight uses the account-level
+`Workers Scripts Read` API to require exactly one `agent-studio` script with no
+associated routes, and checks custom domains through
+`/accounts/{account_id}/workers/domains?service=agent-studio` before and after
+deployment. A missing read scope fails the preflight before the Worker is
+mutated. Production has no direct custom domain, route, or workers.dev
+coordinate; staging keeps its isolated workers.dev smoke URL.
 
 OpenWebUI remains a separate protected application and is outside this Worker
 package's scope.
