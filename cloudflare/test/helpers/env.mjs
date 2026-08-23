@@ -14,6 +14,7 @@
 
 import { register } from 'node:module';
 import { z } from 'zod';
+import { normalizePanelRelations } from '../../src/lib/panel-connections.ts';
 
 // Mirror the DO's own path sanitization so the fake agent rejects traversal the
 // same way `writeWorkspaceFileContent`/`sanitizeRelativePath` do in production.
@@ -254,9 +255,11 @@ export class FakeWorkspaceAgent {
   }
 
   async replaceWorkspaceState(state, workspace, sessionId) {
+    const normalizedRelations = normalizePanelRelations(state.panels ?? [], state.connections ?? []);
     this.state = {
       ...DEFAULT_STATE(),
       ...state,
+      ...normalizedRelations,
       sessionId,
       workspace,
     };
@@ -378,11 +381,11 @@ export class FakeWorkspaceAgent {
       .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
       .filter((group) => group.panelIds.length >= 2);
 
+    const normalizedRelations = normalizePanelRelations(panels, connections);
     this.state = {
       ...this.state,
-      panels,
+      ...normalizedRelations,
       groups,
-      connections,
     };
     if (patch.viewport) this.state.viewport = patch.viewport;
     return this.state;

@@ -42,4 +42,21 @@ describe('panel connections', () => {
     expect(normalized.panels[1].sourcePanelId).toBeUndefined();
     expect(normalized.panels[1].linkedTo).toBeUndefined();
   });
+
+  it('drops self-associations while retaining valid edges', () => {
+    const normalized = normalizePanelRelations(
+      [
+        { id: 'source', type: 'markdown' as const, content: '' },
+        { id: 'target', type: 'markdown' as const, content: '' },
+      ],
+      [
+        { id: 'self', sourceId: 'source', targetId: 'source' },
+        { id: 'valid', sourceId: 'source', targetId: 'target' },
+      ],
+    );
+
+    expect(normalized.connections).toEqual([
+      { id: 'valid', sourceId: 'source', targetId: 'target' },
+    ]);
+  });
 });

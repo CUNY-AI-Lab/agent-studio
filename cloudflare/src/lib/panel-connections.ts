@@ -63,6 +63,7 @@ export function normalizePanelRelations(
   const seenEndpoints = new Set<string>();
   const validConnections = connections.filter((connection) => {
     if (!panelIds.has(connection.sourceId) || !panelIds.has(connection.targetId)) return false;
+    if (connection.sourceId === connection.targetId) return false;
     const endpoint = connectionEndpointKey(connection.sourceId, connection.targetId);
     if (seenEndpoints.has(endpoint)) return false;
     seenEndpoints.add(endpoint);

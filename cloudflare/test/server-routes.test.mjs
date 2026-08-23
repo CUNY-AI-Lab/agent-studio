@@ -1045,6 +1045,74 @@ test('panels: add a panel, then patch layout', async () => {
   assert.deepEqual(layoutState.panels[0].layout, { x: 40, y: 60, width: 300 });
 });
 
+test('relations: PATCH and import drop self-associations while retaining valid edges', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+  const panels = [
+    { id: 'source', type: 'markdown', title: 'Source', content: 'source' },
+    { id: 'target', type: 'markdown', title: 'Target', content: 'target' },
+  ];
+  for (const panel of panels) {
+    const response = await session.request(
+      app,
+      `/api/workspaces/${workspace.id}/panels`,
+      jsonInit('POST', { panel }),
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const selfConnection = { id: 'self-edge', sourceId: 'source', targetId: 'source' };
+  const validConnection = { id: 'valid-edge', sourceId: 'source', targetId: 'target' };
+  const patchResponse = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/layout`,
+    jsonInit('PATCH', { connections: [selfConnection, validConnection] }),
+  );
+  assert.equal(patchResponse.status, 200);
+  assert.deepEqual((await patchResponse.json()).state.connections, [validConnection]);
+
+  const reloaded = await session.request(app, `/api/workspaces/${workspace.id}`);
+  assert.equal(reloaded.status, 200);
+  assert.deepEqual((await reloaded.json()).state.connections, [validConnection]);
+
+  const importedBundle = makeImportBundle({
+    workspace: {
+      id: 'ignored',
+      name: 'Relations import',
+      description: '',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    },
+    state: {
+      sessionId: null,
+      workspace: null,
+      panels,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [selfConnection, validConnection],
+    },
+  });
+  const form = new FormData();
+  form.append('bundle', new File([JSON.stringify(importedBundle)], 'relations.json', {
+    type: 'application/json',
+  }));
+  const importResponse = await session.request(app, '/api/workspaces/import', {
+    method: 'POST',
+    body: form,
+  });
+  assert.equal(importResponse.status, 201);
+  const imported = await importResponse.json();
+
+  const importedReload = await session.request(app, `/api/workspaces/${imported.workspaceId}`);
+  assert.equal(importedReload.status, 200);
+  assert.deepEqual((await importedReload.json()).state.connections, [validConnection]);
+
+  const exported = await session.request(app, `/api/workspaces/${imported.workspaceId}/export`);
+  assert.equal(exported.status, 200);
+  assert.deepEqual((await exported.json()).state.connections, [validConnection]);
+});
+
 test('panels: invalid panel payload -> 400 (hand-validated route)', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
