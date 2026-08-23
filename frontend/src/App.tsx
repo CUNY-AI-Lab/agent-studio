@@ -68,11 +68,25 @@ import {
 } from './lib/panelLayout';
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
 import { computeGroupsDelta } from './lib/groupDelta';
+import {
+  clearPanelRelationFields,
+  connectionEndpointKey,
+  findPanelConnection,
+  makePanelConnection,
+  normalizePanelRelations,
+  repairPanelConnectionId,
+} from './lib/panelConnections';
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
-import { clampNumber, makeClientId } from './lib/format';
+import { makeClientId } from './lib/format';
+import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, CANVAS_WHEEL_CONFIG, zoomViewportAtPoint } from './lib/canvasViewport';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
+import {
+  contextualFailureMessage,
+  getContextualTurnMessages,
+  type ContextualTurn,
+} from './lib/contextualTurn';
 import {
   type ContextualChatTarget,
   type ContextualThreadMessage,
@@ -196,9 +210,10 @@ function WorkspaceShell({
   const contextualAutoPanKeyRef = useRef<string | null>(null);
   const initialPromptSentRef = useRef(false);
   const publishOperationIdRef = useRef<string | null>(null);
-  const contextualPendingRef = useRef<{
+  const chatStopRef = useRef<() => void>(() => undefined);
+  const contextualPendingRef = useRef<ContextualTurn & {
+    turnId: string;
     scopeKey: string;
-    previousAssistantId: string | null;
   } | null>(null);
   const panGestureRef = useRef<{
     pointerId: number;
@@ -258,15 +273,7 @@ function WorkspaceShell({
     },
   });
 
-  const clearContextualDraft = useCallback(() => {
-    setContextualComposer('');
-    contextualPendingRef.current = null;
-  }, []);
-
-  const closeContextualChat = useCallback(() => {
-    setContextualChatTarget(null);
-    clearContextualDraft();
-  }, [clearContextualDraft]);
+  chatStopRef.current = chat.stop;
 
   const openContextualTarget = useCallback((target: ContextualChatTarget) => {
     setContextualChatTarget(target);
@@ -281,6 +288,56 @@ function WorkspaceShell({
     setChatErrorNotice(null);
     return chat.sendMessage({ text }, options);
   }, [chat]);
+
+  const clearContextualPending = useCallback((turnId?: string): ContextualTurn & {
+    turnId: string;
+    scopeKey: string;
+  } | null => {
+    const pending = contextualPendingRef.current;
+    if (!pending || (turnId !== undefined && pending.turnId !== turnId)) return null;
+    contextualPendingRef.current = null;
+    return pending;
+  }, []);
+
+  const finishContextualTurn = useCallback((
+    pending: ContextualTurn & { turnId: string; scopeKey: string },
+    reason: 'cancel' | 'error' | 'empty',
+  ) => {
+    if (contextualPendingRef.current?.turnId !== pending.turnId) return;
+    const content = contextualFailureMessage(reason);
+    setContextualThreads((current) => {
+      const thread = current[pending.scopeKey] || [];
+      const lastMessage = thread[thread.length - 1];
+      if (lastMessage?.role === 'assistant' && lastMessage.content === content) return current;
+      return {
+        ...current,
+        [pending.scopeKey]: [
+          ...thread,
+          { id: makeClientId('context-assistant-error'), role: 'assistant', content },
+        ],
+      };
+    });
+    setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
+    setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
+    clearContextualPending(pending.turnId);
+  }, [clearContextualPending]);
+
+  const clearContextualDraft = useCallback(() => {
+    setContextualComposer('');
+    clearContextualPending();
+  }, [clearContextualPending]);
+
+  const closeContextualChat = useCallback(() => {
+    // Closing the scoped popover is an explicit local cancellation. Stop the
+    // attached stream so a later turn cannot inherit it.
+    const pending = contextualPendingRef.current;
+    if (pending) {
+      void chatStopRef.current();
+      finishContextualTurn(pending, 'cancel');
+    }
+    setContextualChatTarget(null);
+    clearContextualDraft();
+  }, [clearContextualDraft, finishContextualTurn]);
 
   useEffect(() => {
     setWorkspaceState(workspace.state);
@@ -427,6 +484,12 @@ function WorkspaceShell({
     () => visiblePanels.filter((panel) => selectedPanelIds.has(panel.id)),
     [selectedPanelIds, visiblePanels]
   );
+  const selectedConnection = useMemo(
+    () => selectedPanels.length === 2
+      ? findPanelConnection(workspaceState.connections, selectedPanels[0].id, selectedPanels[1].id) ?? null
+      : null,
+    [selectedPanels, workspaceState.connections]
+  );
   const singleSelectedPanel = selectedPanels.length === 1 ? selectedPanels[0] : null;
   const selectedGroup = useMemo(
     () =>
@@ -561,36 +624,6 @@ function WorkspaceShell({
 
     previousArtifactIdsRef.current = nextIds;
   }, [artifactPanels]);
-
-  useEffect(() => {
-    const missingConnections = artifactPanels
-      .filter((panel) => panel.sourcePanelId && panel.sourcePanelId !== panel.id)
-      .flatMap((panel) => panel.sourcePanelId && panel.sourcePanelId !== panel.id
-        ? [{
-          id: `conn-${panel.sourcePanelId}-${panel.id}`,
-          sourceId: panel.sourcePanelId,
-          targetId: panel.id,
-        }]
-        : [])
-      .filter(
-        (connection) =>
-          !workspaceState.connections.some((current) => current.id === connection.id)
-      );
-
-    if (missingConnections.length === 0) return;
-
-    setWorkspaceState((current) => {
-      const known = new Set(current.connections.map((connection) => connection.id));
-      const additions = missingConnections.filter((connection) => !known.has(connection.id));
-      if (additions.length === 0) return current;
-      return { ...current, connections: [...current.connections, ...additions] };
-    });
-    // Send only the NEW connections: the server merges per id, so shipping the
-    // whole array would let this tab's stale snapshot resurrect a connection
-    // the server concurrently removed (removePanel) or drop one another tab
-    // added.
-    void agent.call('applyLayoutPatch', [{ connections: missingConnections }]);
-  }, [agent, artifactPanels, workspaceState.connections]);
 
   useEffect(() => {
     const nextIds = new Set(workspaceState.connections.map((connection) => connection.id));
@@ -1208,6 +1241,14 @@ function WorkspaceShell({
     setSelectedPanelIds(new Set(group.panelIds.filter((panelId) => visiblePanelIds.has(panelId))));
   }, [visiblePanelIds, workspaceState.groups]);
 
+  const handleConnectionClick = useCallback((connection: WorkspaceState['connections'][number]) => {
+    const endpointIds = [connection.sourceId, connection.targetId]
+      .filter((panelId) => visiblePanelIds.has(panelId));
+    if (endpointIds.length !== 2) return;
+    setFocusedPanelId(connection.targetId);
+    setSelectedPanelIds(new Set(endpointIds));
+  }, [visiblePanelIds]);
+
   const refreshWorkspace = useCallback(async () => {
     await onWorkspaceRefresh(workspace.workspace.id);
   }, [onWorkspaceRefresh, workspace.workspace.id]);
@@ -1292,6 +1333,64 @@ function WorkspaceShell({
     if (removeIds.length > 0) patch.removeGroups = removeIds;
     await agent.call('applyLayoutPatch', [patch]);
   }, [agent, workspaceState.groups]);
+
+  const toggleSelectedConnection = useCallback(async () => {
+    if (selectedPanels.length !== 2) return;
+
+    const [firstPanel, secondPanel] = selectedPanels;
+    const currentConnection = findPanelConnection(
+      workspaceState.connections,
+      firstPanel.id,
+      secondPanel.id,
+    );
+
+    if (currentConnection) {
+      setWorkspaceState((current) => {
+        const panels = clearPanelRelationFields(current.panels, [currentConnection]);
+        const relations = normalizePanelRelations(
+          panels,
+          current.connections.filter((connection) => connection.id !== currentConnection.id),
+        );
+        return { ...current, ...relations };
+      });
+      try {
+        await agent.call('applyLayoutPatch', [{ removeConnections: [currentConnection.id] }]);
+        showToast(`Disconnected ${getPanelTitle(firstPanel)} and ${getPanelTitle(secondPanel)}`);
+      } catch (nextError) {
+        setWorkspaceState((current) => ({
+          ...current,
+          ...normalizePanelRelations(current.panels, [...current.connections, currentConnection]),
+        }));
+        setError(nextError instanceof Error ? nextError.message : 'The tile association could not be removed.');
+      }
+      return;
+    }
+
+    const nextConnection = repairPanelConnectionId(
+      makePanelConnection(firstPanel.id, secondPanel.id),
+      workspaceState.connections,
+    );
+    setWorkspaceState((current) => {
+      return {
+        ...current,
+        ...normalizePanelRelations(current.panels, [...current.connections, nextConnection]),
+      };
+    });
+    try {
+      await agent.call('applyLayoutPatch', [{ connections: [nextConnection] }]);
+      showToast(`Associated ${getPanelTitle(firstPanel)} and ${getPanelTitle(secondPanel)}`);
+    } catch (nextError) {
+      setWorkspaceState((current) => ({
+        ...current,
+        ...normalizePanelRelations(
+          current.panels,
+          current.connections.filter((connection) => connectionEndpointKey(connection.sourceId, connection.targetId)
+            !== connectionEndpointKey(nextConnection.sourceId, nextConnection.targetId)),
+        ),
+      }));
+      setError(nextError instanceof Error ? nextError.message : 'The tile association could not be saved.');
+    }
+  }, [agent, selectedPanels, showToast, workspaceState.connections]);
 
   const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
     setWorkspaceState((current) => {
@@ -1889,10 +1988,29 @@ function WorkspaceShell({
   const handleContextualSubmit = useCallback(() => {
     const next = contextualComposer.trim();
     if (!contextualChatTarget || !next) return;
+    if (contextualPendingRef.current) return;
+    if (chat.status === 'submitted' || chat.status === 'streaming' || chat.isStreaming || chat.isRecovering) {
+      setContextualStatus((current) => ({
+        ...current,
+        [contextualChatTarget.key]: 'Finish the current response first.',
+      }));
+      return;
+    }
 
     const previousAssistantId = [...chat.messages]
       .reverse()
       .find((message) => message.role === 'assistant')?.id || null;
+    const turnId = makeClientId('context-turn');
+    const pending: ContextualTurn & {
+      turnId: string;
+      scopeKey: string;
+    } = {
+      turnId,
+      scopeKey: contextualChatTarget.key,
+      previousAssistantId,
+      previousMessageIds: new Set(chat.messages.map((message) => message.id)),
+      userMessageId: null,
+    };
 
     setContextualThreads((current) => ({
       ...current,
@@ -1905,10 +2023,7 @@ function WorkspaceShell({
         },
       ],
     }));
-    contextualPendingRef.current = {
-      scopeKey: contextualChatTarget.key,
-      previousAssistantId,
-    };
+    contextualPendingRef.current = pending;
     setContextualLoading((current) => ({
       ...current,
       [contextualChatTarget.key]: true,
@@ -1917,11 +2032,12 @@ function WorkspaceShell({
       ...current,
       [contextualChatTarget.key]: 'Thinking...',
     }));
-    void sendChatMessage(next, {
+    const request = sendChatMessage(next, {
       body: { scopePanelIds: contextualChatTarget.panelIds },
     });
+    void request.catch(() => finishContextualTurn(pending, 'error'));
     setContextualComposer('');
-  }, [contextualChatTarget, contextualComposer, sendChatMessage]);
+  }, [chat, contextualChatTarget, contextualComposer, finishContextualTurn, sendChatMessage]);
 
   const handleChatClear = useCallback(() => {
     chat.clearHistory();
@@ -2163,97 +2279,56 @@ function WorkspaceShell({
     const pending = contextualPendingRef.current;
     if (!pending) return;
 
-    const assistantMessage = [...chat.messages]
-      .reverse()
-      .find((message) => message.role === 'assistant') || null;
-
     if (chat.status === 'error') {
-      setContextualThreads((current) => {
-        const thread = current[pending.scopeKey] || [];
-        const lastMessage = thread[thread.length - 1];
-        if (lastMessage?.role === 'assistant' && lastMessage.content === "That request didn't go through. Try again.") {
-          return current;
-        }
-
-        return {
-          ...current,
-          [pending.scopeKey]: [
-            ...thread,
-            {
-              id: makeClientId('context-assistant'),
-              role: 'assistant',
-              content: "That request didn't go through. Try again.",
-            },
-          ],
-        };
-      });
-      setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
-      setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
-      contextualPendingRef.current = null;
+      finishContextualTurn(pending, 'error');
       return;
     }
 
-    setContextualLoading((current) => ({ ...current, [pending.scopeKey]: chat.status !== 'ready' }));
+    const turnMessages = getContextualTurnMessages(chat.messages, pending);
+    if (turnMessages.userMessageId) pending.userMessageId = turnMessages.userMessageId;
+    const assistantMessage = turnMessages.assistantMessage;
+
+    setContextualLoading((current) => ({
+      ...current,
+      [pending.scopeKey]: chat.status !== 'ready',
+    }));
     setContextualStatus((current) => ({
       ...current,
       [pending.scopeKey]: getContextualStatusLabel(chat.status, assistantMessage),
     }));
 
-    if (chat.status === 'ready' && (!assistantMessage || assistantMessage.id === pending.previousAssistantId)) {
-      contextualPendingRef.current = null;
-    }
-  }, [chat.messages, chat.status]);
-
-  useEffect(() => {
-    const pending = contextualPendingRef.current;
-    if (!pending) return;
-
-    const assistantMessage = [...chat.messages]
-      .reverse()
-      .find((message) => message.role === 'assistant');
-
-    if (!assistantMessage || assistantMessage.id === pending.previousAssistantId) {
-      return;
-    }
-
-    const content = extractMessageText(assistantMessage);
-    if (!content.trim() && chat.status !== 'ready') return;
-
-    setContextualThreads((current) => {
-      const thread = current[pending.scopeKey] || [];
-      const existingIndex = thread.findIndex((message) => message.id === assistantMessage.id);
-
-      if (existingIndex >= 0) {
-        const next = [...thread];
-        next[existingIndex] = {
-          ...next[existingIndex],
-          content,
-        };
-        return {
-          ...current,
-          [pending.scopeKey]: next,
-        };
+    if (assistantMessage) {
+      const content = extractMessageText(assistantMessage);
+      if (content.trim()) {
+        setContextualThreads((current) => {
+          const thread = current[pending.scopeKey] || [];
+          const existingIndex = thread.findIndex((message) => message.id === assistantMessage.id);
+          if (existingIndex >= 0) {
+            const next = [...thread];
+            next[existingIndex] = { ...next[existingIndex], content };
+            return { ...current, [pending.scopeKey]: next };
+          }
+          return {
+            ...current,
+            [pending.scopeKey]: [
+              ...thread,
+              { id: assistantMessage.id, role: 'assistant', content },
+            ],
+          };
+        });
       }
-
-      return {
-        ...current,
-        [pending.scopeKey]: [
-          ...thread,
-          {
-            id: assistantMessage.id,
-            role: 'assistant',
-            content,
-          },
-        ],
-      };
-    });
+    }
 
     if (chat.status === 'ready') {
-      setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
-      setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
-      contextualPendingRef.current = null;
+      if (assistantMessage && extractMessageText(assistantMessage).trim()) {
+        setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
+        setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
+        clearContextualPending(pending.turnId);
+      } else {
+        finishContextualTurn(pending, 'empty');
+      }
     }
-  }, [chat.messages, chat.status]);
+  }, [chat.messages, chat.status, clearContextualPending, finishContextualTurn]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -2358,6 +2433,7 @@ function WorkspaceShell({
     if (target.closest('.contextual-chat-popover')) return;
     if (target.closest('.group-boundary')) return;
     if (target.closest('button')) return;
+    if (target.closest('[data-connection-id], [role="button"]')) return;
     if (target.closest('.fixed')) return;
     if (target.closest('input')) return;
     if (target.closest('textarea')) return;
@@ -2504,17 +2580,15 @@ function WorkspaceShell({
     const element = canvasViewportRef.current;
     const centerX = element ? element.clientWidth / 2 : 0;
     const centerY = element ? element.clientHeight / 2 : 0;
-    updateViewport((current) => {
-      const nextZoom = clampNumber(current.zoom * factor, 0.35, 2.5);
-      const canvasX = (centerX - current.x) / current.zoom;
-      const canvasY = (centerY - current.y) / current.zoom;
-      return {
-        x: centerX - canvasX * nextZoom,
-        y: centerY - canvasY * nextZoom,
-        zoom: nextZoom,
-      };
-    });
+    updateViewport((current) => zoomViewportAtPoint(current, { x: centerX, y: centerY }, factor));
   }, [updateViewport]);
+
+  const contextualTurnActive = Object.values(contextualLoading).some(Boolean);
+  const handleChatStop = useCallback(() => {
+    const pending = contextualPendingRef.current;
+    void chatStopRef.current();
+    if (pending) finishContextualTurn(pending, 'cancel');
+  }, [finishContextualTurn]);
 
   // Keyboard handling for the canvas region itself (fires only when the region,
   // not a tile, holds focus — tiles stopPropagation their own arrow keys). This
@@ -2550,12 +2624,12 @@ function WorkspaceShell({
   const chatPanelContent = (
     <ChatPanel
       status={chat.status}
-      isBusy={chat.status === 'submitted' || chat.isStreaming || chat.isRecovering}
+      isBusy={contextualTurnActive || chat.status === 'submitted' || chat.isStreaming || chat.isRecovering}
       messages={chat.messages}
       composer={composer}
       onComposerChange={setComposer}
       onSubmit={(text) => void sendChatMessage(text)}
-      onStop={() => void chat.stop()}
+      onStop={handleChatStop}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
       canRetry={Boolean(lastUserPrompt)}
@@ -2690,6 +2764,11 @@ function WorkspaceShell({
           <div className="canvas-header flex items-center justify-between px-4 py-2 z-10">
             <div />
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              {visibleConnections.length > 0 ? (
+                <span aria-label={`${visibleConnections.length} tile association${visibleConnections.length === 1 ? '' : 's'}`}>
+                  {visibleConnections.length} association{visibleConnections.length === 1 ? '' : 's'}
+                </span>
+              ) : null}
               {minimizedPanels.length > 0 ? (
                 <span className="font-mono">{minimizedPanels.length} docked</span>
               ) : null}
@@ -2741,13 +2820,13 @@ function WorkspaceShell({
               initialScale={workspaceState.viewport.zoom}
               initialPositionX={workspaceState.viewport.x}
               initialPositionY={workspaceState.viewport.y}
-              minScale={0.1}
-              maxScale={3}
+              minScale={CANVAS_MIN_ZOOM}
+              maxScale={CANVAS_MAX_ZOOM}
               limitToBounds={false}
               centerZoomedOut={false}
               disabled={isSelectingBox}
-              wheel={{ step: 0.1, excluded: ['no-zoom-scroll'] }}
-              panning={{ velocityDisabled: true, allowLeftClickPan: spacePanning, allowMiddleClickPan: true }}
+              wheel={CANVAS_WHEEL_CONFIG}
+              panning={{ velocityDisabled: false, allowLeftClickPan: spacePanning, allowMiddleClickPan: true }}
               doubleClick={{ disabled: true }}
               onTransform={(_ref, state) => {
                 const nextViewport = {
@@ -2802,6 +2881,8 @@ function WorkspaceShell({
                 connections={visibleConnections}
                 animatingConnectionIds={animatingConnectionIds}
                 panelTitles={panelTitles}
+                selectedConnectionIds={selectedConnection ? new Set([selectedConnection.id]) : undefined}
+                onConnectionClick={handleConnectionClick}
               />
               {visiblePanels.map((panel, index) => {
                 const layout = panelLayouts[panel.id] ?? inferPanelLayout(panel, index);
@@ -2914,6 +2995,8 @@ function WorkspaceShell({
                   : (toolbarPanel ? () => minimizePanels([toolbarPanel.id]) : undefined)}
                 onMaximize={toolbarPanel ? () => setMaximizedPanelId(toolbarPanel.id) : undefined}
                 onGroup={selectedPanelIds.size >= 2 && !selectedGroup ? () => void createGroup() : undefined}
+                onToggleConnection={selectedPanels.length === 2 ? () => void toggleSelectedConnection() : undefined}
+                isConnected={Boolean(selectedConnection)}
                 onUngroup={selectedGroup ? () => void ungroupSelection() : undefined}
                 isInGroup={Boolean(toolbarSinglePanelGroup)}
                 onRemoveFromGroup={toolbarSinglePanelGroup && toolbarPanel ? () => void removePanelFromGroup(toolbarPanel.id) : undefined}

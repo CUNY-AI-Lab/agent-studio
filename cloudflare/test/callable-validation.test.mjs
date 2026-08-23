@@ -11,12 +11,17 @@ test('HTTP and callable runtime validation share the same bounded code contract'
   assert.throws(() => runtimeCodeSchema.parse({ code: 'return 1' }));
 });
 
-test('layout runtime validation includes explicit removeGroups and rejects non-finite values', () => {
-  assert.deepEqual(layoutPatchSchema.parse({ removeGroups: ['group-1'] }), {
+test('layout runtime validation includes explicit removals and rejects non-finite values', () => {
+  assert.deepEqual(layoutPatchSchema.parse({
     removeGroups: ['group-1'],
+    removeConnections: ['connection-1'],
+  }), {
+    removeGroups: ['group-1'],
+    removeConnections: ['connection-1'],
   });
   assert.throws(() => layoutPatchSchema.parse({ viewport: { x: 0, y: 0, zoom: Infinity } }));
   assert.throws(() => layoutPatchSchema.parse({ removeGroups: [42] }));
+  assert.throws(() => layoutPatchSchema.parse({ removeConnections: [42] }));
   assert.throws(() => layoutPatchSchema.parse({ unknown: true }));
 });
 

@@ -25,6 +25,12 @@ function makeProps(panel: WorkspacePanel, overrides: Partial<Parameters<typeof P
 
 const tablePanel: Extract<WorkspacePanel, { type: 'table' }> = { id: 'p1', type: 'table', columns: [], rows: [] };
 const filePanel: Extract<WorkspacePanel, { type: 'editor' }> = { id: 'p2', type: 'editor', filePath: 'doc.md' };
+const cardsPanel: Extract<WorkspacePanel, { type: 'cards' }> = {
+  id: 'p3',
+  type: 'cards',
+  title: 'Cards',
+  items: [{ id: 'card-1', title: 'Finding', badge: 'New', metadata: { Source: 'Paper' } }],
+};
 
 describe('PanelMenu', () => {
   it('always offers ask/minimize/maximize/remove', () => {
@@ -50,6 +56,18 @@ describe('PanelMenu', () => {
   it('does not show file actions for a non-file panel', () => {
     render(<PanelMenu {...makeProps(tablePanel)} />);
     expect(screen.queryByRole('menuitem', { name: 'Show in workspace files' })).toBeNull();
+  });
+
+  it('offers PNG capture and JSON export for cards with metadata', async () => {
+    const onPanelDownload = vi.fn();
+    const user = userEvent.setup();
+    render(<PanelMenu {...makeProps(cardsPanel, { onPanelDownload })} />);
+
+    await user.click(screen.getByRole('menuitem', { name: 'Save as image (PNG)' }));
+    await user.click(screen.getByRole('menuitem', { name: 'Export as JSON' }));
+
+    expect(onPanelDownload).toHaveBeenNthCalledWith(1, cardsPanel, 'png');
+    expect(onPanelDownload).toHaveBeenNthCalledWith(2, cardsPanel, 'json');
   });
 
   it('closes the menu after asking about the tile', async () => {

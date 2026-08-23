@@ -106,6 +106,8 @@ The main composer can inherit selected-tile scope. Contextual tile chat is still
 | Scroll / pinch | Zoom |
 | Click tile | Select tile |
 | Shift-click | Multi-select |
+| Select two tiles, then choose Associate | Persist an explicit association line |
+| Select an association line | Select both endpoint tiles for inspection or disconnect |
 | Drag tile | Move tile |
 | Drag edge | Resize tile |
 | Tile menu or selection toolbar | Open contextual chat for a tile or selection |
@@ -129,7 +131,13 @@ Tiles can be:
 - moved together
 - queried as a group
 
-Connections represent provenance or follow-on relationships between tiles. They help explain how one tile led to another, but they are secondary to the file-first model.
+Connections represent explicit provenance or follow-on relationships between tiles. They help explain how one tile led to another, but they are secondary to the file-first model. Agent-created derived tiles can request the same relationship with the exact source tile id; the UI tools persist that request together with the tile.
+
+User-created associations are explicit workspace state. The canvas never draws a
+new line merely because two tiles happen to be near each other or share a
+source; select two tiles and choose Associate. Associations survive reload and
+workspace export/import, and selecting a line reveals its endpoint tiles so the
+same toolbar can disconnect it.
 
 ## Responsive Behavior
 

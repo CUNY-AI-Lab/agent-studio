@@ -166,7 +166,7 @@ export function ContextualChatPopover({
         {messages.length === 0 ? (
           <div className="contextual-chat-empty">
             <p>Ask a question about this {typeLabel.toLowerCase()} tile.</p>
-            <p className="text-xs opacity-60 mt-1">New tiles here will link to this one.</p>
+            <p className="text-xs opacity-60 mt-1">Ask the agent to create a related tile when you want a visible association.</p>
           </div>
         ) : (
           messages.map((message) => {

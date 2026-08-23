@@ -14,6 +14,13 @@
 
 import { register } from 'node:module';
 import { z } from 'zod';
+import {
+  clearPanelRelationFields,
+  connectionEndpointKey,
+  makePanelConnection,
+  normalizePanelRelations,
+  repairPanelConnectionId,
+} from '../../src/lib/panel-connections.ts';
 
 // Mirror the DO's own path sanitization so the fake agent rejects traversal the
 // same way `writeWorkspaceFileContent`/`sanitizeRelativePath` do in production.
@@ -254,9 +261,11 @@ export class FakeWorkspaceAgent {
   }
 
   async replaceWorkspaceState(state, workspace, sessionId) {
+    const normalizedRelations = normalizePanelRelations(state.panels ?? [], state.connections ?? []);
     this.state = {
       ...DEFAULT_STATE(),
       ...state,
+      ...normalizedRelations,
       sessionId,
       workspace,
     };
@@ -333,9 +342,43 @@ export class FakeWorkspaceAgent {
   async addPanel(panel) {
     const existing = this.state.panels.findIndex((candidate) => candidate.id === panel.id);
     const panels = [...this.state.panels];
-    if (existing >= 0) panels[existing] = panel;
-    else panels.push(panel);
-    this.state = { ...this.state, panels };
+    const previousPanel = existing >= 0 ? panels[existing] : undefined;
+    const sourcePanelIdProvided = Object.hasOwn(panel, 'sourcePanelId');
+    const linkedToProvided = panel.type === 'detail' && Object.hasOwn(panel, 'linkedTo');
+    let mergedPanel = existing >= 0 ? { ...panels[existing], ...panel } : panel;
+    if (existing >= 0 && panel.layout) {
+      mergedPanel = { ...mergedPanel, layout: { ...panels[existing].layout, ...panel.layout } };
+    }
+    if (sourcePanelIdProvided) {
+      mergedPanel = { ...mergedPanel, sourcePanelId: panel.sourcePanelId };
+    }
+    if (existing >= 0) panels[existing] = mergedPanel;
+    else panels.push(mergedPanel);
+
+    const relationshipChanges = [];
+    if (sourcePanelIdProvided) {
+      relationshipChanges.push({ previous: previousPanel?.sourcePanelId, next: mergedPanel.sourcePanelId });
+    }
+    if (linkedToProvided) {
+      relationshipChanges.push({
+        previous: previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined,
+        next: mergedPanel.linkedTo,
+      });
+    }
+    let connections = this.state.connections.filter((connection) => relationshipChanges.every(({ previous }) =>
+      previous === undefined
+      || connectionEndpointKey(connection.sourceId, connection.targetId)
+        !== connectionEndpointKey(previous, mergedPanel.id),
+    ));
+    for (const { next } of relationshipChanges) {
+      if (next === undefined) continue;
+      const connection = makePanelConnection(next, mergedPanel.id);
+      if (!connections.some((current) => connectionEndpointKey(current.sourceId, current.targetId) === connectionEndpointKey(connection.sourceId, connection.targetId))) {
+        connections.push(connection);
+      }
+    }
+    const normalizedRelations = normalizePanelRelations(panels, connections);
+    this.state = { ...this.state, ...normalizedRelations };
     return this.state;
   }
 
@@ -365,8 +408,15 @@ export class FakeWorkspaceAgent {
     // Mirrors the real DO (V3): groups/connections are per-id upserts, group
     // removal is explicit, and entries referencing missing panels are dropped.
     const panelIds = new Set(panels.map((panel) => panel.id));
+    const removedConnectionIds = new Set(patch.removeConnections ?? []);
+    const removedConnections = this.state.connections.filter((connection) => removedConnectionIds.has(connection.id));
+    const panelsWithClearedRelations = clearPanelRelationFields(panels, removedConnections);
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
-    for (const connection of patch.connections ?? []) connectionsById.set(connection.id, connection);
+    for (const connection of patch.connections ?? []) {
+      const repairedConnection = repairPanelConnectionId(connection, [...connectionsById.values()]);
+      connectionsById.set(repairedConnection.id, repairedConnection);
+    }
+    for (const connectionId of patch.removeConnections ?? []) connectionsById.delete(connectionId);
     const connections = [...connectionsById.values()].filter(
       (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId),
     );
@@ -377,11 +427,11 @@ export class FakeWorkspaceAgent {
       .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
       .filter((group) => group.panelIds.length >= 2);
 
+    const normalizedRelations = normalizePanelRelations(panelsWithClearedRelations, connections);
     this.state = {
       ...this.state,
-      panels,
+      ...normalizedRelations,
       groups,
-      connections,
     };
     if (patch.viewport) this.state.viewport = patch.viewport;
     return this.state;

@@ -6,16 +6,22 @@ type CanvasPanelLayout = { x: number; y: number; width: number; height: number }
 type PanelConnection = { id: string; sourceId: string; targetId: string };
 type ConnectionPath = {
   id: string;
+  connection: PanelConnection;
   path: string;
   isAnimating: boolean;
+  isSelected: boolean;
   sourceTitle: string;
+  targetTitle: string;
 };
+const EMPTY_CONNECTION_IDS = new Set<string>();
 
 interface ConnectionLinesProps {
   connections: PanelConnection[];
   panelLayouts: Record<string, CanvasPanelLayout>;
   animatingConnectionIds?: Set<string>;
   panelTitles?: Record<string, string>;
+  selectedConnectionIds?: Set<string>;
+  onConnectionClick?: (connection: PanelConnection) => void;
 }
 
 function getEdgePoint(
@@ -91,6 +97,8 @@ export function ConnectionLines({
   panelLayouts,
   animatingConnectionIds = new Set(),
   panelTitles = {},
+  selectedConnectionIds = EMPTY_CONNECTION_IDS,
+  onConnectionClick,
 }: ConnectionLinesProps) {
   const paths = useMemo(() => {
     return connections
@@ -104,13 +112,16 @@ export function ConnectionLines({
         const targetPoint = getEdgePoint(sourceLayout, targetLayout, false);
         return {
           id: connection.id,
+          connection,
           path: generatePath(sourcePoint, targetPoint),
           isAnimating: animatingConnectionIds.has(connection.id),
+          isSelected: selectedConnectionIds.has(connection.id),
           sourceTitle: panelTitles[connection.sourceId] || connection.sourceId,
+          targetTitle: panelTitles[connection.targetId] || connection.targetId,
         };
       })
       .filter((path): path is ConnectionPath => path !== null);
-  }, [animatingConnectionIds, connections, panelLayouts, panelTitles]);
+  }, [animatingConnectionIds, connections, panelLayouts, panelTitles, selectedConnectionIds]);
 
   const svgBounds = useMemo(() => {
     let minX = 0;
@@ -143,6 +154,8 @@ export function ConnectionLines({
   return (
     <svg
       className="connection-lines absolute"
+      role="group"
+      aria-label={`${paths.length} tile association${paths.length === 1 ? '' : 's'}`}
       style={{
         left: svgBounds.minX,
         top: svgBounds.minY,
@@ -153,25 +166,32 @@ export function ConnectionLines({
       }}
       viewBox={`${svgBounds.minX} ${svgBounds.minY} ${svgBounds.width} ${svgBounds.height}`}
     >
-      <defs>
-        <marker id="connection-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
-          <path d="M0,0 L0,8 L8,4 z" fill="oklch(0.6 0.12 75 / 0.5)" />
-        </marker>
-      </defs>
-
-      {paths.map(({ id, path, isAnimating, sourceTitle }) => (
-        <g key={id}>
-          <path d={path} fill="none" stroke="transparent" strokeWidth="16" style={{ pointerEvents: 'stroke', cursor: 'help' }}>
-            <title>Created from: {sourceTitle}</title>
+      {paths.map(({ id, path, connection, isAnimating, isSelected, sourceTitle, targetTitle }) => (
+        <g
+          key={id}
+          data-connection-id={id}
+          role={onConnectionClick ? 'button' : undefined}
+          tabIndex={onConnectionClick ? 0 : undefined}
+          aria-label={onConnectionClick ? `Association between ${sourceTitle} and ${targetTitle}` : undefined}
+          onClick={onConnectionClick ? () => onConnectionClick(connection) : undefined}
+          onKeyDown={onConnectionClick ? (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onConnectionClick(connection);
+            }
+          } : undefined}
+          style={onConnectionClick ? { pointerEvents: 'auto', cursor: 'pointer' } : undefined}
+        >
+          <path d={path} fill="none" stroke="transparent" strokeWidth="18" style={{ pointerEvents: 'stroke' }}>
+            <title>Association: {sourceTitle} ↔ {targetTitle}</title>
           </path>
           <path
             d={path}
             className={`connection-line ${isAnimating ? 'connection-entering' : ''}`}
             fill="none"
-            stroke="oklch(0.6 0.12 75 / 0.3)"
-            strokeWidth="2"
+            stroke={isSelected ? 'oklch(0.6 0.12 75 / 0.85)' : 'oklch(0.6 0.12 75 / 0.3)'}
+            strokeWidth={isSelected ? '3' : '2'}
             strokeDasharray="6,4"
-            markerEnd="url(#connection-arrow)"
             style={{ pointerEvents: 'none' }}
           />
         </g>

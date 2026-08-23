@@ -182,14 +182,15 @@ export interface WorkspaceAgentClient {
    * Partial layout update. `groups` and `connections` are per-id UPSERTS of
    * just the changed entries (the server merges by id), never whole-array
    * snapshots — a snapshot from a stale tab would clobber concurrent edits.
-   * Group deletion is explicit via `removeGroups`; connections are only
-   * removed server-side (removePanel).
+   * Group and connection deletion are explicit via `removeGroups` and
+   * `removeConnections`; removing a panel also removes its connections.
    */
   applyLayoutPatch(patch: {
     panels?: Record<string, PanelLayout>;
     groups?: PanelGroup[];
     removeGroups?: string[];
     connections?: PanelConnection[];
+    removeConnections?: string[];
     viewport?: WorkspaceViewport;
   }): Promise<WorkspaceState>;
 }

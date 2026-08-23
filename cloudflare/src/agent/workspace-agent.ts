@@ -44,6 +44,13 @@ import {
   verifyGatewayCredentialForSession,
 } from '../lib/cail-identity';
 import { panelSchema } from '../lib/import';
+import {
+  clearPanelRelationFields,
+  connectionEndpointKey,
+  makePanelConnection,
+  normalizePanelRelations,
+  repairPanelConnectionId,
+} from '../lib/panel-connections';
 import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
@@ -235,6 +242,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (!this.state.workspace) {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
+    const normalizedRelations = normalizePanelRelations(this.state.panels, this.state.connections);
+    this.setState({ ...this.state, ...normalizedRelations });
     if (this.cailIdentityJwt === null) {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
       if (stored) {
@@ -510,14 +519,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async replaceWorkspaceState(state: WorkspaceState, workspace: WorkspaceRecord, sessionId: string): Promise<void> {
+    const panels = state.panels.length > 0 ? state.panels : DEFAULT_WORKSPACE_STATE.panels;
+    const normalizedRelations = normalizePanelRelations(panels, state.connections || []);
     this.setState({
       ...state,
       sessionId,
       workspace,
-      panels: state.panels.length > 0 ? state.panels : DEFAULT_WORKSPACE_STATE.panels,
+      ...normalizedRelations,
       viewport: state.viewport || DEFAULT_WORKSPACE_STATE.viewport,
       groups: state.groups || [],
-      connections: state.connections || [],
     });
   }
 
@@ -752,7 +762,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   async addPanel(panel: WorkspacePanel): Promise<WorkspaceState> {
     this.assertNotFrozen();
     this.assertAuthorizedRpc();
-    this.upsertPanel(panelSchema.parse(panel));
+    const parsedPanel = panelSchema.parse(panel);
+    this.upsertPanelWithAssociation(parsedPanel, parsedPanel.sourcePanelId);
     return this.state;
   }
 
@@ -761,15 +772,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.assertNotFrozen();
     this.assertAuthorizedRpc();
     panelId = panelIdSchema.parse(panelId);
+    const panels = this.state.panels.filter((panel) => panel.id !== panelId);
+    const connections = this.state.connections.filter(
+      (connection) => connection.sourceId !== panelId && connection.targetId !== panelId,
+    );
+    const normalizedRelations = normalizePanelRelations(panels, connections);
     this.setState({
       ...this.state,
-      panels: this.state.panels.filter((panel) => panel.id !== panelId),
+      ...normalizedRelations,
       groups: this.state.groups
         .map((group) => ({ ...group, panelIds: group.panelIds.filter((id) => id !== panelId) }))
         .filter((group) => group.panelIds.length >= 2),
-      connections: this.state.connections.filter(
-        (connection) => connection.sourceId !== panelId && connection.targetId !== panelId
-      ),
     });
     return this.state;
   }
@@ -797,19 +810,27 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // only the entries it names and never implicitly deletes the rest, so a
     // stale client snapshot can't erase a concurrent server-side change (e.g.
     // removePanel filtering connections, or another tab's group edit).
-    // Deletions are explicit: groups via patch.removeGroups; connections only
-    // server-side (removePanel). Merged entries referencing panels that no
-    // longer exist are dropped, so a stale patch can't resurrect a removed
-    // panel's connections or group membership.
+    // Deletions are explicit: groups via patch.removeGroups and connections via
+    // patch.removeConnections (removePanel also filters references). Merged
+    // entries referencing panels that no longer exist are dropped, so a stale
+    // patch can't resurrect a removed panel's connections or group membership.
     const panelIds = new Set(panels.map((panel) => panel.id));
+    const removedConnectionIds = new Set(parsedPatch.removeConnections ?? []);
+    const removedConnections = this.state.connections.filter((connection) => removedConnectionIds.has(connection.id));
+    const panelsWithClearedRelations = clearPanelRelationFields(panels, removedConnections);
 
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
     for (const connection of parsedPatch.connections ?? []) {
-      connectionsById.set(connection.id, connection);
+      const repairedConnection = repairPanelConnectionId(connection, [...connectionsById.values()]);
+      connectionsById.set(repairedConnection.id, repairedConnection);
+    }
+    for (const connectionId of parsedPatch.removeConnections ?? []) {
+      connectionsById.delete(connectionId);
     }
     const connections = [...connectionsById.values()].filter(
       (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId)
     );
+    const normalizedRelations = normalizePanelRelations(panelsWithClearedRelations, connections);
 
     const groupsById = new Map(this.state.groups.map((group) => [group.id, group]));
     for (const group of parsedPatch.groups ?? []) {
@@ -824,9 +845,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     this.setState({
       ...this.state,
-      panels,
+      ...normalizedRelations,
       groups,
-      connections,
       viewport: parsedPatch.viewport ?? this.state.viewport,
     });
     return this.state;
@@ -1073,26 +1093,28 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         description: [
           'Create or update a concise markdown panel on the canvas.',
           'Use file-backed panels for durable long-form documents.',
+          'When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
         ].join(' '),
         inputSchema: z.object({
           id: z.string().optional(),
           title: z.string(),
           content: z.string(),
+          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
         strict: true,
-        execute: async ({ id, title, content }) => {
+        execute: async ({ id, title, content, sourcePanelId }) => {
           const panelId = id || crypto.randomUUID();
-          this.upsertPanel({
+          this.upsertPanelWithAssociation({
             id: panelId,
             type: 'markdown',
             title,
             content,
-          });
+          }, sourcePanelId);
           return { ok: true, panelId };
         },
       }),
       ui_detail: tool({
-        description: 'Create or update a detail panel linked to another panel, usually a table.',
+        description: 'Create or update a detail panel linked to another panel, usually a table. The linkedTo relationship is persisted as a visible tile association.',
         inputSchema: z.object({
           id: z.string().optional(),
           title: z.string(),
@@ -1100,57 +1122,59 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         }),
         execute: async ({ id, title, linkedTo }) => {
           const panelId = id || crypto.randomUUID();
-          this.upsertPanel({
+          this.upsertPanelWithAssociation({
             id: panelId,
             type: 'detail',
             title,
             linkedTo,
-          });
+          }, linkedTo);
           return { ok: true, panelId };
         },
       }),
       ui_table: tool({
-        description: 'Create or update a table panel on the canvas as a structured view over concise data.',
+        description: 'Create or update a table panel on the canvas as a structured view over concise data. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
         inputSchema: z.object({
           id: z.string().optional(),
           title: z.string(),
           columns: z.array(z.object({ key: z.string(), label: z.string() })),
           rows: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))),
+          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        execute: async ({ id, title, columns, rows }) => {
+        execute: async ({ id, title, columns, rows, sourcePanelId }) => {
           const panelId = id || crypto.randomUUID();
-          this.upsertPanel({
+          this.upsertPanelWithAssociation({
             id: panelId,
             type: 'table',
             title,
             columns,
             rows,
-          });
+          }, sourcePanelId);
           return { ok: true, panelId };
         },
       }),
       ui_chart: tool({
-        description: 'Create or update a chart panel on the canvas as a structured view over concise data.',
+        description: 'Create or update a chart panel on the canvas as a structured view over concise data. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
         inputSchema: z.object({
           id: z.string().optional(),
           title: z.string(),
           chartType: z.enum(['bar', 'line', 'pie', 'area']),
           data: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))),
+          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        execute: async ({ id, title, chartType, data }) => {
+        execute: async ({ id, title, chartType, data, sourcePanelId }) => {
           const panelId = id || crypto.randomUUID();
-          this.upsertPanel({
+          this.upsertPanelWithAssociation({
             id: panelId,
             type: 'chart',
             title,
             chartType,
             data,
-          });
+          }, sourcePanelId);
           return { ok: true, panelId };
         },
       }),
       ui_cards: tool({
-        description: 'Create or update a cards panel on the canvas for concise derived summaries.',
+        description: 'Create or update a cards panel on the canvas for concise derived summaries. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
         inputSchema: z.object({
           id: z.string().optional(),
           title: z.string(),
@@ -1162,37 +1186,39 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
             badge: z.string().optional(),
             metadata: z.record(z.string(), z.string()).optional(),
           })),
+          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        execute: async ({ id, title, items }) => {
+        execute: async ({ id, title, items, sourcePanelId }) => {
           const panelId = id || crypto.randomUUID();
-          this.upsertPanel({
+          this.upsertPanelWithAssociation({
             id: panelId,
             type: 'cards',
             title,
             items,
-          });
+          }, sourcePanelId);
           return { ok: true, panelId };
         },
       }),
       ui_show_file: tool({
-        description: 'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs.',
+        description: 'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
         inputSchema: z.object({
           id: z.string().optional(),
           title: z.string().optional(),
           filePath: z.string(),
+          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        execute: async ({ id, title, filePath }) => {
+        execute: async ({ id, title, filePath, sourcePanelId }) => {
           const file = await this.readRuntimeFileContent(filePath);
           if (file === null) {
             throw new Error(`File not found: ${filePath}`);
           }
           const panelId = id || crypto.randomUUID();
-          this.upsertPanel({
+          this.upsertPanelWithAssociation({
             id: panelId,
             type: inferFilePanelType(filePath),
             title: title || filePath.split('/').pop() || filePath,
             filePath,
-          });
+          }, sourcePanelId);
           return { ok: true, panelId };
         },
       }),
@@ -1450,22 +1476,79 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
-  private upsertPanel(panel: WorkspacePanel): void {
+  /** Persist a panel update and each explicitly supplied relationship field. */
+  private upsertPanelWithAssociation(panel: WorkspacePanel, sourcePanelId?: string): void {
+    const sourcePanelIdProvided = sourcePanelId !== undefined || Object.hasOwn(panel, 'sourcePanelId');
+    const linkedToProvided = panel.type === 'detail' && Object.hasOwn(panel, 'linkedTo');
+    const requestedSourcePanelId = sourcePanelId !== undefined ? sourcePanelId : panel.sourcePanelId;
+    const requestedLinkedTo = panel.type === 'detail' ? panel.linkedTo : undefined;
+
+    const validateRelationship = (relationshipId: string | undefined): void => {
+      if (relationshipId === undefined) return;
+      panelIdSchema.parse(relationshipId);
+      if (relationshipId === panel.id) {
+        throw new Error('A tile cannot be associated with itself');
+      }
+      if (!this.state.panels.some((candidate) => candidate.id === relationshipId)) {
+        throw new Error(`Panel not found: ${relationshipId}`);
+      }
+    };
+    if (sourcePanelIdProvided) validateRelationship(requestedSourcePanelId);
+    if (linkedToProvided) validateRelationship(requestedLinkedTo);
+
+    const panelWithSource: WorkspacePanel = sourcePanelIdProvided
+      ? { ...panel, sourcePanelId: requestedSourcePanelId }
+      : panel;
     const index = this.state.panels.findIndex((candidate) => candidate.id === panel.id);
     const panels = [...this.state.panels];
+    const previousPanel = index >= 0 ? panels[index] : undefined;
+    let mergedPanel: WorkspacePanel;
     if (index >= 0) {
       const current = panels[index];
-      const preserved = {
-        layout: panel.layout ? { ...current.layout, ...panel.layout } : current.layout,
-        sourcePanelId: panel.sourcePanelId ?? current.sourcePanelId,
-      };
-      const merged = current.type === panel.type
-        ? { ...current, ...panel, ...preserved }
-        : { ...panel, ...preserved };
-      panels[index] = panelSchema.parse(merged);
+      mergedPanel = current.type === panelWithSource.type
+        ? { ...current, ...panelWithSource }
+        : { ...panelWithSource };
+      if (panelWithSource.layout) {
+        mergedPanel = { ...mergedPanel, layout: { ...current.layout, ...panelWithSource.layout } };
+      }
+      if (sourcePanelIdProvided) {
+        mergedPanel = { ...mergedPanel, sourcePanelId: requestedSourcePanelId };
+      }
+      panels[index] = panelSchema.parse(mergedPanel);
+      mergedPanel = panels[index];
     } else {
-      panels.push(panel);
+      panels.push(panelWithSource);
+      mergedPanel = panelWithSource;
     }
-    this.setState({ ...this.state, panels });
+
+    const relationshipChanges: Array<{ previous?: string; next?: string }> = [];
+    if (sourcePanelIdProvided) {
+      relationshipChanges.push({
+        previous: previousPanel?.sourcePanelId,
+        next: mergedPanel.sourcePanelId,
+      });
+    }
+    if (linkedToProvided && mergedPanel.type === 'detail') {
+      relationshipChanges.push({
+        previous: previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined,
+        next: mergedPanel.linkedTo,
+      });
+    }
+
+    let nextConnections = this.state.connections.filter((current) => relationshipChanges.every(
+      ({ previous }) => previous === undefined
+        || connectionEndpointKey(current.sourceId, current.targetId)
+          !== connectionEndpointKey(previous, mergedPanel.id),
+    ));
+    for (const { next } of relationshipChanges) {
+      if (next === undefined) continue;
+      const connection = makePanelConnection(next, mergedPanel.id);
+      if (!nextConnections.some((current) => connectionEndpointKey(current.sourceId, current.targetId) === connectionEndpointKey(connection.sourceId, connection.targetId))) {
+        nextConnections.push(connection);
+      }
+    }
+
+    const normalizedRelations = normalizePanelRelations(panels, nextConnections);
+    this.setState({ ...this.state, ...normalizedRelations });
   }
 }

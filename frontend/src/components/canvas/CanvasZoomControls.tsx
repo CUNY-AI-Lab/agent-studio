@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useControls } from 'react-zoom-pan-pinch';
 import { Minus, Plus } from 'lucide-react';
+import { zoomViewportAtPoint } from '../../lib/canvasViewport';
 
 export function CanvasZoomControls({ zoom, viewportX, viewportY }: { zoom: number; viewportX: number; viewportY: number }) {
   const { instance, state, setTransform } = useControls();
@@ -9,18 +10,17 @@ export function CanvasZoomControls({ zoom, viewportX, viewportY }: { zoom: numbe
   const handleZoom = useCallback((direction: 'in' | 'out') => {
     const { scale, positionX, positionY } = state;
     const factor = direction === 'in' ? 1.2 : 1 / 1.2;
-    const newScale = Math.min(3, Math.max(0.1, scale * factor));
     // Zoom toward the center of the viewport
     const wrapper = instance.wrapperComponent;
     if (wrapper) {
       const rect = wrapper.getBoundingClientRect();
       const cx = rect.width / 2;
       const cy = rect.height / 2;
-      const newX = cx - (cx - positionX) * (newScale / scale);
-      const newY = cy - (cy - positionY) * (newScale / scale);
-      setTransform(newX, newY, newScale, 0);
+      const next = zoomViewportAtPoint({ x: positionX, y: positionY, zoom: scale }, { x: cx, y: cy }, factor);
+      setTransform(next.x, next.y, next.zoom, 0);
     } else {
-      setTransform(positionX, positionY, newScale, 0);
+      const next = zoomViewportAtPoint({ x: positionX, y: positionY, zoom: scale }, { x: 0, y: 0 }, factor);
+      setTransform(next.x, next.y, next.zoom, 0);
     }
   }, [instance, setTransform, state]);
 
