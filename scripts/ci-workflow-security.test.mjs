@@ -67,6 +67,8 @@ test('CI protects action and package credentials in one validation job', async (
   const preflightPosition = deployJob.indexOf('- name: Verify production route and custom-domain read access');
   const deployPosition = deployJob.indexOf('- name: Deploy the exact main commit');
   assert.ok(preflightPosition >= 0 && preflightPosition < deployPosition);
+  assert.match(deployJob, /working-directory: cloudflare\n        run: \|[\s\S]*bunx wrangler deploy \\\n            --config wrangler\.jsonc \\\n            --strict/);
+  assert.doesNotMatch(deployJob, /bunx wrangler deploy[\s\S]*--env staging/);
   assert.equal(deployJob.split('bun ../scripts/agent-studio-route-gate.mjs').length - 1, 1);
   assert.doesNotMatch(deployJob, /route_inventory|route inventory found|cat .*zone/i);
   assert.match(deployJob, /versions list --name agent-studio --json/);
@@ -74,6 +76,13 @@ test('CI protects action and package credentials in one validation job', async (
   assert.ok(deployJob.includes('workers/message'));
   assert.match(deployJob, /versions view "\$version_id" --name agent-studio --json/);
   assert.match(deployJob, /\.versions\[0\]\.version_id == \$id and \.versions\[0\]\.percentage == 100/);
+  const deployCommandPosition = deployJob.indexOf('bunx wrangler deploy');
+  const subdomainReadbackPosition = deployJob.indexOf('/workers/scripts/agent-studio/subdomain');
+  assert.ok(deployCommandPosition >= 0 && deployCommandPosition < subdomainReadbackPosition);
+  assert.match(deployJob, /subdomain="\$\(curl --fail --silent --show-error \\\n\s+"\$\{api\}\/accounts\/\$\{account_id\}\/workers\/scripts\/agent-studio\/subdomain/);
+  assert.match(deployJob, /\.success == true/);
+  assert.match(deployJob, /\.result\.enabled == false/);
+  assert.match(deployJob, /\.result\.previews_enabled == false/);
   assert.match(routeGate, /zones\/\$\{encodeURIComponent\(zoneId\)\}\/workers\/routes/);
   assert.match(routeGate, /accounts\/\$\{encodeURIComponent\(accountId\)\}\/workers\/domains/);
   assert.match(routeGate, /service === 'agent-studio'/);
@@ -84,6 +93,9 @@ test('CI protects action and package credentials in one validation job', async (
   for (const scope of ['Zone Read', 'Workers Routes Read', 'Workers Scripts Read']) {
     assert.match(workerReadme, new RegExp(scope.replaceAll(' ', '\\s+')));
   }
+  assert.match(workerReadme, /account-wide resource scope/);
+  assert.match(workerReadme, /every zone in that account/);
+  assert.match(workerReadme, /single-zone\s+resource scope is insufficient/);
   assert.match(deployJob, /remote mode/);
   assert.match(deployJob, /origin='https:\/\/tools\.ailab\.gc\.cuny\.edu'/);
   assert.match(deployJob, /probe_sso_redirect "\$origin\/agent-studio\/"/);

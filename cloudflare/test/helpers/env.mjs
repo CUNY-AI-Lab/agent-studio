@@ -36,8 +36,8 @@ const CF_STUB_SOURCE = `
   export class DurableObject { constructor(ctx, env){ this.ctx = ctx; this.env = env; } }
   export class RpcTarget {}
   export class EmailMessage {}
-  export class WorkerEntrypoint {}
-  export class WorkflowEntrypoint {}
+  export class WorkerEntrypoint { constructor(ctx, env){ this.ctx = ctx; this.env = env; } }
+  export class WorkflowEntrypoint { constructor(ctx, env){ this.ctx = ctx; this.env = env; } }
   export const exports = {};
   export const env = {};
   export default {};

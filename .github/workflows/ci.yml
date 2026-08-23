@@ -125,9 +125,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Verify production route and custom-domain read access
+        # The token must be account-scoped across every production-account zone.
         # The read-only preflight requires Zone Read, Workers Routes Read, and
-        # Workers Scripts Read. It must stay before deployment so a missing
-        # permission fails without mutating the production Worker.
+        # Workers Scripts Read, before deployment can mutate the Worker.
         run: bun scripts/agent-studio-route-gate.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -139,6 +139,7 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/main ]]
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
           bunx wrangler deploy \
+            --config wrangler.jsonc \
             --strict \
             --tag "$GITHUB_SHA" \
             --message "main $GITHUB_SHA"
