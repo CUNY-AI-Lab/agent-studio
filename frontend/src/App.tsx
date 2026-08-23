@@ -2767,7 +2767,7 @@ export default function App() {
       }
       window.history.replaceState({}, '', url);
       setSelectedWorkspace(null);
-      setLoading(false);
+      if (!selectedGalleryId) setLoading(false);
       return;
     }
     const url = new URL(window.location.href);
@@ -2789,6 +2789,7 @@ export default function App() {
     url.searchParams.set('gallery', selectedGalleryId);
     url.searchParams.delete('workspace');
     window.history.replaceState({}, '', url);
+    setLoading(true);
 
     void fetchGalleryItem(selectedGalleryId)
       .then((item) => {
@@ -2827,6 +2828,13 @@ export default function App() {
       setError(nextError instanceof Error ? nextError.message : 'Failed to clone gallery item');
     }
   }, [loadGallery, loadWorkspaces]);
+
+  const handleOpenGalleryItem = useCallback((galleryId: string) => {
+    setError(null);
+    setSelectedGallery(null);
+    setSelectedWorkspaceId(null);
+    setSelectedGalleryId(galleryId);
+  }, []);
 
   const handleImportBundle = useCallback(async (file: File | null) => {
     if (!file) return;
@@ -2965,6 +2973,7 @@ export default function App() {
         setSelectedGalleryId(null);
         setSelectedWorkspaceId(id);
       }}
+      onOpenGalleryItem={handleOpenGalleryItem}
       onCloneGalleryItem={handleCloneGalleryItem}
       onStartBlank={() => handleCreateWorkspace()}
       onImportWorkspace={handleImportBundle}

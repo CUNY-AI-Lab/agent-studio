@@ -65,6 +65,36 @@ describe('CanvasFlow selection state', () => {
     });
   });
 
+  it('does not reseed React Flow when streamed state clones unchanged canvas data', async () => {
+    const { rerender } = renderCanvas(new Set(['panel-one']), {
+      allPanels: panels,
+      workspaceFiles: [],
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole('group', { name: 'One (markdown tile), selected' })).toBeInTheDocument();
+    });
+
+    for (let index = 0; index < 20; index += 1) {
+      rerender(
+        <CanvasFlow
+          panels={panels.map((panel) => ({ ...panel, layout: panel.layout ? { ...panel.layout } : undefined }))}
+          allPanels={panels.map((panel) => ({ ...panel }))}
+          groups={[]}
+          connections={[]}
+          viewport={{ x: 0, y: 0, zoom: 1 }}
+          fileSource={{ kind: 'workspace', id: 'workspace-test' }}
+          selectedPanelIds={new Set(['panel-one'])}
+          workspaceFiles={[]}
+          readOnly
+        />,
+      );
+    }
+
+    expect(screen.getByRole('group', { name: 'One (markdown tile), selected' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Two (markdown tile)' })).toBeInTheDocument();
+  });
+
   it('deletes the current same-size selection after the selected tile changes', async () => {
     const onPanelDelete = vi.fn();
     const { rerender } = renderCanvas(new Set(['panel-one']), { onPanelDelete, readOnly: false });

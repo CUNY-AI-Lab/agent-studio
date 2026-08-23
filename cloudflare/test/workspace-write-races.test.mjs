@@ -232,6 +232,41 @@ test('structured UI tools persist explicit tile associations', async () => {
   assert.equal(fake.state.panels.find((candidate) => candidate.id === 'table').sourcePanelId, 'source');
 });
 
+test('implicit UI panel ids remain stable when the same turn is retried', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const fake = {
+    messages: [{ id: 'user-turn-1', role: 'user', parts: [{ type: 'text', text: 'make a tile' }] }],
+    state: {
+      sessionId: 'session',
+      workspace: null,
+      panels: [],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [],
+    },
+    setState(next) {
+      this.state = next;
+    },
+    async withMutationFence(operation) {
+      return operation();
+    },
+  };
+  fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+    WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+
+  const workspace = { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' };
+  const firstTools = WorkspaceAgent.prototype.buildHostTools.call(fake, workspace, 'session');
+  const first = await firstTools.ui_markdown.execute({ title: 'Tile', content: 'content' });
+  const second = await firstTools.ui_markdown.execute({ title: 'Second tile', content: 'content' });
+  const retryTools = WorkspaceAgent.prototype.buildHostTools.call(fake, workspace, 'session');
+  const retried = await retryTools.ui_markdown.execute({ title: 'Tile', content: 'content' });
+
+  assert.equal(retried.panelId, first.panelId);
+  assert.notEqual(second.panelId, first.panelId, 'two panels in one turn must remain distinct');
+  assert.equal(fake.state.panels.length, 2, 'a retry must update the committed tile, not append another');
+});
+
 test('structured UI tools reject an association to a missing tile', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');

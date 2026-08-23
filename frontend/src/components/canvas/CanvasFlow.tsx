@@ -81,6 +81,21 @@ type PanelFlowNode = Node<PanelNodeData, 'panel'>;
 type GroupFlowNode = Node<GroupNodeData, 'groupBoundary'>;
 type CanvasNode = PanelFlowNode | GroupFlowNode;
 type AssociationFlowEdge = Edge<AssociationEdgeData, 'association'>;
+type CanvasComparable =
+  | WorkspacePanel
+  | WorkspacePanel[]
+  | WorkspaceFileInfo[]
+  | PanelGroup
+  | Set<string>
+  | undefined;
+
+function valueMatches(left: CanvasComparable, right: CanvasComparable): boolean {
+  if (left === right) return true;
+  if (left instanceof Set && right instanceof Set) {
+    return left.size === right.size && [...left].every((value) => right.has(value));
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
   if (left.length !== right.length) return false;
@@ -101,16 +116,18 @@ function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
     ) return false;
 
     if (node.type === 'panel' && next.type === 'panel') {
-      return node.data.panel === next.data.panel &&
-        node.data.allPanels === next.data.allPanels &&
-        node.data.workspaceFiles === next.data.workspaceFiles &&
-        node.data.highlightedFilePaths === next.data.highlightedFilePaths &&
+      return valueMatches(node.data.panel, next.data.panel) &&
+        valueMatches(node.data.allPanels, next.data.allPanels) &&
+        valueMatches(node.data.workspaceFiles, next.data.workspaceFiles) &&
+        valueMatches(node.data.highlightedFilePaths, next.data.highlightedFilePaths) &&
+        node.data.fileSource.kind === next.data.fileSource.kind &&
+        node.data.fileSource.id === next.data.fileSource.id &&
         node.data.isMenuOpen === next.data.isMenuOpen &&
         node.data.readOnly === next.data.readOnly;
     }
 
     if (node.type === 'groupBoundary' && next.type === 'groupBoundary') {
-      return node.data.group === next.data.group &&
+      return valueMatches(node.data.group, next.data.group) &&
         node.data.isEditing === next.data.isEditing &&
         node.data.editValue === next.data.editValue;
     }

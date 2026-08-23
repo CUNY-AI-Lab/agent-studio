@@ -24,6 +24,7 @@ import {
   getRuntimeFilesPrefix,
   listGalleryFilesRecursive,
   readGalleryFile,
+  resolveMimeType,
   sanitizeRelativePath,
 } from './lib/files';
 import {
@@ -363,9 +364,20 @@ app.get('/api/gallery/:id/panels/:panelId/preview', async (c) => {
   }
 
   const panel = item.state.panels.find((candidate) => candidate.id === c.req.param('panelId'));
-  if (!panel || panel.type !== 'preview' || panel.filePath || !panel.content) {
+  if (!panel || panel.type !== 'preview') {
     return jsonError(c, 404, 'not_found', 'Preview panel not found');
   }
+
+  if (panel.filePath) {
+    const file = await readGalleryFile(c.env, item.id, panel.filePath);
+    if (!file) return jsonError(c, 404, 'not_found', 'Preview file not found');
+    return new Response(file.body, {
+      status: 200,
+      headers: new Headers(Object.entries(previewServingHeaders())),
+    });
+  }
+
+  if (!panel.content) return jsonError(c, 404, 'not_found', 'Preview panel not found');
 
   return new Response(panel.content, {
     status: 200,
@@ -645,9 +657,20 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.getSnapshot();
   const panel = state.panels.find((candidate) => candidate.id === c.req.param('panelId'));
-  if (!panel || panel.type !== 'preview' || panel.filePath || !panel.content) {
+  if (!panel || panel.type !== 'preview') {
     return jsonError(c, 404, 'not_found', 'Preview panel not found');
   }
+
+  if (panel.filePath) {
+    const file = await agent.readWorkspaceFileContent(panel.filePath);
+    if (!file) return jsonError(c, 404, 'not_found', 'Preview file not found');
+    return new Response(file.data, {
+      status: 200,
+      headers: new Headers(Object.entries(previewServingHeaders())),
+    });
+  }
+
+  if (!panel.content) return jsonError(c, 404, 'not_found', 'Preview panel not found');
 
   return new Response(panel.content, {
     status: 200,
@@ -869,7 +892,7 @@ app.get('/api/workspaces/:id/files/*', async (c) => {
     return jsonError(c, 404, 'not_found', 'File not found');
   }
 
-  const contentType = file.contentType || getMimeType(filePath);
+  const contentType = resolveMimeType(filePath, file.contentType);
   return new Response(file.data, {
     status: 200,
     headers: {

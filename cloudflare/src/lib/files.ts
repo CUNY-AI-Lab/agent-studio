@@ -77,6 +77,25 @@ export function getGalleryFileKey(galleryId: string, filePath: string): string {
   return `${getGalleryFilesPrefix(galleryId)}${normalizeRelativePath(filePath)}`;
 }
 
+/**
+ * Runtime files written by Dynamic Workers can report the generic text/plain
+ * type even when the write supplied an extension-specific type. Keep the
+ * extension contract authoritative for known text/document files so a file
+ * such as an HTML artifact is rendered as HTML by the preview iframe.
+ */
+export function resolveMimeType(filePath: string, reportedType?: string): string {
+  const extensionType = getMimeType(filePath);
+  const normalizedReportedType = reportedType?.split(';', 1)[0]?.trim().toLowerCase();
+  const genericReportedType = normalizedReportedType === 'text/plain' ||
+    normalizedReportedType === 'application/octet-stream';
+
+  if (extensionType !== 'application/octet-stream' &&
+      (!normalizedReportedType || genericReportedType)) {
+    return extensionType;
+  }
+  return reportedType || extensionType;
+}
+
 function getRelativePath(prefix: string, key: string): string {
   return key.startsWith(prefix) ? key.slice(prefix.length) : key;
 }
