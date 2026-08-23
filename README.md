@@ -57,6 +57,12 @@ path. The `GATEWAY` Cloudflare service binding carries the direct Vercel AI SDK
 OpenAI-compatible transport. Agent Studio stores no provider key and does not
 select a second model path.
 
+The shared Gateway can publish models for several CAIL applications. Agent
+Studio intentionally consumes only `@cf/...` Workers AI entries because its
+workspace model and chat runtime use that namespace. Unsupported provider
+entries are ignored at the catalog boundary; a malformed supported entry fails
+closed instead of silently changing the model contract.
+
 Agent-owned authentication challenges use the strict cail-identity 5.2.5
 envelope `{ "error": { "code", "message", "launch"? } }`. The
 OpenAI-compatible `type`/`param`/`cail` envelope remains scoped to errors

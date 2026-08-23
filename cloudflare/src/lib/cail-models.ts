@@ -48,9 +48,13 @@ const modelEntrySchema = z.object({
   registry_url: z.string().nullable().optional(),
 });
 
-const modelListSchema = z.object({
+const modelListEnvelopeSchema = z.object({
   object: z.literal('list'),
-  data: z.array(modelEntrySchema).min(1),
+  data: z.array(z.unknown()),
+});
+
+const supportedModelIdSchema = z.object({
+  id: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200),
 });
 
 function canonicalBase(value: string): string {
@@ -124,9 +128,20 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
     throw new Error(`Model catalog request failed with status ${response.status}.`);
   }
 
-  const parsed = modelListSchema.safeParse(await response.json());
-  if (!parsed.success) throw new Error('Model catalog response did not match the CAIL schema.');
-  return { models: parsed.data.data.map(normalizeEntry) };
+  const envelope = modelListEnvelopeSchema.safeParse(await response.json());
+  if (!envelope.success) throw new Error('Model catalog response did not match the CAIL schema.');
+
+  // The shared Gateway serves multiple products and may include OpenRouter
+  // entries alongside Workers AI. Agent Studio's runtime and workspace model
+  // contract are intentionally Workers AI-only, so discard unsupported
+  // provider namespaces before validating individual supported entries. A
+  // malformed @cf entry still fails closed rather than being hidden.
+  const supportedEntries = envelope.data.data.filter(
+    (entry) => supportedModelIdSchema.safeParse(entry).success,
+  );
+  const parsedEntries = z.array(modelEntrySchema).min(1).safeParse(supportedEntries);
+  if (!parsedEntries.success) throw new Error('Model catalog response did not match the CAIL schema.');
+  return { models: parsedEntries.data.map(normalizeEntry) };
 }
 
 export { resolveCailModelName };
