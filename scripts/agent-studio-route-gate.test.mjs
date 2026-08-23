@@ -21,13 +21,15 @@ function jsonResponse(value, status = 200) {
   });
 }
 
-function scriptsResponse(result) {
-  return {
+function scriptsResponse(result, resultInfo) {
+  const response = {
     errors: [],
     messages: [],
     result,
     success: true,
   };
+  if (resultInfo !== undefined) response.result_info = resultInfo;
+  return response;
 }
 
 function agentStudioScript(routes) {
@@ -95,6 +97,29 @@ test('route gate reads the account-level script and filtered custom-domain inven
   );
 });
 
+test('route gate accepts the current paginated script envelope and long unrelated names', async () => {
+  const { fetchImpl } = fetchFor((url) => {
+    if (url.pathname.endsWith('/workers/scripts')) {
+      return jsonResponse(scriptsResponse([
+        {
+          id: 'an-unrelated-worker-name-longer-than-thirty-two-characters',
+          routes: [{ arbitrary: 'unrelated route metadata' }],
+        },
+        agentStudioScript(),
+      ], {
+        count: 2,
+        page: 1,
+        per_page: 20,
+        total_count: 2,
+        total_pages: 1,
+      }));
+    }
+    return jsonResponse(emptyDomains());
+  });
+
+  await verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl);
+});
+
 test('route gate requires exactly one Agent Studio script with no associated routes', async () => {
   const cases = [
     ['no scripts', []],
@@ -152,7 +177,10 @@ test('route gate stops on a permissions 403 before custom-domain reads', async (
 
   await assert.rejects(
     verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl),
-    (error) => error instanceof Error && error.message === FAILURE_MESSAGE,
+    (error) => error instanceof Error
+      && error.message === FAILURE_MESSAGE
+      && error.stage === 'scripts'
+      && error.reason === 'http-403',
   );
   assert.equal(calls.length, 1);
 });
@@ -285,7 +313,10 @@ test('CLI emits only the fixed route-gate failure for a forbidden custom domain'
 
   assert.equal(status, 1);
   assert.equal(Buffer.concat(stdout).toString(), '');
-  assert.equal(Buffer.concat(stderr).toString(), `${FAILURE_MESSAGE}\n`);
+  assert.equal(
+    Buffer.concat(stderr).toString(),
+    `${FAILURE_MESSAGE} [domains: unexpected-routing]\n`,
+  );
   assert.doesNotMatch(Buffer.concat(stderr).toString(), /secret|hostname|zone/i);
 });
 
@@ -327,6 +358,48 @@ test('CLI emits only the fixed route-gate failure for an associated route', asyn
 
   assert.equal(status, 1);
   assert.equal(Buffer.concat(stdout).toString(), '');
-  assert.equal(Buffer.concat(stderr).toString(), `${FAILURE_MESSAGE}\n`);
+  assert.equal(
+    Buffer.concat(stderr).toString(),
+    `${FAILURE_MESSAGE} [scripts: unexpected-routing]\n`,
+  );
   assert.doesNotMatch(Buffer.concat(stderr).toString(), /secret|hostname|zone/i);
+});
+
+test('CLI reports only the bounded endpoint and status for a forbidden script inventory', async () => {
+  const server = createServer((request, response) => {
+    if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
+      response.statusCode = 403;
+      response.end('secret provider response');
+      return;
+    }
+    response.statusCode = 404;
+    response.end('unexpected request');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address !== null && address !== undefined);
+  assert.ok(Number.isInteger(address.port));
+  const child = spawn(process.execPath, [GATE_SCRIPT], {
+    env: {
+      ...process.env,
+      CLOUDFLARE_API_BASE: `http://127.0.0.1:${address.port}/client/v4`,
+      CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
+      CLOUDFLARE_API_TOKEN: TOKEN,
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const stdout = [];
+  const stderr = [];
+  child.stdout.on('data', (chunk) => stdout.push(chunk));
+  child.stderr.on('data', (chunk) => stderr.push(chunk));
+  const [status] = await once(child, 'close');
+  await new Promise((resolve) => server.close(resolve));
+
+  assert.equal(status, 1);
+  assert.equal(Buffer.concat(stdout).toString(), '');
+  assert.equal(
+    Buffer.concat(stderr).toString(),
+    `${FAILURE_MESSAGE} [scripts: http-403]\n`,
+  );
+  assert.doesNotMatch(Buffer.concat(stderr).toString(), /secret|provider|response/i);
 });
