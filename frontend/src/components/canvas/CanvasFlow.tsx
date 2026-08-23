@@ -95,7 +95,9 @@ function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
       node.style?.height !== next.style?.height ||
       node.zIndex !== next.zIndex ||
       node.draggable !== next.draggable ||
-      node.focusable !== next.focusable
+      node.focusable !== next.focusable ||
+      node.selected !== next.selected ||
+      node.ariaLabel !== next.ariaLabel
     ) return false;
 
     if (node.type === 'panel' && next.type === 'panel') {
