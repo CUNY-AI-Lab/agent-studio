@@ -542,6 +542,83 @@ hr.editorial {
   font-size: 0.75rem;
 }
 
+.panel-cards {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+
+.panel-card {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--rule-navy);
+  background: var(--card);
+  padding: 0.8rem 0.9rem;
+}
+
+.panel-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.panel-card-heading h4 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.panel-card-badge {
+  flex: none;
+  border: 1px solid var(--rule-navy);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  padding: 0.15rem 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.panel-card-subtitle,
+.panel-card-description {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.panel-card-subtitle {
+  color: var(--muted-foreground);
+}
+
+.panel-card-description {
+  color: var(--foreground);
+}
+
+.panel-card-metadata {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0.7rem 0 0;
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+}
+
+.panel-card-metadata-row {
+  display: grid;
+  grid-template-columns: minmax(5rem, auto) 1fr;
+  gap: 0.6rem;
+  font-size: 0.72rem;
+}
+
+.panel-card-metadata-row dt {
+  color: var(--muted-foreground);
+  font-weight: 600;
+}
+
+.panel-card-metadata-row dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 /* Chat panel - flat ruled surface */
 .chat-panel {
   background: var(--card);

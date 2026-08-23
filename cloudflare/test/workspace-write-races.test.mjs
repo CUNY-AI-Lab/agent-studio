@@ -298,6 +298,109 @@ test('addPanel persists a supplied sourcePanelId as an explicit association', as
   ]);
 });
 
+test('reassociating a panel replaces its prior visible edge and provenance', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const fake = {
+    state: {
+      sessionId: 'session',
+      workspace: null,
+      panels: [panel('source-a'), panel('source-b'), { ...panel('child'), sourcePanelId: 'source-a' }],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [{ id: 'connection-child-source-a', sourceId: 'child', targetId: 'source-a' }],
+    },
+    assertNotFrozen() {},
+    assertAuthorizedRpc() {},
+    setState(next) {
+      this.state = next;
+    },
+  };
+  fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+    WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+
+  await WorkspaceAgent.prototype.addPanel.call(fake, {
+    ...panel('child'),
+    sourcePanelId: 'source-b',
+  });
+
+  assert.equal(fake.state.panels.find((candidate) => candidate.id === 'child').sourcePanelId, 'source-b');
+  assert.deepEqual(fake.state.connections, [
+    { id: 'connection-child-source-b', sourceId: 'child', targetId: 'source-b' },
+  ]);
+});
+
+test('disconnect and source removal clear detail linkage metadata', async () => {
+  const detail = {
+    id: 'detail',
+    type: 'detail',
+    title: 'Detail',
+    sourcePanelId: 'source',
+    linkedTo: 'source',
+  };
+  const state = {
+    sessionId: null,
+    workspace: null,
+    panels: [panel('source'), detail],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    groups: [],
+    connections: [{ id: 'connection-detail-source', sourceId: 'detail', targetId: 'source' }],
+  };
+  const { fake, applyLayoutPatch, removePanel } = await makeLayoutAgent(state);
+
+  await applyLayoutPatch({ removeConnections: ['connection-detail-source'] });
+  const disconnected = fake.state.panels.find((candidate) => candidate.id === 'detail');
+  assert.equal(disconnected.sourcePanelId, undefined);
+  assert.equal(disconnected.linkedTo, undefined);
+
+  // Recreate the persisted relationship, then remove its source tile as a
+  // separate lifecycle action. Both paths must leave the same normalized state.
+  fake.state = {
+    ...fake.state,
+    panels: [panel('source'), { ...detail }],
+    connections: [{ id: 'connection-detail-source', sourceId: 'detail', targetId: 'source' }],
+  };
+  await removePanel('source');
+  const removedSource = fake.state.panels.find((candidate) => candidate.id === 'detail');
+  assert.equal(removedSource.sourcePanelId, undefined);
+  assert.equal(removedSource.linkedTo, undefined);
+  assert.deepEqual(fake.state.connections, []);
+});
+
+test('replaceWorkspaceState normalizes imported relationship fields before reload', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const fake = {
+    state: { panels: [], connections: [] },
+    setState(next) {
+      this.state = next;
+    },
+  };
+  const importedPanels = [
+    panel('source'),
+    {
+      id: 'detail',
+      type: 'detail',
+      title: 'Detail',
+      sourcePanelId: 'source',
+      linkedTo: 'stale-source',
+    },
+  ];
+  await WorkspaceAgent.prototype.replaceWorkspaceState.call(fake, {
+    sessionId: 'old',
+    workspace: null,
+    panels: importedPanels,
+    viewport: { x: 0, y: 0, zoom: 1 },
+    groups: [],
+    connections: [{ id: 'connection-stale', sourceId: 'detail', targetId: 'stale-source' }],
+  }, { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' }, 'session');
+
+  const detail = fake.state.panels.find((candidate) => candidate.id === 'detail');
+  assert.equal(detail.sourcePanelId, undefined);
+  assert.equal(detail.linkedTo, undefined);
+  assert.deepEqual(fake.state.connections, []);
+});
+
 // ---------------------------------------------------------------------------
 // V3 — applyLayoutPatch merges connections/groups per id
 // ---------------------------------------------------------------------------

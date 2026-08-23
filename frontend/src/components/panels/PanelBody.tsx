@@ -5,6 +5,7 @@ import { DetailPanelView } from './DetailPanelView';
 import { FilePreview, PreviewPanelView } from './FilePreview';
 import { FileTreePanelView } from './FileTreePanelView';
 import { TablePanelView } from './TablePanelView';
+import { CardsPanelView } from './CardsPanelView';
 
 const LazyChartPanelView = lazy(() => import('./ChartPanelView'));
 const LazyMarkdownRenderer = lazy(() => import('../renderers/MarkdownRenderer'));
@@ -45,17 +46,7 @@ export function PanelBody({
         </Suspense>
       );
     case 'cards':
-      return (
-        <div className="panel-cards">
-          {panel.items.map((item, index) => (
-            <article className="panel-card" key={item.id || index}>
-              <h4>{item.title}</h4>
-              {item.subtitle ? <p>{item.subtitle}</p> : null}
-              {item.description ? <span>{item.description}</span> : null}
-            </article>
-          ))}
-        </div>
-      );
+      return <CardsPanelView panel={panel} />;
     case 'pdf':
     case 'editor':
     case 'file':

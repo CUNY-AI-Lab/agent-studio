@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { findPanelConnection, makePanelConnection } from './panelConnections';
+import { findPanelConnection, makePanelConnection, normalizePanelRelations } from './panelConnections';
 
 describe('panel connections', () => {
   it('creates a stable association regardless of selection order', () => {
@@ -30,5 +30,16 @@ describe('panel connections', () => {
     expect(connection.sourceId).toBe(first);
     expect(connection.targetId).toBe(second);
     expect(makePanelConnection(second, first).id).toBe(connection.id);
+  });
+
+  it('clears provenance when its only visible edge is disconnected', () => {
+    const panels = [
+      { id: 'source', type: 'markdown' as const, content: '' },
+      { id: 'detail', type: 'detail' as const, linkedTo: 'source', sourcePanelId: 'source' },
+    ];
+    const normalized = normalizePanelRelations(panels, []);
+    expect(normalized.panels[1]).toMatchObject({ id: 'detail' });
+    expect(normalized.panels[1].sourcePanelId).toBeUndefined();
+    expect(normalized.panels[1].linkedTo).toBeUndefined();
   });
 });

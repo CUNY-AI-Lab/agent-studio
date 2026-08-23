@@ -1,4 +1,9 @@
-import type { PanelConnection } from '../types';
+import type { PanelConnection, WorkspacePanel } from '../types';
+
+export interface NormalizedPanelRelations {
+  panels: WorkspacePanel[];
+  connections: PanelConnection[];
+}
 
 /**
  * Connections are associations between two tiles. The endpoint order is
@@ -41,5 +46,42 @@ export function makePanelConnection(firstId: string, secondId: string): PanelCon
       : `connection-${endpointHash(connectionEndpointKey(sourceId, targetId))}`,
     sourceId,
     targetId,
+  };
+}
+
+/** Keep UI state in step with the Worker after a connection is removed. */
+export function normalizePanelRelations(
+  panels: WorkspacePanel[],
+  connections: PanelConnection[],
+): NormalizedPanelRelations {
+  const panelIds = new Set(panels.map((panel) => panel.id));
+  const seenEndpoints = new Set<string>();
+  const validConnections = connections.filter((connection) => {
+    if (!panelIds.has(connection.sourceId) || !panelIds.has(connection.targetId)) return false;
+    const endpoint = connectionEndpointKey(connection.sourceId, connection.targetId);
+    if (seenEndpoints.has(endpoint)) return false;
+    seenEndpoints.add(endpoint);
+    return true;
+  });
+
+  return {
+    connections: validConnections,
+    panels: panels.map((panel) => {
+      const requestedSource = panel.sourcePanelId
+        ?? (panel.type === 'detail' ? panel.linkedTo : undefined);
+      const sourcePanelId = requestedSource
+        && panelIds.has(requestedSource)
+        && requestedSource !== panel.id
+        && findPanelConnection(validConnections, panel.id, requestedSource)
+        ? requestedSource
+        : undefined;
+
+      if (panel.type === 'detail') {
+        if (panel.sourcePanelId === sourcePanelId && panel.linkedTo === sourcePanelId) return panel;
+        return { ...panel, sourcePanelId, linkedTo: sourcePanelId };
+      }
+      if (panel.sourcePanelId === sourcePanelId) return panel;
+      return { ...panel, sourcePanelId };
+    }),
   };
 }

@@ -44,7 +44,11 @@ import {
   verifyGatewayCredentialForSession,
 } from '../lib/cail-identity';
 import { panelSchema } from '../lib/import';
-import { connectionEndpointKey, makePanelConnection } from '../lib/panel-connections';
+import {
+  connectionEndpointKey,
+  makePanelConnection,
+  normalizePanelRelations,
+} from '../lib/panel-connections';
 import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
@@ -236,6 +240,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (!this.state.workspace) {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
+    const normalizedRelations = normalizePanelRelations(this.state.panels, this.state.connections);
+    this.setState({ ...this.state, ...normalizedRelations });
     if (this.cailIdentityJwt === null) {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
       if (stored) {
@@ -511,14 +517,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async replaceWorkspaceState(state: WorkspaceState, workspace: WorkspaceRecord, sessionId: string): Promise<void> {
+    const panels = state.panels.length > 0 ? state.panels : DEFAULT_WORKSPACE_STATE.panels;
+    const normalizedRelations = normalizePanelRelations(panels, state.connections || []);
     this.setState({
       ...state,
       sessionId,
       workspace,
-      panels: state.panels.length > 0 ? state.panels : DEFAULT_WORKSPACE_STATE.panels,
+      ...normalizedRelations,
       viewport: state.viewport || DEFAULT_WORKSPACE_STATE.viewport,
       groups: state.groups || [],
-      connections: state.connections || [],
     });
   }
 
@@ -763,15 +770,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.assertNotFrozen();
     this.assertAuthorizedRpc();
     panelId = panelIdSchema.parse(panelId);
+    const panels = this.state.panels.filter((panel) => panel.id !== panelId);
+    const connections = this.state.connections.filter(
+      (connection) => connection.sourceId !== panelId && connection.targetId !== panelId,
+    );
+    const normalizedRelations = normalizePanelRelations(panels, connections);
     this.setState({
       ...this.state,
-      panels: this.state.panels.filter((panel) => panel.id !== panelId),
+      ...normalizedRelations,
       groups: this.state.groups
         .map((group) => ({ ...group, panelIds: group.panelIds.filter((id) => id !== panelId) }))
         .filter((group) => group.panelIds.length >= 2),
-      connections: this.state.connections.filter(
-        (connection) => connection.sourceId !== panelId && connection.targetId !== panelId
-      ),
     });
     return this.state;
   }
@@ -815,6 +824,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const connections = [...connectionsById.values()].filter(
       (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId)
     );
+    const normalizedRelations = normalizePanelRelations(panels, connections);
 
     const groupsById = new Map(this.state.groups.map((group) => [group.id, group]));
     for (const group of parsedPatch.groups ?? []) {
@@ -829,9 +839,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     this.setState({
       ...this.state,
-      panels,
+      ...normalizedRelations,
       groups,
-      connections,
       viewport: parsedPatch.viewport ?? this.state.viewport,
     });
     return this.state;
@@ -1467,21 +1476,29 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    * inferred line from layout or proximity.
    */
   private upsertPanelWithAssociation(panel: WorkspacePanel, sourcePanelId?: string): void {
-    if (sourcePanelId !== undefined) {
-      panelIdSchema.parse(sourcePanelId);
-      if (sourcePanelId === panel.id) {
+    const relationshipId = sourcePanelId ?? (panel.type === 'detail' ? panel.linkedTo : undefined);
+    if (relationshipId !== undefined) {
+      panelIdSchema.parse(relationshipId);
+      if (relationshipId === panel.id) {
         throw new Error('A tile cannot be associated with itself');
       }
-      if (!this.state.panels.some((candidate) => candidate.id === sourcePanelId)) {
-        throw new Error(`Panel not found: ${sourcePanelId}`);
+      if (!this.state.panels.some((candidate) => candidate.id === relationshipId)) {
+        throw new Error(`Panel not found: ${relationshipId}`);
       }
     }
 
-    const panelWithSource = sourcePanelId === undefined
+    let panelWithSource: WorkspacePanel = relationshipId === undefined
       ? panel
-      : { ...panel, sourcePanelId };
+      : {
+        ...panel,
+        sourcePanelId: relationshipId,
+      };
+    if (relationshipId !== undefined && panelWithSource.type === 'detail') {
+      panelWithSource = { ...panelWithSource, linkedTo: relationshipId };
+    }
     const index = this.state.panels.findIndex((candidate) => candidate.id === panelWithSource.id);
     const panels = [...this.state.panels];
+    const previousPanel = index >= 0 ? panels[index] : undefined;
     let mergedPanel: WorkspacePanel;
     if (index >= 0) {
       const current = panels[index];
@@ -1499,14 +1516,23 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       mergedPanel = panelWithSource;
     }
 
-    const nextConnections = [...this.state.connections];
-    if (sourcePanelId !== undefined) {
-      const connection = makePanelConnection(sourcePanelId, mergedPanel.id);
+    let nextConnections = [...this.state.connections];
+    if (relationshipId !== undefined) {
+      const previousRelationshipId = previousPanel?.sourcePanelId
+        ?? (previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined);
+      if (previousRelationshipId !== undefined) {
+        nextConnections = nextConnections.filter(
+          (current) => connectionEndpointKey(current.sourceId, current.targetId)
+            !== connectionEndpointKey(previousRelationshipId, mergedPanel.id),
+        );
+      }
+      const connection = makePanelConnection(relationshipId, mergedPanel.id);
       if (!nextConnections.some((current) => connectionEndpointKey(current.sourceId, current.targetId) === connectionEndpointKey(connection.sourceId, connection.targetId))) {
         nextConnections.push(connection);
       }
     }
 
-    this.setState({ ...this.state, panels, connections: nextConnections });
+    const normalizedRelations = normalizePanelRelations(panels, nextConnections);
+    this.setState({ ...this.state, ...normalizedRelations });
   }
 }

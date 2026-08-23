@@ -68,13 +68,22 @@ import {
 } from './lib/panelLayout';
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
 import { computeGroupsDelta } from './lib/groupDelta';
-import { findPanelConnection, makePanelConnection } from './lib/panelConnections';
+import {
+  findPanelConnection,
+  makePanelConnection,
+  normalizePanelRelations,
+} from './lib/panelConnections';
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { makeClientId } from './lib/format';
 import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, CANVAS_WHEEL_CONFIG, zoomViewportAtPoint } from './lib/canvasViewport';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
+import {
+  contextualFailureMessage,
+  getContextualTurnMessages,
+  type ContextualTurn,
+} from './lib/contextualTurn';
 import {
   type ContextualChatTarget,
   type ContextualThreadMessage,
@@ -102,6 +111,11 @@ import type {
   WorkspaceResponse,
   WorkspaceState,
 } from './types';
+
+// This is a recovery boundary for a scoped popover turn, not an output cap.
+// A response that outlives it is stopped and reported so the popover cannot
+// remain in a permanent Working state after a stalled socket/provider.
+const CONTEXTUAL_TURN_TIMEOUT_MS = 90_000;
 
 function WorkspaceShell({
   workspace,
@@ -198,9 +212,11 @@ function WorkspaceShell({
   const contextualAutoPanKeyRef = useRef<string | null>(null);
   const initialPromptSentRef = useRef(false);
   const publishOperationIdRef = useRef<string | null>(null);
-  const contextualPendingRef = useRef<{
+  const chatStopRef = useRef<() => void>(() => undefined);
+  const contextualPendingRef = useRef<ContextualTurn & {
+    turnId: string;
     scopeKey: string;
-    previousAssistantId: string | null;
+    timeoutId: number | null;
   } | null>(null);
   const panGestureRef = useRef<{
     pointerId: number;
@@ -260,15 +276,7 @@ function WorkspaceShell({
     },
   });
 
-  const clearContextualDraft = useCallback(() => {
-    setContextualComposer('');
-    contextualPendingRef.current = null;
-  }, []);
-
-  const closeContextualChat = useCallback(() => {
-    setContextualChatTarget(null);
-    clearContextualDraft();
-  }, [clearContextualDraft]);
+  chatStopRef.current = chat.stop;
 
   const openContextualTarget = useCallback((target: ContextualChatTarget) => {
     setContextualChatTarget(target);
@@ -283,6 +291,58 @@ function WorkspaceShell({
     setChatErrorNotice(null);
     return chat.sendMessage({ text }, options);
   }, [chat]);
+
+  const clearContextualPending = useCallback((turnId?: string): ContextualTurn & {
+    turnId: string;
+    scopeKey: string;
+    timeoutId: number | null;
+  } | null => {
+    const pending = contextualPendingRef.current;
+    if (!pending || (turnId !== undefined && pending.turnId !== turnId)) return null;
+    if (pending.timeoutId !== null) window.clearTimeout(pending.timeoutId);
+    contextualPendingRef.current = null;
+    return pending;
+  }, []);
+
+  const finishContextualTurn = useCallback((
+    pending: ContextualTurn & { turnId: string; scopeKey: string; timeoutId: number | null },
+    reason: 'timeout' | 'cancel' | 'error' | 'empty',
+  ) => {
+    if (contextualPendingRef.current?.turnId !== pending.turnId) return;
+    const content = contextualFailureMessage(reason);
+    setContextualThreads((current) => {
+      const thread = current[pending.scopeKey] || [];
+      const lastMessage = thread[thread.length - 1];
+      if (lastMessage?.role === 'assistant' && lastMessage.content === content) return current;
+      return {
+        ...current,
+        [pending.scopeKey]: [
+          ...thread,
+          { id: makeClientId('context-assistant-error'), role: 'assistant', content },
+        ],
+      };
+    });
+    setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
+    setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
+    clearContextualPending(pending.turnId);
+  }, [clearContextualPending]);
+
+  const clearContextualDraft = useCallback(() => {
+    setContextualComposer('');
+    clearContextualPending();
+  }, [clearContextualPending]);
+
+  const closeContextualChat = useCallback(() => {
+    // Closing the scoped popover is an explicit local cancellation. Stop the
+    // attached stream and clear its watchdog so a later turn cannot inherit it.
+    const pending = contextualPendingRef.current;
+    if (pending) {
+      void chatStopRef.current();
+      finishContextualTurn(pending, 'cancel');
+    }
+    setContextualChatTarget(null);
+    clearContextualDraft();
+  }, [clearContextualDraft, finishContextualTurn]);
 
   useEffect(() => {
     setWorkspaceState(workspace.state);
@@ -1290,17 +1350,20 @@ function WorkspaceShell({
     );
 
     if (currentConnection) {
-      setWorkspaceState((current) => ({
-        ...current,
-        connections: current.connections.filter((connection) => connection.id !== currentConnection.id),
-      }));
+      setWorkspaceState((current) => {
+        const relations = normalizePanelRelations(
+          current.panels,
+          current.connections.filter((connection) => connection.id !== currentConnection.id),
+        );
+        return { ...current, ...relations };
+      });
       try {
         await agent.call('applyLayoutPatch', [{ removeConnections: [currentConnection.id] }]);
         showToast(`Disconnected ${getPanelTitle(firstPanel)} and ${getPanelTitle(secondPanel)}`);
       } catch (nextError) {
         setWorkspaceState((current) => ({
           ...current,
-          connections: [...current.connections, currentConnection],
+          ...normalizePanelRelations(current.panels, [...current.connections, currentConnection]),
         }));
         setError(nextError instanceof Error ? nextError.message : 'The tile association could not be removed.');
       }
@@ -1921,10 +1984,31 @@ function WorkspaceShell({
   const handleContextualSubmit = useCallback(() => {
     const next = contextualComposer.trim();
     if (!contextualChatTarget || !next) return;
+    if (contextualPendingRef.current) return;
+    if (chat.status === 'submitted' || chat.status === 'streaming' || chat.isStreaming || chat.isRecovering) {
+      setContextualStatus((current) => ({
+        ...current,
+        [contextualChatTarget.key]: 'Finish the current response first.',
+      }));
+      return;
+    }
 
     const previousAssistantId = [...chat.messages]
       .reverse()
       .find((message) => message.role === 'assistant')?.id || null;
+    const turnId = makeClientId('context-turn');
+    const pending: ContextualTurn & {
+      turnId: string;
+      scopeKey: string;
+      timeoutId: number | null;
+    } = {
+      turnId,
+      scopeKey: contextualChatTarget.key,
+      previousAssistantId,
+      previousMessageIds: new Set(chat.messages.map((message) => message.id)),
+      userMessageId: null,
+      timeoutId: null,
+    };
 
     setContextualThreads((current) => ({
       ...current,
@@ -1937,10 +2021,7 @@ function WorkspaceShell({
         },
       ],
     }));
-    contextualPendingRef.current = {
-      scopeKey: contextualChatTarget.key,
-      previousAssistantId,
-    };
+    contextualPendingRef.current = pending;
     setContextualLoading((current) => ({
       ...current,
       [contextualChatTarget.key]: true,
@@ -1949,11 +2030,17 @@ function WorkspaceShell({
       ...current,
       [contextualChatTarget.key]: 'Thinking...',
     }));
-    void sendChatMessage(next, {
+    const request = sendChatMessage(next, {
       body: { scopePanelIds: contextualChatTarget.panelIds },
     });
+    void request.catch(() => finishContextualTurn(pending, 'error'));
+    pending.timeoutId = window.setTimeout(() => {
+      if (contextualPendingRef.current?.turnId !== turnId) return;
+      void chatStopRef.current();
+      finishContextualTurn(pending, 'timeout');
+    }, CONTEXTUAL_TURN_TIMEOUT_MS);
     setContextualComposer('');
-  }, [contextualChatTarget, contextualComposer, sendChatMessage]);
+  }, [chat, contextualChatTarget, contextualComposer, finishContextualTurn, sendChatMessage]);
 
   const handleChatClear = useCallback(() => {
     chat.clearHistory();
@@ -2195,97 +2282,56 @@ function WorkspaceShell({
     const pending = contextualPendingRef.current;
     if (!pending) return;
 
-    const assistantMessage = [...chat.messages]
-      .reverse()
-      .find((message) => message.role === 'assistant') || null;
-
     if (chat.status === 'error') {
-      setContextualThreads((current) => {
-        const thread = current[pending.scopeKey] || [];
-        const lastMessage = thread[thread.length - 1];
-        if (lastMessage?.role === 'assistant' && lastMessage.content === "That request didn't go through. Try again.") {
-          return current;
-        }
-
-        return {
-          ...current,
-          [pending.scopeKey]: [
-            ...thread,
-            {
-              id: makeClientId('context-assistant'),
-              role: 'assistant',
-              content: "That request didn't go through. Try again.",
-            },
-          ],
-        };
-      });
-      setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
-      setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
-      contextualPendingRef.current = null;
+      finishContextualTurn(pending, 'error');
       return;
     }
 
-    setContextualLoading((current) => ({ ...current, [pending.scopeKey]: chat.status !== 'ready' }));
+    const turnMessages = getContextualTurnMessages(chat.messages, pending);
+    if (turnMessages.userMessageId) pending.userMessageId = turnMessages.userMessageId;
+    const assistantMessage = turnMessages.assistantMessage;
+
+    setContextualLoading((current) => ({
+      ...current,
+      [pending.scopeKey]: chat.status !== 'ready',
+    }));
     setContextualStatus((current) => ({
       ...current,
       [pending.scopeKey]: getContextualStatusLabel(chat.status, assistantMessage),
     }));
 
-    if (chat.status === 'ready' && (!assistantMessage || assistantMessage.id === pending.previousAssistantId)) {
-      contextualPendingRef.current = null;
-    }
-  }, [chat.messages, chat.status]);
-
-  useEffect(() => {
-    const pending = contextualPendingRef.current;
-    if (!pending) return;
-
-    const assistantMessage = [...chat.messages]
-      .reverse()
-      .find((message) => message.role === 'assistant');
-
-    if (!assistantMessage || assistantMessage.id === pending.previousAssistantId) {
-      return;
-    }
-
-    const content = extractMessageText(assistantMessage);
-    if (!content.trim() && chat.status !== 'ready') return;
-
-    setContextualThreads((current) => {
-      const thread = current[pending.scopeKey] || [];
-      const existingIndex = thread.findIndex((message) => message.id === assistantMessage.id);
-
-      if (existingIndex >= 0) {
-        const next = [...thread];
-        next[existingIndex] = {
-          ...next[existingIndex],
-          content,
-        };
-        return {
-          ...current,
-          [pending.scopeKey]: next,
-        };
+    if (assistantMessage) {
+      const content = extractMessageText(assistantMessage);
+      if (content.trim()) {
+        setContextualThreads((current) => {
+          const thread = current[pending.scopeKey] || [];
+          const existingIndex = thread.findIndex((message) => message.id === assistantMessage.id);
+          if (existingIndex >= 0) {
+            const next = [...thread];
+            next[existingIndex] = { ...next[existingIndex], content };
+            return { ...current, [pending.scopeKey]: next };
+          }
+          return {
+            ...current,
+            [pending.scopeKey]: [
+              ...thread,
+              { id: assistantMessage.id, role: 'assistant', content },
+            ],
+          };
+        });
       }
-
-      return {
-        ...current,
-        [pending.scopeKey]: [
-          ...thread,
-          {
-            id: assistantMessage.id,
-            role: 'assistant',
-            content,
-          },
-        ],
-      };
-    });
+    }
 
     if (chat.status === 'ready') {
-      setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
-      setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
-      contextualPendingRef.current = null;
+      if (assistantMessage && extractMessageText(assistantMessage).trim()) {
+        setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
+        setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
+        clearContextualPending(pending.turnId);
+      } else {
+        finishContextualTurn(pending, 'empty');
+      }
     }
-  }, [chat.messages, chat.status]);
+  }, [chat.messages, chat.status, clearContextualPending, finishContextualTurn]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -2539,6 +2585,13 @@ function WorkspaceShell({
     updateViewport((current) => zoomViewportAtPoint(current, { x: centerX, y: centerY }, factor));
   }, [updateViewport]);
 
+  const contextualTurnActive = Object.values(contextualLoading).some(Boolean);
+  const handleChatStop = useCallback(() => {
+    const pending = contextualPendingRef.current;
+    void chatStopRef.current();
+    if (pending) finishContextualTurn(pending, 'cancel');
+  }, [finishContextualTurn]);
+
   // Keyboard handling for the canvas region itself (fires only when the region,
   // not a tile, holds focus — tiles stopPropagation their own arrow keys). This
   // is why the canvas is a labeled region with roving tile focus rather than
@@ -2573,12 +2626,12 @@ function WorkspaceShell({
   const chatPanelContent = (
     <ChatPanel
       status={chat.status}
-      isBusy={chat.status === 'submitted' || chat.isStreaming || chat.isRecovering}
+      isBusy={contextualTurnActive || chat.status === 'submitted' || chat.isStreaming || chat.isRecovering}
       messages={chat.messages}
       composer={composer}
       onComposerChange={setComposer}
       onSubmit={(text) => void sendChatMessage(text)}
-      onStop={() => void chat.stop()}
+      onStop={handleChatStop}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
       canRetry={Boolean(lastUserPrompt)}
