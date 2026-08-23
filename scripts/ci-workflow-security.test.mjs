@@ -85,9 +85,10 @@ test('CI protects action and package credentials in one validation job', async (
   assert.match(deployJob, /\.result\.previews_enabled == false/);
   assert.match(routeGate, /accounts\/\$\{encodeURIComponent\(accountId\)\}\/workers\/scripts/);
   assert.match(routeGate, /accounts\/\$\{encodeURIComponent\(accountId\)\}\/workers\/domains/);
-  assert.match(routeGate, /scripts\.result\.length !== 1/);
-  assert.match(routeGate, /scripts\.result\[0\]\.id !== 'agent-studio'/);
-  assert.match(routeGate, /scripts\.result\[0\]\.routes\.length !== 0/);
+  assert.match(routeGate, /const agentStudioScripts = scripts\.result\.filter/);
+  assert.match(routeGate, /agentStudioScripts\.length !== 1/);
+  assert.match(routeGate, /agentStudioScripts\[0\]\.routes \?\? \[\]/);
+  assert.match(routeGate, /\.length !== 0/);
   assert.match(routeGate, /domains\.result\.length !== 0/);
   assert.match(routeGate, /Agent Studio route gate failed/);
   assert.match(deployJob, /select\(\.annotations\["workers\/message"\] == \$message\)/);

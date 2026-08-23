@@ -30,11 +30,12 @@ function scriptsResponse(result) {
   };
 }
 
-function agentStudioScript(routes = []) {
-  return {
+function agentStudioScript(routes) {
+  const script = {
     id: 'agent-studio',
-    routes,
   };
+  if (routes !== undefined) script.routes = routes;
+  return script;
 }
 
 function emptyDomains() {
@@ -69,7 +70,13 @@ function fetchFor(handler) {
 test('route gate reads the account-level script and filtered custom-domain inventories', async () => {
   const { calls, fetchImpl } = fetchFor((url) => {
     if (url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
-      return jsonResponse(scriptsResponse([agentStudioScript()]));
+      return jsonResponse(scriptsResponse([
+        {
+          id: 'other-worker',
+          routes: [{ arbitrary: 'fleet route metadata' }],
+        },
+        agentStudioScript(),
+      ]));
     }
     if (url.pathname === `/client/v4/accounts/${ACCOUNT_ID}/workers/domains`) {
       assert.equal(url.search, '?service=agent-studio');
@@ -88,21 +95,16 @@ test('route gate reads the account-level script and filtered custom-domain inven
   );
 });
 
-test('route gate requires exactly one Agent Studio script with an explicit empty route list', async () => {
+test('route gate requires exactly one Agent Studio script with no associated routes', async () => {
   const cases = [
     ['no scripts', []],
-    ['another script', [
-      { id: 'another-script', routes: [] },
-    ]],
-    ['multiple scripts', [
+    ['multiple Agent Studio scripts', [
       agentStudioScript(),
-      { id: 'another-script', routes: [] },
+      agentStudioScript([]),
     ]],
     ['an associated route', [agentStudioScript([
       { id: 'route-id', pattern: 'example.test/*', script: 'agent-studio' },
     ])]],
-    ['missing routes', [{ id: 'agent-studio' }]],
-    ['null routes', [{ id: 'agent-studio', routes: null }]],
   ];
 
   for (const [name, result] of cases) {
@@ -118,6 +120,30 @@ test('route gate requires exactly one Agent Studio script with an explicit empty
       (error) => error instanceof Error && error.message === FAILURE_MESSAGE,
     );
     assert.equal(calls.length, 1);
+  }
+});
+
+test('route gate ignores unrelated Workers and accepts omitted or null route metadata', async () => {
+  const inventories = [
+    [
+      { id: 'other-worker', routes: [{ arbitrary: 'fleet route metadata' }] },
+      agentStudioScript(),
+    ],
+    [
+      { id: 'another-worker' },
+      { id: 'yet-another-worker', routes: null },
+      { id: 'agent-studio', routes: null },
+    ],
+  ];
+
+  for (const result of inventories) {
+    const { fetchImpl } = fetchFor((url) => {
+      if (url.pathname.endsWith('/workers/scripts')) {
+        return jsonResponse(scriptsResponse(result));
+      }
+      return jsonResponse(emptyDomains());
+    });
+    await verifyAgentStudioRoutes(API_BASE, ACCOUNT_ID, TOKEN, fetchImpl);
   }
 });
 
@@ -144,9 +170,7 @@ test('route gate rejects malformed script-list responses', async () => {
       result: {},
       success: true,
     }],
-    ['malformed route', scriptsResponse([agentStudioScript([
-      { id: '', pattern: 'example.test/*', script: 'agent-studio' },
-    ])])],
+    ['malformed routes field', scriptsResponse([{ id: 'agent-studio', routes: {} }])],
   ];
 
   for (const [name, payload] of cases) {

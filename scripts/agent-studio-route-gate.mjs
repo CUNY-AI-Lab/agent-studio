@@ -6,14 +6,9 @@ export const FAILURE_MESSAGE = 'Agent Studio route gate failed';
 
 const responseInfoSchema = z.record(z.string(), z.any());
 const responseInfoListSchema = z.nullable(z.array(responseInfoSchema));
-const routeSchema = z.object({
-  id: z.string().check(z.minLength(1), z.maxLength(32)),
-  pattern: z.string().check(z.minLength(1)),
-  script: z.optional(z.nullable(z.string().check(z.minLength(1)))),
-});
 const scriptSchema = z.object({
-  id: z.string().check(z.minLength(1), z.maxLength(32)),
-  routes: z.array(routeSchema),
+  id: z.optional(z.string().check(z.minLength(1), z.maxLength(32))),
+  routes: z.optional(z.nullable(z.array(z.any()))),
 });
 const scriptsResponseSchema = z.strictObject({
   errors: responseInfoListSchema,
@@ -99,10 +94,10 @@ export async function verifyAgentStudioRoutes(
   }
 
   const scripts = parseScripts(await readJson(scriptsUrl(apiBase, accountId), token, fetchImpl));
+  const agentStudioScripts = scripts.result.filter((script) => script.id === 'agent-studio');
   if (
-    scripts.result.length !== 1
-    || scripts.result[0].id !== 'agent-studio'
-    || scripts.result[0].routes.length !== 0
+    agentStudioScripts.length !== 1
+    || (agentStudioScripts[0].routes ?? []).length !== 0
   ) {
     throw routeGateError();
   }
