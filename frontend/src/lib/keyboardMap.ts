@@ -54,7 +54,7 @@ export const KEYBOARD_SHORTCUT_GROUPS: KeyboardShortcutGroup[] = [
     shortcuts: [
       { keys: '+ / =', description: 'Zoom in (when the canvas is focused)' },
       { keys: '- / _', description: 'Zoom out (when the canvas is focused)' },
-      { keys: '0', description: 'Reset zoom and position (when the canvas is focused)' },
+      { keys: '0', description: 'Fit all tiles in view (when the canvas is focused)' },
       { keys: 'Space + drag', description: 'Pan the canvas (mouse)' },
       { keys: '?', description: 'Open the keyboard shortcuts dialog' },
     ],

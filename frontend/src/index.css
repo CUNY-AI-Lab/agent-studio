@@ -366,7 +366,7 @@ hr.editorial {
 }
 
 /* Artifact being dragged */
-.artifact-card.dragging {
+.agent-studio-react-flow .react-flow__node.dragging .artifact-card {
   outline: 2px solid var(--rule-navy);
   outline-offset: 0;
   transform: scale(1.02);
@@ -626,7 +626,7 @@ hr.editorial {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   Custom Infinite Canvas Styles (react-zoom-pan-pinch)
+   React Flow canvas styles
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* Canvas wrapper */
@@ -634,106 +634,91 @@ hr.editorial {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  cursor: grab;
 }
 
-.canvas-wrapper:active {
-  cursor: grabbing;
+.agent-studio-react-flow {
+  --xy-background-color: transparent;
+  --xy-edge-stroke-default: oklch(0.6 0.12 75 / 0.36);
+  --xy-edge-stroke-selected-default: oklch(0.6 0.12 75 / 0.9);
+  --xy-node-boxshadow-default: none;
+  --xy-node-border-default: transparent;
+  background: transparent;
 }
 
-/* Canvas content area */
-.canvas-content {
-  position: relative;
+.agent-studio-react-flow .react-flow__renderer {
+  background: transparent;
 }
 
-/* Smooth panel transitions when not dragging/resizing */
-.artifact-card {
-  transition:
-    left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    top 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Disable transitions during drag/resize for responsive feel */
-.artifact-card.dragging,
-.artifact-card.resizing,
-.artifact-card.group-dragging {
+.agent-studio-react-flow .react-flow__node {
+  outline: none;
   transition: none;
 }
 
-/* Raised stacking while dragging (flat: outline instead of shadow) */
-.artifact-card.dragging {
-  z-index: 1000;
+.agent-studio-react-flow .react-flow__node.dragging .artifact-card {
+  outline: 2px solid var(--rule-navy);
+  outline-offset: 0;
 }
 
-/* Custom resize handles - corners only */
-.resize-handle {
-  position: absolute;
-  width: 12px;
-  height: 12px;
-  background: white;
+.agent-studio-react-flow .react-flow__node:focus-visible .artifact-card {
+  box-shadow:
+    0 0 0 2px var(--background),
+    0 0 0 4px var(--ring);
+}
+
+.agent-studio-react-flow .artifact-card {
+  position: relative;
+  transition: none;
+}
+
+.agent-studio-react-flow .artifact-card.dragging * {
+  user-select: none;
+}
+
+.agent-studio-react-flow .react-flow__node-resizer {
+  z-index: 8;
+}
+
+.canvas-node-resize-handle {
+  width: 10px;
+  height: 10px;
   border: 2px solid var(--primary);
+  background: var(--card);
+}
+
+.canvas-node-resize-line {
+  border-color: var(--primary);
+}
+
+.canvas-hidden-handle {
+  width: 1px;
+  height: 1px;
+  min-width: 1px;
+  min-height: 1px;
+  border: 0;
   opacity: 0;
-  transition: opacity 0.15s ease;
-  z-index: 10;
-  touch-action: none;
+  pointer-events: none;
 }
 
-.artifact-card:hover .resize-handle,
-.artifact-card:focus-within .resize-handle {
-  opacity: 1;
+.canvas-association-edge {
+  fill: none;
+  stroke: oklch(0.6 0.12 75 / 0.32);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+  pointer-events: stroke;
 }
 
-/* Always show resize handles on touch devices */
-@media (hover: none) {
-  .resize-handle {
-    opacity: 0.7;
-    width: 20px;
-    height: 20px;
-  }
-  .resize-handle.nw { top: -10px; left: -10px; }
-  .resize-handle.ne { top: -10px; right: -10px; }
-  .resize-handle.sw { bottom: -10px; left: -10px; }
-  .resize-handle.se { bottom: -10px; right: -10px; }
+.canvas-association-edge.selected {
+  stroke: oklch(0.6 0.12 75 / 0.9);
+  stroke-width: 3;
 }
 
-/* Corner positions */
-.resize-handle.nw {
-  top: -6px;
-  left: -6px;
-  cursor: nw-resize;
+.agent-studio-react-flow .react-flow__edge:focus-visible .canvas-association-edge {
+  stroke: var(--ring);
+  stroke-width: 3;
 }
 
-.resize-handle.ne {
-  top: -6px;
-  right: -6px;
-  cursor: ne-resize;
-}
-
-.resize-handle.sw {
-  bottom: -6px;
-  left: -6px;
-  cursor: sw-resize;
-}
-
-.resize-handle.se {
-  bottom: -6px;
-  right: -6px;
-  cursor: se-resize;
-}
-
-/* Dark mode resize handles */
-.dark .resize-handle {
-  background: oklch(0.25 0.02 250);
-  border-color: var(--rule-navy);
-}
-
-/* Prevent text selection during drag */
-.artifact-card.dragging * {
-  user-select: none;
-}
-
-.artifact-card.resizing * {
-  user-select: none;
+.agent-studio-react-flow .react-flow__edge-interaction {
+  cursor: pointer;
 }
 
 /* Canvas header */
@@ -1258,53 +1243,12 @@ hr.editorial {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 /* Subtle border glow on hover to indicate interactivity */
-.artifact-card:not(.dragging):not(.resizing):hover {
+.agent-studio-react-flow .artifact-card:hover {
   border-color: oklch(0.6 0.12 253 / 0.4);
 }
 
-.dark .artifact-card:not(.dragging):not(.resizing):hover {
+.dark .agent-studio-react-flow .artifact-card:hover {
   border-color: oklch(0.6 0.12 253 / 0.5);
-}
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   Connection Lines
-   ═══════════════════════════════════════════════════════════════════════════ */
-
-.connection-lines {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.connection-line {
-  fill: none;
-  stroke: oklch(0.6 0.12 253 / 0.4);
-  stroke-width: 2;
-  stroke-dasharray: 8 4;
-}
-
-.dark .connection-line {
-  stroke: oklch(0.65 0.12 253 / 0.5);
-}
-
-/* Connection line draw-in animation */
-@keyframes line-draw {
-  from {
-    stroke-dashoffset: 100%;
-  }
-  to {
-    stroke-dashoffset: 0;
-  }
-}
-
-.connection-entering {
-  stroke-dasharray: 1000;
-  stroke-dashoffset: 1000;
-  animation: line-draw 0.6s ease-out forwards;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1312,19 +1256,20 @@ hr.editorial {
    ═══════════════════════════════════════════════════════════════════════════ */
 
 .group-boundary {
-  position: absolute;
   border: 2px dashed oklch(0.7 0.02 250 / 0.3);
   border-radius: 0;
   background: oklch(0.94 0.01 80 / 0.15);
-  /* Smooth transitions for position/size changes when panels move */
-  transition:
-    left 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    top 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    width 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    height 0.3s cubic-bezier(0.4, 0, 0.2, 1),
-    border-color 0.2s ease,
-    background 0.2s ease,
-    box-shadow 0.2s ease;
+  /* Leave the space between tiles available for association-edge clicks. The
+     label remains the deliberate group-selection/drag target below. */
+  pointer-events: none;
+}
+
+.agent-studio-react-flow .react-flow__node.group-boundary-node {
+  pointer-events: none !important;
+}
+
+.agent-studio-react-flow .react-flow__node.group-boundary-node .group-boundary-label {
+  pointer-events: auto;
 }
 
 .group-boundary:hover {
@@ -1348,7 +1293,7 @@ hr.editorial {
   border-color: oklch(0.6 0.12 253 / 0.6);
   background: oklch(0.6 0.12 253 / 0.08);
   box-shadow: 0 0 0 4px oklch(0.6 0.12 253 / 0.12);
-  pointer-events: auto;
+  pointer-events: none;
   cursor: pointer;
 }
 
@@ -1395,16 +1340,6 @@ hr.editorial {
 
 .group-name-input::placeholder {
   color: oklch(0.6 0.02 250);
-}
-
-/* Selection box (drag to select) */
-.selection-box {
-  position: absolute;
-  border: 2px solid oklch(0.6 0.12 253);
-  background: oklch(0.6 0.12 253 / 0.1);
-  border-radius: 4px;
-  pointer-events: none;
-  z-index: 5000;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1624,31 +1559,9 @@ hr.editorial {
    Accessibility: keyboard focus visibility
    -------------------------------------------------------------------------- */
 
-/* Focusable canvas tiles get a clear, theme-aware focus ring. Uses
-   :focus-visible so mouse pointer-downs don't paint a ring, but keyboard focus
-   (Tab / arrow roving) always does. */
-.artifact-card:focus-visible {
-  outline: none;
-  box-shadow:
-    0 0 0 2px var(--background),
-    0 0 0 4px var(--ring);
-}
-
-.dark .artifact-card:focus-visible {
-  box-shadow:
-    0 0 0 2px var(--background),
-    0 0 0 4px var(--ring);
-}
-
-/* Reveal resize handles when the tile has keyboard focus, matching the hover
-   affordance. (focus-within already covers inner focus.) */
-.artifact-card:focus-visible .resize-handle {
-  opacity: 1;
-}
-
-/* Generic focus ring for the group-boundary and menu triggers driven by
-   focus-visible so keyboard users always see where they are. */
-.group-boundary:focus-visible {
+/* Generic focus ring for group boundaries and menu triggers. */
+.agent-studio-react-flow .react-flow__node:focus-visible .group-boundary,
+.group-boundary-label:focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 2px;
 }
@@ -1668,10 +1581,7 @@ hr.editorial {
     scroll-behavior: auto !important;
   }
 
-  .artifact-card,
-  .artifact-card.dragging,
-  .artifact-card.resizing,
-  .artifact-card.group-dragging {
+  .artifact-card {
     transition: none !important;
   }
 }

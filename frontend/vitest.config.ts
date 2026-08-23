@@ -6,6 +6,12 @@ import react from '@vitejs/plugin-react';
 // untouched. We only need the React plugin to compile JSX/TSX for tests.
 export default defineConfig({
   plugins: [react()],
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    include: ['@xyflow/react'],
+  },
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],

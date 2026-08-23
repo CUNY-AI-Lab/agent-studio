@@ -1,19 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
 import { useAgent } from 'agents/react';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
 import { agentBasePath } from './base-path';
 import { toPng } from 'html-to-image';
 import { HomePage } from './components/HomePage';
-import { ConnectionLines } from './components/canvas/ConnectionLines';
+import { CanvasFlow } from './components/canvas/CanvasFlow';
 import { ContextualChatPopover } from './components/canvas/ContextualChatPopover';
-import { DraggablePanel } from './components/canvas/DraggablePanel';
-import { GroupBoundary } from './components/canvas/GroupBoundary';
-import { SelectionBox } from './components/canvas/SelectionBox';
 import { SelectionToolbar } from './components/canvas/SelectionToolbar';
-import { CanvasZoomControls } from './components/canvas/CanvasZoomControls';
 import { ReadOnlyCanvas } from './components/canvas/ReadOnlyCanvas';
-import { PanelBody } from './components/panels/PanelBody';
 import { PanelMenu } from './components/panels/PanelMenu';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { WorkspaceHeader } from './components/workspace/WorkspaceHeader';
@@ -79,7 +73,6 @@ import {
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { makeClientId } from './lib/format';
-import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, CANVAS_WHEEL_CONFIG, zoomViewportAtPoint } from './lib/canvasViewport';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
 import {
@@ -160,17 +153,11 @@ function WorkspaceShell({
   // errors). Kept separate from the visual toast so announcements can fire even
   // when there is nothing new to show visually.
   const [announcement, setAnnouncement] = useState('');
-  const [animatingPanelIds, setAnimatingPanelIds] = useState<Set<string>>(new Set());
-  const [animatingConnectionIds, setAnimatingConnectionIds] = useState<Set<string>>(new Set());
   const [highlightedFilePaths, setHighlightedFilePaths] = useState<Set<string>>(new Set());
   const [activeFilePillPopover, setActiveFilePillPopover] = useState<string | null>(null);
   const [selectedPanelIds, setSelectedPanelIds] = useState<Set<string>>(new Set());
   const [hoveredPanelId, setHoveredPanelId] = useState<string | null>(null);
   const [hoveredToolbarPanelId, setHoveredToolbarPanelId] = useState<string | null>(null);
-  const [isSelectingBox, setIsSelectingBox] = useState(false);
-  const [spacePanning, setSpacePanning] = useState(false);
-  const [selectionBoxStart, setSelectionBoxStart] = useState<{ x: number; y: number } | null>(null);
-  const [selectionBoxEnd, setSelectionBoxEnd] = useState<{ x: number; y: number } | null>(null);
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupNameInput, setGroupNameInput] = useState('');
@@ -191,7 +178,6 @@ function WorkspaceShell({
   const workspaceFilesRef = useRef(workspace.files);
   const viewportSaveTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const viewportRef = useRef(workspace.state.viewport);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
   const panelSourceRef = useRef<Record<string, string>>({});
   const lastLayoutInteractionRef = useRef(Date.now());
@@ -201,12 +187,8 @@ function WorkspaceShell({
   const hoveredPanelIdRef = useRef<string | null>(null);
   const hoveredToolbarPanelIdRef = useRef<string | null>(null);
   const previousDockedChatRef = useRef<boolean | null>(null);
-  const selectionPendingRef = useRef<{ x: number; y: number } | null>(null);
-  const selectionSuppressClickRef = useRef(false);
-  const selectionPointerIdRef = useRef<number | null>(null);
   const pendingAutoFocusRef = useRef<Set<string>>(new Set());
   const previousArtifactIdsRef = useRef<Set<string>>(new Set());
-  const previousConnectionIdsRef = useRef<Set<string>>(new Set());
   const contextualAutoPanKeyRef = useRef<string | null>(null);
   const initialPromptSentRef = useRef(false);
   const publishOperationIdRef = useRef<string | null>(null);
@@ -214,13 +196,6 @@ function WorkspaceShell({
   const contextualPendingRef = useRef<ContextualTurn & {
     turnId: string;
     scopeKey: string;
-  } | null>(null);
-  const panGestureRef = useRef<{
-    pointerId: number;
-    startClientX: number;
-    startClientY: number;
-    originX: number;
-    originY: number;
   } | null>(null);
 
   const agent = useAgent<WorkspaceAgentClient, WorkspaceState>({
@@ -355,11 +330,6 @@ function WorkspaceShell({
     setHighlightedFilePaths(new Set());
     setActiveFilePillPopover(null);
     setToast(null);
-    setAnimatingPanelIds(new Set());
-    setAnimatingConnectionIds(new Set());
-    setIsSelectingBox(false);
-    setSelectionBoxStart(null);
-    setSelectionBoxEnd(null);
     setFocusedPanelId(null);
     setEditingGroupId(null);
     setGroupNameInput('');
@@ -371,18 +341,12 @@ function WorkspaceShell({
     setContextualThreads({});
     setContextualLoading({});
     setContextualStatus({});
-    selectionPendingRef.current = null;
-    selectionSuppressClickRef.current = false;
-    selectionPointerIdRef.current = null;
-    panGestureRef.current = null;
     panelSourceRef.current = {};
     previousArtifactIdsRef.current = new Set(
       workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
     );
-    previousConnectionIdsRef.current = new Set(workspace.state.connections.map((connection) => connection.id));
     contextualAutoPanKeyRef.current = null;
     initialPromptSentRef.current = false;
-    viewportRef.current = workspace.state.viewport;
     if (workspace.downloads && workspace.downloads.length > 0) {
       workspace.downloads.forEach((download) => {
         triggerQueuedDownload(download);
@@ -425,10 +389,6 @@ function WorkspaceShell({
     () => workspaceState.panels.filter((panel) => panel.type !== 'chat'),
     [workspaceState.panels]
   );
-  const existingPanelIds = useMemo(
-    () => new Set(artifactPanels.map((panel) => panel.id)),
-    [artifactPanels]
-  );
   const workspaceFileEntries = useMemo(
     () => workspaceFiles.filter((file) => !file.isDirectory),
     [workspaceFiles]
@@ -459,26 +419,10 @@ function WorkspaceShell({
     () => new Set(visiblePanels.map((panel) => panel.id)),
     [visiblePanels]
   );
-  // Roving tabindex target: exactly one visible tile is Tab-reachable at a time,
-  // so the canvas takes a single tab stop and arrow keys drive geometry from the
-  // focused tile. Prefer the explicitly focused tile, then the first selected,
-  // then the first visible tile.
-  const rovingPanelId = useMemo(() => {
-    if (focusedPanelId && visiblePanels.some((panel) => panel.id === focusedPanelId)) {
-      return focusedPanelId;
-    }
-    const firstSelected = visiblePanels.find((panel) => selectedPanelIds.has(panel.id));
-    if (firstSelected) return firstSelected.id;
-    return visiblePanels[0]?.id ?? null;
-  }, [focusedPanelId, selectedPanelIds, visiblePanels]);
   const panelLayouts = useMemo(() => buildPanelLayouts(visiblePanels), [visiblePanels]);
   const visibleConnections = useMemo(
     () => workspaceState.connections.filter((connection) => visiblePanelIds.has(connection.sourceId) && visiblePanelIds.has(connection.targetId)),
     [visiblePanelIds, workspaceState.connections]
-  );
-  const panelTitles = useMemo(
-    () => Object.fromEntries(visiblePanels.map((panel) => [panel.id, getPanelTitle(panel)])),
-    [visiblePanels]
   );
   const selectedPanels = useMemo(
     () => visiblePanels.filter((panel) => selectedPanelIds.has(panel.id)),
@@ -489,6 +433,10 @@ function WorkspaceShell({
       ? findPanelConnection(workspaceState.connections, selectedPanels[0].id, selectedPanels[1].id) ?? null
       : null,
     [selectedPanels, workspaceState.connections]
+  );
+  const selectedConnectionIds = useMemo(
+    () => selectedConnection ? new Set([selectedConnection.id]) : new Set<string>(),
+    [selectedConnection]
   );
   const singleSelectedPanel = selectedPanels.length === 1 ? selectedPanels[0] : null;
   const selectedGroup = useMemo(
@@ -603,54 +551,10 @@ function WorkspaceShell({
           panelSourceRef.current[panel.id] = panel.sourcePanelId;
         }
       });
-
-      setAnimatingPanelIds((current) => {
-        const next = new Set(current);
-        newPanels.forEach((panel) => next.add(panel.id));
-        return next;
-      });
-
-      newPanels.forEach((panel) => {
-        window.setTimeout(() => {
-          setAnimatingPanelIds((current) => {
-            if (!current.has(panel.id)) return current;
-            const next = new Set(current);
-            next.delete(panel.id);
-            return next;
-          });
-        }, 400);
-      });
     }
 
     previousArtifactIdsRef.current = nextIds;
   }, [artifactPanels]);
-
-  useEffect(() => {
-    const nextIds = new Set(workspaceState.connections.map((connection) => connection.id));
-    const previousIds = previousConnectionIdsRef.current;
-    const newIds = Array.from(nextIds).filter((connectionId) => !previousIds.has(connectionId));
-
-    if (newIds.length > 0) {
-      setAnimatingConnectionIds((current) => {
-        const next = new Set(current);
-        newIds.forEach((connectionId) => next.add(connectionId));
-        return next;
-      });
-
-      newIds.forEach((connectionId) => {
-        window.setTimeout(() => {
-          setAnimatingConnectionIds((current) => {
-            if (!current.has(connectionId)) return current;
-            const next = new Set(current);
-            next.delete(connectionId);
-            return next;
-          });
-        }, 600);
-      });
-    }
-
-    previousConnectionIdsRef.current = nextIds;
-  }, [workspaceState.connections]);
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -813,9 +717,6 @@ function WorkspaceShell({
     }
   }, [closeContextualChat, contextualChatTarget, visiblePanels]);
 
-  useEffect(() => {
-    viewportRef.current = workspaceState.viewport;
-  }, [workspaceState.viewport]);
 
   useEffect(() => {
     function handleResize() {
@@ -884,61 +785,6 @@ function WorkspaceShell({
     };
   }, [publishModalOpen, publishing]);
 
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      const activeElement = document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-      if (activeElement && (activeElement.tagName === 'INPUT' || activeElement.tagName === 'TEXTAREA' || activeElement.isContentEditable)) {
-        return;
-      }
-      if (event.code === 'Space' && !event.repeat) {
-        setSpacePanning(true);
-        event.preventDefault();
-      }
-    }
-
-    function handleKeyUp(event: KeyboardEvent) {
-      if (event.code === 'Space') {
-        setSpacePanning(false);
-        event.preventDefault();
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, []);
-
-  const getViewportRelativePoint = useCallback((clientX: number, clientY: number) => {
-    const rect = canvasViewportRef.current?.getBoundingClientRect();
-    if (!rect) return null;
-    return {
-      x: clientX - rect.left,
-      y: clientY - rect.top,
-    };
-  }, []);
-
-  const releaseCanvasPointerCapture = useCallback((pointerId?: number) => {
-    const id = pointerId ?? selectionPointerIdRef.current ?? panGestureRef.current?.pointerId;
-    if (id == null) return;
-
-    const element = canvasViewportRef.current;
-    if (element && element.hasPointerCapture(id)) {
-      element.releasePointerCapture(id);
-    }
-
-    if (selectionPointerIdRef.current === id) {
-      selectionPointerIdRef.current = null;
-    }
-    if (panGestureRef.current?.pointerId === id) {
-      panGestureRef.current = null;
-    }
-  }, []);
-
   const persistViewport = useCallback((viewport: WorkspaceState['viewport']) => {
     if (viewportSaveTimeoutRef.current) {
       clearTimeout(viewportSaveTimeoutRef.current);
@@ -951,7 +797,6 @@ function WorkspaceShell({
   const updateViewport = useCallback((updater: (current: WorkspaceState['viewport']) => WorkspaceState['viewport']) => {
     setWorkspaceState((current) => {
       const nextViewport = updater(current.viewport);
-      viewportRef.current = nextViewport;
       persistViewport(nextViewport);
       return {
         ...current,
@@ -960,7 +805,7 @@ function WorkspaceShell({
     });
   }, [persistViewport]);
 
-  const setViewport = useCallback((nextViewport: WorkspaceState['viewport']) => {
+  const handleViewportChange = useCallback((nextViewport: WorkspaceState['viewport']) => {
     updateViewport(() => nextViewport);
   }, [updateViewport]);
 
@@ -995,22 +840,6 @@ function WorkspaceShell({
     contextualAutoPanKeyRef.current = contextualChatTarget.key;
     focusCanvasBounds(bounds);
   }, [contextualChatTarget, focusCanvasBounds, panelLayouts]);
-
-  const selectPanel = useCallback((panelId: string, additive: boolean) => {
-    setSelectedPanelIds((current) => {
-      if (!additive) {
-        if (current.size === 1 && current.has(panelId)) return current;
-        return new Set([panelId]);
-      }
-      const next = new Set(current);
-      if (next.has(panelId)) {
-        next.delete(panelId);
-      } else {
-        next.add(panelId);
-      }
-      return next;
-    });
-  }, []);
 
   const clearSelection = useCallback(() => {
     setSelectedPanelIds(new Set());
@@ -1391,6 +1220,33 @@ function WorkspaceShell({
       setError(nextError instanceof Error ? nextError.message : 'The tile association could not be saved.');
     }
   }, [agent, selectedPanels, showToast, workspaceState.connections]);
+
+  const removeConnection = useCallback(async (connectionId: string) => {
+    const connection = workspaceState.connections.find((entry) => entry.id === connectionId);
+    if (!connection) return;
+
+    setWorkspaceState((current) => {
+      const panels = clearPanelRelationFields(current.panels, [connection]);
+      return {
+        ...current,
+        ...normalizePanelRelations(
+          panels,
+          current.connections.filter((entry) => entry.id !== connection.id),
+        ),
+      };
+    });
+
+    try {
+      await agent.call('applyLayoutPatch', [{ removeConnections: [connection.id] }]);
+      showToast('Association removed');
+    } catch (nextError) {
+      setWorkspaceState((current) => ({
+        ...current,
+        ...normalizePanelRelations(current.panels, [...current.connections, connection]),
+      }));
+      setError(nextError instanceof Error ? nextError.message : 'The tile association could not be removed.');
+    }
+  }, [agent, showToast, workspaceState.connections]);
 
   const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
     setWorkspaceState((current) => {
@@ -1972,19 +1828,6 @@ function WorkspaceShell({
     }
   }, [openContextualTarget, selectedGroup, selectedPanels]);
 
-  const handlePanelClick = useCallback((panelId: string, event: React.MouseEvent) => {
-    event.stopPropagation();
-    if (selectionSuppressClickRef.current) return;
-    selectPanel(panelId, event.metaKey || event.ctrlKey || event.shiftKey);
-  }, [selectPanel]);
-
-  const handlePanelDoubleClick = useCallback((panelId: string, event: React.MouseEvent) => {
-    event.stopPropagation();
-    if (selectionSuppressClickRef.current) return;
-    clearSelection();
-    openContextualChatForPanel(panelId);
-  }, [clearSelection, openContextualChatForPanel]);
-
   const handleContextualSubmit = useCallback(() => {
     const next = contextualComposer.trim();
     if (!contextualChatTarget || !next) return;
@@ -2354,15 +2197,6 @@ function WorkspaceShell({
         return;
       }
 
-      if ((event.key === 'Delete' || event.key === 'Backspace') && selectedPanelIds.size > 0) {
-        event.preventDefault();
-        const panelIds = Array.from(selectedPanelIds);
-        void removePanels(panelIds).then((removed) => {
-          if (removed) clearSelection();
-        });
-        return;
-      }
-
       const isMeta = event.metaKey || event.ctrlKey;
       if (isMeta && event.key.toLowerCase() === 'g') {
         event.preventDefault();
@@ -2382,9 +2216,8 @@ function WorkspaceShell({
       if (event.key === 'ArrowUp') dy = -step;
       if (event.key === 'ArrowDown') dy = step;
 
-      // When 2+ tiles are selected, arrows nudge the whole selection. A single
-      // focused tile is handled by DraggablePanel's own key handler (which stops
-      // propagation), so this only runs for multi-select.
+      // When 2+ tiles are selected, arrows nudge the whole selection. CanvasFlow
+      // handles a single focused tile's keyboard movement and resize bindings.
       if ((dx !== 0 || dy !== 0) && selectedPanelIds.size > 1) {
         event.preventDefault();
         const updates: Record<string, { x: number; y: number; width: number; height: number }> = {};
@@ -2421,195 +2254,12 @@ function WorkspaceShell({
     ungroupSelection,
   ]);
 
-  const handleCanvasPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    // Only handle left mouse button for selection
-    if (event.button !== 0) return;
-
-    // If space-panning, let TransformWrapper handle it
-    if (spacePanning) return;
-
-    const target = event.target instanceof Element ? event.target : null;
-    if (!target) return;
-    if (target.closest('.contextual-chat-popover')) return;
-    if (target.closest('.group-boundary')) return;
-    if (target.closest('button')) return;
-    if (target.closest('[data-connection-id], [role="button"]')) return;
-    if (target.closest('.fixed')) return;
-    if (target.closest('input')) return;
-    if (target.closest('textarea')) return;
-    if (target.closest('.panel-menu') || target.closest('.panel-menu-trigger')) return;
-
-    const isPanel = Boolean(target.closest('.artifact-card'));
-
-    closeContextualChat();
-
-    const relative = getViewportRelativePoint(event.clientX, event.clientY);
-    if (!relative) return;
-
-    if (isPanel) {
-      if (target.closest('.artifact-header') || target.closest('.resize-handle')) return;
-      selectionPendingRef.current = { x: relative.x, y: relative.y };
-      return;
-    }
-
-    event.stopPropagation();
-    if (canvasViewportRef.current) {
-      canvasViewportRef.current.setPointerCapture(event.pointerId);
-      selectionPointerIdRef.current = event.pointerId;
-    }
-    selectionPendingRef.current = null;
-    setIsSelectingBox(true);
-    setSelectionBoxStart(relative);
-    setSelectionBoxEnd(relative);
-  }, [closeContextualChat, getViewportRelativePoint, spacePanning]);
-
-  const handleCanvasPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-
-    const relative = getViewportRelativePoint(event.clientX, event.clientY);
-    if (!relative) return;
-
-    if (isSelectingBox && selectionBoxStart) {
-      event.preventDefault();
-      setSelectionBoxEnd(relative);
-      return;
-    }
-
-    const pending = selectionPendingRef.current;
-    if (!pending) return;
-
-    const dx = relative.x - pending.x;
-    const dy = relative.y - pending.y;
-    if (Math.hypot(dx, dy) < 6) return;
-
-    selectionPendingRef.current = null;
-    if (canvasViewportRef.current) {
-      canvasViewportRef.current.setPointerCapture(event.pointerId);
-      selectionPointerIdRef.current = event.pointerId;
-    }
-    setIsSelectingBox(true);
-    setSelectionBoxStart({ x: pending.x, y: pending.y });
-    setSelectionBoxEnd(relative);
-  }, [getViewportRelativePoint, isSelectingBox, selectionBoxStart]);
-
-  const handleCanvasPointerUp = useCallback((event?: React.PointerEvent<HTMLDivElement> | PointerEvent) => {
-    const pointerId = event && 'pointerId' in event ? event.pointerId : undefined;
-
-    if (selectionPendingRef.current && !isSelectingBox) {
-      selectionPendingRef.current = null;
-      releaseCanvasPointerCapture(pointerId);
-      return;
-    }
-
-    releaseCanvasPointerCapture(pointerId);
-
-    if (!isSelectingBox || !selectionBoxStart || !selectionBoxEnd) {
-      setIsSelectingBox(false);
-      setSelectionBoxStart(null);
-      setSelectionBoxEnd(null);
-      selectionPendingRef.current = null;
-      return;
-    }
-
-    const width = Math.abs(selectionBoxEnd.x - selectionBoxStart.x);
-    const height = Math.abs(selectionBoxEnd.y - selectionBoxStart.y);
-    const viewport = viewportRef.current;
-    const left = (Math.min(selectionBoxStart.x, selectionBoxEnd.x) - viewport.x) / viewport.zoom;
-    const top = (Math.min(selectionBoxStart.y, selectionBoxEnd.y) - viewport.y) / viewport.zoom;
-    const right = (Math.max(selectionBoxStart.x, selectionBoxEnd.x) - viewport.x) / viewport.zoom;
-    const bottom = (Math.max(selectionBoxStart.y, selectionBoxEnd.y) - viewport.y) / viewport.zoom;
-    const isDragSelection = width > 10 && height > 10;
-
-    if (isDragSelection) {
-      const hits = visiblePanels
-        .filter((panel) => {
-          const layout = panelLayouts[panel.id];
-          if (!layout) return false;
-          return !(
-            layout.x + layout.width < left ||
-            layout.x > right ||
-            layout.y + layout.height < top ||
-            layout.y > bottom
-          );
-        })
-        .map((panel) => panel.id);
-
-      setSelectedPanelIds(new Set(hits));
-    } else {
-      clearSelection();
-    }
-
-    setIsSelectingBox(false);
-    setSelectionBoxStart(null);
-    setSelectionBoxEnd(null);
-    selectionPendingRef.current = null;
-
-    if (isDragSelection) {
-      selectionSuppressClickRef.current = true;
-      window.setTimeout(() => {
-        selectionSuppressClickRef.current = false;
-      }, 0);
-    }
-  }, [
-    clearSelection,
-    isSelectingBox,
-    panelLayouts,
-    releaseCanvasPointerCapture,
-    selectionBoxEnd,
-    selectionBoxStart,
-    visiblePanels,
-  ]);
-
-  useEffect(() => {
-    if (!isSelectingBox) return;
-
-    const onWindowPointerUp = (event: PointerEvent) => {
-      handleCanvasPointerUp(event);
-    };
-
-    window.addEventListener('pointerup', onWindowPointerUp);
-    return () => {
-      window.removeEventListener('pointerup', onWindowPointerUp);
-    };
-  }, [handleCanvasPointerUp, isSelectingBox]);
-
-  const handleResetViewport = useCallback(() => {
-    setViewport({ x: 0, y: 0, zoom: 1 });
-  }, [setViewport]);
-
-  const zoomBy = useCallback((factor: number) => {
-    const element = canvasViewportRef.current;
-    const centerX = element ? element.clientWidth / 2 : 0;
-    const centerY = element ? element.clientHeight / 2 : 0;
-    updateViewport((current) => zoomViewportAtPoint(current, { x: centerX, y: centerY }, factor));
-  }, [updateViewport]);
-
   const contextualTurnActive = Object.values(contextualLoading).some(Boolean);
   const handleChatStop = useCallback(() => {
     const pending = contextualPendingRef.current;
     void chatStopRef.current();
     if (pending) finishContextualTurn(pending, 'cancel');
   }, [finishContextualTurn]);
-
-  // Keyboard handling for the canvas region itself (fires only when the region,
-  // not a tile, holds focus — tiles stopPropagation their own arrow keys). This
-  // is why the canvas is a labeled region with roving tile focus rather than
-  // role="application": it adds a few affordances without trapping all keys.
-  const handleCanvasKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.target !== event.currentTarget) return;
-    if (event.key === '+' || event.key === '=') {
-      event.preventDefault();
-      zoomBy(1.2);
-    } else if (event.key === '-' || event.key === '_') {
-      event.preventDefault();
-      zoomBy(1 / 1.2);
-    } else if (event.key === '0') {
-      event.preventDefault();
-      handleResetViewport();
-    } else if (event.key === '?') {
-      event.preventDefault();
-      setShortcutsOpen(true);
-    }
-  }, [handleResetViewport, zoomBy]);
 
   const canvasViewportSize = canvasViewportRef.current
     ? {
@@ -2804,159 +2454,93 @@ function WorkspaceShell({
             </div>
           ) : null}
 
-          <div
-            ref={canvasViewportRef}
-            role="region"
-            aria-label={`Workspace canvas, ${visiblePanels.length} tile${visiblePanels.length === 1 ? '' : 's'}. Tab to a tile, then use arrow keys to move it. Press question mark for keyboard help.`}
-            tabIndex={0}
-            className="canvas-bg canvas-wrapper relative flex-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-            onPointerDownCapture={handleCanvasPointerDown}
-            onPointerMoveCapture={handleCanvasPointerMove}
-            onPointerUpCapture={handleCanvasPointerUp}
-            onPointerCancelCapture={handleCanvasPointerUp}
-            onKeyDown={handleCanvasKeyDown}
-          >
-            <TransformWrapper
-              initialScale={workspaceState.viewport.zoom}
-              initialPositionX={workspaceState.viewport.x}
-              initialPositionY={workspaceState.viewport.y}
-              minScale={CANVAS_MIN_ZOOM}
-              maxScale={CANVAS_MAX_ZOOM}
-              limitToBounds={false}
-              centerZoomedOut={false}
-              disabled={isSelectingBox}
-              wheel={CANVAS_WHEEL_CONFIG}
-              panning={{ velocityDisabled: false, allowLeftClickPan: spacePanning, allowMiddleClickPan: true }}
-              doubleClick={{ disabled: true }}
-              onTransform={(_ref, state) => {
-                const nextViewport = {
-                  x: state.positionX,
-                  y: state.positionY,
-                  zoom: state.scale,
-                };
-                viewportRef.current = nextViewport;
-                setWorkspaceState((current) => ({
-                  ...current,
-                  viewport: nextViewport,
-                }));
-                persistViewport(nextViewport);
-              }}
-            >
-              <CanvasZoomControls zoom={workspaceState.viewport.zoom} viewportX={workspaceState.viewport.x} viewportY={workspaceState.viewport.y} />
-              <TransformComponent
-                wrapperStyle={{ width: '100%', height: '100%' }}
-                contentStyle={{ width: '8000px', height: '8000px' }}
-              >
-                <div className="canvas-content relative">
-
-              {workspaceState.groups.map((group) => (
-                <GroupBoundary
-                  key={group.id}
-                  group={group}
-                  panelLayouts={panelLayouts}
-                  existingPanelIds={existingPanelIds}
-                  visiblePanelIds={visiblePanelIds}
-                  scale={workspaceState.viewport.zoom}
-                  isActive={selectedGroup?.id === group.id}
-                  onGroupClick={handleGroupClick}
-                  onGroupRename={(groupId, newName) => {
-                    void renameGroup(groupId, newName);
-                  }}
-                  onGroupDrag={handleGroupDrag}
-                  onGroupDragEnd={(groupId) => {
-                    void handleGroupDragEnd(groupId);
-                  }}
-                  isEditing={editingGroupId === group.id}
-                  editValue={editingGroupId === group.id ? groupNameInput : group.name || ''}
-                  onEditChange={setGroupNameInput}
-                  onEditStart={(groupId) => {
-                    const nextGroup = workspaceState.groups.find((entry) => entry.id === groupId);
-                    setEditingGroupId(groupId);
-                    setGroupNameInput(nextGroup?.name || '');
-                  }}
-                />
-              ))}
-              <ConnectionLines
-                panelLayouts={panelLayouts}
-                connections={visibleConnections}
-                animatingConnectionIds={animatingConnectionIds}
-                panelTitles={panelTitles}
-                selectedConnectionIds={selectedConnection ? new Set([selectedConnection.id]) : undefined}
-                onConnectionClick={handleConnectionClick}
-              />
-              {visiblePanels.map((panel, index) => {
-                const layout = panelLayouts[panel.id] ?? inferPanelLayout(panel, index);
-                return (
-                  <DraggablePanel
-                    key={panel.id}
-                    id={panel.id}
-                    layout={layout}
-                    title={getPanelTitle(panel)}
-                    type={getPanelTypeLabel(panel)}
-                    scale={workspaceState.viewport.zoom}
-                    zIndex={focusedPanelId === panel.id ? 40 : selectedPanelIds.has(panel.id) ? 30 : 1}
-                    onLayoutChange={handlePanelLayoutChange}
-                    onDragStart={handlePanelDragStart}
-                    onDragEnd={(panelId) => {
-                      void handlePanelDragEnd(panelId);
-                    }}
-                    onFocus={setFocusedPanelId}
-                    onOpenMenu={setOpenMenuId}
-                    isMenuOpen={openMenuId === panel.id}
-                    menuContent={renderPanelMenuContent(panel)}
-                    isSelected={selectedPanelIds.has(panel.id)}
-                    isAnimating={animatingPanelIds.has(panel.id)}
-                    onKeyboardSelect={selectPanel}
-                    isFocusTarget={rovingPanelId === panel.id}
-                    onPanelClick={handlePanelClick}
-                    onPanelDoubleClick={(panelId, event) => {
-                      handlePanelDoubleClick(panelId, event);
-                    }}
-                    isInDraggingGroup={draggingGroupId !== null && workspaceState.groups.find((group) => group.id === draggingGroupId)?.panelIds.includes(panel.id)}
-                    onHoverChange={(panelId) => {
-                      if (selectedPanelIds.size > 0) return;
-                      if (hoverClearTimeoutRef.current) {
-                        clearTimeout(hoverClearTimeoutRef.current);
-                        hoverClearTimeoutRef.current = null;
-                      }
-                      if (panelId) {
-                        hoveredPanelIdRef.current = panelId;
-                        setHoveredPanelId(panelId);
-                        return;
-                      }
-                      const lastPanelId = hoveredPanelIdRef.current;
-                      hoverClearTimeoutRef.current = setTimeout(() => {
-                        if (hoveredToolbarPanelIdRef.current === lastPanelId) return;
-                        hoveredPanelIdRef.current = null;
-                        setHoveredPanelId(null);
-                      }, 120);
-                    }}
-                  >
-                    <div
-                      ref={(node) => {
-                        panelRefs.current[panel.id] = node;
-                      }}
-                      className="h-full"
-                    >
-                      <PanelBody
-                        fileSource={{ kind: 'workspace', id: workspace.workspace.id }}
-                        panel={panel}
-                        allPanels={workspaceState.panels}
-                        workspaceFiles={workspaceFiles}
-                        highlightedFilePaths={highlightedFilePaths}
-                        getFileActionLabel={getFileCanvasActionLabel}
-                        onOpenFile={(file) => {
-                          void openFileOnCanvas(file);
-                        }}
-                      />
-                    </div>
-                  </DraggablePanel>
-                );
-              })}
-                </div>
-              </TransformComponent>
-            </TransformWrapper>
-            {visiblePanels.length === 0 ? (
+          <CanvasFlow
+            viewportRef={canvasViewportRef}
+            panels={visiblePanels}
+            allPanels={workspaceState.panels}
+            groups={workspaceState.groups}
+            connections={visibleConnections}
+            viewport={workspaceState.viewport}
+            workspaceFiles={workspaceFiles}
+            fileSource={{ kind: 'workspace', id: workspace.workspace.id }}
+            selectedPanelIds={selectedPanelIds}
+            selectedConnectionIds={selectedConnectionIds}
+            focusedPanelId={focusedPanelId}
+            openMenuId={openMenuId}
+            renderPanelMenu={renderPanelMenuContent}
+            highlightedFilePaths={highlightedFilePaths}
+            getFileActionLabel={getFileCanvasActionLabel}
+            onOpenFile={(file) => {
+              void openFileOnCanvas(file);
+            }}
+            onPanelRef={(panelId, node) => {
+              panelRefs.current[panelId] = node;
+            }}
+            onOpenMenu={setOpenMenuId}
+            onPanelLayoutChange={handlePanelLayoutChange}
+            onPanelDragStart={handlePanelDragStart}
+            onPanelDragEnd={handlePanelDragEnd}
+            onPanelDelete={(panelIds) => {
+              void removePanels(panelIds).then((removed) => {
+                if (removed) clearSelection();
+              });
+            }}
+            onConnectionDelete={(connectionId) => {
+              void removeConnection(connectionId);
+            }}
+            onConnectionClick={handleConnectionClick}
+            onSelectionChange={(panelIds) => {
+              setSelectedPanelIds((current) => {
+                if (current.size === panelIds.length && panelIds.every((panelId) => current.has(panelId))) {
+                  return current;
+                }
+                return new Set(panelIds);
+              });
+            }}
+            onPaneClick={() => {
+              clearSelection();
+              closeContextualChat();
+            }}
+            onNodeDoubleClick={(panelId) => {
+              clearSelection();
+              openContextualChatForPanel(panelId);
+            }}
+            onNodeFocus={setFocusedPanelId}
+            onNodeHover={(panelId) => {
+              if (selectedPanelIds.size > 0) return;
+              if (hoverClearTimeoutRef.current) {
+                clearTimeout(hoverClearTimeoutRef.current);
+                hoverClearTimeoutRef.current = null;
+              }
+              if (panelId) {
+                hoveredPanelIdRef.current = panelId;
+                setHoveredPanelId(panelId);
+                return;
+              }
+              const lastPanelId = hoveredPanelIdRef.current;
+              hoverClearTimeoutRef.current = setTimeout(() => {
+                if (hoveredToolbarPanelIdRef.current === lastPanelId) return;
+                hoveredPanelIdRef.current = null;
+                setHoveredPanelId(null);
+              }, 120);
+            }}
+            onGroupClick={handleGroupClick}
+            onGroupRename={(groupId, newName) => {
+              void renameGroup(groupId, newName);
+            }}
+            onGroupDrag={handleGroupDrag}
+            onGroupDragEnd={handleGroupDragEnd}
+            editingGroupId={editingGroupId}
+            groupNameInput={groupNameInput}
+            onGroupNameInputChange={setGroupNameInput}
+            onEditGroupStart={(groupId) => {
+              const nextGroup = workspaceState.groups.find((entry) => entry.id === groupId);
+              setEditingGroupId(groupId);
+              setGroupNameInput(nextGroup?.name || '');
+            }}
+            onViewportChange={handleViewportChange}
+            onOpenShortcuts={() => setShortcutsOpen(true)}
+            emptyState={visiblePanels.length === 0 ? (
               <div className="canvas-empty pointer-events-none absolute inset-0">
                 <Sparkles className="canvas-empty-icon" />
                 <h3>{minimizedPanels.length > 0 ? 'All Minimized' : 'Empty Canvas'}</h3>
@@ -2967,9 +2551,7 @@ function WorkspaceShell({
                 </p>
               </div>
             ) : null}
-            {isSelectingBox && selectionBoxStart && selectionBoxEnd ? (
-              <SelectionBox start={selectionBoxStart} end={selectionBoxEnd} />
-            ) : null}
+          >
             {showToolbar ? (
               <SelectionToolbar
                 selectedPanelId={selectedPanelIds.size > 0 ? (singleSelectedPanel && !selectedGroup ? singleSelectedPanel.id : null) : (toolbarPanel?.id ?? null)}
@@ -3036,7 +2618,7 @@ function WorkspaceShell({
                 onClose={closeContextualChat}
               />
             ) : null}
-          </div>
+          </CanvasFlow>
           {minimizedPanels.length > 0 ? (
             <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-border bg-card/90 p-2 shadow-lg backdrop-blur">
               <button

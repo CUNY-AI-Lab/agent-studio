@@ -8,9 +8,10 @@ focus management, and current limitations.
 
 ## Canvas keyboard map
 
-Tab into the canvas region, then Tab again to land on a tile. Exactly one tile
-is in the tab order at a time (a roving tabindex), so the canvas takes a single
-tab stop and the arrow keys drive geometry from the focused tile.
+Tab into the canvas region, then Tab through its tiles, association lines, and
+controls. React Flow keeps each focusable node and edge keyboard reachable;
+focus is also used to keep the active tile visually raised and to auto-pan a
+tile into view when needed.
 
 The same map is available in-app: press **`?`** while the canvas region is
 focused, or use the **keyboard icon** in the workspace header. The in-app dialog renders
@@ -52,28 +53,25 @@ below are hand-maintained mirrors of that source, and a vitest drift check
 | --- | --- |
 | `+` / `=` | Zoom in |
 | `-` / `_` | Zoom out |
-| `0` | Reset zoom and position |
+| `0` | Fit all tiles in view |
 | `?` | Open the keyboard-shortcuts dialog |
 | `Space + drag` | Pan the canvas (mouse) |
 
 Every drag interaction on the canvas has a keyboard equivalent: tiles move and
 resize with arrows, groups move with arrows, selection toggles with Enter/Space,
-and the tile menu opens with `M`. All keyboard geometry changes go through the
-**same** `onLayoutChange` / `onDragEnd` callbacks the mouse path uses, so layout
-persists identically.
-
-The shared keyboard-map label for Tab is broader than the current roving-focus
-implementation. Tab reaches the canvas region and its one active tile, then
-moves to the next page control; it does not rove among every tile.
+and the tile menu opens with `M`. Association lines can be focused and then
+activated with Enter/Space to select both endpoint tiles; Delete/Backspace
+disconnects the selected line. All keyboard geometry changes go through the
+same layout and drag-end callbacks as pointer input, so layout persists
+identically.
 
 ## ARIA role decisions
 
-- **Canvas = labeled `region`, not `application`.** We deliberately did *not*
-  use `role="application"`. The canvas adds only a few affordances when the
-  region itself is focused (zoom keys, `?`); it never swallows all keystrokes.
-  Tiles use a roving tabindex so standard browse-mode navigation still works and
-  a screen reader can read tile labels normally. `application` would have
-  suppressed browse mode for no benefit.
+- **Workspace canvas = labeled `region`; React Flow surface = `application`.**
+  The outer workspace landmark remains a `region`. The maintained React Flow
+  interaction surface uses its documented `application` role so its node/edge
+  keyboard model and live announcements work consistently. Tiles and
+  association lines keep explicit labels and native focus targets.
 - **Tiles = `role="group"`** with `aria-label` "`{title} ({type} tile)`". A
   group is the right container role for a labeled region that holds arbitrary
   artifact content; workspace tiles are focusable and support the documented
@@ -113,7 +111,8 @@ moves to the next page control; it does not rove among every tile.
 
 - All interactive controls have theme-aware `:focus-visible` rings (Tailwind
   `focus-visible:ring-ring`, tuned for the dark theme). Focused tiles get a
-  dedicated ring in `index.css` and reveal their resize handles.
+  dedicated ring in `index.css`; selected editable tiles expose their resize
+  handles.
 - A **skip-to-canvas** link is the first focusable element; it focuses the
   canvas region directly.
 - **`prefers-reduced-motion: reduce`** is honored globally in `index.css`:
@@ -140,9 +139,8 @@ bun run --cwd frontend build
 Key a11y test files:
 
 - `frontend/src/lib/focusTrap.test.ts` — trap wrap/restore/Escape
-- `frontend/src/components/canvas/DraggablePanel.test.tsx` — arrow-move delta,
-  Shift/Alt variants, Enter/Space select, `M` menu, roles
-- `frontend/src/components/canvas/GroupBoundary.test.tsx` — group keyboard move/select/rename
+- `frontend/src/components/canvas/ReadOnlyCanvas.test.tsx` — gallery route and
+  focusable tile semantics
 - `frontend/src/components/canvas/SelectionToolbar.test.tsx` — accessible names, menu semantics
 - `frontend/src/components/workspace/KeyboardShortcutsDialog.test.tsx` — dialog + trap + Escape
 - `frontend/src/components/workspace/PublishDialog.test.tsx` — dialog + trap + Escape
@@ -155,17 +153,11 @@ sheet, and confirm dialogs trap focus and restore it on Escape.
 
 ## Current limitations
 
-- **No keyboard focus roving between tiles.** Arrows move the *focused* tile's
-  geometry; a different tile currently becomes the roving target through
-  pointer/selection flows. A future pass could add
-  a 2-D spatial roving scheme (arrows change focus when a modifier is held, or a
-  dedicated "navigate mode"), but that risks colliding with the move bindings.
-- **Keyboard marquee selection is not implemented;**
-  multi-select is Enter/Space per tile plus `Cmd/Ctrl` grouping.
-- **Connection lines** (`ConnectionLines`) are decorative SVG and are not
-  individually focusable/announced.
-- **HomePage / ReadOnlyCanvas gallery view** has less complete semantic and
-  keyboard coverage than the workspace canvas.
+- **Keyboard marquee selection is not implemented;** pointer drag selection is
+  available on the canvas, while multi-select is Enter/Space per tile plus
+  `Cmd/Ctrl` grouping.
+- The read-only gallery does not expose workspace mutation actions; its tiles
+  and viewport remain keyboard and pointer navigable.
 - The **selection toolbar** is not reachable by Tab from a tile in all cases
   because it is positioned/hover-driven; its actions are also available from the
   tile menu (`M`) and header, which are keyboard-reachable.

@@ -64,6 +64,12 @@ export default defineConfig(({ mode }) => {
   return {
     base: normalizedBase,
     plugins: [tailwindcss(), react()],
+    resolve: {
+      dedupe: ['react', 'react-dom'],
+    },
+    optimizeDeps: {
+      include: ['@xyflow/react'],
+    },
     build: {
       modulePreload: {
         resolveDependencies: (_filename, dependencies, context) => {

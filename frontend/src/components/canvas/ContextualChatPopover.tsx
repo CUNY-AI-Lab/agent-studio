@@ -127,7 +127,7 @@ export function ContextualChatPopover({
       role="dialog"
       aria-label={`Ask about ${title}`}
       className={cn(
-        'contextual-chat-popover absolute flex flex-col no-zoom-scroll',
+        'contextual-chat-popover absolute flex flex-col nodrag nopan nowheel',
         position.placement === 'right' && 'origin-left',
         position.placement === 'left' && 'origin-right',
         position.placement === 'bottom' && 'origin-top'
