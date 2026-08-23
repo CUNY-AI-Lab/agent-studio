@@ -367,6 +367,7 @@ export class FakeWorkspaceAgent {
     const panelIds = new Set(panels.map((panel) => panel.id));
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
     for (const connection of patch.connections ?? []) connectionsById.set(connection.id, connection);
+    for (const connectionId of patch.removeConnections ?? []) connectionsById.delete(connectionId);
     const connections = [...connectionsById.values()].filter(
       (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId),
     );

@@ -39,6 +39,7 @@ export const layoutPatchSchema = z.object({
     sourceId: panelIdSchema,
     targetId: panelIdSchema,
   }).strict()).max(1000).optional(),
+  removeConnections: z.array(panelIdSchema).max(1000).optional(),
   viewport: z.object({
     x: z.number().finite(),
     y: z.number().finite(),

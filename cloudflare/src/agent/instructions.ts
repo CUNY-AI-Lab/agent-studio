@@ -33,6 +33,7 @@ export function buildWorkspaceAgentSystemPrompt(scopedPanelPrompt?: string | nul
     'If a file is large, build it incrementally inside codemode with state.writeFile and state.appendFile rather than embedding the whole artifact in one tool argument.',
     'Prefer codemode over direct tool arguments whenever creating a substantial file would require many characters.',
     'Use the UI tools to surface results as markdown, table, chart, cards, detail views, or file-backed panels.',
+    'When a new tile is derived from an existing tile, pass that tile’s exact id as sourcePanelId (or use linkedTo for ui_detail); the relationship is explicit state and becomes a visible association that survives reload and export.',
     'When the user asks about canvas tiles, inspect them with read_scoped_panels or read_panel instead of relying only on the tile summary.',
     'Use ui_download when the user explicitly needs a direct txt, csv, or json download.',
     'Dynamic Workers code mode is available via the codemode tool. Prefer codemode for multi-step transformations, repeated file operations, aggregation, and derived artifact generation.',

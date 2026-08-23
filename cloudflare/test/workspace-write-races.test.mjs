@@ -170,6 +170,134 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
   assert.equal(fakeAgent.synced?.sessionId, sessionId);
 });
 
+test('structured UI tools persist explicit tile associations', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const source = panel('source');
+  const fake = {
+    state: {
+      sessionId: 'session',
+      workspace: null,
+      panels: [source],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [],
+    },
+    setState(next) {
+      this.state = next;
+    },
+    async withMutationFence(operation) {
+      return operation();
+    },
+  };
+  fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+    WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fake,
+    { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' },
+    'session',
+  );
+
+  const tableResult = await tools.ui_table.execute({
+    id: 'table',
+    title: 'Table',
+    columns: [{ key: 'name', label: 'Name' }],
+    rows: [{ name: 'Ada' }],
+    sourcePanelId: 'source',
+  });
+  assert.equal(tableResult.panelId, 'table');
+  assert.deepEqual(fake.state.connections, [
+    { id: 'connection-source-table', sourceId: 'source', targetId: 'table' },
+  ]);
+
+  const detailResult = await tools.ui_detail.execute({
+    id: 'detail',
+    title: 'Detail',
+    linkedTo: 'table',
+  });
+  assert.equal(detailResult.panelId, 'detail');
+  assert.deepEqual(
+    fake.state.connections.map(({ sourceId, targetId }) => ({ sourceId, targetId })),
+    [
+      { sourceId: 'source', targetId: 'table' },
+      { sourceId: 'detail', targetId: 'table' },
+    ],
+  );
+  assert.equal(fake.state.panels.find((candidate) => candidate.id === 'table').sourcePanelId, 'source');
+});
+
+test('structured UI tools reject an association to a missing tile', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const fake = {
+    state: {
+      sessionId: 'session',
+      workspace: null,
+      panels: [panel('source')],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [],
+    },
+    setState(next) {
+      this.state = next;
+    },
+    async withMutationFence(operation) {
+      return operation();
+    },
+  };
+  fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+    WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fake,
+    { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' },
+    'session',
+  );
+
+  await assert.rejects(
+    tools.ui_markdown.execute({
+      id: 'markdown',
+      title: 'Markdown',
+      content: 'content',
+      sourcePanelId: 'missing',
+    }),
+    /Panel not found: missing/,
+  );
+  assert.deepEqual(fake.state.panels.map((candidate) => candidate.id), ['source']);
+  assert.deepEqual(fake.state.connections, []);
+});
+
+test('addPanel persists a supplied sourcePanelId as an explicit association', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const fake = {
+    state: {
+      sessionId: 'session',
+      workspace: null,
+      panels: [panel('source')],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [],
+    },
+    assertNotFrozen() {},
+    assertAuthorizedRpc() {},
+    setState(next) {
+      this.state = next;
+    },
+  };
+  fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+    WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+
+  await WorkspaceAgent.prototype.addPanel.call(fake, {
+    ...panel('child'),
+    sourcePanelId: 'source',
+  });
+
+  assert.deepEqual(fake.state.connections, [
+    { id: 'connection-child-source', sourceId: 'child', targetId: 'source' },
+  ]);
+});
+
 // ---------------------------------------------------------------------------
 // V3 — applyLayoutPatch merges connections/groups per id
 // ---------------------------------------------------------------------------
@@ -218,6 +346,26 @@ test('a stale client connections array cannot resurrect a removed-panel connecti
     [],
     'a connection to a removed panel must not be resurrected by a stale patch'
   );
+});
+
+test('a connection can be explicitly removed without replacing concurrent connections', async () => {
+  const { fake, applyLayoutPatch } = await makeLayoutAgent({
+    sessionId: null,
+    workspace: null,
+    panels: [panel('a'), panel('b'), panel('c')],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    groups: [],
+    connections: [
+      { id: 'connection-a-b', sourceId: 'a', targetId: 'b' },
+      { id: 'connection-b-c', sourceId: 'b', targetId: 'c' },
+    ],
+  });
+
+  await applyLayoutPatch({ removeConnections: ['connection-a-b'] });
+
+  assert.deepEqual(fake.state.connections, [
+    { id: 'connection-b-c', sourceId: 'b', targetId: 'c' },
+  ]);
 });
 
 test('concurrent group edits from two tabs both survive', async () => {

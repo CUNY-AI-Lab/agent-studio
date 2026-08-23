@@ -56,4 +56,36 @@ describe('SelectionToolbar accessibility', () => {
     expect(screen.getByRole('menu', { name: 'Download formats' })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: 'CSV' })).toBeInTheDocument();
   });
+
+  it('exposes an explicit association action for a two-tile selection', async () => {
+    const onToggleConnection = vi.fn();
+    const user = userEvent.setup();
+    render(
+      <SelectionToolbar
+        {...makeProps({
+          selectedPanelId: null,
+          selectedPanelIds: new Set(['p1', 'p2']),
+          onToggleConnection,
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Associate selected tiles' }));
+    expect(onToggleConnection).toHaveBeenCalledOnce();
+  });
+
+  it('turns the association action into a disconnect action when linked', () => {
+    render(
+      <SelectionToolbar
+        {...makeProps({
+          selectedPanelId: null,
+          selectedPanelIds: new Set(['p1', 'p2']),
+          onToggleConnection: vi.fn(),
+          isConnected: true,
+        })}
+      />
+    );
+
+    expect(screen.getByRole('button', { name: 'Disconnect selected tiles' })).toBeInTheDocument();
+  });
 });

@@ -68,9 +68,11 @@ import {
 } from './lib/panelLayout';
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
 import { computeGroupsDelta } from './lib/groupDelta';
+import { findPanelConnection, makePanelConnection } from './lib/panelConnections';
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
-import { clampNumber, makeClientId } from './lib/format';
+import { makeClientId } from './lib/format';
+import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, CANVAS_WHEEL_CONFIG, zoomViewportAtPoint } from './lib/canvasViewport';
 import { downloadBlob, triggerQueuedDownload } from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
 import {
@@ -427,6 +429,12 @@ function WorkspaceShell({
     () => visiblePanels.filter((panel) => selectedPanelIds.has(panel.id)),
     [selectedPanelIds, visiblePanels]
   );
+  const selectedConnection = useMemo(
+    () => selectedPanels.length === 2
+      ? findPanelConnection(workspaceState.connections, selectedPanels[0].id, selectedPanels[1].id) ?? null
+      : null,
+    [selectedPanels, workspaceState.connections]
+  );
   const singleSelectedPanel = selectedPanels.length === 1 ? selectedPanels[0] : null;
   const selectedGroup = useMemo(
     () =>
@@ -561,36 +569,6 @@ function WorkspaceShell({
 
     previousArtifactIdsRef.current = nextIds;
   }, [artifactPanels]);
-
-  useEffect(() => {
-    const missingConnections = artifactPanels
-      .filter((panel) => panel.sourcePanelId && panel.sourcePanelId !== panel.id)
-      .flatMap((panel) => panel.sourcePanelId && panel.sourcePanelId !== panel.id
-        ? [{
-          id: `conn-${panel.sourcePanelId}-${panel.id}`,
-          sourceId: panel.sourcePanelId,
-          targetId: panel.id,
-        }]
-        : [])
-      .filter(
-        (connection) =>
-          !workspaceState.connections.some((current) => current.id === connection.id)
-      );
-
-    if (missingConnections.length === 0) return;
-
-    setWorkspaceState((current) => {
-      const known = new Set(current.connections.map((connection) => connection.id));
-      const additions = missingConnections.filter((connection) => !known.has(connection.id));
-      if (additions.length === 0) return current;
-      return { ...current, connections: [...current.connections, ...additions] };
-    });
-    // Send only the NEW connections: the server merges per id, so shipping the
-    // whole array would let this tab's stale snapshot resurrect a connection
-    // the server concurrently removed (removePanel) or drop one another tab
-    // added.
-    void agent.call('applyLayoutPatch', [{ connections: missingConnections }]);
-  }, [agent, artifactPanels, workspaceState.connections]);
 
   useEffect(() => {
     const nextIds = new Set(workspaceState.connections.map((connection) => connection.id));
@@ -1208,6 +1186,14 @@ function WorkspaceShell({
     setSelectedPanelIds(new Set(group.panelIds.filter((panelId) => visiblePanelIds.has(panelId))));
   }, [visiblePanelIds, workspaceState.groups]);
 
+  const handleConnectionClick = useCallback((connection: WorkspaceState['connections'][number]) => {
+    const endpointIds = [connection.sourceId, connection.targetId]
+      .filter((panelId) => visiblePanelIds.has(panelId));
+    if (endpointIds.length !== 2) return;
+    setFocusedPanelId(connection.targetId);
+    setSelectedPanelIds(new Set(endpointIds));
+  }, [visiblePanelIds]);
+
   const refreshWorkspace = useCallback(async () => {
     await onWorkspaceRefresh(workspace.workspace.id);
   }, [onWorkspaceRefresh, workspace.workspace.id]);
@@ -1292,6 +1278,52 @@ function WorkspaceShell({
     if (removeIds.length > 0) patch.removeGroups = removeIds;
     await agent.call('applyLayoutPatch', [patch]);
   }, [agent, workspaceState.groups]);
+
+  const toggleSelectedConnection = useCallback(async () => {
+    if (selectedPanels.length !== 2) return;
+
+    const [firstPanel, secondPanel] = selectedPanels;
+    const currentConnection = findPanelConnection(
+      workspaceState.connections,
+      firstPanel.id,
+      secondPanel.id,
+    );
+
+    if (currentConnection) {
+      setWorkspaceState((current) => ({
+        ...current,
+        connections: current.connections.filter((connection) => connection.id !== currentConnection.id),
+      }));
+      try {
+        await agent.call('applyLayoutPatch', [{ removeConnections: [currentConnection.id] }]);
+        showToast(`Disconnected ${getPanelTitle(firstPanel)} and ${getPanelTitle(secondPanel)}`);
+      } catch (nextError) {
+        setWorkspaceState((current) => ({
+          ...current,
+          connections: [...current.connections, currentConnection],
+        }));
+        setError(nextError instanceof Error ? nextError.message : 'The tile association could not be removed.');
+      }
+      return;
+    }
+
+    const nextConnection = makePanelConnection(firstPanel.id, secondPanel.id);
+    setWorkspaceState((current) => (
+      current.connections.some((connection) => connection.id === nextConnection.id)
+        ? current
+        : { ...current, connections: [...current.connections, nextConnection] }
+    ));
+    try {
+      await agent.call('applyLayoutPatch', [{ connections: [nextConnection] }]);
+      showToast(`Associated ${getPanelTitle(firstPanel)} and ${getPanelTitle(secondPanel)}`);
+    } catch (nextError) {
+      setWorkspaceState((current) => ({
+        ...current,
+        connections: current.connections.filter((connection) => connection.id !== nextConnection.id),
+      }));
+      setError(nextError instanceof Error ? nextError.message : 'The tile association could not be saved.');
+    }
+  }, [agent, selectedPanels, showToast, workspaceState.connections]);
 
   const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
     setWorkspaceState((current) => {
@@ -2504,16 +2536,7 @@ function WorkspaceShell({
     const element = canvasViewportRef.current;
     const centerX = element ? element.clientWidth / 2 : 0;
     const centerY = element ? element.clientHeight / 2 : 0;
-    updateViewport((current) => {
-      const nextZoom = clampNumber(current.zoom * factor, 0.35, 2.5);
-      const canvasX = (centerX - current.x) / current.zoom;
-      const canvasY = (centerY - current.y) / current.zoom;
-      return {
-        x: centerX - canvasX * nextZoom,
-        y: centerY - canvasY * nextZoom,
-        zoom: nextZoom,
-      };
-    });
+    updateViewport((current) => zoomViewportAtPoint(current, { x: centerX, y: centerY }, factor));
   }, [updateViewport]);
 
   // Keyboard handling for the canvas region itself (fires only when the region,
@@ -2690,6 +2713,11 @@ function WorkspaceShell({
           <div className="canvas-header flex items-center justify-between px-4 py-2 z-10">
             <div />
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              {visibleConnections.length > 0 ? (
+                <span aria-label={`${visibleConnections.length} tile association${visibleConnections.length === 1 ? '' : 's'}`}>
+                  {visibleConnections.length} association{visibleConnections.length === 1 ? '' : 's'}
+                </span>
+              ) : null}
               {minimizedPanels.length > 0 ? (
                 <span className="font-mono">{minimizedPanels.length} docked</span>
               ) : null}
@@ -2741,13 +2769,13 @@ function WorkspaceShell({
               initialScale={workspaceState.viewport.zoom}
               initialPositionX={workspaceState.viewport.x}
               initialPositionY={workspaceState.viewport.y}
-              minScale={0.1}
-              maxScale={3}
+              minScale={CANVAS_MIN_ZOOM}
+              maxScale={CANVAS_MAX_ZOOM}
               limitToBounds={false}
               centerZoomedOut={false}
               disabled={isSelectingBox}
-              wheel={{ step: 0.1, excluded: ['no-zoom-scroll'] }}
-              panning={{ velocityDisabled: true, allowLeftClickPan: spacePanning, allowMiddleClickPan: true }}
+              wheel={CANVAS_WHEEL_CONFIG}
+              panning={{ velocityDisabled: false, allowLeftClickPan: spacePanning, allowMiddleClickPan: true }}
               doubleClick={{ disabled: true }}
               onTransform={(_ref, state) => {
                 const nextViewport = {
@@ -2802,6 +2830,8 @@ function WorkspaceShell({
                 connections={visibleConnections}
                 animatingConnectionIds={animatingConnectionIds}
                 panelTitles={panelTitles}
+                selectedConnectionIds={selectedConnection ? new Set([selectedConnection.id]) : undefined}
+                onConnectionClick={handleConnectionClick}
               />
               {visiblePanels.map((panel, index) => {
                 const layout = panelLayouts[panel.id] ?? inferPanelLayout(panel, index);
@@ -2914,6 +2944,8 @@ function WorkspaceShell({
                   : (toolbarPanel ? () => minimizePanels([toolbarPanel.id]) : undefined)}
                 onMaximize={toolbarPanel ? () => setMaximizedPanelId(toolbarPanel.id) : undefined}
                 onGroup={selectedPanelIds.size >= 2 && !selectedGroup ? () => void createGroup() : undefined}
+                onToggleConnection={selectedPanels.length === 2 ? () => void toggleSelectedConnection() : undefined}
+                isConnected={Boolean(selectedConnection)}
                 onUngroup={selectedGroup ? () => void ungroupSelection() : undefined}
                 isInGroup={Boolean(toolbarSinglePanelGroup)}
                 onRemoveFromGroup={toolbarSinglePanelGroup && toolbarPanel ? () => void removePanelFromGroup(toolbarPanel.id) : undefined}

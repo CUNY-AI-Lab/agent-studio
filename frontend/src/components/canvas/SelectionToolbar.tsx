@@ -7,6 +7,8 @@ import {
   Minus,
   Maximize2,
   Link as LinkIcon,
+  Link2,
+  Link2Off,
   Unlink as UnlinkIcon,
   LogOut,
   Trash2,
@@ -48,6 +50,8 @@ interface SelectionToolbarProps {
   onMaximize?: () => void;
   onRemove?: () => void;
   onGroup?: () => void;
+  onToggleConnection?: () => void;
+  isConnected?: boolean;
   onUngroup?: () => void;
   onRemoveFromGroup?: () => void;
   onAlign?: (mode: AlignMode) => void;
@@ -75,6 +79,8 @@ export function SelectionToolbar({
   onMaximize,
   onRemove,
   onGroup,
+  onToggleConnection,
+  isConnected = false,
   onUngroup,
   onRemoveFromGroup,
   onAlign,
@@ -121,6 +127,7 @@ export function SelectionToolbar({
     onMaximize ? 'maximize' : 'no-maximize',
     onRemove ? 'remove' : 'no-remove',
     onGroup ? 'group-action' : 'no-group-action',
+    onToggleConnection ? `connection-${isConnected ? 'on' : 'off'}` : 'no-connection-action',
     onUngroup ? 'ungroup' : 'no-ungroup',
     onRemoveFromGroup ? 'remove-from-group' : 'no-remove-from-group',
     onAlign ? 'align' : 'no-align',
@@ -175,6 +182,7 @@ export function SelectionToolbar({
   const showMinimizeSection = isSinglePanel && Boolean(onMinimize);
   const showMaximizeSection = isSinglePanel && Boolean(onMaximize);
   const showGroupSection = isMultiSelection && Boolean(onGroup);
+  const showConnectionSection = isMultiSelection && Boolean(onToggleConnection);
   const showUngroupSection = isGroupSelection && Boolean(onUngroup);
   const showRemoveFromGroupSection = isSinglePanel && isInGroup && Boolean(onRemoveFromGroup);
   const showAlignSection = Boolean(onAlign);
@@ -362,9 +370,23 @@ export function SelectionToolbar({
         </>
       ) : null}
 
-      {showUngroupSection ? (
+      {showConnectionSection ? (
         <>
           {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection) ? <div className="toolbar-divider" /> : null}
+          <button
+            className="toolbar-btn"
+            onClick={onToggleConnection}
+            title={isConnected ? 'Disconnect tiles' : 'Associate tiles'}
+            aria-label={isConnected ? 'Disconnect selected tiles' : 'Associate selected tiles'}
+          >
+            {isConnected ? <Link2Off className="w-4 h-4" aria-hidden="true" /> : <Link2 className="w-4 h-4" aria-hidden="true" />}
+          </button>
+        </>
+      ) : null}
+
+      {showUngroupSection ? (
+        <>
+          {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection || showConnectionSection) ? <div className="toolbar-divider" /> : null}
           <button className="toolbar-btn" onClick={onUngroup} title="Ungroup" aria-label="Ungroup">
             <UnlinkIcon className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -373,7 +395,7 @@ export function SelectionToolbar({
 
       {showRemoveFromGroupSection ? (
         <>
-          {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection || showUngroupSection) ? <div className="toolbar-divider" /> : null}
+          {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection || showConnectionSection || showUngroupSection) ? <div className="toolbar-divider" /> : null}
           <button className="toolbar-btn" onClick={onRemoveFromGroup} title="Remove from group" aria-label="Remove tile from group">
             <LogOut className="w-4 h-4" aria-hidden="true" />
           </button>
@@ -382,7 +404,7 @@ export function SelectionToolbar({
 
       {showRemoveSection ? (
         <>
-          {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection || showUngroupSection || showRemoveFromGroupSection) ? <div className="toolbar-divider" /> : null}
+          {(showChatButton || showDownloadSection || showAlignSection || showDistributeSection || showMinimizeSection || showMaximizeSection || showGroupSection || showConnectionSection || showUngroupSection || showRemoveFromGroupSection) ? <div className="toolbar-divider" /> : null}
           <button
             className="toolbar-btn toolbar-btn-danger"
             onClick={onRemove}
