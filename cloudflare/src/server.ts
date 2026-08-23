@@ -393,7 +393,7 @@ app.get('/api/gallery/:id/files/*', async (c) => {
     return jsonError(c, 404, 'not_found', 'Gallery file not found');
   }
 
-  const contentType = object.httpMetadata?.contentType || getMimeType(filePath);
+  const contentType = resolveMimeType(filePath, object.httpMetadata?.contentType);
   return new Response(object.body, {
     status: 200,
     headers: {

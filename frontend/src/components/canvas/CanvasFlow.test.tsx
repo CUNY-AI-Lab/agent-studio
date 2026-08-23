@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { CanvasFlow } from './CanvasFlow';
-import type { MarkdownPanel } from '../../types';
+import { CanvasFlow, flowEdgesMatch, flowNodesMatch } from './CanvasFlow';
+import type { MarkdownPanel, WorkspacePanel } from '../../types';
 
 const panels: MarkdownPanel[] = [
   {
@@ -93,6 +93,95 @@ describe('CanvasFlow selection state', () => {
 
     expect(screen.getByRole('group', { name: 'One (markdown tile), selected' })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Two (markdown tile)' })).toBeInTheDocument();
+  });
+
+  it('compares shared collections once for many large cards', () => {
+    type FlowNode = Parameters<typeof flowNodesMatch>[0][number];
+    const largePanels: MarkdownPanel[] = Array.from({ length: 128 }, (_, index) => ({
+      id: `large-panel-${index}`,
+      type: 'markdown',
+      title: `Card ${index}`,
+      content: `${'large card content '.repeat(512)}-${index}`,
+      layout: { x: index * 20, y: index * 12, width: 280, height: 180 },
+    }));
+    const clonedPanels: MarkdownPanel[] = largePanels.map((panel) => ({
+      ...panel,
+      layout: panel.layout ? { ...panel.layout } : undefined,
+    }));
+    let sharedCollectionReads = 0;
+    const leftSharedPanels = largePanels.slice();
+    largePanels.forEach((panel, index) => {
+      Object.defineProperty(leftSharedPanels, String(index), {
+        configurable: true,
+        enumerable: true,
+        get: () => {
+          sharedCollectionReads += 1;
+          return panel;
+        },
+      });
+    });
+    const leftHighlighted = new Set(['app.html']);
+    const rightHighlighted = new Set(['app.html']);
+    const leftFiles = [{ name: 'app.html', path: 'app.html', isDirectory: false }];
+    const rightFiles = [{ name: 'app.html', path: 'app.html', isDirectory: false }];
+    const makeNode = (
+      panel: WorkspacePanel,
+      allPanels: WorkspacePanel[],
+      workspaceFiles: typeof leftFiles,
+      highlightedFilePaths: Set<string>,
+    ): FlowNode => ({
+      id: panel.id,
+      type: 'panel',
+      position: { x: panel.layout?.x || 0, y: panel.layout?.y || 0 },
+      style: { width: panel.layout?.width, height: panel.layout?.height },
+      selected: false,
+      zIndex: 1,
+      draggable: true,
+      focusable: true,
+      ariaLabel: `${panel.title} (markdown tile)`,
+      data: {
+        panel,
+        allPanels,
+        workspaceFiles,
+        fileSource: { kind: 'workspace', id: 'linear-comparison-test' },
+        highlightedFilePaths,
+        readOnly: false,
+      },
+    });
+    const leftNodes = largePanels.map((panel) => makeNode(panel, leftSharedPanels, leftFiles, leftHighlighted));
+    const rightNodes = clonedPanels.map((panel) => makeNode(panel, clonedPanels, rightFiles, rightHighlighted));
+
+    expect(flowNodesMatch(leftNodes, rightNodes)).toBe(true);
+    // A shared collection is traversed for semantic equality once, not once
+    // per node. This is structural ownership coverage, not a timing threshold.
+    expect(sharedCollectionReads).toBeLessThan(largePanels.length + 4);
+  });
+
+  it('matches cloned association objects by their semantic connection', () => {
+    const leftConnection = { id: 'association-1', sourceId: 'panel-one', targetId: 'panel-two' };
+    const rightConnection = { ...leftConnection };
+    const leftEdges = [{
+      id: leftConnection.id,
+      type: 'association',
+      source: leftConnection.sourceId,
+      target: leftConnection.targetId,
+      selected: false,
+      data: { connection: leftConnection, sourceTitle: 'One', targetTitle: 'Two' },
+    }];
+    const rightEdges = [{
+      id: rightConnection.id,
+      type: 'association',
+      source: rightConnection.sourceId,
+      target: rightConnection.targetId,
+      selected: false,
+      data: { connection: rightConnection, sourceTitle: 'One', targetTitle: 'Two' },
+    }];
+
+    expect(flowEdgesMatch(leftEdges, rightEdges)).toBe(true);
+    expect(flowEdgesMatch(leftEdges, [{
+      ...rightEdges[0],
+      data: { ...rightEdges[0].data, connection: { ...rightConnection, targetId: 'panel-three' } },
+    }])).toBe(false);
   });
 
   it('deletes the current same-size selection after the selected tile changes', async () => {

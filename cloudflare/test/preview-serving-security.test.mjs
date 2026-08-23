@@ -166,6 +166,15 @@ test('file-backed HTML preview serves executable bytes through the opaque previe
   assert.equal(galleryPreview.status, 200);
   assertOpaqueScriptSandbox(galleryPreview);
   assert.equal(await galleryPreview.text(), html);
+
+  const galleryFile = await victim.request(
+    app,
+    `/api/gallery/${item.id}/files/app.html`,
+  );
+  assert.equal(galleryFile.status, 200);
+  assert.equal(galleryFile.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(galleryFile.headers.get('content-disposition'), 'attachment');
+  assert.equal(await galleryFile.text(), html);
 });
 
 test('POST /panels rejects a malformed panel body (400) and accepts a valid one', async () => {
