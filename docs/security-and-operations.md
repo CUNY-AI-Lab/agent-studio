@@ -100,11 +100,12 @@ Private files are fetched through the authenticated API. Responses use
 HTML previews run in sandboxed iframes without same-origin authority.
 
 Dynamic Worker code receives only the declared workspace capabilities. Guarded
-web fetch blocks private destinations and checks every redirect. Git
-credentials are injected only for explicitly allowed HTTPS hosts and are not
-placed in model context. Primo, WorldCat, and LibGuides credentials are
-attached server-side for their approved API hosts. PDF, XLSX, and DOCX tools
-run on the host side of the Worker boundary.
+web fetch remains available for public destinations, blocks private targets,
+and checks every redirect. When configured, Git credentials are injected only
+for explicitly allowed HTTPS hosts and are not placed in model context. When
+configured, Primo, WorldCat, and LibGuides credentials are attached
+server-side only for their approved API hosts. PDF, XLSX, and DOCX tools run
+on the host side of the Worker boundary.
 
 ## Errors and output
 
@@ -156,6 +157,16 @@ manifest command:
 cd cloudflare
 wrangler deploy --env staging --strict
 ```
+
+Production is front-door-only: `workers_dev=false`, preview URLs are disabled,
+and the production manifest has no public Worker route. The canonical Doorway
+host owns the public route and forwards `/agent-studio/*` over the private
+Agent Studio service binding. CI reads back the exact tagged serving version
+and production bindings, invokes the private `AgentStudioReadiness` named
+WorkerEntrypoint through a local helper with `remote: true`, and then probes
+`https://tools.ailab.gc.cuny.edu/agent-studio/` for the SSO redirect and
+`/agent-studio/api/session` for a bounded unauthenticated 401. These probes do
+not log in or send identity credentials.
 
 The production manifest binds the production CAIL Model API and `agent-studio`
 bucket. The staging environment binds the staging Model API and isolated

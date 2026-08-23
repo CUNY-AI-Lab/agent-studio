@@ -1,11 +1,11 @@
 /**
  * CAIL gateway identity (CUNYLogin SSO) for the Agent Studio worker.
  *
- * The standalone Doorway injects X-CAIL-* headers after authentication. This
- * worker is also directly reachable on its workers.dev URL, so bare X-CAIL-*
- * headers prove nothing — anyone can set them. Identity is accepted only from
- * an RS256 identity JWT verified against the configured static public JWKS for
- * this service's audience.
+ * The standalone Doorway injects X-CAIL-* headers after authentication. A
+ * direct or staging endpoint can still receive caller-controlled headers, so
+ * bare X-CAIL-* headers prove nothing — anyone can set them. Identity is
+ * accepted only from an RS256 identity JWT verified against the configured
+ * static public JWKS for this service's audience.
  *
  * The JWT verifiers are shared @cuny-ai-lab/cail-identity primitives — one
  * source of truth across the CAIL fleet for pinned algorithms, audience/time

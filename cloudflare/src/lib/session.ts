@@ -108,7 +108,7 @@ export const sessionMiddleware: MiddlewareHandler<{
   }
 
   // Identity comes only from the verified CAIL identity JWT. Bare X-CAIL-*
-  // claims are never trusted (this worker is reachable on workers.dev).
+  // claims are never trusted, including on direct or staging endpoints.
   const verified = await getCailIdentityFromRequest(c.req.raw, c.env);
 
   // Our verification config failed to LOAD — an operator error, never the

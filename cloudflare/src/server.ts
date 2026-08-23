@@ -3,6 +3,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import { WorkspaceAgent } from './agent/workspace-agent';
 import { MigrationRegistry } from './migration-registry';
+import { AgentStudioReadiness } from './lib/readiness';
 import type { WorkspaceFileInfo, WorkspaceRecord } from './domain/workspace';
 import { validateAgentStudioConfig, type Env } from './env';
 import {
@@ -1030,7 +1031,7 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
   return c.json({ success: true, state });
 });
 
-export { MigrationRegistry, WorkspaceAgent };
+export { AgentStudioReadiness, MigrationRegistry, WorkspaceAgent };
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {

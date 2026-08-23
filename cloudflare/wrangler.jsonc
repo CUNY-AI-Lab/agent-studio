@@ -4,6 +4,8 @@
   "account_id": "452c33847cf5cb1e46f391fca32fd1b5",
   "main": "src/server.ts",
   "compatibility_date": "2026-03-25",
+  "workers_dev": false,
+  "preview_urls": false,
   "compatibility_flags": [
     "nodejs_compat",
     "enable_request_signal",
@@ -40,7 +42,8 @@
   },
   "exports": {
     "WorkspaceAgent": { "type": "durable-object", "storage": "sqlite" },
-    "MigrationRegistry": { "type": "durable-object", "storage": "sqlite" }
+    "MigrationRegistry": { "type": "durable-object", "storage": "sqlite" },
+    "AgentStudioReadiness": { "type": "worker" }
   },
   "r2_buckets": [{
     "binding": "WORKSPACE_FILES",
@@ -69,6 +72,8 @@
   "env": {
     "staging": {
       "name": "agent-studio-staging",
+      "workers_dev": true,
+      "preview_urls": false,
       "compatibility_flags": [
         "nodejs_compat",
         "enable_request_signal",
@@ -92,7 +97,8 @@
       },
       "exports": {
         "WorkspaceAgent": { "type": "durable-object", "storage": "sqlite" },
-        "MigrationRegistry": { "type": "durable-object", "storage": "sqlite" }
+        "MigrationRegistry": { "type": "durable-object", "storage": "sqlite" },
+        "AgentStudioReadiness": { "type": "worker" }
       },
       "r2_buckets": [{
         "binding": "WORKSPACE_FILES",

@@ -9,7 +9,7 @@ import { isAllowedCailModelId } from './lib/workspace-validation';
 /** Runtime bindings and settings used by the worker. */
 export interface Env {
   ASSETS: Fetcher;
-  /** Cloudflare version metadata used by the public readiness probe. */
+  /** Cloudflare version metadata used by health and private release readiness. */
   CF_VERSION_METADATA?: WorkerVersionMetadata;
   LOADER: WorkerLoader;
   WorkspaceAgent: DurableObjectNamespace<WorkspaceAgent>;
