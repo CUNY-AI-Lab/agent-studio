@@ -53,7 +53,7 @@ below are hand-maintained mirrors of that source, and a vitest drift check
 | --- | --- |
 | `+` / `=` | Zoom in |
 | `-` / `_` | Zoom out |
-| `0` | Reset zoom and position |
+| `0` | Fit all tiles in view |
 | `?` | Open the keyboard-shortcuts dialog |
 | `Space + drag` | Pan the canvas (mouse) |
 

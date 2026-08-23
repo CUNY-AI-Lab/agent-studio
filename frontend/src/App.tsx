@@ -2539,6 +2539,7 @@ function WorkspaceShell({
               setGroupNameInput(nextGroup?.name || '');
             }}
             onViewportChange={handleViewportChange}
+            onOpenShortcuts={() => setShortcutsOpen(true)}
             emptyState={visiblePanels.length === 0 ? (
               <div className="canvas-empty pointer-events-none absolute inset-0">
                 <Sparkles className="canvas-empty-icon" />

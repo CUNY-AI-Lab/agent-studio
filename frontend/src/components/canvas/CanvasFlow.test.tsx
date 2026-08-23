@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CanvasFlow } from './CanvasFlow';
 import type { MarkdownPanel } from '../../types';
 
@@ -20,7 +20,10 @@ const panels: MarkdownPanel[] = [
   },
 ];
 
-function renderCanvas(selectedPanelIds: Set<string>) {
+function renderCanvas(
+  selectedPanelIds: Set<string>,
+  overrides: Partial<Parameters<typeof CanvasFlow>[0]> = {},
+) {
   return render(
     <CanvasFlow
       panels={panels}
@@ -30,6 +33,7 @@ function renderCanvas(selectedPanelIds: Set<string>) {
       fileSource={{ kind: 'workspace', id: 'workspace-test' }}
       selectedPanelIds={selectedPanelIds}
       readOnly
+      {...overrides}
     />,
   );
 }
@@ -59,5 +63,56 @@ describe('CanvasFlow selection state', () => {
       expect(screen.getByRole('group', { name: 'One (markdown tile), selected' })).toBeInTheDocument();
       expect(screen.getByRole('group', { name: 'Two (markdown tile), selected' })).toBeInTheDocument();
     });
+  });
+
+  it('deletes the current same-size selection after the selected tile changes', async () => {
+    const onPanelDelete = vi.fn();
+    const { rerender } = renderCanvas(new Set(['panel-one']), { onPanelDelete, readOnly: false });
+
+    await waitFor(() => {
+      expect(screen.getByRole('group', { name: 'One (markdown tile), selected' })).toBeInTheDocument();
+    });
+
+    rerender(
+      <CanvasFlow
+        panels={panels}
+        groups={[]}
+        connections={[]}
+        viewport={{ x: 0, y: 0, zoom: 1 }}
+        fileSource={{ kind: 'workspace', id: 'workspace-test' }}
+        selectedPanelIds={new Set(['panel-two'])}
+        onPanelDelete={onPanelDelete}
+      />,
+    );
+
+    const selectedNode = await screen.findByRole('group', { name: 'Two (markdown tile), selected' });
+    fireEvent.keyDown(selectedNode, { key: 'Delete' });
+
+    expect(onPanelDelete).toHaveBeenCalledOnce();
+    expect(onPanelDelete).toHaveBeenCalledWith(['panel-two']);
+  });
+});
+
+describe('CanvasFlow keyboard view shortcuts', () => {
+  it('uses the React Flow viewport helpers and opens the shortcut dialog', async () => {
+    const onViewportChange = vi.fn();
+    const onOpenShortcuts = vi.fn();
+    renderCanvas(new Set(), { onViewportChange, onOpenShortcuts });
+
+    const canvas = screen.getByRole('region', { name: /Workspace canvas, 2 tiles/ });
+    canvas.focus();
+    fireEvent.keyDown(canvas, { key: '+' });
+    await waitFor(() => expect(onViewportChange).toHaveBeenCalled());
+
+    onViewportChange.mockClear();
+    fireEvent.keyDown(canvas, { key: '-' });
+    await waitFor(() => expect(onViewportChange).toHaveBeenCalled());
+
+    fireEvent.keyDown(canvas, { key: '?' });
+    expect(onOpenShortcuts).toHaveBeenCalledOnce();
+
+    onViewportChange.mockClear();
+    fireEvent.keyDown(canvas, { key: '0' });
+    await waitFor(() => expect(onViewportChange).toHaveBeenCalled());
   });
 });

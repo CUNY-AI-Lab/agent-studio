@@ -343,6 +343,7 @@ interface CanvasFlowProps {
   onGroupNameInputChange?: (value: string) => void;
   onEditGroupStart?: (groupId: string) => void;
   onViewportChange?: (viewport: WorkspaceViewport) => void;
+  onOpenShortcuts?: () => void;
   readOnly?: boolean;
   emptyState?: React.ReactNode;
   children?: React.ReactNode;
@@ -443,6 +444,7 @@ function CanvasFlowInner({
   onGroupNameInputChange,
   onEditGroupStart,
   onViewportChange,
+  onOpenShortcuts,
   readOnly = false,
   emptyState,
   children,
@@ -555,6 +557,7 @@ function CanvasFlowInner({
   const groupDragRef = useRef<{ id: string; x: number; y: number } | null>(null);
   const panelDragIdsRef = useRef<Set<string>>(new Set());
   const edgeSelectionRef = useRef(false);
+  const reactFlow = useReactFlow<CanvasNode, AssociationFlowEdge>();
   const store = useStoreApi<CanvasNode, AssociationFlowEdge>();
 
   useEffect(() => {
@@ -695,6 +698,35 @@ function CanvasFlowInner({
     if (!target) return;
     if (target.closest('input, textarea, select, button, [contenteditable="true"], .panel-menu, .panel-menu-trigger')) return;
 
+    if (event.currentTarget === event.target) {
+      if (event.key === '+' || event.key === '=') {
+        event.preventDefault();
+        void reactFlow.zoomIn({ duration: 160 }).then(() => {
+          handleViewportChange(reactFlow.getViewport());
+        });
+        return;
+      }
+      if (event.key === '-' || event.key === '_') {
+        event.preventDefault();
+        void reactFlow.zoomOut({ duration: 160 }).then(() => {
+          handleViewportChange(reactFlow.getViewport());
+        });
+        return;
+      }
+      if (event.key === '0') {
+        event.preventDefault();
+        void reactFlow.fitView({ duration: 160, padding: 0.2 }).then(() => {
+          handleViewportChange(reactFlow.getViewport());
+        });
+        return;
+      }
+      if (event.key === '?') {
+        event.preventDefault();
+        onOpenShortcuts?.();
+        return;
+      }
+    }
+
     if (event.key === 'Delete' || event.key === 'Backspace') {
       if (readOnly) return;
       const edgeElement = target.closest<HTMLElement>('.react-flow__edge');
@@ -795,7 +827,7 @@ function CanvasFlowInner({
       onPanelLayoutChange?.(nodeId, { x: layout.x + dx * step, y: layout.y + dy * step });
     }
     onPanelDragEnd?.(nodeId);
-  }, [flowEdges, onConnectionClick, onEditGroupStart, onGroupClick, onGroupDrag, onGroupDragEnd, onNodeFocus, onOpenMenu, onPanelDragEnd, onPanelLayoutChange, openMenuId, panelLayouts, readOnly, selectedPanelIds.size]);
+  }, [flowEdges, handleViewportChange, onConnectionClick, onEditGroupStart, onGroupClick, onGroupDrag, onGroupDragEnd, onNodeFocus, onOpenMenu, onOpenShortcuts, onPanelDragEnd, onPanelLayoutChange, openMenuId, panelLayouts, reactFlow, readOnly, selectedPanelIds]);
 
   const handleCanvasFocusCapture = useCallback((event: React.FocusEvent<HTMLDivElement>) => {
     const target = event.target instanceof HTMLElement
