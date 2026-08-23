@@ -124,6 +124,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      - name: Verify production Worker and custom-domain read access
+        # The token must be scoped to the production account. The read-only
+        # preflight uses the account-level Workers Scripts Read API; deployment
+        # retains its existing Workers Scripts Write permission.
+        run: bun scripts/agent-studio-route-gate.mjs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Deploy the exact main commit
         working-directory: cloudflare
         run: |
@@ -131,6 +139,7 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/main ]]
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
           bunx wrangler deploy \
+            --config wrangler.jsonc \
             --strict \
             --tag "$GITHUB_SHA" \
             --message "main $GITHUB_SHA"
@@ -158,6 +167,42 @@ jobs:
             .annotations["workers/tag"] == $tag
             and .annotations["workers/message"] == $message
           ' <<<"$version" >/dev/null
+          jq -e '
+            .resources.script_runtime.compatibility_flags ==
+              ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"] and
+            .resources.script_runtime.exports.AgentStudioReadiness.type == "worker" and
+            ([.resources.bindings[]?
+              | select(.type == "service"
+                and .name == "GATEWAY"
+                and .service == "cail-model-api"
+                and ((.entrypoint // "") == ""))] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "r2_bucket"
+                and .name == "WORKSPACE_FILES"
+                and .bucket_name == "agent-studio")] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "plain_text"
+                and .name == "CAIL_API_BASE"
+                and .text == "https://tools.ailab.gc.cuny.edu")] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "plain_text"
+                and .name == "CAIL_CANONICAL_ORIGIN"
+                and .text == "https://tools.ailab.gc.cuny.edu")] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "plain_text"
+                and .name == "CAIL_BASE_PATH"
+                and .text == "/agent-studio")] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "plain_text"
+                and .name == "CAIL_IDENTITY_ISSUER"
+                and .text == "https://tools.ailab.gc.cuny.edu/cail-sso")] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "plain_text"
+                and .name == "CAIL_REQUIRE_IDENTITY"
+                and .text == "true")] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "service" and (.service | contains("staging")))] | length) == 0
+          ' <<<"$version" >/dev/null
           deployments="$(bunx wrangler deployments list --name agent-studio --json 2>/dev/null)"
           deployment_id="$(jq -r --arg id "$version_id" --arg message "main $GITHUB_SHA" '
             [ .[] ]
@@ -170,36 +215,185 @@ jobs:
           ' <<<"$deployments")"
           [[ "$deployment_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
           printf 'version_id=%s\n' "$version_id" >> "$GITHUB_OUTPUT"
-          echo "deployed version $version_id"
+          api='https://api.cloudflare.com/client/v4'
+          account_id='452c33847cf5cb1e46f391fca32fd1b5'
+          auth="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+          subdomain="$(curl --fail --silent --show-error \
+            "${api}/accounts/${account_id}/workers/scripts/agent-studio/subdomain" \
+            --header "$auth")"
+          jq -e '
+            .success == true
+            and .result.enabled == false
+            and .result.previews_enabled == false
+          ' <<<"$subdomain" >/dev/null
+
+          # Re-run the account-level Worker and custom-domain inventories after
+          # exact readback. The helper is fail-closed and emits only its fixed
+          # bounded failure.
+          bun ../scripts/agent-studio-route-gate.mjs
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      - name: Probe production readiness
+      - name: Probe private Agent Studio readiness
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           EXPECTED_VERSION_ID: ${{ steps.version.outputs.version_id }}
-          HEALTH_URL: https://agent-studio.ailab-452.workers.dev/agent-studio/health
-          API_URL: https://agent-studio.ailab-452.workers.dev/agent-studio/api/session
-          ROOT_URL: https://agent-studio.ailab-452.workers.dev/agent-studio/
         run: |
           set -euo pipefail
-          # The deploy API returns before the public Worker route has finished
-          # propagating. Poll that real boundary at a two-second cadence for
-          # two minutes; a failed probe fails the deployment job.
-          for attempt in $(seq 1 60); do
-            health="$(curl -fsS --max-time 10 "$HEALTH_URL" 2>/dev/null || true)"
-            if jq -e --arg id "$EXPECTED_VERSION_ID" '
-              .ok == true
+          readiness_log="$(mktemp)"
+          readiness_pid=''
+          cleanup() {
+            if [[ -n "$readiness_pid" ]]; then
+              kill "$readiness_pid" >/dev/null 2>&1 || true
+              wait "$readiness_pid" >/dev/null 2>&1 || true
+            fi
+            rm -f "$readiness_log"
+          }
+          trap cleanup EXIT
+
+          # This helper is local, but its one service binding is explicitly
+          # remote. Wrangler's current per-binding remote mode keeps the helper
+          # process local while invoking the deployed named WorkerEntrypoint;
+          # do not replace this with the legacy whole-process remote mode.
+          bunx wrangler dev \
+            --config scripts/release-readiness-wrangler.jsonc \
+            --ip 127.0.0.1 \
+            --port 8798 \
+            >"$readiness_log" 2>&1 &
+          readiness_pid=$!
+
+          deadline_ms=$(( $(date +%s%3N) + 120000 ))
+          while :; do
+            now_ms=$(date +%s%3N)
+            (( now_ms >= deadline_ms )) && break
+            remaining_ms=$(( deadline_ms - now_ms ))
+            request_timeout=$(( (remaining_ms + 999) / 1000 ))
+            (( request_timeout > 10 )) && request_timeout=10
+            readiness="$(curl --silent --show-error --max-time "$request_timeout" \
+              http://127.0.0.1:8798/readiness 2>/dev/null || true)"
+            if jq -e --arg id "$EXPECTED_VERSION_ID" --arg tag "$GITHUB_SHA" '
+              type == "object"
+              and (keys | sort) == ["configuration", "ok", "service", "tag", "version_id"]
+              and .ok == true
               and .service == "agent-studio"
+              and .configuration == "ready"
               and .version_id == $id
-            ' <<<"$health" >/dev/null; then
-              curl -fsS --max-time 10 -o /dev/null "$ROOT_URL"
-              api_response="$(curl -sS --max-time 10 -D - -o /dev/null -w '\n%{http_code}' "$API_URL")"
-              [[ "$(tail -n 1 <<<"$api_response")" == 401 ]]
-              grep -iq '^cache-control: no-store' <<<"$api_response"
-              echo "production readiness passed for $EXPECTED_VERSION_ID"
+              and .tag == $tag
+            ' <<<"$readiness" >/dev/null 2>&1; then
               exit 0
             fi
-            sleep 2
+            now_ms=$(date +%s%3N)
+            (( now_ms >= deadline_ms )) && break
+            remaining_ms=$(( deadline_ms - now_ms ))
+            if (( remaining_ms > 2000 )); then
+              sleep 2
+            elif (( remaining_ms > 1000 )); then
+              sleep 1
+            else
+              sleep 0.2
+            fi
           done
-          echo "production readiness did not serve the expected version" >&2
+          echo 'private Agent Studio readiness did not reach the expected version within 120s' >&2
           exit 1
+
+      - name: Probe canonical Doorway routes
+        run: |
+          set -euo pipefail
+          origin='https://tools.ailab.gc.cuny.edu'
+          body="$(mktemp)"
+          headers="$(mktemp)"
+          trap 'rm -f "$body" "$headers"' EXIT
+
+          # A newly deployed Worker can take a short, bounded interval to
+          # appear through the canonical Doorway binding. Only an absent route
+          # or transient transport error is retryable; an incorrect status or
+          # body fails the release immediately.
+          probe_sso_redirect() {
+            local url="$1"
+            local deadline_ms=$(( $(date +%s%3N) + 120000 ))
+            while :; do
+              local now_ms
+              now_ms=$(date +%s%3N)
+              (( now_ms >= deadline_ms )) && break
+              local remaining_ms=$(( deadline_ms - now_ms ))
+              local request_timeout=$(( (remaining_ms + 999) / 1000 ))
+              (( request_timeout > 10 )) && request_timeout=10
+              local code
+              code="$(curl --silent --show-error --max-time "$request_timeout" \
+                --dump-header "$headers" --output "$body" \
+                --write-out '%{http_code}' \
+                --header 'Cache-Control: no-cache' "$url" 2>/dev/null || true)"
+              if [[ "$code" == 302 ]]; then
+                awk 'BEGIN { IGNORECASE=1 } /^location:/ {
+                  sub(/^[^:]+:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit
+                }' "$headers" | grep -Eq '^https://ssologin\.cuny\.edu/oauth2/rest/authorize\?'
+                return 0
+              fi
+              if [[ -n "$code" && "$code" != 000 && "$code" != 404 ]]; then
+                echo 'canonical Agent Studio UI did not return the Doorway SSO redirect' >&2
+                return 1
+              fi
+              now_ms=$(date +%s%3N)
+              (( now_ms >= deadline_ms )) && break
+              remaining_ms=$(( deadline_ms - now_ms ))
+              if (( remaining_ms > 2000 )); then
+                sleep 2
+              elif (( remaining_ms > 1000 )); then
+                sleep 1
+              else
+                sleep 0.2
+              fi
+            done
+            echo 'canonical Agent Studio UI route did not propagate within 120s' >&2
+            return 1
+          }
+
+          probe_unauthenticated_api() {
+            local url="$1"
+            local deadline_ms=$(( $(date +%s%3N) + 120000 ))
+            while :; do
+              local now_ms
+              now_ms=$(date +%s%3N)
+              (( now_ms >= deadline_ms )) && break
+              local remaining_ms=$(( deadline_ms - now_ms ))
+              local request_timeout=$(( (remaining_ms + 999) / 1000 ))
+              (( request_timeout > 10 )) && request_timeout=10
+              local code
+              code="$(curl --silent --show-error --max-time "$request_timeout" \
+                --dump-header "$headers" --output "$body" \
+                --write-out '%{http_code}' \
+                --header 'Cache-Control: no-cache' "$url" 2>/dev/null || true)"
+              if [[ "$code" == 401 ]]; then
+                jq -e '
+                  type == "object"
+                  and (keys | sort) == ["error"]
+                  and (.error | type) == "object"
+                  and ((.error | keys | sort) == ["code", "launch", "message"])
+                  and .error.code == "authentication_required"
+                  and .error.message == "Please sign in to continue."
+                  and .error.launch == "/launch/agent-studio"
+                ' "$body" >/dev/null
+                grep -iq '^cache-control: no-store' "$headers"
+                return 0
+              fi
+              if [[ -n "$code" && "$code" != 000 && "$code" != 404 ]]; then
+                echo 'canonical Agent Studio API did not return a bounded 401' >&2
+                return 1
+              fi
+              now_ms=$(date +%s%3N)
+              (( now_ms >= deadline_ms )) && break
+              remaining_ms=$(( deadline_ms - now_ms ))
+              if (( remaining_ms > 2000 )); then
+                sleep 2
+              elif (( remaining_ms > 1000 )); then
+                sleep 1
+              else
+                sleep 0.2
+              fi
+            done
+            echo 'canonical Agent Studio API route did not propagate within 120s' >&2
+            return 1
+          }
+
+          probe_sso_redirect "$origin/agent-studio/"
+          probe_unauthenticated_api "$origin/agent-studio/api/session"

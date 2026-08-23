@@ -77,8 +77,9 @@ challenge.
 - Files, previews, canvas panels, groups, connections, gallery publication,
   and cloning.
 - Isolated JavaScript execution through Cloudflare Dynamic Workers.
-- Guarded research fetches and server-side credentials for Primo, WorldCat,
-  and LibGuides; host-side PDF, XLSX, and DOCX tools; and the runtime research
+- Guarded public web fetches remain available, with optional server-side
+  credentials for Primo, WorldCat, and LibGuides when those integrations are
+  configured; host-side PDF, XLSX, and DOCX tools; and the runtime research
   skill documents.
 
 The first successful login may perform the one-time lazy import described in
@@ -151,7 +152,18 @@ bucket.
 
 ## CI and production deploy
 
-Merges to `main` release after the repository checks and a live health check.
+Production is front-door-only. The production Worker has `workers_dev=false`
+and preview URLs disabled, and its Wrangler manifest declares no public route;
+the canonical Doorway Worker owns `https://tools.ailab.gc.cuny.edu/*` and
+forwards the authenticated Agent Studio paths through its private service
+binding. The production Worker is not accepted directly at a workers.dev URL.
+
+Merges to `main` release after the repository checks, exact version/config
+readback, a local helper that invokes the private `AgentStudioReadiness`
+WorkerEntrypoint through a per-binding `remote: true` service binding, and
+anonymous canonical Doorway probes. The UI probe requires the CUNY SSO
+redirect at `/agent-studio/`; the API probe requires Doorway's bounded 401 at
+`/agent-studio/api/session`. No probe logs in or sends an identity credential.
 There is no pull-request production preview: use the isolated staging path for
 non-production validation.
 

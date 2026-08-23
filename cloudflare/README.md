@@ -33,6 +33,12 @@ Production and staging use the standalone Doorway issuer
 `https://tools.ailab.gc.cuny.edu`. Configure that one issuer with
 its matching JWKS.
 
+Production is reached only through Doorway's canonical host. Its Worker
+manifest disables workers.dev and preview URLs and declares no public route;
+Doorway forwards `/agent-studio/*` over the private default service binding.
+Staging keeps its isolated workers.dev URL for the authenticated smoke and
+uses the preview R2 bucket.
+
 Workspace state and chat messages live in the Durable Object. Workspace
 records and files live in R2. Dynamic Workers isolate code execution. Staging
 binds `WORKSPACE_FILES` to `agent-studio-preview`; production uses
@@ -81,6 +87,22 @@ settings, and uses the isolated preview R2 bucket. After activation, run the
 authenticated smoke with `AGENT_STUDIO_STAGING_URL`,
 `AGENT_STUDIO_APP_IDENTITY_JWT`, and `AGENT_STUDIO_GATEWAY_IDENTITY_JWT`
 supplied through the private environment.
+
+The production release job reads back the exact tagged serving version and its
+production bindings, then invokes the private `AgentStudioReadiness` named
+WorkerEntrypoint through the local release helper. The helper uses Wrangler's
+per-binding `remote: true` service binding; it does not use legacy full remote
+development and is never deployed.
+
+The production Cloudflare token must use an account-wide resource scope for the
+production account and retain its existing deploy permissions, including
+`Workers Scripts Write`. CI's read-only preflight uses the account-level
+`Workers Scripts Read` API to require exactly one `agent-studio` script with no
+associated routes, and checks custom domains through
+`/accounts/{account_id}/workers/domains?service=agent-studio` before and after
+deployment. A missing read scope fails the preflight before the Worker is
+mutated. Production has no direct custom domain, route, or workers.dev
+coordinate; staging keeps its isolated workers.dev smoke URL.
 
 OpenWebUI remains a separate protected application and is outside this Worker
 package's scope.

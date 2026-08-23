@@ -1,0 +1,106 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+const workerUrl = new URL('./release-readiness-worker.mjs', import.meta.url);
+const configUrl = new URL('./release-readiness-wrangler.jsonc', import.meta.url);
+const FAILURE = {
+  ok: false,
+  service: 'agent-studio',
+  configuration: 'not_ready',
+  version_id: null,
+  tag: null,
+};
+
+const VALID_READINESS = {
+  ok: true,
+  service: 'agent-studio',
+  configuration: 'ready',
+  version_id: 'version-id',
+  tag: 'commit-sha',
+};
+
+function parseJsonc(source) {
+  return JSON.parse(source.replace(/^\s*\/\/.*$/gm, ''));
+}
+
+test('release helper exposes only a local GET boundary over the named remote entrypoint', async () => {
+  const worker = (await import(workerUrl)).default;
+  const calls = [];
+  const env = {
+    AGENT_STUDIO_READINESS: {
+      getReadiness: async () => {
+        calls.push(true);
+        return VALID_READINESS;
+      },
+    },
+  };
+
+  const response = await worker.fetch(new Request('http://127.0.0.1/readiness'), env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await response.json(), {
+    ok: true,
+    service: 'agent-studio',
+    configuration: 'ready',
+    version_id: 'version-id',
+    tag: 'commit-sha',
+  });
+  assert.deepEqual(calls, [true]);
+
+  const rejected = await worker.fetch(new Request('http://127.0.0.1/readiness', { method: 'POST' }), env);
+  assert.equal(rejected.status, 404);
+});
+
+test('release helper sanitizes malformed private readiness responses', async () => {
+  const worker = (await import(workerUrl)).default;
+  const malformed = [
+    ['extra field', { ...VALID_READINESS, secret: 'leak' }],
+    ['wrong type', { ...VALID_READINESS, ok: 'true' }],
+    ['wrong enum', { ...VALID_READINESS, configuration: 'not_ready' }],
+    ['null metadata', { ...VALID_READINESS, version_id: null }],
+    ['unbounded version', { ...VALID_READINESS, version_id: 'v'.repeat(129) }],
+    ['unbounded tag', { ...VALID_READINESS, tag: ' bad' }],
+    ['valid failure', { ...FAILURE }],
+  ];
+
+  for (const [label, value] of malformed) {
+    const response = await worker.fetch(new Request('http://127.0.0.1/readiness'), {
+      AGENT_STUDIO_READINESS: { getReadiness: async () => value },
+    });
+    assert.equal(response.status, 503, label);
+    assert.equal(response.headers.get('cache-control'), 'no-store', label);
+    const body = await response.text();
+    assert.deepEqual(JSON.parse(body), FAILURE, label);
+    assert.doesNotMatch(body, /leak|secret/i, label);
+  }
+});
+
+test('release helper sanitizes private readiness RPC failures', async () => {
+  const worker = (await import(workerUrl)).default;
+  const response = await worker.fetch(new Request('http://127.0.0.1/readiness'), {
+    AGENT_STUDIO_READINESS: {
+      getReadiness: async () => {
+        throw new Error('private RPC secret detail');
+      },
+    },
+  });
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  const body = await response.text();
+  assert.deepEqual(JSON.parse(body), FAILURE);
+  assert.doesNotMatch(body, /private RPC secret detail|Error|stack/i);
+});
+
+test('release helper follows current per-binding remote service guidance', async () => {
+  const config = parseJsonc(await readFile(configUrl, 'utf8'));
+  assert.deepEqual(config.services, [{
+    binding: 'AGENT_STUDIO_READINESS',
+    service: 'agent-studio',
+    entrypoint: 'AgentStudioReadiness',
+    remote: true,
+  }]);
+  assert.equal(config.workers_dev, false);
+  assert.equal(config.preview_urls, false);
+});

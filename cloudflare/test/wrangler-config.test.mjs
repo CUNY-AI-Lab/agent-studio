@@ -38,3 +38,31 @@ test('Gateway base configuration uses the canonical origin before the transport 
   assert.ok(!config.vars?.CAIL_API_BASE.endsWith('/v1'));
   assert.ok(!config.env?.staging?.vars?.CAIL_API_BASE.endsWith('/v1'));
 });
+
+test('production has no public Worker or preview URL while staging keeps its isolated smoke URL', async () => {
+  const config = parseJsonc(await readFile(configUrl, 'utf8'));
+
+  assert.equal(config.workers_dev, false);
+  assert.equal(config.preview_urls, false);
+  assert.equal(config.env?.staging?.workers_dev, true);
+  assert.equal(config.env?.staging?.preview_urls, false);
+  assert.equal(config.route, undefined);
+  assert.equal(config.routes, undefined);
+  assert.equal(config.env?.staging?.route, undefined);
+  assert.equal(config.env?.staging?.routes, undefined);
+  assert.equal(config.exports?.AgentStudioReadiness?.type, 'worker');
+  assert.equal(config.env?.staging?.exports?.AgentStudioReadiness?.type, 'worker');
+});
+
+test('release readiness uses a named private entrypoint instead of an HTTP route', async () => {
+  const config = parseJsonc(await readFile(configUrl, 'utf8'));
+  const services = config.services ?? [];
+
+  assert.deepEqual(
+    services,
+    [{ binding: 'GATEWAY', service: 'cail-model-api' }],
+  );
+  assert.deepEqual(config.env?.staging?.services, [
+    { binding: 'GATEWAY', service: 'cail-model-api-staging' },
+  ]);
+});
