@@ -19,6 +19,7 @@ import {
   connectionEndpointKey,
   makePanelConnection,
   normalizePanelRelations,
+  repairPanelConnectionId,
 } from '../../src/lib/panel-connections.ts';
 
 // Mirror the DO's own path sanitization so the fake agent rejects traversal the
@@ -411,7 +412,10 @@ export class FakeWorkspaceAgent {
     const removedConnections = this.state.connections.filter((connection) => removedConnectionIds.has(connection.id));
     const panelsWithClearedRelations = clearPanelRelationFields(panels, removedConnections);
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
-    for (const connection of patch.connections ?? []) connectionsById.set(connection.id, connection);
+    for (const connection of patch.connections ?? []) {
+      const repairedConnection = repairPanelConnectionId(connection, [...connectionsById.values()]);
+      connectionsById.set(repairedConnection.id, repairedConnection);
+    }
     for (const connectionId of patch.removeConnections ?? []) connectionsById.delete(connectionId);
     const connections = [...connectionsById.values()].filter(
       (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId),

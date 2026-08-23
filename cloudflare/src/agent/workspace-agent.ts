@@ -49,6 +49,7 @@ import {
   connectionEndpointKey,
   makePanelConnection,
   normalizePanelRelations,
+  repairPanelConnectionId,
 } from '../lib/panel-connections';
 import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
@@ -820,7 +821,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
     for (const connection of parsedPatch.connections ?? []) {
-      connectionsById.set(connection.id, connection);
+      const repairedConnection = repairPanelConnectionId(connection, [...connectionsById.values()]);
+      connectionsById.set(repairedConnection.id, repairedConnection);
     }
     for (const connectionId of parsedPatch.removeConnections ?? []) {
       connectionsById.delete(connectionId);

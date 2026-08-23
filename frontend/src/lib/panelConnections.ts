@@ -51,6 +51,21 @@ export function makePanelConnection(firstId: string, secondId: string): PanelCon
   };
 }
 
+/** Repair a generated id before an optimistic or ID-keyed merge. */
+export function repairPanelConnectionId(
+  connection: PanelConnection,
+  occupiedConnections: PanelConnection[],
+): PanelConnection {
+  const endpoint = connectionEndpointKey(connection.sourceId, connection.targetId);
+  const hasConflictingId = occupiedConnections.some(
+    (occupied) => occupied.id === connection.id
+      && connectionEndpointKey(occupied.sourceId, occupied.targetId) !== endpoint,
+  );
+  if (!hasConflictingId) return connection;
+  const id = uniqueConnectionId(connection, new Set(occupiedConnections.map(({ id }) => id)));
+  return { ...connection, id };
+}
+
 function uniqueConnectionId(
   connection: PanelConnection,
   usedIds: Set<string>,

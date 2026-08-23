@@ -651,6 +651,31 @@ test('a persisted canonical-id collision survives import, boot, patch, and remov
   ]);
 });
 
+test('layout association repairs a generated id before the ID-keyed merge', async () => {
+  const { fake, applyLayoutPatch } = await makeLayoutAgent({
+    sessionId: null,
+    workspace: null,
+    panels: [panel('a'), panel('b'), panel('c'), panel('d')],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    groups: [],
+    connections: [{ id: 'connection-c-d', sourceId: 'a', targetId: 'b' }],
+  });
+
+  await applyLayoutPatch({
+    connections: [{ id: 'connection-c-d', sourceId: 'c', targetId: 'd' }],
+  });
+
+  assert.deepEqual(
+    fake.state.connections.map(({ sourceId, targetId }) => [sourceId, targetId]),
+    [['a', 'b'], ['c', 'd']],
+  );
+  assert.equal(new Set(fake.state.connections.map(({ id }) => id)).size, 2);
+  assert.notEqual(
+    fake.state.connections.find(({ sourceId, targetId }) => sourceId === 'c' && targetId === 'd').id,
+    'connection-c-d',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // V3 — applyLayoutPatch merges connections/groups per id
 // ---------------------------------------------------------------------------

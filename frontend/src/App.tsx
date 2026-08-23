@@ -70,9 +70,11 @@ import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
 import { computeGroupsDelta } from './lib/groupDelta';
 import {
   clearPanelRelationFields,
+  connectionEndpointKey,
   findPanelConnection,
   makePanelConnection,
   normalizePanelRelations,
+  repairPanelConnectionId,
 } from './lib/panelConnections';
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
@@ -1364,9 +1366,11 @@ function WorkspaceShell({
       return;
     }
 
-    const nextConnection = makePanelConnection(firstPanel.id, secondPanel.id);
+    const nextConnection = repairPanelConnectionId(
+      makePanelConnection(firstPanel.id, secondPanel.id),
+      workspaceState.connections,
+    );
     setWorkspaceState((current) => {
-      if (current.connections.some((connection) => connection.id === nextConnection.id)) return current;
       return {
         ...current,
         ...normalizePanelRelations(current.panels, [...current.connections, nextConnection]),
@@ -1380,7 +1384,8 @@ function WorkspaceShell({
         ...current,
         ...normalizePanelRelations(
           current.panels,
-          current.connections.filter((connection) => connection.id !== nextConnection.id),
+          current.connections.filter((connection) => connectionEndpointKey(connection.sourceId, connection.targetId)
+            !== connectionEndpointKey(nextConnection.sourceId, nextConnection.targetId)),
         ),
       }));
       setError(nextError instanceof Error ? nextError.message : 'The tile association could not be saved.');

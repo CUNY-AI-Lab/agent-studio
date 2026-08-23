@@ -4,6 +4,7 @@ import {
   findPanelConnection,
   makePanelConnection,
   normalizePanelRelations,
+  repairPanelConnectionId,
 } from './panelConnections';
 
 describe('panel connections', () => {
@@ -35,6 +36,15 @@ describe('panel connections', () => {
     expect(connection.sourceId).toBe(first);
     expect(connection.targetId).toBe(second);
     expect(makePanelConnection(second, first).id).toBe(connection.id);
+  });
+
+  it('repairs a generated id owned by a different endpoint before merging', () => {
+    const occupied = [{ id: 'connection-c-d', sourceId: 'a', targetId: 'b' }];
+    const repaired = repairPanelConnectionId(makePanelConnection('c', 'd'), occupied);
+
+    expect(repaired).toMatchObject({ sourceId: 'c', targetId: 'd' });
+    expect(repaired.id).not.toBe('connection-c-d');
+    expect(new Set([occupied[0].id, repaired.id]).size).toBe(2);
   });
 
   it('repairs persisted detail fields when their edge is missing', () => {
