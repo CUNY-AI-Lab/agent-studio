@@ -102,14 +102,14 @@ The main composer can inherit selected-tile scope. Contextual tile chat is still
 
 | Action | Result |
 |---|---|
-| Drag background | Pan canvas |
+| Drag background | Select tiles with a rectangle; hold Space or use the middle button to pan |
 | Scroll / pinch | Zoom |
 | Click tile | Select tile |
 | Shift-click | Multi-select |
 | Select two tiles, then choose Associate | Persist an explicit association line |
 | Select an association line | Select both endpoint tiles for inspection or disconnect |
-| Drag tile | Move tile |
-| Drag edge | Resize tile |
+| Drag tile header | Move tile |
+| Drag a resize handle | Resize tile |
 | Tile menu or selection toolbar | Open contextual chat for a tile or selection |
 | Minimize | Send tile to dock |
 | Maximize | Expand tile |

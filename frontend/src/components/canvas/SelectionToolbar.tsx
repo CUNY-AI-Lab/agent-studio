@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect, useLayoutEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   MessageSquare,
   Download as DownloadIcon,
@@ -19,6 +19,8 @@ import {
 type ToolbarDownloadFormat = 'file' | 'csv' | 'json' | 'txt' | 'png';
 type AlignMode = 'left' | 'centerX' | 'right' | 'top' | 'centerY' | 'bottom';
 type DistributeAxis = 'horizontal' | 'vertical';
+
+const TOOLBAR_SIZE = { width: 200, height: 36 } as const;
 
 const ALIGN_OPTIONS: ReadonlyArray<readonly [AlignMode, string]> = [
   ['left', 'Left'],
@@ -93,7 +95,6 @@ export function SelectionToolbar({
   const [openMenu, setOpenMenu] = useState<'download' | 'align' | 'distribute' | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const downloadRef = useRef<HTMLDivElement>(null);
-  const [toolbarSize, setToolbarSize] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
     if (!openMenu) return;
@@ -117,37 +118,9 @@ export function SelectionToolbar({
   const isMultiSelection = Boolean(selectedPanelIds && selectedPanelIds.size > 1 && !selectedGroupId);
   const isSinglePanel = Boolean(selectedPanelId && !selectedGroupId);
 
-  const toolbarKey = [
-    isGroupSelection ? 'group' : 'panel',
-    isMultiSelection ? 'multi' : 'single',
-    isInGroup ? 'in-group' : 'no-group',
-    canChat ? 'chat' : 'no-chat',
-    canDownload ? `download-${downloadFormats.join(',')}` : 'no-download',
-    onMinimize ? 'minimize' : 'no-minimize',
-    onMaximize ? 'maximize' : 'no-maximize',
-    onRemove ? 'remove' : 'no-remove',
-    onGroup ? 'group-action' : 'no-group-action',
-    onToggleConnection ? `connection-${isConnected ? 'on' : 'off'}` : 'no-connection-action',
-    onUngroup ? 'ungroup' : 'no-ungroup',
-    onRemoveFromGroup ? 'remove-from-group' : 'no-remove-from-group',
-    onAlign ? 'align' : 'no-align',
-    onDistribute ? 'distribute' : 'no-distribute',
-    openMenu ?? 'menu-closed',
-  ].join('|');
-
-  useLayoutEffect(() => {
-    if (!hasSelection || !selectionBounds || !toolbarRef.current) return;
-    const rect = toolbarRef.current.getBoundingClientRect();
-    setToolbarSize((current) => (
-      current.width === rect.width && current.height === rect.height
-        ? current
-        : { width: rect.width, height: rect.height }
-    ));
-  }, [hasSelection, selectionBounds, canvasScale, toolbarKey]);
-
   if (!hasSelection || !selectionBounds) return null;
 
-  const toolbarHeight = toolbarSize.height || 36;
+  const toolbarHeight = TOOLBAR_SIZE.height;
   const gap = 8;
   const margin = 8;
   const initialCanvasX = selectionBounds.x + selectionBounds.width / 2;
@@ -158,7 +131,7 @@ export function SelectionToolbar({
   const viewportWidth = viewportSize?.width ?? globalThis.window?.innerWidth ?? 1920;
   const viewportHeight = viewportSize?.height ?? globalThis.window?.innerHeight ?? 1080;
 
-  const computedWidth = toolbarSize.width || 200;
+  const computedWidth = TOOLBAR_SIZE.width;
   let screenX = initialCanvasX * canvasScale + offsetX;
   let screenY = initialCanvasY * canvasScale + offsetY;
 
@@ -211,7 +184,7 @@ export function SelectionToolbar({
             ? 'Actions for selected tiles'
             : `Actions for ${panelTitle || 'tile'}`
       }
-      className="selection-toolbar absolute"
+      className="selection-toolbar absolute nodrag nopan nowheel"
       style={{
         left: canvasX,
         top: canvasY,

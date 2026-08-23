@@ -5,7 +5,7 @@ import type { ContextualChatTarget } from '../../lib/messages';
 import type { WorkspacePanel } from '../../types';
 
 /**
- * The per-tile "…" context menu content. Rendered into DraggablePanel's
+ * The per-tile "…" context menu content. Rendered into the canvas node's
  * menuContent slot. All effectful callbacks are supplied by WorkspaceShell so
  * this stays a pure projection of the panel + handlers.
  */
