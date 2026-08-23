@@ -14,7 +14,10 @@
 
 import { register } from 'node:module';
 import { z } from 'zod';
-import { normalizePanelRelations } from '../../src/lib/panel-connections.ts';
+import {
+  clearPanelRelationFields,
+  normalizePanelRelations,
+} from '../../src/lib/panel-connections.ts';
 
 // Mirror the DO's own path sanitization so the fake agent rejects traversal the
 // same way `writeWorkspaceFileContent`/`sanitizeRelativePath` do in production.
@@ -368,6 +371,9 @@ export class FakeWorkspaceAgent {
     // Mirrors the real DO (V3): groups/connections are per-id upserts, group
     // removal is explicit, and entries referencing missing panels are dropped.
     const panelIds = new Set(panels.map((panel) => panel.id));
+    const removedConnectionIds = new Set(patch.removeConnections ?? []);
+    const removedConnections = this.state.connections.filter((connection) => removedConnectionIds.has(connection.id));
+    const panelsWithClearedRelations = clearPanelRelationFields(panels, removedConnections);
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
     for (const connection of patch.connections ?? []) connectionsById.set(connection.id, connection);
     for (const connectionId of patch.removeConnections ?? []) connectionsById.delete(connectionId);
@@ -381,7 +387,7 @@ export class FakeWorkspaceAgent {
       .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
       .filter((group) => group.panelIds.length >= 2);
 
-    const normalizedRelations = normalizePanelRelations(panels, connections);
+    const normalizedRelations = normalizePanelRelations(panelsWithClearedRelations, connections);
     this.state = {
       ...this.state,
       ...normalizedRelations,

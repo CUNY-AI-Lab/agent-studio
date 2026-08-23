@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "exportedAt": "1970-01-01T00:00:00.000Z",
+  "workspace": {
+    "id": "deployed-v1-relationships",
+    "name": "Deployed v1 relationships",
+    "description": "Legacy relationship state",
+    "createdAt": "1970-01-01T00:00:00.000Z",
+    "updatedAt": "1970-01-01T00:00:00.000Z"
+  },
+  "state": {
+    "sessionId": null,
+    "workspace": null,
+    "panels": [
+      {
+        "id": "source-table",
+        "type": "table",
+        "title": "Source table",
+        "columns": [
+          { "key": "name", "label": "Name" }
+        ],
+        "rows": [
+          { "name": "Ada" }
+        ],
+        "layout": { "x": 120, "y": 120, "width": 360, "height": 240 }
+      },
+      {
+        "id": "source-detail",
+        "type": "detail",
+        "title": "Source detail",
+        "sourcePanelId": "source-table",
+        "linkedTo": "source-table",
+        "layout": { "x": 560, "y": 120, "width": 360, "height": 240 }
+      }
+    ],
+    "viewport": { "x": 0, "y": 0, "zoom": 1 },
+    "groups": [],
+    "connections": []
+  },
+  "messages": [],
+  "files": []
+}

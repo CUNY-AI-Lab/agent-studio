@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createTestIdentityIssuer } from './helpers/identity.mjs';
 
 import {
@@ -32,6 +33,9 @@ import {
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
 
 const app = await importServer();
+const deployedV1Fixture = JSON.parse(
+  await readFile(new URL('./fixtures/deployed-v1-relationships.json', import.meta.url), 'utf8'),
+);
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
@@ -1111,6 +1115,65 @@ test('relations: PATCH and import drop self-associations while retaining valid e
   const exported = await session.request(app, `/api/workspaces/${imported.workspaceId}/export`);
   assert.equal(exported.status, 200);
   assert.deepEqual((await exported.json()).state.connections, [validConnection]);
+});
+
+test('relations: deployed-v1 import, reload, export, and disconnect preserve one source of truth', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const form = new FormData();
+  form.append('bundle', new File([JSON.stringify(deployedV1Fixture)], 'deployed-v1.json', {
+    type: 'application/json',
+  }));
+
+  const importResponse = await session.request(app, '/api/workspaces/import', {
+    method: 'POST',
+    body: form,
+  });
+  assert.equal(importResponse.status, 201);
+  const { workspaceId } = await importResponse.json();
+  const expectedConnection = {
+    id: 'connection-source-detail-source-table',
+    sourceId: 'source-detail',
+    targetId: 'source-table',
+  };
+
+  const readState = async () => {
+    const response = await session.request(app, `/api/workspaces/${workspaceId}`);
+    assert.equal(response.status, 200);
+    return (await response.json()).state;
+  };
+
+  const importedState = await readState();
+  const importedDetail = importedState.panels.find((panel) => panel.id === 'source-detail');
+  assert.equal(importedDetail.sourcePanelId, 'source-table');
+  assert.equal(importedDetail.linkedTo, 'source-table');
+  assert.deepEqual(importedState.connections, [expectedConnection]);
+
+  const exportedResponse = await session.request(app, `/api/workspaces/${workspaceId}/export`);
+  assert.equal(exportedResponse.status, 200);
+  const exportedState = (await exportedResponse.json()).state;
+  const exportedDetail = exportedState.panels.find((panel) => panel.id === 'source-detail');
+  assert.equal(exportedDetail.sourcePanelId, 'source-table');
+  assert.equal(exportedDetail.linkedTo, 'source-table');
+  assert.deepEqual(exportedState.connections, [expectedConnection]);
+
+  const disconnectResponse = await session.request(
+    app,
+    `/api/workspaces/${workspaceId}/layout`,
+    jsonInit('PATCH', { removeConnections: [expectedConnection.id] }),
+  );
+  assert.equal(disconnectResponse.status, 200);
+  const disconnectedState = (await disconnectResponse.json()).state;
+  const disconnectedDetail = disconnectedState.panels.find((panel) => panel.id === 'source-detail');
+  assert.equal(disconnectedDetail.sourcePanelId, undefined);
+  assert.equal(disconnectedDetail.linkedTo, undefined);
+  assert.deepEqual(disconnectedState.connections, []);
+
+  const reloadedState = await readState();
+  const reloadedDetail = reloadedState.panels.find((panel) => panel.id === 'source-detail');
+  assert.equal(reloadedDetail.sourcePanelId, undefined);
+  assert.equal(reloadedDetail.linkedTo, undefined);
+  assert.deepEqual(reloadedState.connections, []);
 });
 
 test('panels: invalid panel payload -> 400 (hand-validated route)', async () => {

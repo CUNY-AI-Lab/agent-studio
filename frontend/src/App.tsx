@@ -69,6 +69,7 @@ import {
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
 import { computeGroupsDelta } from './lib/groupDelta';
 import {
+  clearPanelRelationFields,
   findPanelConnection,
   makePanelConnection,
   normalizePanelRelations,
@@ -1351,8 +1352,9 @@ function WorkspaceShell({
 
     if (currentConnection) {
       setWorkspaceState((current) => {
+        const panels = clearPanelRelationFields(current.panels, [currentConnection]);
         const relations = normalizePanelRelations(
-          current.panels,
+          panels,
           current.connections.filter((connection) => connection.id !== currentConnection.id),
         );
         return { ...current, ...relations };
@@ -1371,18 +1373,23 @@ function WorkspaceShell({
     }
 
     const nextConnection = makePanelConnection(firstPanel.id, secondPanel.id);
-    setWorkspaceState((current) => (
-      current.connections.some((connection) => connection.id === nextConnection.id)
-        ? current
-        : { ...current, connections: [...current.connections, nextConnection] }
-    ));
+    setWorkspaceState((current) => {
+      if (current.connections.some((connection) => connection.id === nextConnection.id)) return current;
+      return {
+        ...current,
+        ...normalizePanelRelations(current.panels, [...current.connections, nextConnection]),
+      };
+    });
     try {
       await agent.call('applyLayoutPatch', [{ connections: [nextConnection] }]);
       showToast(`Associated ${getPanelTitle(firstPanel)} and ${getPanelTitle(secondPanel)}`);
     } catch (nextError) {
       setWorkspaceState((current) => ({
         ...current,
-        connections: current.connections.filter((connection) => connection.id !== nextConnection.id),
+        ...normalizePanelRelations(
+          current.panels,
+          current.connections.filter((connection) => connection.id !== nextConnection.id),
+        ),
       }));
       setError(nextError instanceof Error ? nextError.message : 'The tile association could not be saved.');
     }

@@ -45,15 +45,52 @@ export function findPanelConnection(
   );
 }
 
-function hasConnection(connections: PanelConnection[], firstId: string, secondId: string): boolean {
-  return findPanelConnection(connections, firstId, secondId) !== undefined;
+function validRelationSource(
+  panelId: string,
+  sourceId: string | undefined,
+  panelIds: Set<string>,
+): string | undefined {
+  if (!sourceId || sourceId === panelId || !panelIds.has(sourceId)) return undefined;
+  return sourceId;
 }
 
 /**
- * Keep the redundant detail/source fields as one persisted relationship.
- * `connections` is the visible edge store; sourcePanelId is the provenance
- * for an agent-created edge and detail.linkedTo mirrors it for the detail
- * panel's renderer. Manual edges deliberately do not invent provenance.
+ * Remove the persisted provenance fields represented by an explicit edge
+ * deletion before normalization can reconstruct their canonical edge.
+ */
+export function clearPanelRelationFields(
+  panels: WorkspacePanel[],
+  removedConnections: PanelConnection[],
+): WorkspacePanel[] {
+  const removedEndpoints = new Set(
+    removedConnections.map((connection) => connectionEndpointKey(connection.sourceId, connection.targetId)),
+  );
+  if (removedEndpoints.size === 0) return panels;
+
+  return panels.map((panel) => {
+    const sourcePanelId = panel.sourcePanelId
+      && removedEndpoints.has(connectionEndpointKey(panel.id, panel.sourcePanelId))
+      ? undefined
+      : panel.sourcePanelId;
+
+    if (panel.type !== 'detail') {
+      return sourcePanelId === panel.sourcePanelId ? panel : { ...panel, sourcePanelId };
+    }
+
+    const linkedTo = panel.linkedTo
+      && removedEndpoints.has(connectionEndpointKey(panel.id, panel.linkedTo))
+      ? undefined
+      : panel.linkedTo;
+    if (sourcePanelId === panel.sourcePanelId && linkedTo === panel.linkedTo) return panel;
+    return { ...panel, sourcePanelId, linkedTo };
+  });
+}
+
+/**
+ * Keep each persisted relation field independently valid. `connections` is
+ * the visible edge store; sourcePanelId is provenance for an agent-created
+ * edge while detail.linkedTo is renderer linkage. Manual edges deliberately
+ * do not invent either field.
  */
 export function normalizePanelRelations(
   panels: WorkspacePanel[],
@@ -61,7 +98,7 @@ export function normalizePanelRelations(
 ): NormalizedPanelRelations {
   const panelIds = new Set(panels.map((panel) => panel.id));
   const seenEndpoints = new Set<string>();
-  const validConnections = connections.filter((connection) => {
+  const normalizedConnections = connections.filter((connection) => {
     if (!panelIds.has(connection.sourceId) || !panelIds.has(connection.targetId)) return false;
     if (connection.sourceId === connection.targetId) return false;
     const endpoint = connectionEndpointKey(connection.sourceId, connection.targetId);
@@ -70,29 +107,30 @@ export function normalizePanelRelations(
     return true;
   });
 
-  return {
-    connections: validConnections,
-    panels: panels.map((panel) => {
-      const requestedSource = panel.sourcePanelId
-        ?? (panel.type === 'detail' ? panel.linkedTo : undefined);
-      const sourcePanelId = requestedSource
-        && panelIds.has(requestedSource)
-        && requestedSource !== panel.id
-        && hasConnection(validConnections, panel.id, requestedSource)
-        ? requestedSource
-        : undefined;
+  const ensureConnection = (panelId: string, sourceId: string): void => {
+    const endpoint = connectionEndpointKey(panelId, sourceId);
+    if (seenEndpoints.has(endpoint)) return;
+    seenEndpoints.add(endpoint);
+    normalizedConnections.push(makePanelConnection(panelId, sourceId));
+  };
 
-      if (panel.type === 'detail') {
-        if (panel.sourcePanelId === sourcePanelId && panel.linkedTo === sourcePanelId) return panel;
-        return {
-          ...panel,
-          sourcePanelId,
-          linkedTo: sourcePanelId,
-        };
-      }
+  const normalizedPanels = panels.map((panel) => {
+    const sourcePanelId = validRelationSource(panel.id, panel.sourcePanelId, panelIds);
+    if (sourcePanelId) ensureConnection(panel.id, sourcePanelId);
 
+    if (panel.type !== 'detail') {
       if (panel.sourcePanelId === sourcePanelId) return panel;
       return { ...panel, sourcePanelId };
-    }),
+    }
+
+    const linkedTo = validRelationSource(panel.id, panel.linkedTo, panelIds);
+    if (linkedTo) ensureConnection(panel.id, linkedTo);
+    if (panel.sourcePanelId === sourcePanelId && panel.linkedTo === linkedTo) return panel;
+    return { ...panel, sourcePanelId, linkedTo };
+  });
+
+  return {
+    connections: normalizedConnections,
+    panels: normalizedPanels,
   };
 }

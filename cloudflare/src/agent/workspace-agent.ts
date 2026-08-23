@@ -45,6 +45,7 @@ import {
 } from '../lib/cail-identity';
 import { panelSchema } from '../lib/import';
 import {
+  clearPanelRelationFields,
   connectionEndpointKey,
   makePanelConnection,
   normalizePanelRelations,
@@ -813,6 +814,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     // entries referencing panels that no longer exist are dropped, so a stale
     // patch can't resurrect a removed panel's connections or group membership.
     const panelIds = new Set(panels.map((panel) => panel.id));
+    const removedConnectionIds = new Set(parsedPatch.removeConnections ?? []);
+    const removedConnections = this.state.connections.filter((connection) => removedConnectionIds.has(connection.id));
+    const panelsWithClearedRelations = clearPanelRelationFields(panels, removedConnections);
 
     const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
     for (const connection of parsedPatch.connections ?? []) {
@@ -824,7 +828,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const connections = [...connectionsById.values()].filter(
       (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId)
     );
-    const normalizedRelations = normalizePanelRelations(panels, connections);
+    const normalizedRelations = normalizePanelRelations(panelsWithClearedRelations, connections);
 
     const groupsById = new Map(this.state.groups.map((group) => [group.id, group]));
     for (const group of parsedPatch.groups ?? []) {
@@ -1518,14 +1522,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     let nextConnections = [...this.state.connections];
     if (relationshipId !== undefined) {
-      const previousRelationshipId = previousPanel?.sourcePanelId
-        ?? (previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined);
-      if (previousRelationshipId !== undefined) {
-        nextConnections = nextConnections.filter(
-          (current) => connectionEndpointKey(current.sourceId, current.targetId)
-            !== connectionEndpointKey(previousRelationshipId, mergedPanel.id),
-        );
-      }
+      const previousRelationshipIds = [
+        previousPanel?.sourcePanelId,
+        previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined,
+      ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
+      nextConnections = nextConnections.filter((current) => previousRelationshipIds.every(
+        (previousRelationshipId) => connectionEndpointKey(current.sourceId, current.targetId)
+          !== connectionEndpointKey(previousRelationshipId, mergedPanel.id),
+      ));
       const connection = makePanelConnection(relationshipId, mergedPanel.id);
       if (!nextConnections.some((current) => connectionEndpointKey(current.sourceId, current.targetId) === connectionEndpointKey(connection.sourceId, connection.targetId))) {
         nextConnections.push(connection);

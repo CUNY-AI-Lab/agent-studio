@@ -13,11 +13,16 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 
 import { getWorkspace, putWorkspace } from '../src/lib/workspaces.ts';
+import { normalizePanelRelations } from '../src/lib/panel-connections.ts';
 import { importServer, makeEnv, openSession, registerCloudflareStub } from './helpers/env.mjs';
 
 const app = await importServer();
+const deployedV1Fixture = JSON.parse(
+  await readFile(new URL('./fixtures/deployed-v1-relationships.json', import.meta.url), 'utf8'),
+);
 
 function workspaceKey(sessionId, workspaceId) {
   return `agent-studio/sessions/${sessionId}/workspaces/${workspaceId}/workspace.json`;
@@ -367,7 +372,7 @@ test('disconnect and source removal clear detail linkage metadata', async () => 
   assert.deepEqual(fake.state.connections, []);
 });
 
-test('replaceWorkspaceState normalizes imported relationship fields before reload', async () => {
+test('replaceWorkspaceState normalizes imported relationship fields independently before reload', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const fake = {
@@ -396,9 +401,112 @@ test('replaceWorkspaceState normalizes imported relationship fields before reloa
   }, { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' }, 'session');
 
   const detail = fake.state.panels.find((candidate) => candidate.id === 'detail');
-  assert.equal(detail.sourcePanelId, undefined);
+  assert.equal(detail.sourcePanelId, 'source');
   assert.equal(detail.linkedTo, undefined);
-  assert.deepEqual(fake.state.connections, []);
+  assert.deepEqual(fake.state.connections, [
+    { id: 'connection-detail-source', sourceId: 'detail', targetId: 'source' },
+  ]);
+});
+
+test('deployed-v1 relations survive import/onStart and normalization is idempotent', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const imported = {
+    state: { ...deployedV1Fixture.state, panels: deployedV1Fixture.state.panels.map((panel) => ({ ...panel })) },
+    setState(next) {
+      this.state = next;
+    },
+  };
+  await WorkspaceAgent.prototype.replaceWorkspaceState.call(
+    imported,
+    deployedV1Fixture.state,
+    deployedV1Fixture.workspace,
+    'session',
+  );
+
+  const importedDetail = imported.state.panels.find((panel) => panel.id === 'source-detail');
+  assert.equal(importedDetail.sourcePanelId, 'source-table');
+  assert.equal(importedDetail.linkedTo, 'source-table');
+  assert.deepEqual(imported.state.connections, [
+    { id: 'connection-source-detail-source-table', sourceId: 'source-detail', targetId: 'source-table' },
+  ]);
+  assert.deepEqual(
+    normalizePanelRelations(imported.state.panels, imported.state.connections),
+    { panels: imported.state.panels, connections: imported.state.connections },
+  );
+
+  const onStart = {
+    state: imported.state,
+    cailIdentityJwt: 'already-verified-for-test',
+    ctx: { storage: { get: async () => undefined } },
+    setState(next) {
+      this.state = next;
+    },
+  };
+  await WorkspaceAgent.prototype.onStart.call(onStart);
+  const startedDetail = onStart.state.panels.find((panel) => panel.id === 'source-detail');
+  assert.equal(startedDetail.sourcePanelId, 'source-table');
+  assert.equal(startedDetail.linkedTo, 'source-table');
+  assert.deepEqual(onStart.state.connections, imported.state.connections);
+});
+
+test('normalization preserves independent sourcePanelId and linkedTo fields', () => {
+  const panels = [
+    panel('source-a'),
+    panel('source-b'),
+    { ...panel('equal-detail'), type: 'detail', sourcePanelId: 'source-a', linkedTo: 'source-a' },
+    { ...panel('source-only'), type: 'detail', sourcePanelId: 'source-a' },
+    { ...panel('linked-only'), type: 'detail', linkedTo: 'source-b' },
+    { ...panel('split-detail'), type: 'detail', sourcePanelId: 'source-a', linkedTo: 'source-b' },
+    { ...panel('dangling-detail'), type: 'detail', sourcePanelId: 'missing', linkedTo: 'source-b' },
+  ];
+  const normalized = normalizePanelRelations(panels, [
+    { id: 'manual', sourceId: 'source-b', targetId: 'source-a' },
+    { id: 'duplicate', sourceId: 'source-a', targetId: 'source-b' },
+    { id: 'self', sourceId: 'source-a', targetId: 'source-a' },
+    { id: 'dangling', sourceId: 'source-a', targetId: 'missing' },
+  ]);
+
+  const equalDetail = normalized.panels.find((candidate) => candidate.id === 'equal-detail');
+  const sourceOnly = normalized.panels.find((candidate) => candidate.id === 'source-only');
+  const linkedOnly = normalized.panels.find((candidate) => candidate.id === 'linked-only');
+  const splitDetail = normalized.panels.find((candidate) => candidate.id === 'split-detail');
+  const danglingDetail = normalized.panels.find((candidate) => candidate.id === 'dangling-detail');
+  assert.deepEqual(
+    {
+      equalSource: equalDetail.sourcePanelId,
+      equalLinked: equalDetail.linkedTo,
+      sourceOnly: sourceOnly.sourcePanelId,
+      sourceOnlyLinked: sourceOnly.linkedTo,
+      linkedOnly: linkedOnly.sourcePanelId,
+      linkedOnlyLinked: linkedOnly.linkedTo,
+      splitSource: splitDetail.sourcePanelId,
+      splitLinked: splitDetail.linkedTo,
+      danglingSource: danglingDetail.sourcePanelId,
+      danglingLinked: danglingDetail.linkedTo,
+    },
+    {
+      equalSource: 'source-a',
+      equalLinked: 'source-a',
+      sourceOnly: 'source-a',
+      sourceOnlyLinked: undefined,
+      linkedOnly: undefined,
+      linkedOnlyLinked: 'source-b',
+      splitSource: 'source-a',
+      splitLinked: 'source-b',
+      danglingSource: undefined,
+      danglingLinked: 'source-b',
+    },
+  );
+  assert.deepEqual(normalized.connections.map(({ sourceId, targetId }) => [sourceId, targetId]), [
+    ['source-b', 'source-a'],
+    ['equal-detail', 'source-a'],
+    ['source-a', 'source-only'],
+    ['linked-only', 'source-b'],
+    ['source-a', 'split-detail'],
+    ['source-b', 'split-detail'],
+    ['dangling-detail', 'source-b'],
+  ]);
 });
 
 // ---------------------------------------------------------------------------

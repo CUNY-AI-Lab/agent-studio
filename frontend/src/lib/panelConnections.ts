@@ -49,6 +49,44 @@ export function makePanelConnection(firstId: string, secondId: string): PanelCon
   };
 }
 
+function validRelationSource(
+  panelId: string,
+  sourceId: string | undefined,
+  panelIds: Set<string>,
+): string | undefined {
+  if (!sourceId || sourceId === panelId || !panelIds.has(sourceId)) return undefined;
+  return sourceId;
+}
+
+/** Remove fields represented by an explicit edge deletion before normalizing. */
+export function clearPanelRelationFields(
+  panels: WorkspacePanel[],
+  removedConnections: PanelConnection[],
+): WorkspacePanel[] {
+  const removedEndpoints = new Set(
+    removedConnections.map((connection) => connectionEndpointKey(connection.sourceId, connection.targetId)),
+  );
+  if (removedEndpoints.size === 0) return panels;
+
+  return panels.map((panel) => {
+    const sourcePanelId = panel.sourcePanelId
+      && removedEndpoints.has(connectionEndpointKey(panel.id, panel.sourcePanelId))
+      ? undefined
+      : panel.sourcePanelId;
+
+    if (panel.type !== 'detail') {
+      return sourcePanelId === panel.sourcePanelId ? panel : { ...panel, sourcePanelId };
+    }
+
+    const linkedTo = panel.linkedTo
+      && removedEndpoints.has(connectionEndpointKey(panel.id, panel.linkedTo))
+      ? undefined
+      : panel.linkedTo;
+    if (sourcePanelId === panel.sourcePanelId && linkedTo === panel.linkedTo) return panel;
+    return { ...panel, sourcePanelId, linkedTo };
+  });
+}
+
 /** Keep UI state in step with the Worker after a connection is removed. */
 export function normalizePanelRelations(
   panels: WorkspacePanel[],
@@ -56,7 +94,7 @@ export function normalizePanelRelations(
 ): NormalizedPanelRelations {
   const panelIds = new Set(panels.map((panel) => panel.id));
   const seenEndpoints = new Set<string>();
-  const validConnections = connections.filter((connection) => {
+  const normalizedConnections = connections.filter((connection) => {
     if (!panelIds.has(connection.sourceId) || !panelIds.has(connection.targetId)) return false;
     if (connection.sourceId === connection.targetId) return false;
     const endpoint = connectionEndpointKey(connection.sourceId, connection.targetId);
@@ -65,24 +103,30 @@ export function normalizePanelRelations(
     return true;
   });
 
-  return {
-    connections: validConnections,
-    panels: panels.map((panel) => {
-      const requestedSource = panel.sourcePanelId
-        ?? (panel.type === 'detail' ? panel.linkedTo : undefined);
-      const sourcePanelId = requestedSource
-        && panelIds.has(requestedSource)
-        && requestedSource !== panel.id
-        && findPanelConnection(validConnections, panel.id, requestedSource)
-        ? requestedSource
-        : undefined;
+  const ensureConnection = (panelId: string, sourceId: string): void => {
+    const endpoint = connectionEndpointKey(panelId, sourceId);
+    if (seenEndpoints.has(endpoint)) return;
+    seenEndpoints.add(endpoint);
+    normalizedConnections.push(makePanelConnection(panelId, sourceId));
+  };
 
-      if (panel.type === 'detail') {
-        if (panel.sourcePanelId === sourcePanelId && panel.linkedTo === sourcePanelId) return panel;
-        return { ...panel, sourcePanelId, linkedTo: sourcePanelId };
-      }
+  const normalizedPanels = panels.map((panel) => {
+    const sourcePanelId = validRelationSource(panel.id, panel.sourcePanelId, panelIds);
+    if (sourcePanelId) ensureConnection(panel.id, sourcePanelId);
+
+    if (panel.type !== 'detail') {
       if (panel.sourcePanelId === sourcePanelId) return panel;
       return { ...panel, sourcePanelId };
-    }),
+    }
+
+    const linkedTo = validRelationSource(panel.id, panel.linkedTo, panelIds);
+    if (linkedTo) ensureConnection(panel.id, linkedTo);
+    if (panel.sourcePanelId === sourcePanelId && panel.linkedTo === linkedTo) return panel;
+    return { ...panel, sourcePanelId, linkedTo };
+  });
+
+  return {
+    connections: normalizedConnections,
+    panels: normalizedPanels,
   };
 }
