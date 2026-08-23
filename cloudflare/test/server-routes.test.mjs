@@ -1049,6 +1049,64 @@ test('panels: add a panel, then patch layout', async () => {
   assert.deepEqual(layoutState.panels[0].layout, { x: 40, y: 60, width: 300 });
 });
 
+test('panels: updating one detail relation field preserves the other edge', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+
+  for (const id of ['table', 'cards', 'source-c']) {
+    const response = await session.request(
+      app,
+      `/api/workspaces/${workspace.id}/panels`,
+      jsonInit('POST', { panel: { id, type: 'markdown', title: id, content: id } }),
+    );
+    assert.equal(response.status, 200);
+  }
+
+  const initial = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/panels`,
+    jsonInit('POST', {
+      panel: {
+        id: 'detail',
+        type: 'detail',
+        title: 'Detail',
+        sourcePanelId: 'table',
+        linkedTo: 'cards',
+      },
+    }),
+  );
+  assert.equal(initial.status, 200);
+
+  const updated = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/panels`,
+    jsonInit('POST', {
+      panel: {
+        id: 'detail',
+        type: 'detail',
+        title: 'Detail updated',
+        linkedTo: 'source-c',
+      },
+    }),
+  );
+  assert.equal(updated.status, 200);
+  const state = (await updated.json()).state;
+  const detail = state.panels.find((panel) => panel.id === 'detail');
+  assert.equal(detail.sourcePanelId, 'table');
+  assert.equal(detail.linkedTo, 'source-c');
+  assert.deepEqual(
+    state.connections.map(({ sourceId, targetId }) => [sourceId, targetId]),
+    [['detail', 'table'], ['detail', 'source-c']],
+  );
+
+  const reloaded = await session.request(app, `/api/workspaces/${workspace.id}`);
+  assert.equal(reloaded.status, 200);
+  const reloadedState = (await reloaded.json()).state;
+  assert.deepEqual(reloadedState.panels.find((panel) => panel.id === 'detail'), detail);
+  assert.deepEqual(reloadedState.connections, state.connections);
+});
+
 test('relations: PATCH and import drop self-associations while retaining valid edges', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);

@@ -1474,14 +1474,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
-  /**
-   * Persist a panel update and an explicitly requested tile association in one
-   * state write. `sourcePanelId` is a caller-supplied relationship, never an
-   * inferred line from layout or proximity.
-   */
+  /** Persist a panel update and each explicitly supplied relationship field. */
   private upsertPanelWithAssociation(panel: WorkspacePanel, sourcePanelId?: string): void {
-    const relationshipId = sourcePanelId ?? (panel.type === 'detail' ? panel.linkedTo : undefined);
-    if (relationshipId !== undefined) {
+    const sourcePanelIdProvided = sourcePanelId !== undefined || Object.hasOwn(panel, 'sourcePanelId');
+    const linkedToProvided = panel.type === 'detail' && Object.hasOwn(panel, 'linkedTo');
+    const requestedSourcePanelId = sourcePanelId !== undefined ? sourcePanelId : panel.sourcePanelId;
+    const requestedLinkedTo = panel.type === 'detail' ? panel.linkedTo : undefined;
+
+    const validateRelationship = (relationshipId: string | undefined): void => {
+      if (relationshipId === undefined) return;
       panelIdSchema.parse(relationshipId);
       if (relationshipId === panel.id) {
         throw new Error('A tile cannot be associated with itself');
@@ -1489,30 +1490,28 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       if (!this.state.panels.some((candidate) => candidate.id === relationshipId)) {
         throw new Error(`Panel not found: ${relationshipId}`);
       }
-    }
+    };
+    if (sourcePanelIdProvided) validateRelationship(requestedSourcePanelId);
+    if (linkedToProvided) validateRelationship(requestedLinkedTo);
 
-    let panelWithSource: WorkspacePanel = relationshipId === undefined
-      ? panel
-      : {
-        ...panel,
-        sourcePanelId: relationshipId,
-      };
-    if (relationshipId !== undefined && panelWithSource.type === 'detail') {
-      panelWithSource = { ...panelWithSource, linkedTo: relationshipId };
-    }
-    const index = this.state.panels.findIndex((candidate) => candidate.id === panelWithSource.id);
+    const panelWithSource: WorkspacePanel = sourcePanelIdProvided
+      ? { ...panel, sourcePanelId: requestedSourcePanelId }
+      : panel;
+    const index = this.state.panels.findIndex((candidate) => candidate.id === panel.id);
     const panels = [...this.state.panels];
     const previousPanel = index >= 0 ? panels[index] : undefined;
     let mergedPanel: WorkspacePanel;
     if (index >= 0) {
       const current = panels[index];
-      const preserved = {
-        layout: panelWithSource.layout ? { ...current.layout, ...panelWithSource.layout } : current.layout,
-        sourcePanelId: panelWithSource.sourcePanelId ?? current.sourcePanelId,
-      };
       mergedPanel = current.type === panelWithSource.type
-        ? { ...current, ...panelWithSource, ...preserved }
-        : { ...panelWithSource, ...preserved };
+        ? { ...current, ...panelWithSource }
+        : { ...panelWithSource };
+      if (panelWithSource.layout) {
+        mergedPanel = { ...mergedPanel, layout: { ...current.layout, ...panelWithSource.layout } };
+      }
+      if (sourcePanelIdProvided) {
+        mergedPanel = { ...mergedPanel, sourcePanelId: requestedSourcePanelId };
+      }
       panels[index] = panelSchema.parse(mergedPanel);
       mergedPanel = panels[index];
     } else {
@@ -1520,17 +1519,28 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       mergedPanel = panelWithSource;
     }
 
-    let nextConnections = [...this.state.connections];
-    if (relationshipId !== undefined) {
-      const previousRelationshipIds = [
-        previousPanel?.sourcePanelId,
-        previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined,
-      ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
-      nextConnections = nextConnections.filter((current) => previousRelationshipIds.every(
-        (previousRelationshipId) => connectionEndpointKey(current.sourceId, current.targetId)
-          !== connectionEndpointKey(previousRelationshipId, mergedPanel.id),
-      ));
-      const connection = makePanelConnection(relationshipId, mergedPanel.id);
+    const relationshipChanges: Array<{ previous?: string; next?: string }> = [];
+    if (sourcePanelIdProvided) {
+      relationshipChanges.push({
+        previous: previousPanel?.sourcePanelId,
+        next: mergedPanel.sourcePanelId,
+      });
+    }
+    if (linkedToProvided && mergedPanel.type === 'detail') {
+      relationshipChanges.push({
+        previous: previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined,
+        next: mergedPanel.linkedTo,
+      });
+    }
+
+    let nextConnections = this.state.connections.filter((current) => relationshipChanges.every(
+      ({ previous }) => previous === undefined
+        || connectionEndpointKey(current.sourceId, current.targetId)
+          !== connectionEndpointKey(previous, mergedPanel.id),
+    ));
+    for (const { next } of relationshipChanges) {
+      if (next === undefined) continue;
+      const connection = makePanelConnection(next, mergedPanel.id);
       if (!nextConnections.some((current) => connectionEndpointKey(current.sourceId, current.targetId) === connectionEndpointKey(connection.sourceId, connection.targetId))) {
         nextConnections.push(connection);
       }

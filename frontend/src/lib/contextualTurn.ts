@@ -36,10 +36,8 @@ export function getContextualTurnMessages(
   return { userMessageId: userMessage.id, assistantMessage };
 }
 
-export function contextualFailureMessage(reason: 'timeout' | 'cancel' | 'error' | 'empty'): string {
+export function contextualFailureMessage(reason: 'cancel' | 'error' | 'empty'): string {
   switch (reason) {
-    case 'timeout':
-      return 'This request took too long. Try again.';
     case 'cancel':
       return 'Request stopped.';
     case 'empty':

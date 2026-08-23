@@ -113,11 +113,6 @@ import type {
   WorkspaceState,
 } from './types';
 
-// This is a recovery boundary for a scoped popover turn, not an output cap.
-// A response that outlives it is stopped and reported so the popover cannot
-// remain in a permanent Working state after a stalled socket/provider.
-const CONTEXTUAL_TURN_TIMEOUT_MS = 90_000;
-
 function WorkspaceShell({
   workspace,
   onWorkspaceRefresh,
@@ -217,7 +212,6 @@ function WorkspaceShell({
   const contextualPendingRef = useRef<ContextualTurn & {
     turnId: string;
     scopeKey: string;
-    timeoutId: number | null;
   } | null>(null);
   const panGestureRef = useRef<{
     pointerId: number;
@@ -296,18 +290,16 @@ function WorkspaceShell({
   const clearContextualPending = useCallback((turnId?: string): ContextualTurn & {
     turnId: string;
     scopeKey: string;
-    timeoutId: number | null;
   } | null => {
     const pending = contextualPendingRef.current;
     if (!pending || (turnId !== undefined && pending.turnId !== turnId)) return null;
-    if (pending.timeoutId !== null) window.clearTimeout(pending.timeoutId);
     contextualPendingRef.current = null;
     return pending;
   }, []);
 
   const finishContextualTurn = useCallback((
-    pending: ContextualTurn & { turnId: string; scopeKey: string; timeoutId: number | null },
-    reason: 'timeout' | 'cancel' | 'error' | 'empty',
+    pending: ContextualTurn & { turnId: string; scopeKey: string },
+    reason: 'cancel' | 'error' | 'empty',
   ) => {
     if (contextualPendingRef.current?.turnId !== pending.turnId) return;
     const content = contextualFailureMessage(reason);
@@ -335,7 +327,7 @@ function WorkspaceShell({
 
   const closeContextualChat = useCallback(() => {
     // Closing the scoped popover is an explicit local cancellation. Stop the
-    // attached stream and clear its watchdog so a later turn cannot inherit it.
+    // attached stream so a later turn cannot inherit it.
     const pending = contextualPendingRef.current;
     if (pending) {
       void chatStopRef.current();
@@ -2007,14 +1999,12 @@ function WorkspaceShell({
     const pending: ContextualTurn & {
       turnId: string;
       scopeKey: string;
-      timeoutId: number | null;
     } = {
       turnId,
       scopeKey: contextualChatTarget.key,
       previousAssistantId,
       previousMessageIds: new Set(chat.messages.map((message) => message.id)),
       userMessageId: null,
-      timeoutId: null,
     };
 
     setContextualThreads((current) => ({
@@ -2041,11 +2031,6 @@ function WorkspaceShell({
       body: { scopePanelIds: contextualChatTarget.panelIds },
     });
     void request.catch(() => finishContextualTurn(pending, 'error'));
-    pending.timeoutId = window.setTimeout(() => {
-      if (contextualPendingRef.current?.turnId !== turnId) return;
-      void chatStopRef.current();
-      finishContextualTurn(pending, 'timeout');
-    }, CONTEXTUAL_TURN_TIMEOUT_MS);
     setContextualComposer('');
   }, [chat, contextualChatTarget, contextualComposer, finishContextualTurn, sendChatMessage]);
 
@@ -2443,6 +2428,7 @@ function WorkspaceShell({
     if (target.closest('.contextual-chat-popover')) return;
     if (target.closest('.group-boundary')) return;
     if (target.closest('button')) return;
+    if (target.closest('[data-connection-id], [role="button"]')) return;
     if (target.closest('.fixed')) return;
     if (target.closest('input')) return;
     if (target.closest('textarea')) return;

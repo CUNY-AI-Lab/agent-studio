@@ -6,7 +6,9 @@ export interface NormalizedPanelRelations {
 }
 
 export function connectionEndpointKey(sourceId: string, targetId: string): string {
-  return [sourceId, targetId].sort().join('\u001f');
+  // JSON preserves the tuple boundary even when a schema-valid panel id
+  // contains the old delimiter character.
+  return JSON.stringify([sourceId, targetId].sort());
 }
 
 function endpointHash(endpointKey: string): string {
@@ -43,6 +45,22 @@ export function findPanelConnection(
   return connections.find(
     (connection) => connectionEndpointKey(connection.sourceId, connection.targetId) === key,
   );
+}
+
+function uniqueConnectionId(
+  connection: PanelConnection,
+  usedIds: Set<string>,
+): string {
+  if (!usedIds.has(connection.id)) return connection.id;
+
+  // Keep the normal readable id whenever it is available. A persisted manual
+  // edge can already own that id for a different endpoint, though, so use a
+  // deterministic endpoint id and suffix only if that is also occupied.
+  const base = `connection-${endpointHash(connectionEndpointKey(connection.sourceId, connection.targetId))}`;
+  if (!usedIds.has(base)) return base;
+  let suffix = 1;
+  while (usedIds.has(`${base}-${suffix}`)) suffix += 1;
+  return `${base}-${suffix}`;
 }
 
 function validRelationSource(
@@ -98,20 +116,27 @@ export function normalizePanelRelations(
 ): NormalizedPanelRelations {
   const panelIds = new Set(panels.map((panel) => panel.id));
   const seenEndpoints = new Set<string>();
-  const normalizedConnections = connections.filter((connection) => {
-    if (!panelIds.has(connection.sourceId) || !panelIds.has(connection.targetId)) return false;
-    if (connection.sourceId === connection.targetId) return false;
+  const usedConnectionIds = new Set<string>();
+  const normalizedConnections: PanelConnection[] = [];
+  for (const connection of connections) {
+    if (!panelIds.has(connection.sourceId) || !panelIds.has(connection.targetId)) continue;
+    if (connection.sourceId === connection.targetId) continue;
     const endpoint = connectionEndpointKey(connection.sourceId, connection.targetId);
-    if (seenEndpoints.has(endpoint)) return false;
+    if (seenEndpoints.has(endpoint)) continue;
     seenEndpoints.add(endpoint);
-    return true;
-  });
+    const id = uniqueConnectionId(connection, usedConnectionIds);
+    normalizedConnections.push(id === connection.id ? connection : { ...connection, id });
+    usedConnectionIds.add(id);
+  }
 
   const ensureConnection = (panelId: string, sourceId: string): void => {
     const endpoint = connectionEndpointKey(panelId, sourceId);
     if (seenEndpoints.has(endpoint)) return;
     seenEndpoints.add(endpoint);
-    normalizedConnections.push(makePanelConnection(panelId, sourceId));
+    const connection = makePanelConnection(panelId, sourceId);
+    const id = uniqueConnectionId(connection, usedConnectionIds);
+    normalizedConnections.push(id === connection.id ? connection : { ...connection, id });
+    usedConnectionIds.add(id);
   };
 
   const normalizedPanels = panels.map((panel) => {

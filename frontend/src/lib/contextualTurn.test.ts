@@ -58,7 +58,6 @@ describe('contextual turn correlation', () => {
 
 describe('contextual failure copy', () => {
   it('distinguishes timeout, cancellation, empty, and stream errors', () => {
-    expect(contextualFailureMessage('timeout')).toContain('too long');
     expect(contextualFailureMessage('cancel')).toBe('Request stopped.');
     expect(contextualFailureMessage('empty')).toContain('No response');
     expect(contextualFailureMessage('error')).toContain("didn't go through");

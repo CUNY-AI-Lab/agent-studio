@@ -335,6 +335,51 @@ test('reassociating a panel replaces its prior visible edge and provenance', asy
   ]);
 });
 
+test('updating a detail relation field does not coalesce the independent field', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const fake = {
+    state: {
+      sessionId: 'session',
+      workspace: null,
+      panels: [
+        panel('table'),
+        panel('cards'),
+        panel('source-c'),
+        { id: 'detail', type: 'detail', title: 'detail', sourcePanelId: 'table', linkedTo: 'cards' },
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [
+        { id: 'connection-detail-table', sourceId: 'detail', targetId: 'table' },
+        { id: 'connection-detail-cards', sourceId: 'detail', targetId: 'cards' },
+      ],
+    },
+    assertNotFrozen() {},
+    assertAuthorizedRpc() {},
+    setState(next) {
+      this.state = next;
+    },
+  };
+  fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+    WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+
+  await WorkspaceAgent.prototype.addPanel.call(fake, {
+    id: 'detail',
+    type: 'detail',
+    title: 'Detail updated',
+    linkedTo: 'source-c',
+  });
+
+  const detail = fake.state.panels.find((candidate) => candidate.id === 'detail');
+  assert.equal(detail.sourcePanelId, 'table');
+  assert.equal(detail.linkedTo, 'source-c');
+  assert.deepEqual(
+    fake.state.connections.map(({ sourceId, targetId }) => [sourceId, targetId]),
+    [['detail', 'table'], ['detail', 'source-c']],
+  );
+});
+
 test('disconnect and source removal clear detail linkage metadata', async () => {
   const detail = {
     id: 'detail',
@@ -506,6 +551,103 @@ test('normalization preserves independent sourcePanelId and linkedTo fields', ()
     ['source-a', 'split-detail'],
     ['source-b', 'split-detail'],
     ['dangling-detail', 'source-b'],
+  ]);
+});
+
+test('normalization keeps tuple-distinct endpoints and connection ids unique', () => {
+  const delimiter = '\u001f';
+  const panels = [
+    panel('a'),
+    panel(`b${delimiter}c`),
+    panel(`a${delimiter}b`),
+    panel('c'),
+    { ...panel('detail'), sourcePanelId: 'source' },
+    panel('source'),
+    panel('other'),
+    panel('unrelated'),
+  ];
+  const normalized = normalizePanelRelations(panels, [
+    { id: 'tuple-one', sourceId: 'a', targetId: `b${delimiter}c` },
+    { id: 'tuple-two', sourceId: `a${delimiter}b`, targetId: 'c' },
+    { id: 'connection-detail-source', sourceId: 'other', targetId: 'unrelated' },
+  ]);
+
+  assert.equal(normalized.connections.length, 4);
+  assert.equal(new Set(normalized.connections.map(({ id }) => id)).size, 4);
+  assert.deepEqual(
+    normalized.connections.map(({ sourceId, targetId }) => [sourceId, targetId]),
+    [
+      ['a', `b${delimiter}c`],
+      [`a${delimiter}b`, 'c'],
+      ['other', 'unrelated'],
+      ['detail', 'source'],
+    ],
+  );
+  assert.notEqual(
+    normalized.connections.find(({ sourceId, targetId }) => sourceId === 'detail' && targetId === 'source').id,
+    'connection-detail-source',
+  );
+  assert.deepEqual(normalizePanelRelations(normalized.panels, normalized.connections), normalized);
+});
+
+test('a persisted canonical-id collision survives import, boot, patch, and removal', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const imported = {
+    state: {
+      sessionId: 'old',
+      workspace: null,
+      panels: [
+        panel('source'),
+        { id: 'detail', type: 'detail', title: 'detail', linkedTo: 'source' },
+        panel('other'),
+        panel('unrelated'),
+      ],
+      viewport: { x: 0, y: 0, zoom: 1 },
+      groups: [],
+      connections: [
+        { id: 'connection-detail-source', sourceId: 'other', targetId: 'unrelated' },
+      ],
+    },
+    setState(next) {
+      this.state = next;
+    },
+  };
+  await WorkspaceAgent.prototype.replaceWorkspaceState.call(
+    imported,
+    imported.state,
+    { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' },
+    'session',
+  );
+  const importedIds = imported.state.connections.map(({ id }) => id);
+  assert.equal(new Set(importedIds).size, importedIds.length);
+  const synthesizedId = imported.state.connections.find(
+    ({ sourceId, targetId }) => sourceId === 'detail' && targetId === 'source',
+  ).id;
+  assert.notEqual(synthesizedId, 'connection-detail-source');
+
+  const booted = {
+    state: imported.state,
+    cailIdentityJwt: 'already-verified-for-test',
+    ctx: { storage: { get: async () => undefined } },
+    setState(next) {
+      this.state = next;
+    },
+  };
+  await WorkspaceAgent.prototype.onStart.call(booted);
+  assert.deepEqual(booted.state.connections, imported.state.connections);
+
+  booted.assertNotFrozen = () => {};
+  booted.assertAuthorizedRpc = () => {};
+  await WorkspaceAgent.prototype.applyLayoutPatch.call(booted, { removeConnections: [synthesizedId] });
+  const detail = booted.state.panels.find((candidate) => candidate.id === 'detail');
+  assert.equal(detail.linkedTo, undefined);
+  assert.deepEqual(booted.state.connections, [
+    { id: 'connection-detail-source', sourceId: 'other', targetId: 'unrelated' },
+  ]);
+  await WorkspaceAgent.prototype.applyLayoutPatch.call(booted, {});
+  assert.deepEqual(booted.state.connections, [
+    { id: 'connection-detail-source', sourceId: 'other', targetId: 'unrelated' },
   ]);
 });
 

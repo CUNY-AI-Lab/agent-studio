@@ -125,4 +125,35 @@ describe('panel connections', () => {
       { id: 'valid', sourceId: 'source', targetId: 'target' },
     ]);
   });
+
+  it('keeps tuple-distinct endpoints and connection ids unique', () => {
+    const delimiter = '\u001f';
+    const panels = [
+      { id: 'a', type: 'markdown' as const, content: '' },
+      { id: `b${delimiter}c`, type: 'markdown' as const, content: '' },
+      { id: `a${delimiter}b`, type: 'markdown' as const, content: '' },
+      { id: 'c', type: 'markdown' as const, content: '' },
+      { id: 'detail', type: 'markdown' as const, content: '', sourcePanelId: 'source' },
+      { id: 'source', type: 'markdown' as const, content: '' },
+      { id: 'other', type: 'markdown' as const, content: '' },
+      { id: 'unrelated', type: 'markdown' as const, content: '' },
+    ];
+    const normalized = normalizePanelRelations(panels, [
+      { id: 'tuple-one', sourceId: 'a', targetId: `b${delimiter}c` },
+      { id: 'tuple-two', sourceId: `a${delimiter}b`, targetId: 'c' },
+      { id: 'connection-detail-source', sourceId: 'other', targetId: 'unrelated' },
+    ]);
+
+    expect(normalized.connections).toHaveLength(4);
+    expect(new Set(normalized.connections.map(({ id }) => id)).size).toBe(4);
+    expect(normalized.connections.map(({ sourceId, targetId }) => [sourceId, targetId])).toEqual([
+      ['a', `b${delimiter}c`],
+      [`a${delimiter}b`, 'c'],
+      ['other', 'unrelated'],
+      ['detail', 'source'],
+    ]);
+    expect(normalized.connections.find(({ sourceId, targetId }) => sourceId === 'detail' && targetId === 'source')?.id)
+      .not.toBe('connection-detail-source');
+    expect(normalizePanelRelations(normalized.panels, normalized.connections)).toEqual(normalized);
+  });
 });

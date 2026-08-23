@@ -16,6 +16,8 @@ import { register } from 'node:module';
 import { z } from 'zod';
 import {
   clearPanelRelationFields,
+  connectionEndpointKey,
+  makePanelConnection,
   normalizePanelRelations,
 } from '../../src/lib/panel-connections.ts';
 
@@ -339,9 +341,43 @@ export class FakeWorkspaceAgent {
   async addPanel(panel) {
     const existing = this.state.panels.findIndex((candidate) => candidate.id === panel.id);
     const panels = [...this.state.panels];
-    if (existing >= 0) panels[existing] = panel;
-    else panels.push(panel);
-    this.state = { ...this.state, panels };
+    const previousPanel = existing >= 0 ? panels[existing] : undefined;
+    const sourcePanelIdProvided = Object.hasOwn(panel, 'sourcePanelId');
+    const linkedToProvided = panel.type === 'detail' && Object.hasOwn(panel, 'linkedTo');
+    let mergedPanel = existing >= 0 ? { ...panels[existing], ...panel } : panel;
+    if (existing >= 0 && panel.layout) {
+      mergedPanel = { ...mergedPanel, layout: { ...panels[existing].layout, ...panel.layout } };
+    }
+    if (sourcePanelIdProvided) {
+      mergedPanel = { ...mergedPanel, sourcePanelId: panel.sourcePanelId };
+    }
+    if (existing >= 0) panels[existing] = mergedPanel;
+    else panels.push(mergedPanel);
+
+    const relationshipChanges = [];
+    if (sourcePanelIdProvided) {
+      relationshipChanges.push({ previous: previousPanel?.sourcePanelId, next: mergedPanel.sourcePanelId });
+    }
+    if (linkedToProvided) {
+      relationshipChanges.push({
+        previous: previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined,
+        next: mergedPanel.linkedTo,
+      });
+    }
+    let connections = this.state.connections.filter((connection) => relationshipChanges.every(({ previous }) =>
+      previous === undefined
+      || connectionEndpointKey(connection.sourceId, connection.targetId)
+        !== connectionEndpointKey(previous, mergedPanel.id),
+    ));
+    for (const { next } of relationshipChanges) {
+      if (next === undefined) continue;
+      const connection = makePanelConnection(next, mergedPanel.id);
+      if (!connections.some((current) => connectionEndpointKey(current.sourceId, current.targetId) === connectionEndpointKey(connection.sourceId, connection.targetId))) {
+        connections.push(connection);
+      }
+    }
+    const normalizedRelations = normalizePanelRelations(panels, connections);
+    this.state = { ...this.state, ...normalizedRelations };
     return this.state;
   }
 
