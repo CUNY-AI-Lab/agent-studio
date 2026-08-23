@@ -752,9 +752,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
   private async clearRuntimeFilesUnchecked(): Promise<void> {
     const runtime = this.getRuntimeWorkspace();
-    const paths = (await runtime._getAllPaths()).filter((path) => path !== '/' && path !== '');
-    for (const path of [...paths].sort((left, right) => right.length - left.length)) {
-      await runtime.rm(path, { recursive: true, force: true });
+    const entries = (await runtime.glob('/**')).filter((entry) => entry.path !== '/');
+    for (const entry of [...entries].sort((left, right) => right.path.length - left.path.length)) {
+      await runtime.rm(entry.path, { recursive: true, force: true });
     }
   }
 
@@ -1372,25 +1372,21 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     etag?: string;
   }>> {
     const runtime = this.getRuntimeWorkspace();
-    const paths = await runtime._getAllPaths();
-    const entries = await Promise.all(paths.map(async (path) => {
-      const stat = await runtime.lstat(path);
-      if (!stat) return null;
-      if (stat.type !== 'file' && stat.type !== 'directory') return null;
-      const relativePath = fromRuntimePath(stat.path);
-      if (!relativePath) return null;
+    const entries = (await runtime.glob('/**')).flatMap((entry) => {
+      if (entry.type !== 'file' && entry.type !== 'directory') return [];
+      const relativePath = fromRuntimePath(entry.path);
+      if (!relativePath) return [];
       return {
-        name: relativePath.split('/').pop() || relativePath,
+        name: entry.name,
         path: relativePath,
-        isDirectory: stat.type === 'directory',
-        size: stat.type === 'file' ? stat.size : undefined,
-        uploadedAt: new Date(stat.updatedAt).toISOString(),
-        modifiedAt: new Date(stat.updatedAt).toISOString(),
+        isDirectory: entry.type === 'directory',
+        size: entry.type === 'file' ? entry.size : undefined,
+        uploadedAt: new Date(entry.updatedAt).toISOString(),
+        modifiedAt: new Date(entry.updatedAt).toISOString(),
       };
-    }));
+    });
 
     return entries
-      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
       .sort((left, right) => {
         if (left.isDirectory !== right.isDirectory) return left.isDirectory ? -1 : 1;
         return left.path.localeCompare(right.path);
