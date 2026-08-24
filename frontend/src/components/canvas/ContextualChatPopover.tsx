@@ -64,8 +64,8 @@ export function ContextualChatPopover({
       const screenX = screenRight + gap;
       const screenY = clamp(screenTop, gap, maxY);
       return {
-        x: screenX,
-        y: screenY,
+        x: (screenX - viewport.x) / viewport.zoom,
+        y: (screenY - viewport.y) / viewport.zoom,
         placement: 'right',
       };
     }
@@ -74,8 +74,8 @@ export function ContextualChatPopover({
       const screenX = screenLeft - gap - popoverWidth;
       const screenY = clamp(screenTop, gap, maxY);
       return {
-        x: screenX,
-        y: screenY,
+        x: (screenX - viewport.x) / viewport.zoom,
+        y: (screenY - viewport.y) / viewport.zoom,
         placement: 'left',
       };
     }
@@ -83,8 +83,8 @@ export function ContextualChatPopover({
     const screenX = clamp(screenLeft, gap, maxX);
     const screenY = clamp(screenBottom + gap, gap, maxY);
     return {
-      x: screenX,
-      y: screenY,
+      x: (screenX - viewport.x) / viewport.zoom,
+      y: (screenY - viewport.y) / viewport.zoom,
       placement: 'bottom',
     };
   }, [anchor, viewport, viewportSize]);
@@ -137,7 +137,7 @@ export function ContextualChatPopover({
         top: position.y,
         width: popoverWidth,
         maxHeight: popoverHeight,
-        transform: 'none',
+        transform: `scale(${1 / viewport.zoom})`,
         transformOrigin: position.placement === 'right' ? 'left top' : position.placement === 'left' ? 'right top' : 'top left',
       }}
       onClick={(event) => event.stopPropagation()}

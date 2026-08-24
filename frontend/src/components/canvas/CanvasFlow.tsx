@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   BaseEdge,
-  Background,
-  BackgroundVariant,
   Handle,
   NodeResizer,
   Position,
@@ -549,15 +547,7 @@ interface CanvasFlowProps {
   viewportRef?: React.RefObject<HTMLDivElement | null>;
 }
 
-function CanvasZoomControls({
-  viewport,
-  hasContent,
-  onViewportChange,
-}: {
-  viewport: WorkspaceViewport;
-  hasContent: boolean;
-  onViewportChange: (viewport: WorkspaceViewport) => void;
-}) {
+function CanvasZoomControls({ viewport, onViewportChange }: { viewport: WorkspaceViewport; onViewportChange: (viewport: WorkspaceViewport) => void }) {
   const reactFlow = useReactFlow<CanvasNode, AssociationFlowEdge>();
   const showReset = Math.abs(viewport.zoom - 1) > 0.01 || Math.abs(viewport.x) > 1 || Math.abs(viewport.y) > 1;
 
@@ -570,18 +560,10 @@ function CanvasZoomControls({
   }, [onViewportChange, reactFlow]);
 
   const handleReset = useCallback(() => {
-    if (!hasContent) {
-      void reactFlow.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 160 }).then(() => {
-        onViewportChange({ x: 0, y: 0, zoom: 1 });
-      });
-      return;
-    }
-
-    void reactFlow.fitView({ duration: 160, padding: 0.2 }).then(() => {
-      const nextViewport = reactFlow.getViewport();
-      onViewportChange({ x: nextViewport.x, y: nextViewport.y, zoom: nextViewport.zoom });
+    void reactFlow.setViewport({ x: 0, y: 0, zoom: 1 }, { duration: 160 }).then(() => {
+      onViewportChange({ x: 0, y: 0, zoom: 1 });
     });
-  }, [hasContent, onViewportChange, reactFlow]);
+  }, [onViewportChange, reactFlow]);
 
   return (
     <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 rounded-lg border border-border bg-card/90 p-1 shadow-lg backdrop-blur" role="group" aria-label="Canvas zoom">
@@ -1138,19 +1120,7 @@ function CanvasFlowInner({
         proOptions={REACT_FLOW_PRO_OPTIONS}
         className="agent-studio-react-flow"
       >
-        <Background
-          id="canvas-dots"
-          variant={BackgroundVariant.Dots}
-          gap={24}
-          size={1}
-          color="var(--canvas-grid-color)"
-          bgColor="var(--background)"
-        />
-        <CanvasZoomControls
-          viewport={viewport}
-          hasContent={panels.length > 0}
-          onViewportChange={handleViewportChange}
-        />
+        <CanvasZoomControls viewport={viewport} onViewportChange={handleViewportChange} />
         {emptyState}
         {children}
       </ReactFlow>

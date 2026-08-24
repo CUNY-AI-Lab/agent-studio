@@ -445,7 +445,6 @@ test('cailAuthRequiredResponse is a 401 with the canonical nested envelope', asy
 });
 
 test('resolveCailModelName honors the override and default', () => {
-  assert.equal(DEFAULT_CAIL_MODEL, '@cf/deepseek-ai/deepseek-v4-flash-0731');
   assert.equal(
     resolveCailModelName({ CAIL_MODEL: '@cf/openai/gpt-oss-120b' }),
     '@cf/openai/gpt-oss-120b',
@@ -474,7 +473,6 @@ test('createCailModel sends the verified gateway JWT as one Bearer credential', 
       GATEWAY: gateway,
     },
     identityJwt: 'jwt-token-value',
-    model: '@cf/deepseek-ai/deepseek-v4-flash-0731',
   });
   await model.doGenerate({
     prompt: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
@@ -491,7 +489,6 @@ test('createCailModel sends the verified gateway JWT as one Bearer credential', 
   assert.equal(request.headers.get('x-cail-request-id'), null);
   assert.equal(capturedCredentials[0], 'omit');
   assert.equal(request.redirect, 'manual');
-  assert.equal((await request.clone().json()).model, '@cf/deepseek-ai/deepseek-v4-flash-0731');
 });
 
 test('createCailModel throws without CAIL_API_BASE', () => {

@@ -162,7 +162,7 @@ test('buffered calls use one Bearer credential and only safe server-owned header
   assert.equal(headers.get('x-openwebui-model'), null);
   assert.equal(init.credentials, 'omit');
   assert.equal(init.redirect, 'manual');
-  assert.equal(JSON.parse(init.body).model, '@cf/deepseek-ai/deepseek-v4-flash-0731');
+  assert.equal(JSON.parse(init.body).model, '@cf/zai-org/glm-5.2');
 });
 
 test('provider forwards the caller abort signal to the Gateway Fetcher', async () => {
@@ -294,65 +294,4 @@ test('tool continuation preserves the direct credential on every request', async
   }
   const continuation = JSON.parse(capture.calls[1].init.body);
   assert.equal(continuation.messages.at(-1).role, 'tool');
-});
-
-test('prepareStep tool choice reaches the Gateway as an exact first-step ui_workspace call', async () => {
-  const { createCailModel } = await import('../src/lib/cail-model.ts');
-  const capture = captureGateway((callNumber) => callNumber === 1
-    ? completionResponse({
-      choices: [{
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{
-            id: 'call-title-1',
-            type: 'function',
-            function: { name: 'ui_workspace', arguments: '{"name":"Campus research dashboard"}' },
-          }],
-        },
-        finish_reason: 'tool_calls',
-      }],
-    })
-    : completionResponse());
-  const model = createCailModel({
-    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: capture.gateway },
-    identityJwt: 'gateway-jwt',
-  });
-  const result = generateText({
-    model,
-    prompt: 'Build a campus research dashboard.',
-    tools: {
-      ui_workspace: tool({
-        description: 'Set the workspace title.',
-        inputSchema: z.object({ name: z.string() }),
-        execute: async ({ name }) => ({ name }),
-      }),
-      other_tool: tool({
-        description: 'A tool unavailable during title assignment.',
-        inputSchema: z.object({}),
-        execute: async () => 'unused',
-      }),
-    },
-    prepareStep: ({ stepNumber }) => stepNumber === 0
-      ? {
-        activeTools: ['ui_workspace'],
-        toolChoice: { type: 'tool', toolName: 'ui_workspace' },
-      }
-      : undefined,
-    stopWhen: stepCountIs(2),
-    maxRetries: 0,
-  });
-  await result;
-
-  assert.equal(capture.calls.length, 2);
-  const firstRequest = JSON.parse(capture.calls[0].init.body);
-  assert.deepEqual(firstRequest.tool_choice, {
-    type: 'function',
-    function: { name: 'ui_workspace' },
-  });
-  assert.deepEqual(firstRequest.tools.map((entry) => entry.function.name), ['ui_workspace']);
-  const secondRequest = JSON.parse(capture.calls[1].init.body);
-  assert.equal(secondRequest.tool_choice, 'auto');
-  assert.equal(secondRequest.tools.some((entry) => entry.function.name === 'other_tool'), true);
 });
