@@ -35,6 +35,8 @@ test('CI protects action and package credentials in one validation job', async (
     1,
     'CI must run the authoritative repository check, including its strict Worker dry bundle',
   );
+  assert.match(validationJob, /- name: Install Chromium for browser integration\n\s+run: bunx playwright install --with-deps chromium/);
+  assert.match(validationJob, /- name: Local Worker browser acceptance \(integration, not E2E\)\n\s+run: bun run test:browser -- --no-build/);
 
   for (const action of [
     'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd',

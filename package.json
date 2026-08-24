@@ -18,6 +18,7 @@
     "@oxlint/plugins": "1.79.0",
     "agents": "0.20.1",
     "oxlint": "1.79.0",
+    "playwright": "1.62.1",
     "zod": "4.4.3"
   },
   "scripts": {
@@ -32,7 +33,8 @@
     "test:backend": "bun run --cwd cloudflare test",
     "test:frontend": "bun run --cwd frontend test",
     "test:tools": "node --test scripts/**/*.test.mjs",
-    "test:browser": "python3 scripts/agent-studio-browser-acceptance.py",
+    "test:browser": "bun run scripts/agent-studio-browser-acceptance.ts",
+    "test:browser:install": "playwright install chromium",
     "preview": "bun run --cwd frontend preview",
     "smoke": "bun ./scripts/smoke-worker.mjs",
     "smoke:staging": "bun ./scripts/smoke-staging.mjs --with-chat=true",

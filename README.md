@@ -133,9 +133,12 @@ workspace deletion. It does not call a model, so it does not claim model
 streaming, provider routing, or model-generated artifact quality.
 
 ```bash
+bun run test:browser:install
 bun run test:browser
 ```
 
+The install command downloads the pinned Playwright Chromium revision once per
+developer machine; CI installs the same browser with its Linux dependencies.
 Use `AGENT_STUDIO_BROWSER_URL` with an already-running local Worker only when
 the frontend has already been built; the default command owns the local Worker
 process and cleans it up on exit. The browser path is an integration check,
