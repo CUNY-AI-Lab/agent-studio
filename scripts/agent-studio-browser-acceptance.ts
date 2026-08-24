@@ -513,7 +513,8 @@ async function main(argv: string[]): Promise<number> {
     await runAcceptance(baseUrl, options.headed);
     return 0;
   } catch (error) {
-    console.error(`[browser] acceptance failed: ${sanitizeFailure(error)}`);
+    const message = error instanceof Error ? sanitizeFailure(error) : 'unknown browser acceptance failure';
+    console.error(`[browser] acceptance failed: ${message}`);
     return 1;
   } finally {
     await stopWorker(worker);
