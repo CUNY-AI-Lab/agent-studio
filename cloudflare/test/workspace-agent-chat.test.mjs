@@ -763,6 +763,72 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   assert.equal(wireCalls, 1, 'the AI SDK must not retry the chat request');
 });
 
+test('a placeholder workspace remains title-eligible after an empty prior response', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  let buildWorkspace;
+  const noopTool = tool({
+    description: 'noop',
+    inputSchema: z.object({}),
+    execute: async () => 'ok',
+  });
+  const gateway = {
+    async fetch(input) {
+      if (String(input) === 'https://cail.test/v1/models') {
+        return Response.json({
+          object: 'list',
+          data: [{ id: DEFAULT_CAIL_MODEL, capabilities: ['text-generation', 'function-calling'] }],
+        });
+      }
+      return Response.json({
+        id: 'chatcmpl-title-survival',
+        choices: [{
+          index: 0,
+          message: { role: 'assistant', content: 'ok' },
+          finish_reason: 'stop',
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    },
+  };
+  const workspace = {
+    id: 'placeholder-workspace',
+    name: 'New Workspace',
+    description: '',
+    createdAt: '',
+    updatedAt: '',
+  };
+  const agent = {
+    assertNotFrozen() {},
+    requireWorkspace() { return workspace; },
+    requireSessionId() { return 'session-1'; },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() { return { status: 'valid' }; },
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
+    state: { panels: [] },
+    messages: [
+      { id: 'prior-user', role: 'user', parts: [{ type: 'text', text: 'Build a dashboard' }] },
+      { id: 'prior-empty-response', role: 'assistant', parts: [{ type: 'text', text: '' }] },
+      { id: 'follow-up', role: 'user', parts: [{ type: 'text', text: 'Add sources' }] },
+    ],
+    buildHostTools(workspaceArg) {
+      buildWorkspace = workspaceArg;
+      return {};
+    },
+    createCodeModeTool() { return noopTool; },
+    buildModelTools() { return {}; },
+  };
+
+  const response = await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, {
+    requestId: 'title-survival',
+  });
+  await response.text();
+
+  assert.equal(buildWorkspace.name, 'New Workspace');
+});
+
 test('chat refuses a named non-function-capable model before inference', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {

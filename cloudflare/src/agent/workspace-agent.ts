@@ -93,7 +93,6 @@ import {
 } from '../lib/quota-error';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
 import {
-  isFirstSubstantiveTurn,
   isPlaceholderWorkspaceName,
 } from '../lib/workspace-title';
 
@@ -104,11 +103,6 @@ const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // tool plan cannot spend indefinitely. This is a loop safety boundary, not an
 // output/token cap.
 const MODEL_TOOL_LOOP_STEPS = 12;
-
-interface WorkspaceToolOptions {
-  allowAutomaticWorkspaceRename?: boolean;
-  requireInitialWorkspaceTitle?: boolean;
-}
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -615,8 +609,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     try {
       const modelName = workspace.model ?? resolveCailModelName(this.env);
-      const forceWorkspaceTitle = isPlaceholderWorkspaceName(workspace.name ?? '')
-        && isFirstSubstantiveTurn(this.messages);
       if (this.functionCallingModelId !== modelName) {
         const { models } = await fetchCailModels({
           env: this.env,
@@ -646,10 +638,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           }),
         ].join('\n')
         : null;
-      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, {
-        allowAutomaticWorkspaceRename: forceWorkspaceTitle,
-        requireInitialWorkspaceTitle: forceWorkspaceTitle,
-      });
+      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels);
       const codemode = this.createCodeModeTool(hostTools);
       const modelTools = this.buildModelTools(hostTools);
       const model = createCailModel({
@@ -982,15 +971,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     workspace: WorkspaceRecord,
     sessionId: string,
     scopedPanels: WorkspacePanel[] = [],
-    options: WorkspaceToolOptions = {},
   ) {
     const turnMessageId = [...(this.messages ?? [])]
       .reverse()
       .find((message) => message.role === 'user')?.id;
     const generatedPanelOccurrences = new Map<string, number>();
-    let automaticWorkspaceRenameAvailable = options.allowAutomaticWorkspaceRename === true;
-    const requireInitialWorkspaceTitle = options.requireInitialWorkspaceTitle === true;
-    const workspaceToolInputSchema = requireInitialWorkspaceTitle
+    const workspaceTitleRequired = isPlaceholderWorkspaceName(workspace.name ?? '');
+    let automaticWorkspaceRenameAvailable = workspaceTitleRequired;
+    let automaticWorkspaceTitle: string | undefined;
+    const workspaceToolInputSchema = workspaceTitleRequired
       ? z.object({
         name: workspaceTitleSchema.refine(
           (name) => !isPlaceholderWorkspaceName(name),
@@ -1342,27 +1331,29 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       ui_workspace: tool({
         description: [
           'Set the workspace title and optional description.',
-          requireInitialWorkspaceTitle
-            ? 'On this first turn, provide a concise, readable, task-specific name; a placeholder is not valid.'
+          workspaceTitleRequired
+            ? 'Provide a concise, readable, task-specific name for this placeholder workspace; a placeholder is not valid.'
             : 'The name must be a concise, readable, task-specific title, not a placeholder, filename, or generic label.',
           'Later title changes belong in the workspace header.',
         ].join(' '),
         inputSchema: workspaceToolInputSchema,
         execute: async ({ name, description }) => {
           if (
-            requireInitialWorkspaceTitle
+            workspaceTitleRequired
             && (name === undefined || isPlaceholderWorkspaceName(name))
           ) {
-            throw new Error('The first workspace title must be a specific, non-placeholder name.');
+            throw new Error('Workspace title must be a specific, non-placeholder name.');
           }
           if (
             name !== undefined
             && name !== workspace.name
             && !automaticWorkspaceRenameAvailable
+            && name !== automaticWorkspaceTitle
           ) {
             throw new Error('Workspace title is owned by the user; rename it from the workspace header.');
           }
           if (name !== undefined && name !== workspace.name) {
+            automaticWorkspaceTitle ??= name;
             automaticWorkspaceRenameAvailable = false;
           }
           // CAS update (V2): `workspace` was captured at turn start, so a
