@@ -1,16 +1,19 @@
 ---
 name: threejs
-description: Create interactive 3D visualizations using Three.js. Render 3D scenes, models, animations in preview panels. Use for data visualization, scientific models, architectural views, product displays. Example queries: 'create a 3D bar chart', 'visualize this data in 3D', 'show a rotating cube'. No auth required.
+description: Create interactive Three.js visualizations as HTML workspace files surfaced as canvas tiles. Use for data visualization, scientific models, architectural views, and product displays.
 ---
 
 # Three.js 3D Visualization
 
 ## Overview
-Create interactive 3D visualizations using Three.js library. Renders in preview panels with full mouse controls (orbit, zoom, pan).
+Create interactive 3D visualizations using Three.js with full mouse controls
+(orbit, zoom, pan). Write each visualization as a self-contained HTML workspace
+file in codemode with `state.writeFile`, then call `ui_show_file` with its path
+and a concise display title.
 
 ## Basic Template
 
-All Three.js visualizations use `addPanel({ type: 'preview', content: html })` with ES modules:
+All Three.js visualizations use a self-contained HTML file with ES modules:
 
 ```javascript
 const html = `<!DOCTYPE html>
@@ -91,9 +94,11 @@ const html = `<!DOCTYPE html>
 </body>
 </html>`;
 
-await addPanel({ id: '3d-scene', type: 'preview', title: '3D Scene', content: html });
-return 'Created 3D scene';
+await state.writeFile('3d-scene.html', html);
+return { filePath: '3d-scene.html' };
 ```
+
+Then call `ui_show_file` with `filePath: "3d-scene.html"` and a task-specific title.
 
 ## 3D Bar Chart
 
@@ -222,8 +227,8 @@ const html = \`<!DOCTYPE html>
 </body>
 </html>\`;
 
-await addPanel({ id: '3d-chart', type: 'preview', title: '3D Bar Chart', content: html });
-return 'Created 3D bar chart';
+await state.writeFile('3d-bar-chart.html', html);
+return { filePath: '3d-bar-chart.html' };
 ```
 
 ## 3D Scatter Plot
@@ -310,7 +315,8 @@ const html = \`<!DOCTYPE html>
 </body>
 </html>\`;
 
-await addPanel({ id: '3d-scatter', type: 'preview', title: '3D Scatter Plot', content: html });
+await state.writeFile('3d-scatter-plot.html', html);
+return { filePath: '3d-scatter-plot.html' };
 ```
 
 ## Animated Globe
@@ -410,7 +416,8 @@ const html = \`<!DOCTYPE html>
 </body>
 </html>\`;
 
-await addPanel({ id: '3d-globe', type: 'preview', title: 'Globe', content: html });
+await state.writeFile('globe.html', html);
+return { filePath: 'globe.html' };
 ```
 
 ## 3D Text
@@ -497,7 +504,8 @@ const html = \`<!DOCTYPE html>
 </body>
 </html>\`;
 
-await addPanel({ id: '3d-text', type: 'preview', title: '3D Text', content: html });
+await state.writeFile('3d-text.html', html);
+return { filePath: '3d-text.html' };
 ```
 
 ## Common Geometries
@@ -560,5 +568,5 @@ new THREE.MeshStandardMaterial({
 - Use `MeshStandardMaterial` with lighting for realistic looks
 - Add `GridHelper` or `AxesHelper` for orientation
 - Use `raycaster` for hover/click interactions
-- Panel maximize (menu -> Maximize) works great for 3D views
+- Tile maximize (menu -> Maximize) works well for 3D views
 - Combine with data from APIs to create data visualizations

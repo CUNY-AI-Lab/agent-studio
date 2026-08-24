@@ -262,7 +262,8 @@ const citations = {
 };
 
 // Display or return
-await setMarkdown('citations', {
+await ui_markdown({
+  id: 'citations',
   title: 'Citations',
   content: `# ${work.title}
 
@@ -308,7 +309,11 @@ const bibtex = works
   .map(formatBibTeX)
   .join('\n\n');
 
-await download('references.bib', bibtex, 'text');
+await ui_download({
+  filename: 'references.bib',
+  format: 'txt',
+  data: bibtex
+});
 
 return `Created bibliography with ${works.filter(w => w).length} entries`;
 ```

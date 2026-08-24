@@ -1,12 +1,15 @@
 ---
 name: network-graph
-description: Create interactive network/graph visualizations using D3 force simulation. Show relationships, connections, hierarchies. Nodes and links with physics-based layout. Example queries: 'visualize citation network', 'show author collaborations', 'create a knowledge graph'. No auth required.
+description: Create interactive D3 network visualizations as HTML workspace files surfaced as canvas tiles. Shows relationships, connections, and hierarchies.
 ---
 
 # Network Graph Visualization
 
 ## Overview
-Create interactive force-directed network graphs using D3.js. Great for visualizing relationships, citations, collaborations, and hierarchical data.
+Create interactive force-directed network graphs using D3.js. Write each graph
+as a self-contained HTML workspace file in codemode with `state.writeFile`,
+then call `ui_show_file` with its path and a concise display title. This keeps
+the graph durable and avoids embedding the document in a UI tool argument.
 
 ## Basic Network Graph
 
@@ -141,8 +144,11 @@ const html = \`<!DOCTYPE html>
 </body>
 </html>\`;
 
-await addPanel({ id: 'network', type: 'preview', title: 'Network Graph', content: html });
+await state.writeFile('network-graph.html', html);
+return { filePath: 'network-graph.html' };
 ```
+
+Then call `ui_show_file` with `filePath: "network-graph.html"` and a task-specific title.
 
 ## Citation Network Example
 
@@ -260,7 +266,8 @@ const html = \`<!DOCTYPE html>
 </body>
 </html>\`;
 
-await addPanel({ id: 'tree', type: 'preview', title: 'Tree', content: html });
+await state.writeFile('tree.html', html);
+return { filePath: 'tree.html' };
 ```
 
 ## Customization Options

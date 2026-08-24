@@ -1,12 +1,16 @@
 ---
 name: leaflet
-description: Create interactive maps in preview panels. Use for: location visualization, markers, popups, shapes, GeoJSON. Example queries: 'show these locations on a map', 'plot coordinates', 'create a map of NYC'.
+description: Create interactive maps as self-contained HTML workspace files surfaced as canvas tiles. Use for location visualization, markers, popups, shapes, and GeoJSON.
 ---
 
 # Leaflet Maps
 
 ## Overview
-Create interactive maps in preview panels using Leaflet.js. Load from CDN - no build step needed.
+Create interactive maps as self-contained HTML workspace files using
+Leaflet.js. In codemode, write the file with `state.writeFile`; after codemode
+returns, surface it with `ui_show_file` and a concise display title. Load
+Leaflet from its CDN; keep the artifact's own CSS, JavaScript, and data in the
+file so it remains durable.
 
 ## Tile Providers
 
@@ -28,11 +32,7 @@ Choose based on aesthetic needs:
 ## Basic Map
 
 ```javascript
-await addPanel({
-  id: 'map',
-  type: 'preview',
-  title: 'Map',
-  content: `<!DOCTYPE html>
+const html = `<!DOCTYPE html>
 <html>
 <head>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -53,9 +53,13 @@ await addPanel({
     }).addTo(map);
   </script>
 </body>
-</html>`
-});
+</html>`;
+
+await state.writeFile('map.html', html);
+return { filePath: 'map.html' };
 ```
+
+Then call `ui_show_file` with `filePath: "map.html"` and a task-specific title.
 
 ## Adding Markers
 

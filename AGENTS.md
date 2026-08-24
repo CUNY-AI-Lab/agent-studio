@@ -22,6 +22,12 @@
 
 ## Workflow
 
+- Read `CANVAS-DESIGN.md` before changing canvas behavior or product language,
+  and `ACCESSIBILITY.md` before changing interactions. Runtime capability
+  guidance must follow the file-first tool contract in
+  `cloudflare/src/agent/instructions.ts`: durable artifacts use workspace files
+  plus `ui_show_file`, and direct text/data downloads use `ui_download`. Do not
+  restore legacy preview-panel or `addPanel` examples in skill instructions.
 - Keep the implementation direct. Do not add compatibility aliases, fallback
   reads, provenance or receipt theater, broad polling, or hidden retries.
   Tests and smoke commands must be labeled honestly; the local Worker process

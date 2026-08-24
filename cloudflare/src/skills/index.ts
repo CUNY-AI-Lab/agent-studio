@@ -108,22 +108,22 @@ export const SKILLS: Skill[] = [
   {
     name: 'frontend-design',
     description:
-      'Design guidelines for building polished UI components. Use when creating custom preview panels or HTML interfaces.',
+      'Design guidelines for building polished HTML workspace files and surfacing them as file-backed canvas tiles.',
   },
   {
     name: 'leaflet',
     description:
-      "Create interactive maps in preview panels. Use for: location visualization, markers, popups, shapes, GeoJSON. Example queries: 'show these locations on a map', 'plot coordinates', 'create a map of NYC'.",
+      "Create interactive maps as self-contained HTML workspace files surfaced as canvas tiles. Use for: location visualization, markers, popups, shapes, GeoJSON. Example queries: 'show these locations on a map', 'plot coordinates', 'create a map of NYC'.",
   },
   {
     name: 'threejs',
     description:
-      "Create interactive 3D visualizations using Three.js. Render 3D scenes, bar charts, scatter plots, globes in preview panels with mouse controls. Example queries: 'create a 3D bar chart', 'visualize this data in 3D', 'show a rotating globe'. No auth required.",
+      "Create interactive 3D visualizations using Three.js as HTML workspace files surfaced as canvas tiles. Render 3D scenes, bar charts, scatter plots, and globes with mouse controls. Example queries: 'create a 3D bar chart', 'visualize this data in 3D', 'show a rotating globe'. No auth required.",
   },
   {
     name: 'network-graph',
     description:
-      "Create interactive network/graph visualizations using D3 force simulation. Show relationships, connections, hierarchies. Nodes and links with physics-based layout. Example queries: 'visualize citation network', 'show author collaborations', 'create a knowledge graph'. No auth required.",
+      "Create interactive D3 network visualizations as HTML workspace files surfaced as canvas tiles. Show relationships, connections, and hierarchies with physics-based layout. Example queries: 'visualize citation network', 'show author collaborations', 'create a knowledge graph'. No auth required.",
   },
 ];
 

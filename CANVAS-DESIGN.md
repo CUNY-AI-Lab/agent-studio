@@ -9,6 +9,11 @@ This document describes the current product model for the canvas. Earlier drafts
 
 Agent Studio is an infinite canvas made of tiles.
 
+The canvas has no positive-coordinate origin boundary: users can pan and place
+tiles in any direction, including above and left of their starting view. New
+tiles are placed in the current viewport instead of being pulled back toward
+the initial origin.
+
 Three concepts matter:
 - `Files`: durable workspace artifacts
 - `Tiles`: canvas views over files or derived data
@@ -105,6 +110,7 @@ The main composer can inherit selected-tile scope. Contextual tile chat is still
 | Drag background | Select tiles with a rectangle; hold Space or use the middle button to pan |
 | Scroll / pinch | Zoom |
 | Click tile | Select tile |
+| Double-click tile | Ask a question about that tile |
 | Shift-click | Multi-select |
 | Select two tiles, then choose Associate | Persist an explicit association line |
 | Select an association line | Select both endpoint tiles for inspection or disconnect |
@@ -122,6 +128,10 @@ The main composer can inherit selected-tile scope. Contextual tile chat is still
 | Go to Tile | Focus the existing tile |
 | Download File | Download the durable artifact |
 | Show in Workspace Files | Reveal the file in the shelf/context |
+
+Contextual controls are screen-space UI. Zooming or resizing a tile changes
+their position, not their size. File downloads keep their temporary Blob URL
+alive long enough for the browser to begin the download before revoking it.
 
 ## Grouping and Connections
 
@@ -175,6 +185,19 @@ interface CanvasState {
 ```
 
 In current persisted app state, this still maps onto `uiState.panels`, `groups`, and `connections`.
+
+Persisted workspace state owns committed tile geometry, viewport, groups, and
+associations. React Flow owns transient drag measurements and selection. Its
+rendered nodes and edges are replaced only when those values changed; cloned
+but equal streamed updates do not reseed them. This ownership boundary prevents
+feedback loops and visible canvas vibration while preserving live agent
+changes.
+
+For a newly created workspace, the model replaces the placeholder with one
+concise task-specific title. Once that title is established, later title edits
+belong to the user in the workspace header. Files and surfaced tiles likewise
+receive concise content-specific display titles rather than filenames or
+generic labels.
 
 ## Design Principles
 
