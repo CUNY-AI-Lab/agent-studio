@@ -214,7 +214,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
       }
       const headers = new Headers(init?.headers);
       const requestBody = z.object({ model: z.string() }).parse(
-        await new Request(_input, init).json(),
+        await new Request(input, init).json(),
       );
       wire.push({
         method: init?.method,

@@ -670,6 +670,7 @@ test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
 test('gateway 429 quota_exceeded streams the verbatim quota message to the user', async (t) => {
   t.mock.method(console, 'error', () => {});
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
   const { tool } = await import('ai');
   const { z } = await import('zod');
 
@@ -681,7 +682,7 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
       if (String(input) === 'https://cail.test/v1/models') {
         return Response.json({
           object: 'list',
-          data: [{ id: '@cf/zai-org/glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
+          data: [{ id: DEFAULT_CAIL_MODEL, capabilities: ['text-generation', 'function-calling'] }],
         });
       }
       wireCalls += 1;
