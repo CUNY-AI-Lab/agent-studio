@@ -255,13 +255,14 @@ test('the maintained SSE parser keeps standard multiline, spacing, and DONE beha
     'data: {"type":"text-delta",\n' +
       'data: "id":"text-1","delta":"line"}\n\n' +
       'data:  {"type":"finish","finishReason":"stop"}\n\n' +
-      'data:[DONE]\n\n',
+      'data:[DONE]\n\n' +
+      'data: {"type":"text-delta","id":"text-1","delta":"after"}\n\n',
   );
   const results = await readParsedResults([standardBody]);
 
   assert.deepEqual(
     results.map((result) => result.success && result.value.type),
-    ['text-delta', 'finish'],
+    ['text-delta', 'finish', 'text-delta'],
   );
   assert.equal(results.every((result) => result.success), true);
 

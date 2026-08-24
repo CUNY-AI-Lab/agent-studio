@@ -12,7 +12,9 @@ The wire contract is standard SSE:
   `data:` is removed; other spacing follows the EventSource parser.
 - A blank line dispatches an event. An unterminated tail at source close is not
   dispatched.
-- `data: [DONE]` terminates the payload stream and is not a UI message chunk.
+- `data: [DONE]` is an ignored sentinel, not a stream terminator. The parser
+  continues to consume later events and the chat loop completes only when the
+  parsed stream reaches EOF (or an abort/error path is taken).
 
 Invalid JSON or schema-invalid UI chunks are skipped individually, preserving
 the prior transport behavior that ignored malformed lines while allowing later
