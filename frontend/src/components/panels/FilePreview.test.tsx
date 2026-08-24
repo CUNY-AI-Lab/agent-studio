@@ -53,6 +53,64 @@ describe('FilePreview failure surfacing', () => {
     expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();
   });
 
+  it('renders protected markdown from the fetched response without a second blob URL fetch', async () => {
+    const createObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+    const revokeObjectUrlDescriptor = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+    const createObjectUrl = vi.fn(() => 'blob:notes');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    const browserFetch = vi.spyOn(globalThis, 'fetch');
+    fetchFile.mockResolvedValue(new Response('# Notes\n\nLoaded once.', { status: 200 }));
+
+    try {
+      render(
+        <FilePreview
+          fileSource={workspaceSource}
+          panel={{ id: 'panel-1', type: 'editor', filePath: 'notes.md' }}
+          fetchFile={fetchFile}
+        />,
+      );
+
+      expect(await screen.findByText('Loaded once.')).toBeInTheDocument();
+      expect(fetchFile).toHaveBeenCalledOnce();
+      expect(browserFetch).not.toHaveBeenCalled();
+      expect(createObjectUrl).toHaveBeenCalledOnce();
+    } finally {
+      browserFetch.mockRestore();
+      if (createObjectUrlDescriptor) {
+        Object.defineProperty(URL, 'createObjectURL', createObjectUrlDescriptor);
+      } else {
+        Reflect.deleteProperty(URL, 'createObjectURL');
+      }
+      if (revokeObjectUrlDescriptor) {
+        Object.defineProperty(URL, 'revokeObjectURL', revokeObjectUrlDescriptor);
+      } else {
+        Reflect.deleteProperty(URL, 'revokeObjectURL');
+      }
+    }
+  });
+
+  it('keeps gallery text previews on their public URL fetch', async () => {
+    const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('Gallery text', { status: 200 }),
+    );
+
+    try {
+      render(
+        <FilePreview
+          fileSource={{ kind: 'gallery', id: 'gallery-1' }}
+          panel={{ id: 'panel-1', type: 'editor', filePath: 'notes.md' }}
+        />,
+      );
+
+      expect(await screen.findByText('Gallery text')).toBeInTheDocument();
+      expect(browserFetch).toHaveBeenCalledOnce();
+      expect(String(browserFetch.mock.calls[0][0])).toContain('/api/gallery/gallery-1/files/notes.md');
+    } finally {
+      browserFetch.mockRestore();
+    }
+  });
+
   it('surfaces a failed panel preview fetch instead of loading forever', async () => {
     fetchPreview.mockResolvedValue(
       new Response('boom', { status: 500 }),
