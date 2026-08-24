@@ -1,0 +1,46 @@
+diff --git a/dist/index.js b/dist/index.js
+index 28b5f6dbed6058cf1e170cdd83d4b7d0cfbf7427..7c1438baf631f3919a910beda1c14c294433c1dc 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -3,0 +4 @@
++import { parseJsonEventStream, uiMessageChunkSchema } from "ai";
+@@ -3254,0 +3256,20 @@
++		const framedStream = new ReadableStream({
++			async pull(controller) {
++				try {
++					const next = await pull();
++					if (next.done) controller.close();
++					else controller.enqueue(next.value);
++				} catch (error) {
++					controller.error(error);
++				}
++			},
++			async cancel(reason) {
++				await reader.cancel(reason).catch(() => {});
++			}
++		});
++		const parsedReader = parseJsonEventStream({
++			stream: framedStream,
++			schema: uiMessageChunkSchema
++		}).getReader();
++		let parsedComplete = false;
++		try {
+@@ -3259 +3280 @@
+-				readResult = await pull();
++				readResult = await parsedReader.read();
+@@ -3266,0 +3288 @@
++				parsedComplete = true;
+@@ -3278,3 +3300,2 @@
+-			const lines = decoder.decode(value).split("\n");
+-			for (const line of lines) if (line.startsWith("data: ") && line !== "data: [DONE]") try {
+-				const data = JSON.parse(line.slice(6));
++			if (!value.success) continue;
++			for (const data of [value.value]) try {
+@@ -3446,0 +3468,4 @@
++		} finally {
++			if (!parsedComplete) await parsedReader.cancel().catch(() => {});
++			parsedReader.releaseLock();
++		}
+@@ -3681,1 +3704,0 @@
+-//# sourceMappingURL=index.js.map
+\ No newline at end of file

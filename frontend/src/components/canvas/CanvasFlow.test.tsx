@@ -51,6 +51,13 @@ const chartContextualPanels: WorkspacePanel[] = [
   },
 ];
 
+async function preloadChartPanel() {
+  // PanelBody loads chart rendering through React.lazy. Resolve that module
+  // before mounting a chart fixture so the test observes the loaded boundary,
+  // not an import-scheduling race.
+  await import('../panels/ChartPanelView');
+}
+
 const manualResizeObservers = new Set<ManualResizeObserver>();
 
 class ManualResizeObserver implements ResizeObserver {
@@ -163,6 +170,7 @@ describe('CanvasFlow selection state', () => {
       );
     }
 
+    await preloadChartPanel();
     render(<ChartContextualHarness />);
 
     await waitFor(() => {
@@ -229,6 +237,7 @@ describe('CanvasFlow selection state', () => {
         );
       }
 
+      await preloadChartPanel();
       render(<ChartAssociationHarness />);
       ManualResizeObserver.notifyAll();
 

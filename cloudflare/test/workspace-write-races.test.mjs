@@ -162,7 +162,6 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
     turnStartRecord,
     sessionId,
     [],
-    { allowAutomaticWorkspaceRename: true },
   );
   const result = await tools.ui_workspace.execute(
     { name: 'Renamed' },
@@ -213,7 +212,6 @@ test('ui_workspace gives concurrent manual title edits precedence per field', as
     turnStartRecord,
     sessionId,
     [],
-    { allowAutomaticWorkspaceRename: true },
   );
   const result = await tools.ui_workspace.execute(
     { name: 'Model title', description: 'A task summary' },
@@ -227,7 +225,7 @@ test('ui_workspace gives concurrent manual title edits precedence per field', as
   assert.equal(result.description, 'A task summary');
 });
 
-test('ui_workspace cannot rename an existing workspace without the initial automatic-title allowance', async () => {
+test('ui_workspace cannot rename an existing workspace after title ownership is established', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
 
@@ -292,7 +290,91 @@ test('ui_workspace keeps description-only updates available after title ownershi
   assert.equal(result.description, 'A model-authored task summary');
 });
 
-test('initial ui_workspace requires a specific non-placeholder name', async () => {
+test('ui_workspace treats a repeated generated title as a no-op within one model turn', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+
+  const { env } = makeEnv();
+  const sessionId = 'k'.repeat(32);
+  const workspace = {
+    id: 'l'.repeat(32),
+    name: 'New Workspace',
+    description: '',
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+  await putWorkspace(env, sessionId, workspace);
+  const fakeAgent = {
+    env,
+    assertNotFrozen() {},
+    async withMutationFence(operation) { return operation(); },
+    async syncWorkspace() {},
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fakeAgent,
+    workspace,
+    sessionId,
+    [],
+  );
+
+  await tools.ui_workspace.execute(
+    { name: 'Campus research dashboard' },
+    { toolCallId: 'tool-generated-title', messages: [] },
+  );
+  const repeated = await tools.ui_workspace.execute(
+    { name: 'Campus research dashboard', description: 'A task summary' },
+    { toolCallId: 'tool-repeated-title', messages: [] },
+  );
+
+  const stored = await getWorkspace(env, sessionId, workspace.id);
+  assert.equal(stored.name, 'Campus research dashboard');
+  assert.equal(stored.description, 'A task summary');
+  assert.equal(repeated.name, 'Campus research dashboard');
+  assert.equal(repeated.description, 'A task summary');
+});
+
+test('ui_workspace rejects a different second generated title within one model turn', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+
+  const { env } = makeEnv();
+  const sessionId = 'm'.repeat(32);
+  const workspace = {
+    id: 'n'.repeat(32),
+    name: 'New Workspace',
+    description: '',
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+  await putWorkspace(env, sessionId, workspace);
+  const fakeAgent = {
+    env,
+    assertNotFrozen() {},
+    async withMutationFence(operation) { return operation(); },
+    async syncWorkspace() {},
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fakeAgent,
+    workspace,
+    sessionId,
+    [],
+  );
+
+  await tools.ui_workspace.execute(
+    { name: 'Campus research dashboard' },
+    { toolCallId: 'tool-first-title', messages: [] },
+  );
+  await assert.rejects(
+    tools.ui_workspace.execute(
+      { name: 'Campus research brief' },
+      { toolCallId: 'tool-different-title', messages: [] },
+    ),
+    /owned by the user/,
+  );
+  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'Campus research dashboard');
+});
+
+test('placeholder ui_workspace requires a specific non-placeholder name', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
 
@@ -317,7 +399,6 @@ test('initial ui_workspace requires a specific non-placeholder name', async () =
     workspace,
     sessionId,
     [],
-    { allowAutomaticWorkspaceRename: true, requireInitialWorkspaceTitle: true },
   );
   const schema = tools.ui_workspace.inputSchema;
   assert.equal(schema.safeParse({ description: 'summary' }).success, false);
@@ -328,14 +409,14 @@ test('initial ui_workspace requires a specific non-placeholder name', async () =
       { description: 'summary' },
       { toolCallId: 'tool-initial-description', messages: [] },
     ),
-    /first workspace title must be a specific/,
+    /Workspace title must be a specific/,
   );
   await assert.rejects(
     tools.ui_workspace.execute(
       { name: 'New Workspace' },
       { toolCallId: 'tool-initial-placeholder', messages: [] },
     ),
-    /first workspace title must be a specific/,
+    /Workspace title must be a specific/,
   );
   assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'New Workspace');
 });
