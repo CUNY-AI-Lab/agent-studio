@@ -21,6 +21,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import {
+  ApiError,
   clearWorkspaceDownloads,
   cloneGalleryItem,
   createWorkspace,
@@ -50,6 +51,7 @@ import type { ModelCatalog } from './api';
 import {
   PANEL_GAP,
   buildPanelLayouts,
+  findOpenPanelPosition,
   getGroupBounds,
   getLayoutsBounds,
   inferPanelLayout,
@@ -101,13 +103,17 @@ import type {
   WorkspaceAgentClient,
   WorkspaceFileInfo,
   WorkspacePanel,
+  WorkspaceRecord,
   WorkspaceResponse,
   WorkspaceState,
 } from './types';
+import { reconcileWorkspaceDraft } from './lib/workspaceDraft';
+import { replaceWorkspaceInHomeList } from './lib/workspaceHome';
 
 function WorkspaceShell({
   workspace,
   onWorkspaceRefresh,
+  onWorkspaceHomeMetadataUpdate,
   onGoHome,
   onDelete,
   initialPrompt,
@@ -115,6 +121,7 @@ function WorkspaceShell({
 }: {
   workspace: WorkspaceResponse;
   onWorkspaceRefresh: (workspaceId: string) => Promise<void>;
+  onWorkspaceHomeMetadataUpdate: (workspace: WorkspaceRecord) => void;
   onGoHome: () => void;
   onDelete: () => Promise<void>;
   initialPrompt?: string | null;
@@ -182,6 +189,7 @@ function WorkspaceShell({
   const hoveredPanelIdRef = useRef<string | null>(null);
   const hoveredToolbarPanelIdRef = useRef<string | null>(null);
   const previousDockedChatRef = useRef<boolean | null>(null);
+  const serverWorkspaceRef = useRef(workspace.workspace);
   const pendingAutoFocusRef = useRef<Set<string>>(new Set());
   const previousArtifactIdsRef = useRef<Set<string>>(new Set());
   const contextualAutoPanKeyRef = useRef<string | null>(null);
@@ -192,6 +200,32 @@ function WorkspaceShell({
     turnId: string;
     scopeKey: string;
   } | null>(null);
+
+  const reconcileWorkspaceFromServer = useCallback((nextWorkspace: WorkspaceRecord) => {
+    const previousServer = serverWorkspaceRef.current;
+    serverWorkspaceRef.current = nextWorkspace;
+    setWorkspaceName((current) => reconcileWorkspaceDraft(
+      { name: current, description: '', model: undefined },
+      previousServer,
+      nextWorkspace,
+    ).name);
+    setWorkspaceDescription((current) => reconcileWorkspaceDraft(
+      { name: '', description: current, model: undefined },
+      previousServer,
+      nextWorkspace,
+    ).description);
+    setWorkspaceModel((current) => reconcileWorkspaceDraft(
+      { name: '', description: '', model: current },
+      previousServer,
+      nextWorkspace,
+    ).model);
+    setPublishTitle((current) => current === previousServer.name ? nextWorkspace.name : current);
+    setPublishDescription((current) => current === previousServer.description ? nextWorkspace.description : current);
+    // The home list owns this metadata update. The selected workspace keeps
+    // its live state/files in this shell; replacing the parent response here
+    // would feed its older snapshot back through the same-ID refresh effect.
+    onWorkspaceHomeMetadataUpdate(nextWorkspace);
+  }, [onWorkspaceHomeMetadataUpdate]);
 
   const agent = useAgent<WorkspaceAgentClient, WorkspaceState>({
     agent: workspace.agent.className,
@@ -207,6 +241,9 @@ function WorkspaceShell({
     query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
       setWorkspaceState(state);
+      if (state.workspace && state.workspace.id === workspace.workspace.id) {
+        reconcileWorkspaceFromServer(state.workspace);
+      }
     },
   });
 
@@ -310,37 +347,60 @@ function WorkspaceShell({
   }, [clearContextualDraft, finishContextualTurn]);
 
   useEffect(() => {
+    const previousServer = serverWorkspaceRef.current;
+    const workspaceChanged = previousServer.id !== workspace.workspace.id;
+    serverWorkspaceRef.current = workspace.workspace;
     setWorkspaceState(workspace.state);
     setWorkspaceFiles(workspace.files);
     workspaceFilesRef.current = workspace.files;
-    setWorkspaceName(workspace.workspace.name);
-    setWorkspaceDescription(workspace.workspace.description);
-    setWorkspaceModel(workspace.workspace.model);
-    setPublishModalOpen(false);
-    setPublishTitle(workspace.workspace.name);
-    setPublishDescription(workspace.workspace.description);
-    setSelectedPanelIds(new Set());
-    setHoveredPanelId(null);
-    setHoveredToolbarPanelId(null);
-    setHighlightedFilePaths(new Set());
-    setActiveFilePillPopover(null);
-    setToast(null);
-    setFocusedPanelId(null);
-    setEditingGroupId(null);
-    setGroupNameInput('');
-    setMinimizedPanelIds(new Set());
-    setMaximizedPanelId(null);
-    setOpenMenuId(null);
-    closeContextualChat();
-    setContextualThreads({});
-    setContextualLoading({});
-    setContextualStatus({});
-    panelSourceRef.current = {};
-    previousArtifactIdsRef.current = new Set(
-      workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
-    );
-    contextualAutoPanKeyRef.current = null;
-    initialPromptSentRef.current = false;
+    if (workspaceChanged) {
+      setWorkspaceName(workspace.workspace.name);
+      setWorkspaceDescription(workspace.workspace.description);
+      setWorkspaceModel(workspace.workspace.model);
+      setPublishModalOpen(false);
+      setPublishTitle(workspace.workspace.name);
+      setPublishDescription(workspace.workspace.description);
+      setSelectedPanelIds(new Set());
+      setHoveredPanelId(null);
+      setHoveredToolbarPanelId(null);
+      setHighlightedFilePaths(new Set());
+      setActiveFilePillPopover(null);
+      setToast(null);
+      setFocusedPanelId(null);
+      setEditingGroupId(null);
+      setGroupNameInput('');
+      setMinimizedPanelIds(new Set());
+      setMaximizedPanelId(null);
+      setOpenMenuId(null);
+      closeContextualChat();
+      setContextualThreads({});
+      setContextualLoading({});
+      setContextualStatus({});
+      panelSourceRef.current = {};
+      previousArtifactIdsRef.current = new Set(
+        workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
+      );
+      contextualAutoPanKeyRef.current = null;
+      initialPromptSentRef.current = false;
+    } else {
+      setWorkspaceName((current) => reconcileWorkspaceDraft(
+        { name: current, description: '', model: undefined },
+        previousServer,
+        workspace.workspace,
+      ).name);
+      setWorkspaceDescription((current) => reconcileWorkspaceDraft(
+        { name: '', description: current, model: undefined },
+        previousServer,
+        workspace.workspace,
+      ).description);
+      setWorkspaceModel((current) => reconcileWorkspaceDraft(
+        { name: '', description: '', model: current },
+        previousServer,
+        workspace.workspace,
+      ).model);
+      setPublishTitle((current) => current === previousServer.name ? workspace.workspace.name : current);
+      setPublishDescription((current) => current === previousServer.description ? workspace.workspace.description : current);
+    }
     if (workspace.downloads && workspace.downloads.length > 0) {
       workspace.downloads.forEach((download) => {
         triggerQueuedDownload(download);
@@ -1228,36 +1288,15 @@ function WorkspaceShell({
     const gap = PANEL_GAP;
     const occupiedRects: CanvasPanelLayout[] = [];
     const addedLayouts: Record<string, { x: number; y: number; width: number; height: number }> = {};
+    const canvasWidth = canvasViewportRef.current?.clientWidth || globalThis.window?.innerWidth || 1440;
+    const canvasHeight = canvasViewportRef.current?.clientHeight || globalThis.window?.innerHeight || 900;
 
-    const overlaps = (x: number, y: number, width: number, height: number) =>
-      occupiedRects.some((rect) => !(
-        x + width + gap <= rect.x ||
-        rect.x + rect.width + gap <= x ||
-        y + height + gap <= rect.y ||
-        rect.y + rect.height + gap <= y
-      ));
-
-    const findPosition = (width: number, height: number) => {
-      const startX = 32;
-      const startY = 32;
-
-      if (occupiedRects.length === 0) {
-        return { x: startX, y: startY };
-      }
-
-      for (let y = startY; y <= 4000; y += 48) {
-        for (let x = startX; x <= 4000; x += 48) {
-          if (!overlaps(x, y, width, height)) {
-            return { x, y };
-          }
-        }
-      }
-
-      return {
-        x: startX,
-        y: Math.max(...occupiedRects.map((rect) => rect.y + rect.height), 0) + gap,
-      };
-    };
+    const overlaps = (x: number, y: number, width: number, height: number) => occupiedRects.some((rect) => !(
+      x + width + gap <= rect.x ||
+      rect.x + rect.width + gap <= x ||
+      y + height + gap <= rect.y ||
+      rect.y + rect.height + gap <= y
+    ));
 
     visiblePanels.forEach((panel) => {
       if (panel.layout?.x === undefined || panel.layout?.y === undefined) return;
@@ -1298,7 +1337,13 @@ function WorkspaceShell({
           y = sourceLayout.y + sourceLayout.height + gap;
 
           if (overlaps(x, y, width, height)) {
-            const position = findPosition(width, height);
+            const position = findOpenPanelPosition(
+              occupiedRects,
+              width,
+              height,
+              workspaceState.viewport,
+              { width: canvasWidth, height: canvasHeight },
+            );
             x = position.x;
             y = position.y;
           }
@@ -1306,7 +1351,13 @@ function WorkspaceShell({
 
         delete panelSourceRef.current[panel.id];
       } else {
-        const position = findPosition(width, height);
+        const position = findOpenPanelPosition(
+          occupiedRects,
+          width,
+          height,
+          workspaceState.viewport,
+          { width: canvasWidth, height: canvasHeight },
+        );
         x = position.x;
         y = position.y;
       }
@@ -1319,7 +1370,7 @@ function WorkspaceShell({
     if (Object.keys(addedLayouts).length > 0) {
       void savePanelLayouts(addedLayouts);
     }
-  }, [panelLayouts, savePanelLayouts, visiblePanels]);
+  }, [panelLayouts, savePanelLayouts, visiblePanels, workspaceState.viewport]);
 
   useEffect(() => {
     if (pendingAutoFocusRef.current.size === 0) return;
@@ -1870,7 +1921,7 @@ function WorkspaceShell({
       link.href = dataUrl;
       link.click();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to export tile image');
+      setError(nextError instanceof ApiError ? nextError.message : 'The tile image didn’t export. Try again.');
     }
   }, []);
 
@@ -1976,7 +2027,7 @@ function WorkspaceShell({
       });
       await refreshWorkspace();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to save workspace');
+      setError(nextError instanceof ApiError ? nextError.message : 'The workspace didn’t save. Check your connection and try again.');
     } finally {
       setSavingWorkspace(false);
     }
@@ -1991,7 +2042,7 @@ function WorkspaceShell({
       await refreshWorkspace();
     } catch (nextError) {
       setWorkspaceModel(previous);
-      setError(nextError instanceof Error ? nextError.message : 'Failed to change model');
+      setError(nextError instanceof ApiError ? nextError.message : 'The model didn’t change. Try again.');
     }
   }, [refreshWorkspace, workspace.workspace.id, workspaceModel]);
 
@@ -2019,7 +2070,7 @@ function WorkspaceShell({
       await refreshWorkspace();
       showToast('Published to gallery');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to publish workspace');
+      setError(nextError instanceof ApiError ? nextError.message : 'Publishing didn’t finish. Try again.');
     } finally {
       setPublishing(false);
     }
@@ -2688,10 +2739,14 @@ export default function App() {
       setSelectedWorkspace(response);
       setSelectedWorkspaceId(workspaceId);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to load workspace');
+      setError(nextError instanceof ApiError ? nextError.message : 'The workspace didn’t load. Reload the page to try again.');
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  const handleWorkspaceHomeMetadataUpdate = useCallback((nextWorkspace: WorkspaceRecord) => {
+    setWorkspaces((current) => replaceWorkspaceInHomeList(current, nextWorkspace));
   }, []);
 
   useEffect(() => {
@@ -2898,6 +2953,7 @@ export default function App() {
               await loadWorkspaces();
               await loadGallery();
             }}
+            onWorkspaceHomeMetadataUpdate={handleWorkspaceHomeMetadataUpdate}
           />
         ) : null}
       </div>
