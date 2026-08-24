@@ -285,8 +285,59 @@ test('ui_workspace keeps description-only updates available after title ownershi
     { description: 'A model-authored task summary' },
     { toolCallId: 'tool-description-only', messages: [] },
   );
+  assert.equal(tools.ui_workspace.inputSchema.safeParse({
+    description: 'Another model-authored task summary',
+  }).success, true);
   assert.equal(result.name, 'Human title');
   assert.equal(result.description, 'A model-authored task summary');
+});
+
+test('initial ui_workspace requires a specific non-placeholder name', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+
+  const { env } = makeEnv();
+  const sessionId = 'i'.repeat(32);
+  const workspace = {
+    id: 'j'.repeat(32),
+    name: 'New Workspace',
+    description: '',
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+  await putWorkspace(env, sessionId, workspace);
+  const fakeAgent = {
+    env,
+    assertNotFrozen() {},
+    async withMutationFence(operation) { return operation(); },
+    async syncWorkspace() {},
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fakeAgent,
+    workspace,
+    sessionId,
+    [],
+    { allowAutomaticWorkspaceRename: true, requireInitialWorkspaceTitle: true },
+  );
+  const schema = tools.ui_workspace.inputSchema;
+  assert.equal(schema.safeParse({ description: 'summary' }).success, false);
+  assert.equal(schema.safeParse({ name: 'New Workspace' }).success, false);
+  assert.equal(schema.safeParse({ name: 'Research brief' }).success, true);
+  await assert.rejects(
+    tools.ui_workspace.execute(
+      { description: 'summary' },
+      { toolCallId: 'tool-initial-description', messages: [] },
+    ),
+    /first workspace title must be a specific/,
+  );
+  await assert.rejects(
+    tools.ui_workspace.execute(
+      { name: 'New Workspace' },
+      { toolCallId: 'tool-initial-placeholder', messages: [] },
+    ),
+    /first workspace title must be a specific/,
+  );
+  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'New Workspace');
 });
 
 test('ui_show_file requires an authored display title instead of deriving one from the filename', async () => {

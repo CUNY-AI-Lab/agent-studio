@@ -108,6 +108,7 @@ const MODEL_TOOL_LOOP_STEPS = 12;
 
 interface WorkspaceToolOptions {
   allowAutomaticWorkspaceRename?: boolean;
+  requireInitialWorkspaceTitle?: boolean;
 }
 
 const CODEMODE_DESCRIPTION = [
@@ -264,6 +265,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    */
   private cailIdentityJwt: string | null = null;
   private cailSubject: string | null = null;
+  /** In-memory capability proof for the model used by the warm DO instance. */
+  private functionCallingModelId: string | null = null;
 
   async onStart() {
     if (!this.state.workspace) {
@@ -615,12 +618,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const modelName = workspace.model ?? resolveCailModelName(this.env);
       const forceWorkspaceTitle = isPlaceholderWorkspaceName(workspace.name ?? '')
         && isFirstSubstantiveTurn(this.messages);
-      if (forceWorkspaceTitle) {
+      if (this.functionCallingModelId !== modelName) {
         const { models } = await fetchCailModels({
           env: this.env,
           identityJwt,
         });
         requireFunctionCallingModel(models, modelName);
+        this.functionCallingModelId = modelName;
       }
       const scopedPanelIds = z.array(z.string()).safeParse(options?.body?.scopePanelIds).data ?? [];
       const scopedPanels = scopedPanelIds
@@ -645,6 +649,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         : null;
       const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, {
         allowAutomaticWorkspaceRename: forceWorkspaceTitle,
+        requireInitialWorkspaceTitle: forceWorkspaceTitle,
       });
       const codemode = this.createCodeModeTool(hostTools);
       const modelTools = this.buildModelTools(hostTools);
@@ -986,6 +991,22 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       .find((message) => message.role === 'user')?.id;
     const generatedPanelOccurrences = new Map<string, number>();
     let automaticWorkspaceRenameAvailable = options.allowAutomaticWorkspaceRename === true;
+    const requireInitialWorkspaceTitle = options.requireInitialWorkspaceTitle === true;
+    const workspaceToolInputSchema = requireInitialWorkspaceTitle
+      ? z.object({
+        name: workspaceTitleSchema.refine(
+          (name) => !isPlaceholderWorkspaceName(name),
+          'Provide a specific workspace title, not a placeholder.',
+        ),
+        description: z.string().optional(),
+      })
+      : z.object({
+        name: workspaceTitleSchema.optional(),
+        description: z.string().optional(),
+      }).refine(
+        ({ name, description }) => name !== undefined || description !== undefined,
+        'Provide a workspace name or description.',
+      );
     const panelIdForTool = (providedId: string | undefined, toolName: string): string => {
       if (providedId) return providedId;
       if (!turnMessageId) return crypto.randomUUID();
@@ -1323,17 +1344,19 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       ui_workspace: tool({
         description: [
           'Set the workspace title and optional description.',
-          'The name must be a concise, readable, task-specific title, not a placeholder, filename, or generic label.',
-          'A new placeholder workspace may receive one automatic title on the first substantive turn. Later title changes belong in the workspace header.',
+          requireInitialWorkspaceTitle
+            ? 'On this first turn, provide a concise, readable, task-specific name; a placeholder is not valid.'
+            : 'The name must be a concise, readable, task-specific title, not a placeholder, filename, or generic label.',
+          'Later title changes belong in the workspace header.',
         ].join(' '),
-        inputSchema: z.object({
-          name: workspaceTitleSchema.optional(),
-          description: z.string().optional(),
-        }).refine(
-          ({ name, description }) => name !== undefined || description !== undefined,
-          'Provide a workspace name or description.',
-        ),
+        inputSchema: workspaceToolInputSchema,
         execute: async ({ name, description }) => {
+          if (
+            requireInitialWorkspaceTitle
+            && (name === undefined || isPlaceholderWorkspaceName(name))
+          ) {
+            throw new Error('The first workspace title must be a specific, non-placeholder name.');
+          }
           if (
             name !== undefined
             && name !== workspace.name

@@ -205,7 +205,13 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   const gatewayToken = await mintGateway(issuer);
   const wire = [];
   env.GATEWAY = {
-    async fetch(_input, init) {
+    async fetch(input, init) {
+      if (String(input) === 'https://cail.test/v1/models') {
+        return Response.json({
+          object: 'list',
+          data: [{ id: '@cf/zai-org/glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
+        });
+      }
       const headers = new Headers(init?.headers);
       const requestBody = z.object({ model: z.string() }).parse(
         await new Request(_input, init).json(),
@@ -353,7 +359,13 @@ test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forw
     CAIL_REQUIRE_IDENTITY: 'true',
     SESSION_SECRET: 'workspace-refresh-chat-secret',
     GATEWAY: {
-      async fetch(_input, init) {
+      async fetch(input, init) {
+        if (String(input) === 'https://cail.test/v1/models') {
+          return Response.json({
+            object: 'list',
+            data: [{ id: '@cf/zai-org/glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
+          });
+        }
         const headers = new Headers(init?.headers);
         wire.push({
           authorization: headers.get('authorization'),
