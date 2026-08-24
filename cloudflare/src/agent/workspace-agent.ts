@@ -51,7 +51,12 @@ import {
   normalizePanelRelations,
   repairPanelConnectionId,
 } from '../lib/panel-connections';
-import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
+import {
+  layoutPatchSchema,
+  panelIdSchema,
+  runtimeCodeSchema,
+  workspaceTitleSchema,
+} from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
 import {
@@ -80,6 +85,11 @@ import {
   quotaSignalFromError,
 } from '../lib/quota-error';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
+import {
+  isFirstSubstantiveTurn,
+  isPlaceholderWorkspaceName,
+  prepareWorkspaceTitleStep,
+} from '../lib/workspace-title';
 
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
@@ -620,6 +630,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         identityJwt,
         model: workspace.model,
       });
+      const forceWorkspaceTitle = isPlaceholderWorkspaceName(workspace.name ?? '')
+        && isFirstSubstantiveTurn(this.messages);
 
       const result = streamText({
         model,
@@ -636,6 +648,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           ...modelTools,
           codemode,
         },
+        prepareStep: ({ stepNumber }) => prepareWorkspaceTitleStep(forceWorkspaceTitle, stepNumber),
         stopWhen: stepCountIs(MODEL_TOOL_LOOP_STEPS),
       });
 
@@ -1222,10 +1235,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         },
       }),
       ui_show_file: tool({
-        description: 'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
+        description: [
+          'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs.',
+          'Give the panel a concise, readable, task-specific display title; never omit it or use the filename as the title.',
+          'When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
+        ].join(' '),
         inputSchema: z.object({
           id: z.string().optional(),
-          title: z.string().optional(),
+          title: workspaceTitleSchema,
           filePath: z.string(),
           sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
@@ -1238,7 +1255,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           this.upsertPanelWithAssociation({
             id: panelId,
             type: inferFilePanelType(filePath),
-            title: title || filePath.split('/').pop() || filePath,
+            title,
             filePath,
           }, sourcePanelId);
           return { ok: true, panelId };
@@ -1261,9 +1278,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         },
       }),
       ui_workspace: tool({
-        description: 'Update the workspace title or description.',
+        description: [
+          'Set the workspace title and optional description.',
+          'The name must be a concise, readable, task-specific title, not a placeholder, filename, or generic label.',
+          'A new placeholder workspace requires this tool on the first substantive turn. Do not rename an existing or human-named workspace unless the user explicitly asks.',
+        ].join(' '),
         inputSchema: z.object({
-          name: z.string().optional(),
+          name: workspaceTitleSchema,
           description: z.string().optional(),
         }),
         execute: async ({ name, description }) => {
@@ -1271,12 +1292,28 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           // blind put of it would revert a PATCH (e.g. a model override) that
           // landed while this turn was streaming. Patch the freshly read
           // record through the etag CAS instead.
-          const result = await updateWorkspaceWithRetry(this.env, sessionId, workspace.id, (current) => ({
-            ...current,
-            name: name ?? current.name,
-            description: description ?? current.description,
-            updatedAt: new Date().toISOString(),
-          }));
+          const result = await updateWorkspaceWithRetry(this.env, sessionId, workspace.id, (current) => {
+            // The model is working from the turn-start record. A field-level
+            // compare keeps a manual edit made during the stream authoritative
+            // while still allowing unrelated fields to be updated.
+            const next = { ...current };
+            let changed = false;
+            if (current.name === workspace.name && name !== current.name) {
+              next.name = name;
+              changed = true;
+            }
+            if (
+              description !== undefined
+              && current.description === workspace.description
+              && description !== current.description
+            ) {
+              next.description = description;
+              changed = true;
+            }
+            return changed
+              ? { ...next, updatedAt: new Date().toISOString() }
+              : null;
+          });
           if (!result.ok) {
             throw new Error(
               result.reason === 'not-found'

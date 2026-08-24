@@ -103,13 +103,16 @@ import type {
   WorkspaceAgentClient,
   WorkspaceFileInfo,
   WorkspacePanel,
+  WorkspaceRecord,
   WorkspaceResponse,
   WorkspaceState,
 } from './types';
+import { reconcileWorkspaceDraft } from './lib/workspaceDraft';
 
 function WorkspaceShell({
   workspace,
   onWorkspaceRefresh,
+  onWorkspaceServerUpdate,
   onGoHome,
   onDelete,
   initialPrompt,
@@ -117,6 +120,7 @@ function WorkspaceShell({
 }: {
   workspace: WorkspaceResponse;
   onWorkspaceRefresh: (workspaceId: string) => Promise<void>;
+  onWorkspaceServerUpdate: (workspace: WorkspaceRecord) => void;
   onGoHome: () => void;
   onDelete: () => Promise<void>;
   initialPrompt?: string | null;
@@ -184,6 +188,7 @@ function WorkspaceShell({
   const hoveredPanelIdRef = useRef<string | null>(null);
   const hoveredToolbarPanelIdRef = useRef<string | null>(null);
   const previousDockedChatRef = useRef<boolean | null>(null);
+  const serverWorkspaceRef = useRef(workspace.workspace);
   const pendingAutoFocusRef = useRef<Set<string>>(new Set());
   const previousArtifactIdsRef = useRef<Set<string>>(new Set());
   const contextualAutoPanKeyRef = useRef<string | null>(null);
@@ -194,6 +199,29 @@ function WorkspaceShell({
     turnId: string;
     scopeKey: string;
   } | null>(null);
+
+  const reconcileWorkspaceFromServer = useCallback((nextWorkspace: WorkspaceRecord) => {
+    const previousServer = serverWorkspaceRef.current;
+    serverWorkspaceRef.current = nextWorkspace;
+    setWorkspaceName((current) => reconcileWorkspaceDraft(
+      { name: current, description: '', model: undefined },
+      previousServer,
+      nextWorkspace,
+    ).name);
+    setWorkspaceDescription((current) => reconcileWorkspaceDraft(
+      { name: '', description: current, model: undefined },
+      previousServer,
+      nextWorkspace,
+    ).description);
+    setWorkspaceModel((current) => reconcileWorkspaceDraft(
+      { name: '', description: '', model: current },
+      previousServer,
+      nextWorkspace,
+    ).model);
+    setPublishTitle((current) => current === previousServer.name ? nextWorkspace.name : current);
+    setPublishDescription((current) => current === previousServer.description ? nextWorkspace.description : current);
+    onWorkspaceServerUpdate(nextWorkspace);
+  }, [onWorkspaceServerUpdate]);
 
   const agent = useAgent<WorkspaceAgentClient, WorkspaceState>({
     agent: workspace.agent.className,
@@ -209,6 +237,9 @@ function WorkspaceShell({
     query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
       setWorkspaceState(state);
+      if (state.workspace && state.workspace.id === workspace.workspace.id) {
+        reconcileWorkspaceFromServer(state.workspace);
+      }
     },
   });
 
@@ -312,37 +343,60 @@ function WorkspaceShell({
   }, [clearContextualDraft, finishContextualTurn]);
 
   useEffect(() => {
+    const previousServer = serverWorkspaceRef.current;
+    const workspaceChanged = previousServer.id !== workspace.workspace.id;
+    serverWorkspaceRef.current = workspace.workspace;
     setWorkspaceState(workspace.state);
     setWorkspaceFiles(workspace.files);
     workspaceFilesRef.current = workspace.files;
-    setWorkspaceName(workspace.workspace.name);
-    setWorkspaceDescription(workspace.workspace.description);
-    setWorkspaceModel(workspace.workspace.model);
-    setPublishModalOpen(false);
-    setPublishTitle(workspace.workspace.name);
-    setPublishDescription(workspace.workspace.description);
-    setSelectedPanelIds(new Set());
-    setHoveredPanelId(null);
-    setHoveredToolbarPanelId(null);
-    setHighlightedFilePaths(new Set());
-    setActiveFilePillPopover(null);
-    setToast(null);
-    setFocusedPanelId(null);
-    setEditingGroupId(null);
-    setGroupNameInput('');
-    setMinimizedPanelIds(new Set());
-    setMaximizedPanelId(null);
-    setOpenMenuId(null);
-    closeContextualChat();
-    setContextualThreads({});
-    setContextualLoading({});
-    setContextualStatus({});
-    panelSourceRef.current = {};
-    previousArtifactIdsRef.current = new Set(
-      workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
-    );
-    contextualAutoPanKeyRef.current = null;
-    initialPromptSentRef.current = false;
+    if (workspaceChanged) {
+      setWorkspaceName(workspace.workspace.name);
+      setWorkspaceDescription(workspace.workspace.description);
+      setWorkspaceModel(workspace.workspace.model);
+      setPublishModalOpen(false);
+      setPublishTitle(workspace.workspace.name);
+      setPublishDescription(workspace.workspace.description);
+      setSelectedPanelIds(new Set());
+      setHoveredPanelId(null);
+      setHoveredToolbarPanelId(null);
+      setHighlightedFilePaths(new Set());
+      setActiveFilePillPopover(null);
+      setToast(null);
+      setFocusedPanelId(null);
+      setEditingGroupId(null);
+      setGroupNameInput('');
+      setMinimizedPanelIds(new Set());
+      setMaximizedPanelId(null);
+      setOpenMenuId(null);
+      closeContextualChat();
+      setContextualThreads({});
+      setContextualLoading({});
+      setContextualStatus({});
+      panelSourceRef.current = {};
+      previousArtifactIdsRef.current = new Set(
+        workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
+      );
+      contextualAutoPanKeyRef.current = null;
+      initialPromptSentRef.current = false;
+    } else {
+      setWorkspaceName((current) => reconcileWorkspaceDraft(
+        { name: current, description: '', model: undefined },
+        previousServer,
+        workspace.workspace,
+      ).name);
+      setWorkspaceDescription((current) => reconcileWorkspaceDraft(
+        { name: '', description: current, model: undefined },
+        previousServer,
+        workspace.workspace,
+      ).description);
+      setWorkspaceModel((current) => reconcileWorkspaceDraft(
+        { name: '', description: '', model: current },
+        previousServer,
+        workspace.workspace,
+      ).model);
+      setPublishTitle((current) => current === previousServer.name ? workspace.workspace.name : current);
+      setPublishDescription((current) => current === previousServer.description ? workspace.workspace.description : current);
+    }
     if (workspace.downloads && workspace.downloads.length > 0) {
       workspace.downloads.forEach((download) => {
         triggerQueuedDownload(download);
@@ -2687,6 +2741,17 @@ export default function App() {
     }
   }, []);
 
+  const handleWorkspaceServerUpdate = useCallback((nextWorkspace: WorkspaceRecord) => {
+    setSelectedWorkspace((current) => (
+      current && current.workspace.id === nextWorkspace.id
+        ? { ...current, workspace: nextWorkspace }
+        : current
+    ));
+    setWorkspaces((current) => current.map((item) => (
+      item.id === nextWorkspace.id ? nextWorkspace : item
+    )));
+  }, []);
+
   useEffect(() => {
     void loadHome();
   }, [loadHome]);
@@ -2891,6 +2956,7 @@ export default function App() {
               await loadWorkspaces();
               await loadGallery();
             }}
+            onWorkspaceServerUpdate={handleWorkspaceServerUpdate}
           />
         ) : null}
       </div>

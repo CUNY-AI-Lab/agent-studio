@@ -175,6 +175,69 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
   assert.equal(fakeAgent.synced?.sessionId, sessionId);
 });
 
+test('ui_workspace gives concurrent manual title edits precedence per field', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+
+  const { env } = makeEnv();
+  const sessionId = 'c'.repeat(32);
+  const turnStartRecord = {
+    id: 'd'.repeat(32),
+    name: 'New Workspace',
+    description: '',
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+  await putWorkspace(env, sessionId, {
+    ...turnStartRecord,
+    name: 'My manual title',
+  });
+
+  const fakeAgent = {
+    env,
+    synced: null,
+    assertNotFrozen() {},
+    async withMutationFence(operation) { return operation(); },
+    async syncWorkspace(nextWorkspace, syncSessionId) {
+      this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
+    },
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, turnStartRecord, sessionId);
+  const result = await tools.ui_workspace.execute(
+    { name: 'Model title', description: 'A task summary' },
+    { toolCallId: 'tool-manual-wins', messages: [] },
+  );
+
+  const stored = await getWorkspace(env, sessionId, turnStartRecord.id);
+  assert.equal(stored.name, 'My manual title');
+  assert.equal(stored.description, 'A task summary');
+  assert.equal(result.name, 'My manual title');
+  assert.equal(result.description, 'A task summary');
+});
+
+test('ui_show_file requires an authored display title instead of deriving one from the filename', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const fakeAgent = {
+    env: makeEnv().env,
+    messages: [],
+    async withMutationFence(operation) { return operation(); },
+    async readRuntimeFileContent() { return { data: new ArrayBuffer(0) }; },
+    upsertPanelWithAssociation() {},
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fakeAgent,
+    { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' },
+    'session',
+  );
+
+  assert.equal(tools.ui_show_file.inputSchema.safeParse({ filePath: 'index.html' }).success, false);
+  assert.equal(tools.ui_show_file.inputSchema.safeParse({
+    filePath: 'index.html',
+    title: 'Interactive research brief',
+  }).success, true);
+});
+
 test('structured UI tools persist explicit tile associations', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');

@@ -17,6 +17,9 @@ export const patchWorkspaceSchema = z.object({
   model: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200).optional(),
 });
 
+/** Human-readable titles produced by the model for workspace-visible UI. */
+export const workspaceTitleSchema = z.string().trim().min(1).max(120);
+
 export const runtimeCodeSchema = z.string().trim().min(1).max(100_000);
 export const panelIdSchema = z.string().trim().min(1).max(200);
 
