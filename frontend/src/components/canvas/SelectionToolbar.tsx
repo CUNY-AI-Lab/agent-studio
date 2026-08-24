@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import {
   MessageSquare,
   Download as DownloadIcon,
@@ -93,8 +93,30 @@ export function SelectionToolbar({
   onHoverChange,
 }: SelectionToolbarProps) {
   const [openMenu, setOpenMenu] = useState<'download' | 'align' | 'distribute' | null>(null);
+  const [toolbarSize, setToolbarSize] = useState<{ width: number; height: number }>(TOOLBAR_SIZE);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const downloadRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+
+    const updateToolbarSize = () => {
+      const width = toolbar.offsetWidth;
+      const height = toolbar.offsetHeight;
+      if (width <= 0 || height <= 0) return;
+      setToolbarSize((current) => (
+        current.width === width && current.height === height
+          ? current
+          : { width, height }
+      ));
+    };
+
+    updateToolbarSize();
+    const observer = new ResizeObserver(updateToolbarSize);
+    observer.observe(toolbar);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -120,7 +142,7 @@ export function SelectionToolbar({
 
   if (!hasSelection || !selectionBounds) return null;
 
-  const toolbarHeight = TOOLBAR_SIZE.height;
+  const toolbarHeight = toolbarSize.height;
   const gap = 8;
   const margin = 8;
   const initialCanvasX = selectionBounds.x + selectionBounds.width / 2;
@@ -131,7 +153,7 @@ export function SelectionToolbar({
   const viewportWidth = viewportSize?.width ?? globalThis.window?.innerWidth ?? 1920;
   const viewportHeight = viewportSize?.height ?? globalThis.window?.innerHeight ?? 1080;
 
-  const computedWidth = TOOLBAR_SIZE.width;
+  const computedWidth = toolbarSize.width;
   let screenX = initialCanvasX * canvasScale + offsetX;
   let screenY = initialCanvasY * canvasScale + offsetY;
 
@@ -146,9 +168,6 @@ export function SelectionToolbar({
 
   screenX = Math.min(Math.max(screenX, minCenterX), Math.max(minCenterX, maxCenterX));
   screenY = Math.min(Math.max(screenY, minTopY), Math.max(minTopY, maxTopY));
-
-  const canvasX = (screenX - offsetX) / canvasScale;
-  const canvasY = (screenY - offsetY) / canvasScale;
 
   const showChatButton = canChat;
   const showDownloadSection = isSinglePanel && canDownload && downloadFormats.length > 0;
@@ -186,10 +205,10 @@ export function SelectionToolbar({
       }
       className="selection-toolbar absolute nodrag nopan nowheel"
       style={{
-        left: canvasX,
-        top: canvasY,
-        transform: `translateX(-50%) scale(${1 / canvasScale})`,
-        transformOrigin: 'bottom center',
+        left: screenX,
+        top: screenY,
+        transform: 'translateX(-50%)',
+        transformOrigin: 'top center',
         zIndex: 10000,
         display: 'inline-flex',
         flexDirection: 'row',

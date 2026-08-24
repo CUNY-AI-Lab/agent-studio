@@ -74,6 +74,40 @@ test('round-trip: a workspace WITHOUT a model override still imports', async () 
   assert.equal(reparsed.workspace.model, undefined);
 });
 
+test('round-trip: negative canvas coordinates export and re-import unchanged', async () => {
+  const now = new Date(0).toISOString();
+  const workspace = {
+    id: 'ws-negative-canvas',
+    name: 'Negative Canvas',
+    description: 'tiles can live above and left of the origin',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const state = {
+    ...baseState(workspace),
+    panels: [{
+      id: 'panel-negative',
+      type: 'markdown',
+      title: 'Above and left',
+      content: 'content',
+      layout: { x: -480.5, y: -220.25, width: 420, height: 260 },
+    }],
+    viewport: { x: 760, y: 540, zoom: 0.8 },
+  };
+
+  const bundle = await createWorkspaceExportBundle({
+    workspace,
+    state,
+    messages: [],
+    files: [],
+    readFile: async () => null,
+  });
+  const reparsed = parseWorkspaceImportBundle(JSON.parse(JSON.stringify(bundle)));
+
+  assert.deepEqual(reparsed.state.panels[0].layout, state.panels[0].layout);
+  assert.deepEqual(reparsed.state.viewport, state.viewport);
+});
+
 test('round-trip: a malformed model id is still rejected on import', () => {
   const now = new Date(0).toISOString();
   const bundle = {

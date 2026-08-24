@@ -122,6 +122,7 @@ export function createDefaultWorkspace(args: {
   id: string;
   name: string;
   description?: string;
+  model: string;
 }): WorkspaceRecord {
   const now = new Date().toISOString();
   return {
@@ -130,5 +131,6 @@ export function createDefaultWorkspace(args: {
     description: args.description || '',
     createdAt: now,
     updatedAt: now,
+    model: args.model,
   };
 }
