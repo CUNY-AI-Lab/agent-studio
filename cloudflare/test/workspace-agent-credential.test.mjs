@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { z } from 'zod';
 import { createTestIdentityIssuer, TEST_SUBJECTS } from './helpers/identity.mjs';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
@@ -206,6 +207,9 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   env.GATEWAY = {
     async fetch(_input, init) {
       const headers = new Headers(init?.headers);
+      const requestBody = z.object({ model: z.string() }).parse(
+        await new Request(_input, init).json(),
+      );
       wire.push({
         method: init?.method,
         authorization: headers.get('authorization'),
@@ -213,7 +217,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
         app: headers.get('X-CAIL-App'),
         credentials: init?.credentials,
         redirect: init?.redirect,
-        model: typeof init?.body === 'string' ? JSON.parse(init.body).model : undefined,
+        model: requestBody.model,
       });
       return Response.json({
         error: {
@@ -253,7 +257,6 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   assert.deepEqual(closeCalls, []);
 
   const { tool } = await import('ai');
-  const { z } = await import('zod');
   const noopTool = tool({
     description: 'noop',
     inputSchema: z.object({}),
@@ -385,7 +388,6 @@ test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forw
     parts: [{ type: 'text', text: 'hello' }],
   }];
   const { tool } = await import('ai');
-  const { z } = await import('zod');
   const noopTool = tool({
     description: 'noop',
     inputSchema: z.object({}),
