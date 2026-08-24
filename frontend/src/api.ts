@@ -25,14 +25,6 @@ const canonicalErrorPayloadSchema = z.object({
 const CAIL_TOOLS_ORIGIN = 'https://tools.ailab.gc.cuny.edu';
 const AGENT_STUDIO_PATH = '/agent-studio';
 
-/**
- * An error whose message was minted by this API layer for the user to read —
- * either the worker's canonical error copy or our own full-sentence fallback.
- * UI error banners show an ApiError's message verbatim; any other thrown value
- * (network TypeError, library exception) gets per-action fallback copy instead.
- */
-export class ApiError extends Error {}
-
 function canonicalApiErrorFromPayload<T>(payload: T): CanonicalApiError | null {
   const parsed = canonicalErrorPayloadSchema.safeParse(payload);
   return parsed.success ? parsed.data.error : null;
@@ -102,13 +94,13 @@ async function requestCsrfToken(): Promise<string> {
     // include the upstream body in the thrown bootstrap error.
     const { payload } = await readResponseError(response);
     if (handleAuthRequired(response.status, payload)) {
-      throw new ApiError('Sign in to continue.');
+      throw new Error('Sign in to continue.');
     }
-    throw new ApiError("Agent Studio couldn't start. Reload the page and try again.");
+    throw new Error("Agent Studio couldn't start. Reload the page and try again.");
   }
   const token = readCookie(CSRF_COOKIE_NAME);
   if (!token) {
-    throw new ApiError("Agent Studio couldn't start. Reload the page and try again.");
+    throw new Error("Agent Studio couldn't start. Reload the page and try again.");
   }
   return token;
 }
@@ -212,9 +204,9 @@ async function parseJson<T>(response: Response): Promise<T> {
     const { payload, message } = await readResponseError(response);
     if (handleAuthRequired(response.status, payload)) {
       // Redirecting to the standalone Doorway; reject with a benign message so callers stop.
-      throw new ApiError('Sign in to continue.');
+      throw new Error('Sign in to continue.');
     }
-    throw new ApiError(message);
+    throw new Error(message);
   }
   const payload = await response.json();
   // SAFETY: each caller selects the response type for a fixed Worker route;
@@ -229,16 +221,16 @@ export async function refreshModelCredential(workspaceId: string): Promise<void>
   });
   if (response.ok) {
     if (response.status !== 204) {
-      throw new ApiError("That didn't work. Try again.");
+      throw new Error("That didn't work. Try again.");
     }
     return;
   }
 
   const { payload, message } = await readResponseError(response);
   if (handleAuthRequired(response.status, payload)) {
-    throw new ApiError('Sign in to continue.');
+    throw new Error('Sign in to continue.');
   }
-  throw new ApiError(message);
+  throw new Error(message);
 }
 
 function encodePath(filePath: string): string {
@@ -305,12 +297,12 @@ export interface ModelCatalog {
   default: string;
 }
 
-export class ModelsQuotaError extends ApiError {}
-export class ModelsAuthError extends ApiError {}
+export class ModelsQuotaError extends Error {}
+export class ModelsAuthError extends Error {}
 /** A 5xx from the catalog route — including the 502 the worker mints for
  * config/secret drift. Typed so the UI can surface a broken deployment
  * instead of silently hiding the picker. */
-export class ModelsUnavailableError extends ApiError {}
+export class ModelsUnavailableError extends Error {}
 
 export async function fetchModels(): Promise<ModelCatalog> {
   const response = await fetch(appPath('/api/models'), { credentials: 'include' });
@@ -319,7 +311,7 @@ export async function fetchModels(): Promise<ModelCatalog> {
     if (handleAuthRequired(response.status, payload)) {
       throw new ModelsAuthError('Your sign-in expired. Sign in again to load models.');
     }
-    throw new ApiError(message);
+    throw new Error(message);
   }
   if (response.status === 429) {
     const { message } = await readResponseError(response);
@@ -354,8 +346,6 @@ export interface ModelPickerView {
   advanced: ModelOption[];
   /** Sunset note for the effective model when it is retiring; else null. */
   effectiveRetiringNote: string | null;
-  /** A stored override that cannot support Agent Studio's tool loop. */
-  unsupportedEffectiveModel: string | null;
 }
 
 function buildOption(entry: ModelCatalogEntry, catalogDefault: string): ModelOption {
@@ -375,11 +365,10 @@ function buildOption(entry: ModelCatalogEntry, catalogDefault: string): ModelOpt
 /**
  * Partition the catalog into the picker's recommended/advanced groups, honoring
  * the override and the contract's visibility rules:
- *  - effective model = workspace override ?? catalog default.
+ *  - effective model = workspace override ?? catalog default (data[0]).
  *  - deprecated models are hidden unless they are the currently-selected model.
- *  - the server catalog contains only models advertising function-calling;
- *    an effective model absent from it is shown as unavailable rather than
- *    replaced with a fallback.
+ *  - a stored override that dropped from the catalog is kept selectable,
+ *    prepended into the group matching its tier (or recommended by default).
  */
 export function buildModelPickerView(
   catalog: ModelCatalog,
@@ -411,15 +400,16 @@ export function buildModelPickerView(
     (entry.tier === 'advanced' ? advanced : recommended).push(option);
   }
 
-  const unsupportedEffectiveModel = effectiveInCatalog ? null : effectiveModel;
+  // Keep a stored override selectable even if it dropped from the catalog.
+  if (!effectiveInCatalog) {
+    recommended.unshift({
+      id: effectiveModel,
+      label: modelDisplayName(effectiveModel),
+      title: effectiveModel,
+    });
+  }
 
-  return {
-    effectiveModel,
-    recommended,
-    advanced,
-    effectiveRetiringNote,
-    unsupportedEffectiveModel,
-  };
+  return { effectiveModel, recommended, advanced, effectiveRetiringNote };
 }
 
 export async function updateWorkspace(
@@ -454,7 +444,7 @@ export async function fetchGalleryItems(): Promise<GalleryItem[]> {
     items.push(...payload.items);
     cursor = payload.nextCursor;
     if (cursor) {
-      if (seenCursors.has(cursor)) throw new ApiError("Couldn't load the gallery. Try again.");
+      if (seenCursors.has(cursor)) throw new Error("Couldn't load the gallery. Try again.");
       seenCursors.add(cursor);
     }
   } while (cursor);
@@ -507,9 +497,9 @@ export async function fetchWorkspaceExport(workspaceId: string): Promise<{ blob:
     // with an opaque download failure.
     const { payload, message } = await readResponseError(response);
     if (handleAuthRequired(response.status, payload)) {
-      throw new ApiError('Sign in to continue.');
+      throw new Error('Sign in to continue.');
     }
-    throw new ApiError(message);
+    throw new Error(message);
   }
 
   return {
