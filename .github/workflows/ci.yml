@@ -51,6 +51,7 @@ jobs:
           CAIL_BASE_PATH=/agent-studio
           CAIL_IDENTITY_JWKS=
           CAIL_IDENTITY_ISSUER=
+          CAIL_CANONICAL_ORIGIN=
           EOF
 
       - name: Local Worker process integration smoke (not E2E)

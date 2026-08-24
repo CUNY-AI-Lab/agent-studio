@@ -46,6 +46,16 @@ type WorkspaceSnapshot = {
   panels: Array<{ id: string; layout?: WorkspacePanelLayout }>;
 };
 
+type BrowserPoint = {
+  x: number;
+  y: number;
+};
+
+type CanvasPoint = {
+  position: BrowserPoint;
+  absolute: BrowserPoint;
+};
+
 type AcceptanceOptions = {
   url?: string;
   port: number;
@@ -310,6 +320,37 @@ function associationName(sourceTitle: string, targetTitle: string): RegExp {
   return new RegExp(`^Association between ${escapeRegExp(sourceTitle)} and ${escapeRegExp(targetTitle)}$`);
 }
 
+async function emptyCanvasPoint(page: Page, canvas: Locator): Promise<CanvasPoint> {
+  const box = await canvas.boundingBox();
+  if (!box) fail('Workspace canvas did not expose a browser bounding box');
+  const position = await page.evaluate((bounds) => {
+    const candidates = [
+      [0.75, 0.5],
+      [0.65, 0.5],
+      [0.85, 0.5],
+      [0.75, 0.7],
+      [0.55, 0.75],
+      [0.5, 0.5],
+    ] as const;
+    for (const [xFraction, yFraction] of candidates) {
+      const x = bounds.x + bounds.width * xFraction;
+      const y = bounds.y + bounds.height * yFraction;
+      const target = document.elementFromPoint(x, y);
+      const application = target?.closest('[role="application"]');
+      const blocked = target?.closest('button, a, input, textarea, select, [contenteditable="true"], [role="group"], [role="heading"]');
+      if (application && !blocked) {
+        return { x: x - bounds.x, y: y - bounds.y };
+      }
+    }
+    return null;
+  }, box);
+  if (!position) fail('Workspace canvas did not expose an empty browser point');
+  return {
+    position,
+    absolute: { x: box.x + position.x, y: box.y + position.y },
+  };
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -349,11 +390,8 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await expect(association).toHaveCount(0);
 
     const canvas = page.getByRole('region', { name: /^Workspace canvas/ });
-    const canvasBox = await canvas.boundingBox();
-    if (!canvasBox) fail('Workspace canvas did not expose a browser bounding box');
-    await canvas.click({
-      position: { x: canvasBox.width - 40, y: canvasBox.height - 40 },
-    });
+    const firstClearPoint = await emptyCanvasPoint(page, canvas);
+    await canvas.click({ position: firstClearPoint.position });
     await expect(multiToolbar).toHaveCount(0);
 
     await selectPanel(page, 'Source cards', 'cards');
@@ -367,6 +405,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
         schema: WorkspacePayloadSchema,
       }),
     );
+    const panPoint = await emptyCanvasPoint(page, canvas);
     await canvas.focus();
     await page.keyboard.down('Space');
     // React Flow derives panOnDrag from this key in a state update. Yield one
@@ -377,9 +416,9 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
       requestAnimationFrame(() => resolveFrame());
     }));
     try {
-      await page.mouse.move(canvasBox.x + canvasBox.width - 80, canvasBox.y + canvasBox.height - 80);
+      await page.mouse.move(panPoint.absolute.x, panPoint.absolute.y);
       await page.mouse.down();
-      await page.mouse.move(canvasBox.x + canvasBox.width - 280, canvasBox.y + canvasBox.height - 280, { steps: 10 });
+      await page.mouse.move(panPoint.absolute.x - 200, panPoint.absolute.y - 200, { steps: 10 });
       await page.mouse.up();
     } finally {
       await page.keyboard.up('Space');
@@ -406,7 +445,8 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
 
     await page.getByRole('button', { name: 'Reset zoom and position' }).click();
     await expect(multiToolbar).toBeVisible();
-    await canvas.click({ position: { x: canvasBox.width - 40, y: canvasBox.height - 40 } });
+    const secondClearPoint = await emptyCanvasPoint(page, canvas);
+    await canvas.click({ position: secondClearPoint.position });
     await expect(multiToolbar).toHaveCount(0);
 
     await selectPanel(page, 'Source cards', 'cards');

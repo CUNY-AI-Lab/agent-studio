@@ -37,6 +37,11 @@ test('CI protects action and package credentials in one validation job', async (
   );
   assert.match(validationJob, /- name: Install Chromium for browser integration\n\s+run: bunx playwright install --with-deps chromium/);
   assert.match(validationJob, /- name: Local Worker browser acceptance \(integration, not E2E\)\n\s+run: bun run test:browser -- --no-build/);
+  assert.match(
+    validationJob,
+    /CAIL_IDENTITY_ISSUER=\n\s+CAIL_CANONICAL_ORIGIN=\n/,
+    'local Worker acceptance must use the request origin instead of the production WebSocket origin',
+  );
 
   for (const action of [
     'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd',
