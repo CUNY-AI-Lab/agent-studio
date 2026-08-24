@@ -369,6 +369,13 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     );
     await canvas.focus();
     await page.keyboard.down('Space');
+    // React Flow derives panOnDrag from this key in a state update. Yield one
+    // browser frame so the visible gesture begins after that update commits;
+    // otherwise a fast synthetic drag can arrive while left-drag selection is
+    // still active on slower browsers.
+    await page.evaluate(() => new Promise<void>((resolveFrame) => {
+      requestAnimationFrame(() => resolveFrame());
+    }));
     try {
       await page.mouse.move(canvasBox.x + canvasBox.width - 80, canvasBox.y + canvasBox.height - 80);
       await page.mouse.down();
