@@ -51,6 +51,7 @@ import type { ModelCatalog } from './api';
 import {
   PANEL_GAP,
   buildPanelLayouts,
+  findOpenPanelPosition,
   getGroupBounds,
   getLayoutsBounds,
   inferPanelLayout,
@@ -1229,36 +1230,15 @@ function WorkspaceShell({
     const gap = PANEL_GAP;
     const occupiedRects: CanvasPanelLayout[] = [];
     const addedLayouts: Record<string, { x: number; y: number; width: number; height: number }> = {};
+    const canvasWidth = canvasViewportRef.current?.clientWidth || globalThis.window?.innerWidth || 1440;
+    const canvasHeight = canvasViewportRef.current?.clientHeight || globalThis.window?.innerHeight || 900;
 
-    const overlaps = (x: number, y: number, width: number, height: number) =>
-      occupiedRects.some((rect) => !(
-        x + width + gap <= rect.x ||
-        rect.x + rect.width + gap <= x ||
-        y + height + gap <= rect.y ||
-        rect.y + rect.height + gap <= y
-      ));
-
-    const findPosition = (width: number, height: number) => {
-      const startX = 32;
-      const startY = 32;
-
-      if (occupiedRects.length === 0) {
-        return { x: startX, y: startY };
-      }
-
-      for (let y = startY; y <= 4000; y += 48) {
-        for (let x = startX; x <= 4000; x += 48) {
-          if (!overlaps(x, y, width, height)) {
-            return { x, y };
-          }
-        }
-      }
-
-      return {
-        x: startX,
-        y: Math.max(...occupiedRects.map((rect) => rect.y + rect.height), 0) + gap,
-      };
-    };
+    const overlaps = (x: number, y: number, width: number, height: number) => occupiedRects.some((rect) => !(
+      x + width + gap <= rect.x ||
+      rect.x + rect.width + gap <= x ||
+      y + height + gap <= rect.y ||
+      rect.y + rect.height + gap <= y
+    ));
 
     visiblePanels.forEach((panel) => {
       if (panel.layout?.x === undefined || panel.layout?.y === undefined) return;
@@ -1299,7 +1279,13 @@ function WorkspaceShell({
           y = sourceLayout.y + sourceLayout.height + gap;
 
           if (overlaps(x, y, width, height)) {
-            const position = findPosition(width, height);
+            const position = findOpenPanelPosition(
+              occupiedRects,
+              width,
+              height,
+              workspaceState.viewport,
+              { width: canvasWidth, height: canvasHeight },
+            );
             x = position.x;
             y = position.y;
           }
@@ -1307,7 +1293,13 @@ function WorkspaceShell({
 
         delete panelSourceRef.current[panel.id];
       } else {
-        const position = findPosition(width, height);
+        const position = findOpenPanelPosition(
+          occupiedRects,
+          width,
+          height,
+          workspaceState.viewport,
+          { width: canvasWidth, height: canvasHeight },
+        );
         x = position.x;
         y = position.y;
       }
@@ -1320,7 +1312,7 @@ function WorkspaceShell({
     if (Object.keys(addedLayouts).length > 0) {
       void savePanelLayouts(addedLayouts);
     }
-  }, [panelLayouts, savePanelLayouts, visiblePanels]);
+  }, [panelLayouts, savePanelLayouts, visiblePanels, workspaceState.viewport]);
 
   useEffect(() => {
     if (pendingAutoFocusRef.current.size === 0) return;

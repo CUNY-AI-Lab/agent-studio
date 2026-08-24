@@ -802,8 +802,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const nextLayout = parsedPatch.panels?.[panel.id];
       if (!nextLayout) return panel;
       const layout = { ...panel.layout };
-      if (nextLayout.x !== undefined) layout.x = clamp(nextLayout.x, 0, 100000);
-      if (nextLayout.y !== undefined) layout.y = clamp(nextLayout.y, 0, 100000);
+      // Flow coordinates intentionally have no origin boundary. React Flow's
+      // viewport is the navigation boundary, so panning left/up and persisting
+      // negative x/y values must work just like positive coordinates. Keep the
+      // product clamps on dimensions below; only finite-value validation applies
+      // to positions at the schema boundary.
+      if (nextLayout.x !== undefined) layout.x = nextLayout.x;
+      if (nextLayout.y !== undefined) layout.y = nextLayout.y;
       if (nextLayout.width !== undefined) layout.width = clamp(nextLayout.width, 100, 10000);
       if (nextLayout.height !== undefined) layout.height = clamp(nextLayout.height, 60, 10000);
       return {

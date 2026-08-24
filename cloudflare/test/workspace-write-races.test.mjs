@@ -733,6 +733,48 @@ async function makeLayoutAgent(state) {
   };
 }
 
+test('layout patch preserves negative flow coordinates through the DO state echo and reload', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { applyLayoutPatch } = await makeLayoutAgent({
+    sessionId: null,
+    workspace: null,
+    panels: [panel('negative')],
+    viewport: { x: 0, y: 0, zoom: 1 },
+    groups: [],
+    connections: [],
+  });
+
+  const echoed = await applyLayoutPatch({
+    panels: {
+      negative: { x: -480.5, y: -220.25, width: 420, height: 260 },
+    },
+    viewport: { x: 760, y: 540, zoom: 0.8 },
+  });
+
+  assert.deepEqual(echoed.panels[0].layout, {
+    x: -480.5,
+    y: -220.25,
+    width: 420,
+    height: 260,
+  });
+  assert.deepEqual(echoed.viewport, { x: 760, y: 540, zoom: 0.8 });
+
+  const reloaded = {
+    state: echoed,
+    setState(next) {
+      this.state = next;
+    },
+  };
+  await WorkspaceAgent.prototype.replaceWorkspaceState.call(
+    reloaded,
+    echoed,
+    { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' },
+    'session',
+  );
+  assert.deepEqual(reloaded.state.panels[0].layout, echoed.panels[0].layout);
+  assert.deepEqual(reloaded.state.viewport, echoed.viewport);
+});
+
 function panel(id) {
   return { id, type: 'markdown', title: id, content: '' };
 }
