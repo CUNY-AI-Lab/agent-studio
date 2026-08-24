@@ -493,16 +493,6 @@ describe('CanvasFlow selection state', () => {
 });
 
 describe('CanvasFlow keyboard view shortcuts', () => {
-  it('renders the viewport-aware dot background inside React Flow', async () => {
-    renderCanvas(new Set());
-
-    await waitFor(() => {
-      const background = document.querySelector('[data-testid="rf__background"]');
-      expect(background).toBeInTheDocument();
-      expect(background?.querySelector('.react-flow__background-pattern.dots')).toBeInTheDocument();
-    });
-  });
-
   it('uses the React Flow viewport helpers and opens the shortcut dialog', async () => {
     const onViewportChange = vi.fn();
     const onOpenShortcuts = vi.fn();

@@ -242,7 +242,7 @@ export function ChatPanel({
           className="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-sm resize-none focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all placeholder:text-muted-foreground"
           value={composer}
           onChange={(event) => onComposerChange(event.target.value)}
-          placeholder={selectedScopeLabel ? 'Ask about the selected tiles.' : 'Ask the agent to create files and tiles.'}
+          placeholder={selectedScopeLabel ? 'Ask about the selected tiles.' : 'Ask the agent to create files and panels.'}
           aria-label="Message the agent"
           disabled={isWorking}
           rows={2}

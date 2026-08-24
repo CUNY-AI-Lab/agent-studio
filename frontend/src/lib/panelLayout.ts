@@ -1,4 +1,4 @@
-import type { WorkspacePanel, WorkspaceState, WorkspaceViewport } from '../types';
+import type { WorkspacePanel, WorkspaceState } from '../types';
 
 export const PANEL_GAP = 20;
 
@@ -13,91 +13,10 @@ export function inferPanelLayout(panel: WorkspacePanel, index: number) {
 export type CanvasPanelLayout = ReturnType<typeof inferPanelLayout>;
 export type LayoutMap = Record<string, CanvasPanelLayout>;
 
-export interface CanvasViewportSize {
-  width: number;
-  height: number;
-}
-
-export interface PanelPosition {
-  x: number;
-  y: number;
-}
-
 export function buildPanelLayouts(panels: WorkspacePanel[]): Record<string, CanvasPanelLayout> {
   return Object.fromEntries(
     panels.map((panel, index) => [panel.id, inferPanelLayout(panel, index)])
   );
-}
-
-function overlapsWithGap(
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  rect: CanvasPanelLayout,
-): boolean {
-  return !(
-    x + width + PANEL_GAP <= rect.x ||
-    rect.x + rect.width + PANEL_GAP <= x ||
-    y + height + PANEL_GAP <= rect.y ||
-    rect.y + rect.height + PANEL_GAP <= y
-  );
-}
-
-function hasLayoutOverlap(
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  layouts: CanvasPanelLayout[],
-): boolean {
-  return layouts.some((rect) => overlapsWithGap(x, y, width, height, rect));
-}
-
-/**
- * Find an open position centered on the user's current viewport.
- *
- * React Flow's viewport is a screen-space translation plus zoom. Converting
- * the viewport center back into flow coordinates keeps a new tile near the
- * user's current working area even after they pan into negative coordinates.
- * The expanding square search has no canvas boundary: a finite set of finite
- * rectangles always leaves an open position eventually.
- */
-export function findOpenPanelPosition(
-  occupiedLayouts: CanvasPanelLayout[],
-  width: number,
-  height: number,
-  viewport: WorkspaceViewport,
-  viewportSize: CanvasViewportSize,
-): PanelPosition {
-  const zoom = Math.max(viewport.zoom, Number.EPSILON);
-  const centerX = (viewportSize.width / 2 - viewport.x) / zoom;
-  const centerY = (viewportSize.height / 2 - viewport.y) / zoom;
-  const startX = centerX - width / 2;
-  const startY = centerY - height / 2;
-
-  if (!hasLayoutOverlap(startX, startY, width, height, occupiedLayouts)) {
-    return { x: startX, y: startY };
-  }
-
-  const step = Math.max(PANEL_GAP, 48);
-  for (let ring = 1; ; ring += 1) {
-    for (let offset = -ring; offset <= ring; offset += 1) {
-      const candidates = [
-        [ring, offset],
-        [-ring, offset],
-        [offset, ring],
-        [offset, -ring],
-      ];
-      for (const [xOffset, yOffset] of candidates) {
-        const x = startX + xOffset * step;
-        const y = startY + yOffset * step;
-        if (!hasLayoutOverlap(x, y, width, height, occupiedLayouts)) {
-          return { x, y };
-        }
-      }
-    }
-  }
 }
 
 export function collectLayouts(layouts: LayoutMap, panelIds: Iterable<string>) {

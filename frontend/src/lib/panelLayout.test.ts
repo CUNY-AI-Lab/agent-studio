@@ -3,7 +3,6 @@ import {
   PANEL_GAP,
   buildPanelLayouts,
   collectLayouts,
-  findOpenPanelPosition,
   getGroupBounds,
   getLayoutsBounds,
   hasOverlappingPanels,
@@ -162,33 +161,5 @@ describe('buildPanelLayouts', () => {
   it('keys layouts by panel id', () => {
     const layouts = buildPanelLayouts([markdownPanel('a'), markdownPanel('b')]);
     expect(Object.keys(layouts)).toEqual(['a', 'b']);
-  });
-});
-
-describe('findOpenPanelPosition', () => {
-  const viewportSize = { width: 1000, height: 700 };
-
-  it('places an unassociated tile at the current viewport center', () => {
-    expect(findOpenPanelPosition([], 360, 220, { x: 0, y: 0, zoom: 1 }, viewportSize)).toEqual({
-      x: 320,
-      y: 240,
-    });
-  });
-
-  it('follows panned and zoomed viewports into negative flow coordinates', () => {
-    expect(findOpenPanelPosition([], 360, 220, { x: 600, y: 400, zoom: 1.25 }, viewportSize)).toEqual({
-      x: -260,
-      y: -150,
-    });
-  });
-
-  it('searches outward from the viewport center when the center is occupied', () => {
-    const occupied = [{ x: 320, y: 240, width: 360, height: 220 }];
-    const position = findOpenPanelPosition(occupied, 360, 220, { x: 0, y: 0, zoom: 1 }, viewportSize);
-    expect(position).not.toEqual({ x: 320, y: 240 });
-    expect(
-      occupied.some((layout) => layout.x === position.x && layout.y === position.y),
-    ).toBe(false);
-    expect(position.x !== 320 || position.y !== 240).toBe(true);
   });
 });

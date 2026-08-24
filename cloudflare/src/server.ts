@@ -36,11 +36,8 @@ import {
 import {
   fetchCailModels,
   ModelCatalogAuthError,
-  ModelCatalogDefaultError,
   ModelCatalogQuotaError,
-  supportsFunctionCalling,
 } from './lib/cail-models';
-import { resolveCailModelName } from './lib/cail-model';
 import { cailAuthRequiredResponse } from './lib/cail-identity';
 import {
   layoutPatchSchema,
@@ -137,9 +134,6 @@ app.onError((error, c) => {
   }
   if (error instanceof ModelCatalogQuotaError) {
     return c.json(canonicalError('quota_exceeded', error.message, { type: 'rate_limit_error', retryable: false }), 429);
-  }
-  if (error instanceof ModelCatalogDefaultError) {
-    return c.json(canonicalError('model_unavailable', 'Agent Studio’s default model is unavailable.', { type: 'api_error', retryable: true }), 502);
   }
   return c.json(canonicalError('internal_error', 'Something went wrong.', { type: 'api_error', retryable: true }), 500);
 });
@@ -330,15 +324,10 @@ app.get('/api/models', async (c) => {
     env: c.env,
     identityJwt: cailGatewayJwt(c),
   });
-  const configuredDefault = resolveCailModelName(c.env);
-  const defaultEntry = models.find((model) => model.id === configuredDefault);
-  if (!defaultEntry || !supportsFunctionCalling(defaultEntry)) {
-    throw new ModelCatalogDefaultError();
-  }
-  const functionCallingModels = models.filter(supportsFunctionCalling);
+  const recommended = models.find((model) => model.recommended) ?? models[0];
   return c.json({
-    models: functionCallingModels,
-    default: defaultEntry.id,
+    models,
+    default: recommended.id,
   });
 });
 
@@ -432,7 +421,6 @@ app.post('/api/gallery/:id', async (c) => {
     id: workspaceId,
     name: item.title,
     description: `Cloned from gallery: ${item.description}`,
-    model: resolveCailModelName(c.env),
   });
   workspace.createdAt = now;
   workspace.updatedAt = now;
@@ -520,7 +508,6 @@ app.post('/api/workspaces', async (c) => {
     id: createOpaqueId(),
     name: body.name,
     description: body.description,
-    model: resolveCailModelName(c.env),
   });
 
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
@@ -553,8 +540,8 @@ app.post('/api/workspaces/import', async (c) => {
   let bundle;
   try {
     bundle = parseWorkspaceImportBundle(JSON.parse(await bundleFile.text()));
-  } catch {
-    return jsonError(c, 400, 'invalid_bundle', "That file isn't a workspace export from Agent Studio. Choose a .agent-studio.json export and try again.");
+  } catch (error) {
+    return jsonError(c, 400, 'invalid_bundle', error instanceof Error ? error.message : 'Invalid workspace bundle');
   }
   if (bundle.files.length > MAX_IMPORT_FILE_COUNT) {
     return jsonError(c, 400, 'payload_too_large', `Workspace bundle exceeds the ${MAX_IMPORT_FILE_COUNT} file import limit`);
@@ -582,8 +569,10 @@ app.post('/api/workspaces/import', async (c) => {
     description: bundle.workspace.description,
     createdAt: now,
     updatedAt: now,
-    model: bundle.workspace.model ?? resolveCailModelName(c.env),
   };
+  // Preserve a per-workspace model override across the export/import round-trip.
+  if (bundle.workspace.model) workspace.model = bundle.workspace.model;
+
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
   try {
@@ -928,7 +917,7 @@ app.put('/api/workspaces/:id/files/*', async (c) => {
   const putContentType = c.req.header('content-type')?.split(';', 1)[0]?.trim() || undefined;
   const uploadVerdict = isAllowedUpload({ name: filePath, type: putContentType });
   if (!uploadVerdict.allowed) {
-    return jsonError(c, 400, 'invalid_upload', uploadVerdict.reason || "Files of this type can't be uploaded. Upload documents, data files, or images instead.");
+    return jsonError(c, 400, 'invalid_upload', uploadVerdict.reason || 'File type not allowed');
   }
   const declaredLength = Number(c.req.header('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_FILE_BYTES) {
