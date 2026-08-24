@@ -21,6 +21,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import {
+  ApiError,
   clearWorkspaceDownloads,
   cloneGalleryItem,
   createWorkspace,
@@ -1870,7 +1871,7 @@ function WorkspaceShell({
       link.href = dataUrl;
       link.click();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to export tile image');
+      setError(nextError instanceof ApiError ? nextError.message : 'The tile image didn’t export. Try again.');
     }
   }, []);
 
@@ -1976,7 +1977,7 @@ function WorkspaceShell({
       });
       await refreshWorkspace();
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to save workspace');
+      setError(nextError instanceof ApiError ? nextError.message : 'The workspace didn’t save. Check your connection and try again.');
     } finally {
       setSavingWorkspace(false);
     }
@@ -1991,7 +1992,7 @@ function WorkspaceShell({
       await refreshWorkspace();
     } catch (nextError) {
       setWorkspaceModel(previous);
-      setError(nextError instanceof Error ? nextError.message : 'Failed to change model');
+      setError(nextError instanceof ApiError ? nextError.message : 'The model didn’t change. Try again.');
     }
   }, [refreshWorkspace, workspace.workspace.id, workspaceModel]);
 
@@ -2019,7 +2020,7 @@ function WorkspaceShell({
       await refreshWorkspace();
       showToast('Published to gallery');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to publish workspace');
+      setError(nextError instanceof ApiError ? nextError.message : 'Publishing didn’t finish. Try again.');
     } finally {
       setPublishing(false);
     }
@@ -2688,7 +2689,7 @@ export default function App() {
       setSelectedWorkspace(response);
       setSelectedWorkspaceId(workspaceId);
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Failed to load workspace');
+      setError(nextError instanceof ApiError ? nextError.message : 'The workspace didn’t load. Reload the page to try again.');
     } finally {
       setLoading(false);
     }

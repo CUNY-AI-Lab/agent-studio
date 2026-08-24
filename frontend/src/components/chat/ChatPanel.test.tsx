@@ -92,7 +92,7 @@ describe('ChatPanel', () => {
     render(
       <ChatPanel {...baseProps} composer="do a thing" onSubmit={onSubmit} onComposerChange={onComposerChange} />
     );
-    const textarea = screen.getByPlaceholderText('Ask the agent to create files and panels.');
+    const textarea = screen.getByPlaceholderText('Ask the agent to create files and tiles.');
     textarea.focus();
     await user.keyboard('{Enter}');
     expect(onSubmit).toHaveBeenCalledWith('do a thing');

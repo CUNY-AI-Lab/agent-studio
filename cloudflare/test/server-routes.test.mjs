@@ -909,7 +909,7 @@ test('upload: disallowed extension (.exe) is rejected with 400', async () => {
     body: form,
   });
   assert.equal(res.status, 400);
-  assert.match((await readError(res)).message, /\.exe.*not allowed/);
+  assert.match((await readError(res)).message, /'\.exe' files can't be uploaded/);
   assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
 });
 
