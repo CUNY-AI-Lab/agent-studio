@@ -424,7 +424,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
       'the user pan to persist',
     );
     if (
-      stateAfterPan.viewport.x >= stateBeforePan.viewport.x &&
+      stateAfterPan.viewport.x >= stateBeforePan.viewport.x ||
       stateAfterPan.viewport.y >= stateBeforePan.viewport.y
     ) {
       fail('Canvas pan did not move the viewport farther into negative coordinates');
