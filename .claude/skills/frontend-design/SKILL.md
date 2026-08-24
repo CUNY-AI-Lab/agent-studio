@@ -1,11 +1,17 @@
 ---
 name: frontend-design
-description: Design guidelines for building polished UI components. Use when creating custom preview panels or HTML interfaces.
+description: Design guidelines for building polished HTML workspace files and surfacing them as file-backed canvas tiles.
 ---
 
 # Frontend Design
 
-Guidelines for creating distinctive, production-grade frontend interfaces that avoid generic "AI slop" aesthetics. Use this skill ALWAYS when creating UI with `addPanel({ type: 'preview', content: html })`.
+Guidelines for creating distinctive, production-grade frontend interfaces that avoid generic "AI slop" aesthetics. Use this skill whenever creating an HTML artifact.
+
+Write a self-contained `.html` workspace file with inline CSS and JavaScript in
+codemode using `state.writeFile` (and `state.appendFile` for large artifacts).
+After codemode returns, call `ui_show_file` with the file path and a concise,
+task-specific display title. Do not put a full HTML document in a UI tool
+argument.
 
 ## Design Thinking
 
@@ -19,14 +25,11 @@ Before coding, commit to a BOLD aesthetic direction:
 
 ## Implementation
 
-Create complete HTML with embedded CSS and JavaScript:
+Create complete HTML with embedded CSS and JavaScript, then save it as a
+workspace file:
 
 ```javascript
-await addPanel({
-  id: 'my-app',
-  type: 'preview',
-  title: 'My App',
-  content: `<!DOCTYPE html>
+const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -42,9 +45,13 @@ await addPanel({
     // Your JavaScript here
   </script>
 </body>
-</html>`
-});
+</html>`;
+
+await state.writeFile('my-app.html', html);
+return { filePath: 'my-app.html' };
 ```
+
+Then call `ui_show_file` with `filePath: "my-app.html"` and a readable title.
 
 ## Frontend Aesthetics Guidelines
 

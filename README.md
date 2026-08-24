@@ -63,6 +63,11 @@ workspace model and chat runtime use that namespace. Unsupported provider
 entries are ignored at the catalog boundary; a malformed supported entry fails
 closed instead of silently changing the model contract.
 
+The production-configured default is
+`@cf/deepseek-ai/deepseek-v4-flash-0731`. A workspace may retain another
+supported Workers AI model selected by its user; the default is used only when
+no valid workspace or environment override exists.
+
 Agent-owned authentication challenges use the strict cail-identity 5.2.5
 envelope `{ "error": { "code", "message", "launch"? } }`. The
 OpenAI-compatible `type`/`param`/`cail` envelope remains scoped to errors
@@ -74,13 +79,18 @@ challenge.
 - Workspace create, edit, import/export, and deletion with Durable Object state
   and R2 records.
 - Authenticated streaming chat with the CAIL model gateway.
-- Files, previews, canvas panels, groups, connections, gallery publication,
-  and cloning.
+- Workspace files, rendered file previews, canvas tiles, groups, associations,
+  gallery publication, and cloning.
 - Isolated JavaScript execution through Cloudflare Dynamic Workers.
 - Guarded public web fetches remain available, with optional server-side
   credentials for Primo, WorldCat, and LibGuides when those integrations are
   configured; host-side PDF, XLSX, and DOCX tools; and the runtime research
   skill documents.
+
+The interaction and state rules for tiles, associations, titles, downloads, and
+the unbounded canvas live in [Agent Studio Canvas Model](./CANVAS-DESIGN.md).
+Keyboard and assistive-technology behavior lives in
+[Accessibility](./ACCESSIBILITY.md).
 
 The first successful login may perform the one-time lazy import described in
 [One-time first-login import](./docs/legacy-account-import.md). It requires a
