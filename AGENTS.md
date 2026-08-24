@@ -58,3 +58,20 @@
 - Never expose JWTs, subjects, emails, workspace identifiers, prompts, files,
   credentials, or user data in logs, smoke output, command arguments, or
   documentation. Keep secrets in the authorized environment.
+
+## Test value
+
+- Every test protects a visible user action, a load-bearing boundary, or a
+  deliberately injected failure such as cancellation, stale state, or a race.
+  Delete harness-only checks and duplicate DOM or CSS assertions.
+- Name the boundary honestly: component tests exercise rendered components,
+  in-process tests exercise a local adapter or Worker seam, and browser tests
+  exercise the built frontend across a real local Worker process. Do not call a
+  mocked callback or an in-process fake an end-to-end test.
+- Browser acceptance acts through accessible controls and checks what a user
+  sees, downloads, and finds persisted after reload. It does not assert CSS
+  classes, framework internals, callback counts, or implementation-only DOM
+  rows.
+- Keep model behavior deterministic. Use a maintained local fake/provider seam
+  when model protocol behavior is in scope; otherwise use a deterministic
+  artifact path and state explicitly which model behavior was not tested.

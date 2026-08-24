@@ -176,7 +176,6 @@ describe('CanvasFlow selection state', () => {
     await waitFor(() => {
       const chartTile = screen.getByRole('group', { name: 'Enrollment (chart tile)' });
       expect(chartTile).toBeInTheDocument();
-      expect(chartTile.querySelector('[data-chart]')).toBeInTheDocument();
     });
 
     fireEvent.doubleClick(screen.getByRole('group', { name: 'Chart notes (markdown tile)' }));
@@ -185,7 +184,6 @@ describe('CanvasFlow selection state', () => {
       expect(screen.getByRole('dialog', { name: 'Ask about Chart notes' })).toBeInTheDocument();
       const chartTile = screen.getByRole('group', { name: 'Enrollment (chart tile)' });
       expect(chartTile).toBeInTheDocument();
-      expect(chartTile.querySelector('[data-chart]')).toBeInTheDocument();
     });
   });
 
@@ -244,7 +242,7 @@ describe('CanvasFlow selection state', () => {
       await waitFor(() => {
         expect(screen.getByRole('group', { name: 'Enrollment (chart tile)' })).toBeInTheDocument();
         expect(screen.getByRole('group', { name: 'Follow-up notes (markdown tile)' })).toBeInTheDocument();
-        expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(2);
+        expect(screen.getAllByRole('button', { name: /Association between/ })).toHaveLength(2);
       });
 
       fireEvent.doubleClick(screen.getByRole('group', { name: 'Chart notes (markdown tile)' }));
@@ -252,17 +250,17 @@ describe('CanvasFlow selection state', () => {
 
       await waitFor(() => {
         expect(screen.getByRole('dialog', { name: 'Ask about Chart notes' })).toBeInTheDocument();
-        expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(2);
+        expect(screen.getAllByRole('button', { name: /Association between/ })).toHaveLength(2);
       });
 
       fireEvent.click(screen.getByRole('button', { name: 'Close' }));
       await waitFor(() => {
         expect(screen.queryByRole('dialog', { name: 'Ask about Chart notes' })).not.toBeInTheDocument();
-        expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(2);
+        expect(screen.getAllByRole('button', { name: /Association between/ })).toHaveLength(2);
       });
 
       fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
-      await waitFor(() => expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(2));
+      await waitFor(() => expect(screen.getAllByRole('button', { name: /Association between/ })).toHaveLength(2));
     } finally {
       vi.stubGlobal('ResizeObserver', nativeResizeObserver);
       vi.stubGlobal('DOMMatrixReadOnly', nativeDOMMatrixReadOnly);
@@ -480,7 +478,7 @@ describe('CanvasFlow selection state', () => {
       await waitFor(() => {
         expect(screen.getByRole('group', { name: 'One (markdown tile)' })).toBeInTheDocument();
         expect(screen.getByRole('group', { name: 'Two (markdown tile)' })).toBeInTheDocument();
-        expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(1);
+        expect(screen.getAllByRole('button', { name: /Association between/ })).toHaveLength(1);
       });
 
       fireEvent.click(screen.getByRole('group', { name: 'One (markdown tile)' }));
@@ -492,7 +490,7 @@ describe('CanvasFlow selection state', () => {
       expect(screen.queryByRole('button', { name: '1 selected' })).not.toBeInTheDocument();
       expect(screen.getByRole('group', { name: 'One (markdown tile)' })).toBeInTheDocument();
       expect(screen.getByRole('group', { name: 'Two (markdown tile)' })).toBeInTheDocument();
-      expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: /Association between/ })).toHaveLength(1);
     } finally {
       vi.stubGlobal('ResizeObserver', nativeResizeObserver);
       vi.stubGlobal('DOMMatrixReadOnly', nativeDOMMatrixReadOnly);
@@ -502,16 +500,6 @@ describe('CanvasFlow selection state', () => {
 });
 
 describe('CanvasFlow keyboard view shortcuts', () => {
-  it('renders the viewport-aware dot background inside React Flow', async () => {
-    renderCanvas(new Set());
-
-    await waitFor(() => {
-      const background = document.querySelector('[data-testid="rf__background"]');
-      expect(background).toBeInTheDocument();
-      expect(background?.querySelector('.react-flow__background-pattern.dots')).toBeInTheDocument();
-    });
-  });
-
   it('uses the React Flow viewport helpers and opens the shortcut dialog', async () => {
     const onViewportChange = vi.fn();
     const onOpenShortcuts = vi.fn();

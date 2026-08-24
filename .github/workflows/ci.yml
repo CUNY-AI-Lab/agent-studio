@@ -32,6 +32,9 @@ jobs:
           NODE_AUTH_TOKEN: ${{ github.token }}
         run: bun install --frozen-lockfile
 
+      - name: Install Chromium for browser integration
+        run: bunx playwright install --with-deps chromium
+
       - name: Dependency audit
         run: bun audit --audit-level high
 
@@ -48,6 +51,7 @@ jobs:
           CAIL_BASE_PATH=/agent-studio
           CAIL_IDENTITY_JWKS=
           CAIL_IDENTITY_ISSUER=
+          CAIL_CANONICAL_ORIGIN=
           EOF
 
       - name: Local Worker process integration smoke (not E2E)
@@ -86,6 +90,9 @@ jobs:
             show_worker_log
             exit 1
           fi
+
+      - name: Local Worker browser acceptance (integration, not E2E)
+        run: bun run test:browser -- --no-build
 
   deploy:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
