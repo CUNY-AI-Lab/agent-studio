@@ -38,7 +38,14 @@ import {
   type WorkspaceState,
 } from '../domain/workspace';
 import type { Env } from '../env';
-import { createCailModel } from '../lib/cail-model';
+import { createCailModel, resolveCailModelName } from '../lib/cail-model';
+import {
+  fetchCailModels,
+  ModelCatalogAuthError,
+  ModelCatalogCapabilityError,
+  ModelCatalogQuotaError,
+  requireFunctionCallingModel,
+} from '../lib/cail-models';
 import {
   isCailIdentityConfigError,
   verifyGatewayCredentialForSession,
@@ -51,7 +58,12 @@ import {
   normalizePanelRelations,
   repairPanelConnectionId,
 } from '../lib/panel-connections';
-import { layoutPatchSchema, panelIdSchema, runtimeCodeSchema } from '../lib/workspace-validation';
+import {
+  layoutPatchSchema,
+  panelIdSchema,
+  runtimeCodeSchema,
+  workspaceTitleSchema,
+} from '../lib/workspace-validation';
 import { canonicalError } from '../lib/error-envelope';
 import { guardedWebFetch } from '../lib/web-fetch-guard';
 import {
@@ -80,6 +92,11 @@ import {
   quotaSignalFromError,
 } from '../lib/quota-error';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
+import {
+  isFirstSubstantiveTurn,
+  isPlaceholderWorkspaceName,
+  prepareWorkspaceTitleStep,
+} from '../lib/workspace-title';
 
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
@@ -88,6 +105,11 @@ const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // tool plan cannot spend indefinitely. This is a loop safety boundary, not an
 // output/token cap.
 const MODEL_TOOL_LOOP_STEPS = 12;
+
+interface WorkspaceToolOptions {
+  allowAutomaticWorkspaceRename?: boolean;
+  requireInitialWorkspaceTitle?: boolean;
+}
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -243,6 +265,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
    */
   private cailIdentityJwt: string | null = null;
   private cailSubject: string | null = null;
+  /** In-memory capability proof for the model used by the warm DO instance. */
+  private functionCallingModelId: string | null = null;
 
   async onStart() {
     if (!this.state.workspace) {
@@ -591,6 +615,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
 
     try {
+      const modelName = workspace.model ?? resolveCailModelName(this.env);
+      const forceWorkspaceTitle = isPlaceholderWorkspaceName(workspace.name ?? '')
+        && isFirstSubstantiveTurn(this.messages);
+      if (this.functionCallingModelId !== modelName) {
+        const { models } = await fetchCailModels({
+          env: this.env,
+          identityJwt,
+        });
+        requireFunctionCallingModel(models, modelName);
+        this.functionCallingModelId = modelName;
+      }
       const scopedPanelIds = z.array(z.string()).safeParse(options?.body?.scopePanelIds).data ?? [];
       const scopedPanels = scopedPanelIds
         .map((panelId) => this.state.panels.find((panel) => panel.id === panelId))
@@ -612,13 +647,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           }),
         ].join('\n')
         : null;
-      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels);
+      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, {
+        allowAutomaticWorkspaceRename: forceWorkspaceTitle,
+        requireInitialWorkspaceTitle: forceWorkspaceTitle,
+      });
       const codemode = this.createCodeModeTool(hostTools);
       const modelTools = this.buildModelTools(hostTools);
       const model = createCailModel({
         env: this.env,
         identityJwt,
-        model: workspace.model,
+        model: modelName,
       });
 
       const result = streamText({
@@ -636,6 +674,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           ...modelTools,
           codemode,
         },
+        prepareStep: ({ stepNumber }) => prepareWorkspaceTitleStep(forceWorkspaceTitle, stepNumber),
         stopWhen: stepCountIs(MODEL_TOOL_LOOP_STEPS),
       });
 
@@ -647,12 +686,28 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           return quota ?? 'Agent Studio hit an internal error while streaming this response.';
         },
       });
-    } catch {
-      const errorText = JSON.stringify(canonicalError(
-        'internal_error',
-        'Agent Studio could not start this response.',
-        { type: 'api_error', retryable: true },
-      ));
+    } catch (error) {
+      const errorText = error instanceof ModelCatalogCapabilityError
+        ? JSON.stringify(canonicalError(
+          'model_capability_required',
+          error.message,
+          { type: 'api_error', retryable: false },
+        ))
+        : error instanceof ModelCatalogQuotaError
+          ? JSON.stringify(canonicalError(
+            'quota_exceeded',
+            error.message,
+            { type: 'rate_limit_error', retryable: false },
+          ))
+          : error instanceof ModelCatalogAuthError
+            ? serializeCailAuthError(
+              createCailAuthError('authentication_required', 'Sign in to continue.', '/agent-studio'),
+            )
+            : JSON.stringify(canonicalError(
+              'internal_error',
+              'Agent Studio could not start this response.',
+              { type: 'api_error', retryable: true },
+            ));
       return createUIMessageStreamResponse({
         stream: createUIMessageStream({
           execute: ({ writer }) => writer.write({ type: 'error', errorText }),
@@ -802,8 +857,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const nextLayout = parsedPatch.panels?.[panel.id];
       if (!nextLayout) return panel;
       const layout = { ...panel.layout };
-      if (nextLayout.x !== undefined) layout.x = clamp(nextLayout.x, 0, 100000);
-      if (nextLayout.y !== undefined) layout.y = clamp(nextLayout.y, 0, 100000);
+      // Flow coordinates intentionally have no origin boundary. React Flow's
+      // viewport is the navigation boundary, so panning left/up and persisting
+      // negative x/y values must work just like positive coordinates. Keep the
+      // product clamps on dimensions below; only finite-value validation applies
+      // to positions at the schema boundary.
+      if (nextLayout.x !== undefined) layout.x = nextLayout.x;
+      if (nextLayout.y !== undefined) layout.y = nextLayout.y;
       if (nextLayout.width !== undefined) layout.width = clamp(nextLayout.width, 100, 10000);
       if (nextLayout.height !== undefined) layout.height = clamp(nextLayout.height, 60, 10000);
       return {
@@ -920,11 +980,33 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return codeModeTools;
   }
 
-  private buildHostTools(workspace: WorkspaceRecord, sessionId: string, scopedPanels: WorkspacePanel[] = []) {
+  private buildHostTools(
+    workspace: WorkspaceRecord,
+    sessionId: string,
+    scopedPanels: WorkspacePanel[] = [],
+    options: WorkspaceToolOptions = {},
+  ) {
     const turnMessageId = [...(this.messages ?? [])]
       .reverse()
       .find((message) => message.role === 'user')?.id;
     const generatedPanelOccurrences = new Map<string, number>();
+    let automaticWorkspaceRenameAvailable = options.allowAutomaticWorkspaceRename === true;
+    const requireInitialWorkspaceTitle = options.requireInitialWorkspaceTitle === true;
+    const workspaceToolInputSchema = requireInitialWorkspaceTitle
+      ? z.object({
+        name: workspaceTitleSchema.refine(
+          (name) => !isPlaceholderWorkspaceName(name),
+          'Provide a specific workspace title, not a placeholder.',
+        ),
+        description: z.string().optional(),
+      })
+      : z.object({
+        name: workspaceTitleSchema.optional(),
+        description: z.string().optional(),
+      }).refine(
+        ({ name, description }) => name !== undefined || description !== undefined,
+        'Provide a workspace name or description.',
+      );
     const panelIdForTool = (providedId: string | undefined, toolName: string): string => {
       if (providedId) return providedId;
       if (!turnMessageId) return crypto.randomUUID();
@@ -1217,10 +1299,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         },
       }),
       ui_show_file: tool({
-        description: 'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
+        description: [
+          'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs.',
+          'Give the panel a concise, readable, task-specific display title; never omit it or use the filename as the title.',
+          'When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
+        ].join(' '),
         inputSchema: z.object({
           id: z.string().optional(),
-          title: z.string().optional(),
+          title: workspaceTitleSchema,
           filePath: z.string(),
           sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
@@ -1233,7 +1319,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           this.upsertPanelWithAssociation({
             id: panelId,
             type: inferFilePanelType(filePath),
-            title: title || filePath.split('/').pop() || filePath,
+            title,
             filePath,
           }, sourcePanelId);
           return { ok: true, panelId };
@@ -1256,22 +1342,57 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         },
       }),
       ui_workspace: tool({
-        description: 'Update the workspace title or description.',
-        inputSchema: z.object({
-          name: z.string().optional(),
-          description: z.string().optional(),
-        }),
+        description: [
+          'Set the workspace title and optional description.',
+          requireInitialWorkspaceTitle
+            ? 'On this first turn, provide a concise, readable, task-specific name; a placeholder is not valid.'
+            : 'The name must be a concise, readable, task-specific title, not a placeholder, filename, or generic label.',
+          'Later title changes belong in the workspace header.',
+        ].join(' '),
+        inputSchema: workspaceToolInputSchema,
         execute: async ({ name, description }) => {
+          if (
+            requireInitialWorkspaceTitle
+            && (name === undefined || isPlaceholderWorkspaceName(name))
+          ) {
+            throw new Error('The first workspace title must be a specific, non-placeholder name.');
+          }
+          if (
+            name !== undefined
+            && name !== workspace.name
+            && !automaticWorkspaceRenameAvailable
+          ) {
+            throw new Error('Workspace title is owned by the user; rename it from the workspace header.');
+          }
+          if (name !== undefined && name !== workspace.name) {
+            automaticWorkspaceRenameAvailable = false;
+          }
           // CAS update (V2): `workspace` was captured at turn start, so a
           // blind put of it would revert a PATCH (e.g. a model override) that
           // landed while this turn was streaming. Patch the freshly read
           // record through the etag CAS instead.
-          const result = await updateWorkspaceWithRetry(this.env, sessionId, workspace.id, (current) => ({
-            ...current,
-            name: name ?? current.name,
-            description: description ?? current.description,
-            updatedAt: new Date().toISOString(),
-          }));
+          const result = await updateWorkspaceWithRetry(this.env, sessionId, workspace.id, (current) => {
+            // The model is working from the turn-start record. A field-level
+            // compare keeps a manual edit made during the stream authoritative
+            // while still allowing unrelated fields to be updated.
+            const next = { ...current };
+            let changed = false;
+            if (current.name === workspace.name && name !== undefined && name !== current.name) {
+              next.name = name;
+              changed = true;
+            }
+            if (
+              description !== undefined
+              && current.description === workspace.description
+              && description !== current.description
+            ) {
+              next.description = description;
+              changed = true;
+            }
+            return changed
+              ? { ...next, updatedAt: new Date().toISOString() }
+              : null;
+          });
           if (!result.ok) {
             throw new Error(
               result.reason === 'not-found'

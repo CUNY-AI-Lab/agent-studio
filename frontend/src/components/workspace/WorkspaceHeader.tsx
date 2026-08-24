@@ -1,6 +1,6 @@
 import { Download, Keyboard, MessageSquare, RotateCcw, Share2, Trash2 } from 'lucide-react';
 import { ThemeToggle } from '../ThemeToggle';
-import { buildModelPickerView, type ModelCatalog } from '../../api';
+import { buildModelPickerView, modelDisplayName, type ModelCatalog } from '../../api';
 
 /**
  * Workspace canvas header: editable title/description, tile/file counts,
@@ -97,28 +97,40 @@ export function WorkspaceHeader({
         {modelCatalog ? (() => {
           const view = buildModelPickerView(modelCatalog, workspaceModel);
           return (
-            <select
-              className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 hover:text-foreground transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              value={view.effectiveModel}
-              onChange={(event) => onModelChange(event.target.value)}
-              title={view.effectiveRetiringNote ?? `Model: ${view.effectiveModel}`}
-              aria-label="Agent model"
-            >
-              {view.recommended.map((option) => (
-                <option key={option.id} value={option.id} title={option.title}>
-                  {option.label}
-                </option>
-              ))}
-              {view.advanced.length > 0 ? (
-                <optgroup label="Other models">
-                  {view.advanced.map((option) => (
-                    <option key={option.id} value={option.id} title={option.title}>
-                      {option.label}
-                    </option>
-                  ))}
-                </optgroup>
+            <>
+              <select
+                className="mr-1 max-w-[9rem] rounded-md border border-border bg-transparent px-2 py-1 text-[11px] text-foreground/80 hover:text-foreground transition-colors cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                value={view.effectiveModel}
+                onChange={(event) => onModelChange(event.target.value)}
+                title={view.effectiveRetiringNote ?? `Model: ${view.effectiveModel}`}
+                aria-label="Agent model"
+              >
+                {view.unsupportedEffectiveModel ? (
+                  <option value={view.unsupportedEffectiveModel} disabled>
+                    {modelDisplayName(view.unsupportedEffectiveModel)} (tools unavailable)
+                  </option>
+                ) : null}
+                {view.recommended.map((option) => (
+                  <option key={option.id} value={option.id} title={option.title}>
+                    {option.label}
+                  </option>
+                ))}
+                {view.advanced.length > 0 ? (
+                  <optgroup label="Other models">
+                    {view.advanced.map((option) => (
+                      <option key={option.id} value={option.id} title={option.title}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+              </select>
+              {view.unsupportedEffectiveModel ? (
+                <span className="max-w-[18rem] text-[11px] text-destructive" role="status">
+                  This workspace’s model cannot use Agent Studio tools. Choose a function-capable model.
+                </span>
               ) : null}
-            </select>
+            </>
           );
         })() : modelQuotaNotice ? (
           <div className="mr-1 flex max-w-[18rem] items-center gap-1.5 text-[11px] text-muted-foreground" role="status" aria-live="polite">

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { z } from 'zod';
 import { createTestIdentityIssuer, TEST_SUBJECTS } from './helpers/identity.mjs';
 
 import { registerCloudflareStub } from './helpers/env.mjs';
@@ -204,8 +205,17 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   const gatewayToken = await mintGateway(issuer);
   const wire = [];
   env.GATEWAY = {
-    async fetch(_input, init) {
+    async fetch(input, init) {
+      if (String(input) === 'https://cail.test/v1/models') {
+        return Response.json({
+          object: 'list',
+          data: [{ id: '@cf/zai-org/glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
+        });
+      }
       const headers = new Headers(init?.headers);
+      const requestBody = z.object({ model: z.string() }).parse(
+        await new Request(input, init).json(),
+      );
       wire.push({
         method: init?.method,
         authorization: headers.get('authorization'),
@@ -213,6 +223,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
         app: headers.get('X-CAIL-App'),
         credentials: init?.credentials,
         redirect: init?.redirect,
+        model: requestBody.model,
       });
       return Response.json({
         error: {
@@ -252,7 +263,6 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
   assert.deepEqual(closeCalls, []);
 
   const { tool } = await import('ai');
-  const { z } = await import('zod');
   const noopTool = tool({
     description: 'noop',
     inputSchema: z.object({}),
@@ -293,6 +303,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     app: 'agent-studio',
     credentials: 'omit',
     redirect: 'manual',
+    model: '@cf/zai-org/glm-5.2',
   });
 });
 
@@ -348,7 +359,13 @@ test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forw
     CAIL_REQUIRE_IDENTITY: 'true',
     SESSION_SECRET: 'workspace-refresh-chat-secret',
     GATEWAY: {
-      async fetch(_input, init) {
+      async fetch(input, init) {
+        if (String(input) === 'https://cail.test/v1/models') {
+          return Response.json({
+            object: 'list',
+            data: [{ id: '@cf/zai-org/glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
+          });
+        }
         const headers = new Headers(init?.headers);
         wire.push({
           authorization: headers.get('authorization'),
@@ -383,7 +400,6 @@ test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forw
     parts: [{ type: 'text', text: 'hello' }],
   }];
   const { tool } = await import('ai');
-  const { z } = await import('zod');
   const noopTool = tool({
     description: 'noop',
     inputSchema: z.object({}),
