@@ -36,5 +36,8 @@
     "smoke": "bun ./scripts/smoke-worker.mjs",
     "smoke:staging": "bun ./scripts/smoke-staging.mjs --with-chat=true",
     "deploy": "bun run --cwd cloudflare deploy"
+  },
+  "patchedDependencies": {
+    "@cloudflare/ai-chat@0.9.3": "patches/@cloudflare%2Fai-chat@0.9.3.patch"
   }
 }
