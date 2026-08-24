@@ -294,6 +294,14 @@ export function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean
   });
 }
 
+function preserveNodeMeasurements(next: CanvasNode[], current: CanvasNode[]): CanvasNode[] {
+  const measuredById = new Map(current.map((node) => [node.id, node.measured]));
+  return next.map((node) => {
+    const measured = measuredById.get(node.id);
+    return measured ? { ...node, measured } : node;
+  });
+}
+
 function connectionsMatch(left: PanelConnection | undefined, right: PanelConnection | undefined): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
@@ -746,7 +754,7 @@ function CanvasFlowInner({
   const store = useStoreApi<CanvasNode, AssociationFlowEdge>();
 
   useEffect(() => {
-    setNodes((current) => flowNodesMatch(current, flowNodes) ? current : flowNodes);
+    setNodes((current) => flowNodesMatch(current, flowNodes) ? current : preserveNodeMeasurements(flowNodes, current));
   }, [flowNodes, setNodes]);
 
   useEffect(() => {
@@ -754,8 +762,8 @@ function CanvasFlowInner({
   }, [flowEdges, setEdges]);
 
   const handleNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
-    const interactiveChanges = changes.filter((change) => change.type !== 'dimensions' || change.resizing);
-    if (interactiveChanges.length > 0) applyNodeChanges(interactiveChanges);
+    const stateChanges = changes.filter((change) => change.type !== 'dimensions' || change.dimensions);
+    if (stateChanges.length > 0) applyNodeChanges(stateChanges);
     for (const change of changes) {
       if (!('id' in change)) continue;
       if (change.id.startsWith('group:')) continue;
@@ -774,10 +782,10 @@ function CanvasFlowInner({
         }
       }
 
-      // React Flow emits a non-resizing dimensions change while measuring a
-      // node. Persist only interactive resize changes; writing measurement
-      // results back into the authoritative workspace would reseed the
-      // controlled node list and loop forever.
+      // Keep measured dimensions in React Flow's controlled node state so a
+      // later selection or viewport update retains the measured handle bounds.
+      // Persist only interactive resize changes; measurement results are not
+      // authoritative workspace layout.
       if (change.type === 'dimensions' && change.dimensions && change.resizing) {
         const currentLayout = panelLayouts[change.id];
         if (
