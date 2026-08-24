@@ -7,6 +7,7 @@ These are the maintained guides for the Agent Studio repository.
 | [`../README.md`](../README.md) | Setup, architecture, validation, staging smoke, and deploy command. |
 | [`security-and-operations.md`](./security-and-operations.md) | Current identity, storage, content, tool, validation, and staging operations contract. |
 | [`legacy-account-import.md`](./legacy-account-import.md) | The one-time first-login import for a verified legacy session. |
+| [`chat-stream-framing.md`](./chat-stream-framing.md) | The Worker SSE framing and terminal-event contract. |
 | [`../cloudflare/README.md`](../cloudflare/README.md) | Worker package setup, bindings, local run, and direct staging deploy. |
 | [`../AGENTS.md`](../AGENTS.md) | Repository invariants and workflow for agents and contributors. |
 | [`../ACCESSIBILITY.md`](../ACCESSIBILITY.md) | Keyboard, ARIA, and current accessibility decisions. |
