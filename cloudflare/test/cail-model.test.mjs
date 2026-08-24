@@ -162,7 +162,7 @@ test('buffered calls use one Bearer credential and only safe server-owned header
   assert.equal(headers.get('x-openwebui-model'), null);
   assert.equal(init.credentials, 'omit');
   assert.equal(init.redirect, 'manual');
-  assert.equal(JSON.parse(init.body).model, '@cf/zai-org/glm-5.2');
+  assert.equal(JSON.parse(init.body).model, '@cf/deepseek-ai/deepseek-v4-flash-0731');
 });
 
 test('provider forwards the caller abort signal to the Gateway Fetcher', async () => {

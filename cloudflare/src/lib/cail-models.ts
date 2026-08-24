@@ -27,6 +27,7 @@ export interface CailModelsResult {
 
 export class ModelCatalogAuthError extends Error {}
 export class ModelCatalogQuotaError extends Error {}
+export class ModelCatalogDefaultError extends Error {}
 
 export interface FetchCailModelsOptions {
   env: CailModelEnv;

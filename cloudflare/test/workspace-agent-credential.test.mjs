@@ -213,6 +213,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
         app: headers.get('X-CAIL-App'),
         credentials: init?.credentials,
         redirect: init?.redirect,
+        model: typeof init?.body === 'string' ? JSON.parse(init.body).model : undefined,
       });
       return Response.json({
         error: {
@@ -293,6 +294,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     app: 'agent-studio',
     credentials: 'omit',
     redirect: 'manual',
+    model: '@cf/zai-org/glm-5.2',
   });
 });
 
