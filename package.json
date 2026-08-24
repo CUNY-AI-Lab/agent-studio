@@ -32,6 +32,7 @@
     "test:backend": "bun run --cwd cloudflare test",
     "test:frontend": "bun run --cwd frontend test",
     "test:tools": "node --test scripts/**/*.test.mjs",
+    "test:browser": "python3 scripts/agent-studio-browser-acceptance.py",
     "preview": "bun run --cwd frontend preview",
     "smoke": "bun ./scripts/smoke-worker.mjs",
     "smoke:staging": "bun ./scripts/smoke-staging.mjs --with-chat=true",
