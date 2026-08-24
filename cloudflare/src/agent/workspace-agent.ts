@@ -66,6 +66,7 @@ import { getSkillContent, SKILLS } from '../skills';
 import { buildWorkspaceAgentSystemPrompt } from './instructions';
 import {
   getMimeType,
+  resolveMimeType,
   sanitizeRelativePath,
   toRuntimePath,
 } from '../lib/files';
@@ -103,6 +104,11 @@ function inferFilePanelType(filePath: string): 'pdf' | 'preview' | 'editor' {
   if (filePath.toLowerCase().endsWith('.pdf')) return 'pdf';
   if (/\.(html?|svg)$/i.test(filePath)) return 'preview';
   return 'editor';
+}
+
+function deterministicPanelId(turnMessageId: string, toolName: string, occurrence: number): string {
+  const safeMessageId = turnMessageId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
+  return `agent-${safeMessageId}-${toolName}-${occurrence}`;
 }
 
 function fromRuntimePath(filePath: string): string {
@@ -915,6 +921,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   private buildHostTools(workspace: WorkspaceRecord, sessionId: string, scopedPanels: WorkspacePanel[] = []) {
+    const turnMessageId = [...(this.messages ?? [])]
+      .reverse()
+      .find((message) => message.role === 'user')?.id;
+    const generatedPanelOccurrences = new Map<string, number>();
+    const panelIdForTool = (providedId: string | undefined, toolName: string): string => {
+      if (providedId) return providedId;
+      if (!turnMessageId) return crypto.randomUUID();
+      const occurrence = generatedPanelOccurrences.get(toolName) ?? 0;
+      generatedPanelOccurrences.set(toolName, occurrence + 1);
+      return deterministicPanelId(turnMessageId, toolName, occurrence);
+    };
     const tools = {
       list_files: tool({
         description: 'List all files in the current workspace.',
@@ -1103,7 +1120,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         }),
         strict: true,
         execute: async ({ id, title, content, sourcePanelId }) => {
-          const panelId = id || crypto.randomUUID();
+          const panelId = panelIdForTool(id, 'ui_markdown');
           this.upsertPanelWithAssociation({
             id: panelId,
             type: 'markdown',
@@ -1121,7 +1138,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           linkedTo: z.string(),
         }),
         execute: async ({ id, title, linkedTo }) => {
-          const panelId = id || crypto.randomUUID();
+          const panelId = panelIdForTool(id, 'ui_detail');
           this.upsertPanelWithAssociation({
             id: panelId,
             type: 'detail',
@@ -1141,7 +1158,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
         execute: async ({ id, title, columns, rows, sourcePanelId }) => {
-          const panelId = id || crypto.randomUUID();
+          const panelId = panelIdForTool(id, 'ui_table');
           this.upsertPanelWithAssociation({
             id: panelId,
             type: 'table',
@@ -1162,7 +1179,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
         execute: async ({ id, title, chartType, data, sourcePanelId }) => {
-          const panelId = id || crypto.randomUUID();
+          const panelId = panelIdForTool(id, 'ui_chart');
           this.upsertPanelWithAssociation({
             id: panelId,
             type: 'chart',
@@ -1189,7 +1206,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
         execute: async ({ id, title, items, sourcePanelId }) => {
-          const panelId = id || crypto.randomUUID();
+          const panelId = panelIdForTool(id, 'ui_cards');
           this.upsertPanelWithAssociation({
             id: panelId,
             type: 'cards',
@@ -1212,7 +1229,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           if (file === null) {
             throw new Error(`File not found: ${filePath}`);
           }
-          const panelId = id || crypto.randomUUID();
+          const panelId = panelIdForTool(id, 'ui_show_file');
           this.upsertPanelWithAssociation({
             id: panelId,
             type: inferFilePanelType(filePath),
@@ -1412,7 +1429,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     return {
       filePath: relativePath,
-      contentType: stat.mimeType || getMimeType(relativePath),
+      contentType: resolveMimeType(relativePath, stat.mimeType),
       data: toArrayBuffer(data),
     };
   }

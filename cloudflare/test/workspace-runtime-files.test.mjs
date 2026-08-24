@@ -5,8 +5,33 @@ import { registerCloudflareStub } from './helpers/env.mjs';
 
 registerCloudflareStub();
 const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+const { resolveMimeType } = await import('../src/lib/files.ts');
 
 const timestamp = Date.parse('2026-08-23T12:00:00.000Z');
+
+test('known runtime extensions recover from generic stored MIME types', () => {
+  assert.equal(resolveMimeType('app.html', 'text/plain'), 'text/html; charset=utf-8');
+  assert.equal(resolveMimeType('app.js', 'application/octet-stream'), 'text/javascript; charset=utf-8');
+  assert.equal(resolveMimeType('notes.txt', 'text/plain'), 'text/plain; charset=utf-8');
+  assert.equal(resolveMimeType('data.bin', 'application/octet-stream'), 'application/octet-stream');
+  assert.equal(resolveMimeType('data.bin', 'application/x-custom'), 'application/x-custom');
+});
+
+test('runtime file reads expose the extension MIME used by the preview route', async () => {
+  const agent = {
+    getRuntimeWorkspace() {
+      return {
+        stat: async () => ({ type: 'file', mimeType: 'text/plain' }),
+        readFileBytes: async () => new TextEncoder().encode('<script>document.body.dataset.ready="yes"</script>'),
+      };
+    },
+  };
+
+  const file = await WorkspaceAgent.prototype.readRuntimeFileContent.call(agent, 'app.html');
+
+  assert.equal(file.contentType, 'text/html; charset=utf-8');
+  assert.equal(new TextDecoder().decode(file.data), '<script>document.body.dataset.ready="yes"</script>');
+});
 
 function fileEntry(path, name, type, size = 0) {
   return {

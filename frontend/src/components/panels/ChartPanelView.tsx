@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import {
   Area,
   AreaChart,
@@ -34,7 +35,7 @@ function inferChartKeys(data: ChartDatum[]) {
   };
 }
 
-export default function ChartPanelView({
+const ChartPanelView = memo(function ChartPanelView({
   panel,
 }: {
   panel: Extract<WorkspacePanel, { type: 'chart' }>;
@@ -116,4 +117,6 @@ export default function ChartPanelView({
       </ChartContainer>
     </div>
   );
-}
+});
+
+export default ChartPanelView;

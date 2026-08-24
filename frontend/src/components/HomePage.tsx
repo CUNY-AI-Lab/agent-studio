@@ -14,6 +14,7 @@ interface HomePageProps {
   galleryItems: GalleryItem[];
   onCreateWorkspace: (name: string) => Promise<void>;
   onSelectWorkspace: (id: string) => void;
+  onOpenGalleryItem: (id: string) => void;
   onCloneGalleryItem: (id: string) => Promise<void>;
   onStartBlank: () => Promise<void>;
   onImportWorkspace: (file: File | null) => Promise<void>;
@@ -26,6 +27,7 @@ export function HomePage({
   galleryItems,
   onCreateWorkspace,
   onSelectWorkspace,
+  onOpenGalleryItem,
   onCloneGalleryItem,
   onStartBlank,
   onImportWorkspace,
@@ -108,12 +110,11 @@ export function HomePage({
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {galleryItems.map((item) => (
-                <button
+                <article
                   key={item.id}
-                  type="button"
-                  onClick={() => onCloneGalleryItem(item.id)}
-                  disabled={busy}
-                  className="w-full text-left p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group disabled:opacity-50"
+                  role="group"
+                  aria-label={`${item.title} gallery item`}
+                  className="w-full p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group"
                 >
                   <div className="flex items-start justify-between gap-2 mb-2">
                     <h3 className="font-medium text-sm group-hover:text-primary transition-colors line-clamp-1">
@@ -124,7 +125,25 @@ export function HomePage({
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground line-clamp-2">{item.description}</p>
-                </button>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onOpenGalleryItem(item.id)}
+                      disabled={busy}
+                      className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+                    >
+                      Open read-only
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void onCloneGalleryItem(item.id)}
+                      disabled={busy}
+                      className="rounded-md bg-primary px-2.5 py-1.5 text-xs text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      Use as workspace
+                    </button>
+                  </div>
+                </article>
               ))}
             </div>
           </section>

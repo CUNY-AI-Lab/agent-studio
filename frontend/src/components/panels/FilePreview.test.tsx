@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FilePreview, PreviewPanelView } from './FilePreview';
 import type { WorkspaceFileFetcher } from '../../lib/fileUrls';
@@ -65,6 +65,19 @@ describe('FilePreview failure surfacing', () => {
       />,
     );
     expect(await screen.findByText('We couldn’t load this file. Try again or download it.')).toBeInTheDocument();
+    expect(screen.queryByText('Loading preview…')).not.toBeInTheDocument();
+  });
+
+  it('loads a file-backed HTML preview through the sandboxed preview endpoint', async () => {
+    fetchPreview.mockResolvedValue(new Response('<h1>hello</h1>', { status: 200 }));
+    render(
+      <PreviewPanelView
+        fileSource={workspaceSource}
+        panel={{ id: 'panel-3', type: 'preview', filePath: 'app.html' }}
+        fetchPreview={fetchPreview}
+      />,
+    );
+    await waitFor(() => expect(fetchPreview).toHaveBeenCalledWith('ws-1', 'panel-3'));
     expect(screen.queryByText('Loading preview…')).not.toBeInTheDocument();
   });
 });

@@ -32,6 +32,7 @@ function props(overrides: Partial<React.ComponentProps<typeof HomePage>> = {}) {
     galleryItems: [],
     onCreateWorkspace: vi.fn(async () => {}),
     onSelectWorkspace: vi.fn(),
+    onOpenGalleryItem: vi.fn(),
     onCloneGalleryItem: vi.fn(async () => {}),
     onStartBlank: vi.fn(async () => {}),
     onImportWorkspace: vi.fn(async () => {}),
@@ -53,7 +54,7 @@ describe('HomePage', () => {
     );
 
     expect(screen.getByRole('button', { name: /Workspace 10/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Gallery 7/ })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Gallery 7 gallery item' })).toBeInTheDocument();
     expect(screen.getByRole('main')).toBeInTheDocument();
     expect(screen.queryByText(/Built for the CUNY community/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Search APIs, analyze data/i)).not.toBeInTheDocument();
@@ -70,6 +71,26 @@ describe('HomePage', () => {
     await user.upload(screen.getByLabelText('Import workspace bundle'), bundle);
 
     expect(onImportWorkspace).toHaveBeenCalledWith(bundle);
+  });
+
+  it('opens a gallery item read-only without cloning it', async () => {
+    const user = userEvent.setup();
+    const onOpenGalleryItem = vi.fn();
+    const onCloneGalleryItem = vi.fn(async () => {});
+    render(
+      <HomePage
+        {...props({
+          galleryItems: [galleryItem(1)],
+          onOpenGalleryItem,
+          onCloneGalleryItem,
+        })}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Open read-only' }));
+
+    expect(onOpenGalleryItem).toHaveBeenCalledWith('gallery-1');
+    expect(onCloneGalleryItem).not.toHaveBeenCalled();
   });
 
   it('disables creation and import controls while importing', () => {

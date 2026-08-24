@@ -126,6 +126,57 @@ test('a benign preview panel renders (feature preserved end to end)', async () =
   assert.equal(await res.text(), benign, 'benign preview content is served intact');
 });
 
+test('file-backed HTML preview serves executable bytes through the opaque preview route', async () => {
+  const { env, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'File Preview');
+  const panelId = 'file-preview';
+  const html = '<!doctype html><style>body{color:green}</style><p id="status">CSS</p><script>document.querySelector("#status").textContent="JavaScript"</script>';
+
+  const addRes = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/panels`,
+    jsonInit('POST', { panel: { id: panelId, type: 'preview', filePath: 'app.html', title: 'File preview' } }),
+  );
+  assert.equal(addRes.status, 200);
+
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+  agent.files.set('app.html', { bytes: new TextEncoder().encode(html), contentType: 'text/plain' });
+
+  const workspacePreview = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/panels/${panelId}/preview`,
+  );
+  assert.equal(workspacePreview.status, 200);
+  assertOpaqueScriptSandbox(workspacePreview);
+  assert.equal(await workspacePreview.text(), html);
+
+  const publishRes = await session.request(
+    app,
+    `/api/workspaces/${workspace.id}/publish`,
+    jsonInit('POST', { title: 'File preview', description: 'File preview' }),
+  );
+  assert.equal(publishRes.status, 201);
+  const { item } = await publishRes.json();
+  const { session: victim } = await openSession(app, env);
+  const galleryPreview = await victim.request(
+    app,
+    `/api/gallery/${item.id}/panels/${panelId}/preview`,
+  );
+  assert.equal(galleryPreview.status, 200);
+  assertOpaqueScriptSandbox(galleryPreview);
+  assert.equal(await galleryPreview.text(), html);
+
+  const galleryFile = await victim.request(
+    app,
+    `/api/gallery/${item.id}/files/app.html`,
+  );
+  assert.equal(galleryFile.status, 200);
+  assert.equal(galleryFile.headers.get('content-type'), 'text/html; charset=utf-8');
+  assert.equal(galleryFile.headers.get('content-disposition'), 'attachment');
+  assert.equal(await galleryFile.text(), html);
+});
+
 test('POST /panels rejects a malformed panel body (400) and accepts a valid one', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);

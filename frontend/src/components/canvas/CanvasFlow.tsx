@@ -29,6 +29,7 @@ import { PanelBody } from '../panels/PanelBody';
 import type {
   PanelGroup,
   PanelConnection,
+  PanelLayout,
   WorkspaceFileInfo,
   WorkspacePanel,
   WorkspaceViewport,
@@ -81,9 +82,175 @@ type PanelFlowNode = Node<PanelNodeData, 'panel'>;
 type GroupFlowNode = Node<GroupNodeData, 'groupBoundary'>;
 type CanvasNode = PanelFlowNode | GroupFlowNode;
 type AssociationFlowEdge = Edge<AssociationEdgeData, 'association'>;
+type PanelScalar = string | number | boolean | null;
 
-function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
+function scalarRecordMatches(
+  left: Record<string, PanelScalar>,
+  right: Record<string, PanelScalar>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => Object.hasOwn(right, key) && left[key] === right[key]);
+}
+
+function stringRecordMatches(
+  left: Record<string, string> | undefined,
+  right: Record<string, string> | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => Object.hasOwn(right, key) && left[key] === right[key]);
+}
+
+function scalarRecordsMatch(
+  left: Record<string, PanelScalar>[],
+  right: Record<string, PanelScalar>[],
+): boolean {
   if (left.length !== right.length) return false;
+  return left.every((record, index) => scalarRecordMatches(record, right[index]));
+}
+
+function panelLayoutMatches(left: PanelLayout | undefined, right: PanelLayout | undefined): boolean {
+  return left?.x === right?.x &&
+    left?.y === right?.y &&
+    left?.width === right?.width &&
+    left?.height === right?.height;
+}
+
+function panelColumnsMatch(
+  left: Array<{ key: string; label: string }>,
+  right: Array<{ key: string; label: string }>,
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((column, index) => {
+    const next = right[index];
+    return column.key === next.key && column.label === next.label;
+  });
+}
+
+function cardItemsMatch(
+  left: Array<{
+    id?: string;
+    title: string;
+    subtitle?: string;
+    description?: string;
+    badge?: string;
+    metadata?: Record<string, string>;
+  }>,
+  right: Array<{
+    id?: string;
+    title: string;
+    subtitle?: string;
+    description?: string;
+    badge?: string;
+    metadata?: Record<string, string>;
+  }>,
+): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((card, index) => {
+    const next = right[index];
+    return card.id === next.id &&
+      card.title === next.title &&
+      card.subtitle === next.subtitle &&
+      card.description === next.description &&
+      card.badge === next.badge &&
+      stringRecordMatches(card.metadata, next.metadata);
+  });
+}
+
+function panelBaseMatches(left: WorkspacePanel, right: WorkspacePanel): boolean {
+  return left.id === right.id &&
+    left.type === right.type &&
+    left.title === right.title &&
+    left.sourcePanelId === right.sourcePanelId &&
+    panelLayoutMatches(left.layout, right.layout);
+}
+
+function panelsMatch(left: WorkspacePanel, right: WorkspacePanel): boolean {
+  if (!panelBaseMatches(left, right)) return false;
+
+  switch (left.type) {
+    case 'chat':
+    case 'fileTree':
+      return true;
+    case 'markdown':
+      return right.type === 'markdown' && left.content === right.content;
+    case 'table':
+      return right.type === 'table' &&
+        panelColumnsMatch(left.columns, right.columns) &&
+        scalarRecordsMatch(left.rows, right.rows);
+    case 'chart':
+      return right.type === 'chart' &&
+        left.chartType === right.chartType &&
+        scalarRecordsMatch(left.data, right.data);
+    case 'cards':
+      return right.type === 'cards' && cardItemsMatch(left.items, right.items);
+    case 'pdf':
+    case 'editor':
+    case 'file':
+      return right.type === left.type && left.filePath === right.filePath;
+    case 'preview':
+      return right.type === 'preview' &&
+        left.filePath === right.filePath &&
+        left.content === right.content;
+    case 'detail':
+      return right.type === 'detail' && left.linkedTo === right.linkedTo;
+  }
+}
+
+function panelsCollectionMatches(left: WorkspacePanel[], right: WorkspacePanel[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((panel, index) => panelsMatch(panel, right[index]));
+}
+
+function workspaceFilesMatch(left: WorkspaceFileInfo[], right: WorkspaceFileInfo[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((file, index) => {
+    const next = right[index];
+    return file.name === next.name &&
+      file.path === next.path &&
+      file.isDirectory === next.isDirectory &&
+      file.size === next.size &&
+      file.uploadedAt === next.uploadedAt &&
+      file.modifiedAt === next.modifiedAt &&
+      file.etag === next.etag;
+  });
+}
+
+function highlightedPathsMatch(left: Set<string> | undefined, right: Set<string> | undefined): boolean {
+  if (left === right) return true;
+  if (!left || !right || left.size !== right.size) return false;
+  for (const path of left) {
+    if (!right.has(path)) return false;
+  }
+  return true;
+}
+
+function panelGroupsMatch(left: PanelGroup, right: PanelGroup): boolean {
+  return left.id === right.id &&
+    left.name === right.name &&
+    left.color === right.color &&
+    left.panelIds.length === right.panelIds.length &&
+    left.panelIds.every((panelId, index) => panelId === right.panelIds[index]);
+}
+
+function sharedPanelDataMatches(left: PanelNodeData, right: PanelNodeData): boolean {
+  return panelsCollectionMatches(left.allPanels, right.allPanels) &&
+    workspaceFilesMatch(left.workspaceFiles, right.workspaceFiles) &&
+    highlightedPathsMatch(left.highlightedFilePaths, right.highlightedFilePaths);
+}
+
+export function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
+  if (left.length !== right.length) return false;
+  const leftShared = left.find((node): node is PanelFlowNode => node.type === 'panel')?.data;
+  const rightShared = right.find((node): node is PanelFlowNode => node.type === 'panel')?.data;
+  if ((leftShared === undefined) !== (rightShared === undefined)) return false;
+  if (leftShared && rightShared && !sharedPanelDataMatches(leftShared, rightShared)) return false;
+
   return left.every((node, index) => {
     const next = right[index];
     if (
@@ -101,16 +268,24 @@ function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
     ) return false;
 
     if (node.type === 'panel' && next.type === 'panel') {
-      return node.data.panel === next.data.panel &&
-        node.data.allPanels === next.data.allPanels &&
-        node.data.workspaceFiles === next.data.workspaceFiles &&
-        node.data.highlightedFilePaths === next.data.highlightedFilePaths &&
+      if (!leftShared || !rightShared ||
+        node.data.allPanels !== leftShared.allPanels ||
+        node.data.workspaceFiles !== leftShared.workspaceFiles ||
+        node.data.highlightedFilePaths !== leftShared.highlightedFilePaths ||
+        next.data.allPanels !== rightShared.allPanels ||
+        next.data.workspaceFiles !== rightShared.workspaceFiles ||
+        next.data.highlightedFilePaths !== rightShared.highlightedFilePaths) {
+        return false;
+      }
+      return panelsMatch(node.data.panel, next.data.panel) &&
+        node.data.fileSource.kind === next.data.fileSource.kind &&
+        node.data.fileSource.id === next.data.fileSource.id &&
         node.data.isMenuOpen === next.data.isMenuOpen &&
         node.data.readOnly === next.data.readOnly;
     }
 
     if (node.type === 'groupBoundary' && next.type === 'groupBoundary') {
-      return node.data.group === next.data.group &&
+      return panelGroupsMatch(node.data.group, next.data.group) &&
         node.data.isEditing === next.data.isEditing &&
         node.data.editValue === next.data.editValue;
     }
@@ -119,7 +294,23 @@ function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
   });
 }
 
-function flowEdgesMatch(left: AssociationFlowEdge[], right: AssociationFlowEdge[]): boolean {
+function preserveNodeMeasurements(next: CanvasNode[], current: CanvasNode[]): CanvasNode[] {
+  const measuredById = new Map(current.map((node) => [node.id, node.measured]));
+  return next.map((node) => {
+    const measured = measuredById.get(node.id);
+    return measured ? { ...node, measured } : node;
+  });
+}
+
+function connectionsMatch(left: PanelConnection | undefined, right: PanelConnection | undefined): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  return left.id === right.id &&
+    left.sourceId === right.sourceId &&
+    left.targetId === right.targetId;
+}
+
+export function flowEdgesMatch(left: AssociationFlowEdge[], right: AssociationFlowEdge[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((edge, index) => {
     const next = right[index];
@@ -128,7 +319,9 @@ function flowEdgesMatch(left: AssociationFlowEdge[], right: AssociationFlowEdge[
       edge.source === next.source &&
       edge.target === next.target &&
       edge.selected === next.selected &&
-      edge.data?.connection === next.data?.connection;
+      edge.data?.sourceTitle === next.data?.sourceTitle &&
+      edge.data?.targetTitle === next.data?.targetTitle &&
+      connectionsMatch(edge.data?.connection, next.data?.connection);
   });
 }
 
@@ -561,7 +754,7 @@ function CanvasFlowInner({
   const store = useStoreApi<CanvasNode, AssociationFlowEdge>();
 
   useEffect(() => {
-    setNodes((current) => flowNodesMatch(current, flowNodes) ? current : flowNodes);
+    setNodes((current) => flowNodesMatch(current, flowNodes) ? current : preserveNodeMeasurements(flowNodes, current));
   }, [flowNodes, setNodes]);
 
   useEffect(() => {
@@ -569,8 +762,8 @@ function CanvasFlowInner({
   }, [flowEdges, setEdges]);
 
   const handleNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
-    const interactiveChanges = changes.filter((change) => change.type !== 'dimensions' || change.resizing);
-    if (interactiveChanges.length > 0) applyNodeChanges(interactiveChanges);
+    const stateChanges = changes.filter((change) => change.type !== 'dimensions' || change.dimensions);
+    if (stateChanges.length > 0) applyNodeChanges(stateChanges);
     for (const change of changes) {
       if (!('id' in change)) continue;
       if (change.id.startsWith('group:')) continue;
@@ -589,10 +782,10 @@ function CanvasFlowInner({
         }
       }
 
-      // React Flow emits a non-resizing dimensions change while measuring a
-      // node. Persist only interactive resize changes; writing measurement
-      // results back into the authoritative workspace would reseed the
-      // controlled node list and loop forever.
+      // Keep measured dimensions in React Flow's controlled node state so a
+      // later selection or viewport update retains the measured handle bounds.
+      // Persist only interactive resize changes; measurement results are not
+      // authoritative workspace layout.
       if (change.type === 'dimensions' && change.dimensions && change.resizing) {
         const currentLayout = panelLayouts[change.id];
         if (
