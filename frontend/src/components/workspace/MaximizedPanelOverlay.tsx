@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef } from 'react';
 import { X } from 'lucide-react';
 import { getPanelTitle, getPanelTypeLabel } from '../../lib/panelFiles';
-import type { FileSource } from '../../lib/fileUrls';
+import type { FileDownloadHandler, FileSource } from '../../lib/fileUrls';
 import type { WorkspaceFileInfo, WorkspacePanel } from '../../types';
 import { createFocusTrap } from '../../lib/focusTrap';
 import { PanelBody } from '../panels/PanelBody';
@@ -14,6 +14,7 @@ export function MaximizedPanelOverlay({
   highlightedFilePaths,
   getFileActionLabel,
   onOpenFile,
+  onDownloadFile,
   onClose,
 }: {
   panel: WorkspacePanel | null;
@@ -23,6 +24,7 @@ export function MaximizedPanelOverlay({
   highlightedFilePaths: Set<string>;
   getFileActionLabel: (filePath: string) => string;
   onOpenFile: (file: WorkspaceFileInfo) => void;
+  onDownloadFile: FileDownloadHandler;
   onClose: () => void;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -68,6 +70,7 @@ export function MaximizedPanelOverlay({
             highlightedFilePaths={highlightedFilePaths}
             getFileActionLabel={getFileActionLabel}
             onOpenFile={onOpenFile}
+            onDownloadFile={onDownloadFile}
           />
         </div>
       </div>

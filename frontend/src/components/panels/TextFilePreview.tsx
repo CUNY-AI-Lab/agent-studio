@@ -3,7 +3,15 @@ import { parseCsvPreview } from '../../lib/csv';
 
 const LazyMarkdownRenderer = lazy(() => import('../renderers/MarkdownRenderer'));
 
-export function TextFilePreview({ url, filePath }: { url: string; filePath: string }) {
+export function TextFilePreview({
+  url,
+  filePath,
+  blob,
+}: {
+  url: string;
+  filePath: string;
+  blob?: Blob | null;
+}) {
   const [textContent, setTextContent] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const extension = filePath.split('.').pop()?.toLowerCase() || '';
@@ -13,12 +21,17 @@ export function TextFilePreview({ url, filePath }: { url: string; filePath: stri
     setTextContent(null);
     setLoadError(null);
 
-    fetch(url)
-      .then(async (response) => {
+    const contentPromise = blob
+      ? blob.text()
+      : fetch(url).then(async (response) => {
         if (!response.ok) {
           throw new Error('We couldn’t load this file. Try again or download it.');
         }
-        const text = await response.text();
+        return response.text();
+      });
+
+    contentPromise
+      .then((text) => {
         if (!cancelled) {
           setTextContent(text);
         }
@@ -32,7 +45,7 @@ export function TextFilePreview({ url, filePath }: { url: string; filePath: stri
     return () => {
       cancelled = true;
     };
-  }, [url]);
+  }, [blob, url]);
 
   if (loadError) {
     return <div className="panel-empty">{loadError}</div>;

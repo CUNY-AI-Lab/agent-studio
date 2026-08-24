@@ -27,6 +27,7 @@ import { Minus, Plus } from 'lucide-react';
 import { CANVAS_LARGE_STEP, CANVAS_RESIZE_STEP, CANVAS_STEP } from '../../lib/keyboardMap';
 import { buildPanelLayouts, getGroupBounds, type CanvasPanelLayout, type LayoutMap } from '../../lib/panelLayout';
 import { getPanelTitle, getPanelTypeLabel } from '../../lib/panelFiles';
+import type { FileDownloadHandler } from '../../lib/fileUrls';
 import { PanelBody } from '../panels/PanelBody';
 import type {
   PanelGroup,
@@ -55,6 +56,7 @@ type PanelNodeData = {
   highlightedFilePaths?: Set<string>;
   getFileActionLabel?: (filePath: string) => string;
   onOpenFile?: (file: WorkspaceFileInfo) => void;
+  onDownloadFile?: FileDownloadHandler;
   onPanelRef?: (panelId: string, element: HTMLElement | null) => void;
   onOpenMenu?: (panelId: string) => void;
   isMenuOpen?: boolean;
@@ -412,6 +414,7 @@ function PanelNode({ data, selected }: NodeProps<PanelFlowNode>) {
             highlightedFilePaths={data.highlightedFilePaths}
             getFileActionLabel={data.getFileActionLabel}
             onOpenFile={data.onOpenFile}
+            onDownloadFile={data.onDownloadFile}
           />
         </div>
       </div>
@@ -520,6 +523,7 @@ interface CanvasFlowProps {
   highlightedFilePaths?: Set<string>;
   getFileActionLabel?: (filePath: string) => string;
   onOpenFile?: (file: WorkspaceFileInfo) => void;
+  onDownloadFile?: FileDownloadHandler;
   onPanelRef?: (panelId: string, element: HTMLElement | null) => void;
   onOpenMenu?: (panelId: string) => void;
   onPanelLayoutChange?: (panelId: string, layout: Partial<CanvasPanelLayout>) => void;
@@ -637,6 +641,7 @@ function CanvasFlowInner({
   highlightedFilePaths,
   getFileActionLabel,
   onOpenFile,
+  onDownloadFile,
   onPanelRef,
   onOpenMenu,
   onPanelLayoutChange,
@@ -730,6 +735,7 @@ function CanvasFlowInner({
           highlightedFilePaths,
           getFileActionLabel,
           onOpenFile,
+          onDownloadFile,
           onPanelRef,
           onOpenMenu,
           isMenuOpen: openMenuId === panel.id,
@@ -739,7 +745,7 @@ function CanvasFlowInner({
         },
       } satisfies PanelFlowNode;
     }),
-  ], [allPanels, fileSource, focusedPanelId, getFileActionLabel, groupNodes, highlightedFilePaths, onOpenFile, onOpenMenu, onPanelDragEnd, onPanelRef, openMenuId, panels, panelLayouts, readOnly, renderPanelMenu, selectedPanelIds, workspaceFiles]);
+  ], [allPanels, fileSource, focusedPanelId, getFileActionLabel, groupNodes, highlightedFilePaths, onDownloadFile, onOpenFile, onOpenMenu, onPanelDragEnd, onPanelRef, openMenuId, panels, panelLayouts, readOnly, renderPanelMenu, selectedPanelIds, workspaceFiles]);
 
   const flowEdges = useMemo<AssociationFlowEdge[]>(() => connections.flatMap((connection) => {
     if (!panelLayouts[connection.sourceId] || !panelLayouts[connection.targetId]) return [];

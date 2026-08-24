@@ -46,7 +46,7 @@ import {
   uploadWorkspaceFiles,
   handleAuthRequired,
 } from './api';
-import { downloadFileSource } from './lib/fileUrls';
+import { downloadFileSource, type FileSource } from './lib/fileUrls';
 import type { ModelCatalog } from './api';
 import {
   PANEL_GAP,
@@ -1052,6 +1052,13 @@ function WorkspaceShell({
     return files;
   }, [highlightWorkspaceFiles, showToast, workspace.workspace.id]);
 
+  const handleFileDownload = useCallback((source: FileSource, filePath: string, filename: string) => {
+    setError(null);
+    void downloadFileSource(source, filePath, filename).catch((nextError) => {
+      setError(nextError instanceof Error ? nextError.message : 'The file didn’t download. Try again.');
+    });
+  }, []);
+
   useEffect(() => {
     if (chat.status !== 'ready') return;
 
@@ -1138,7 +1145,7 @@ function WorkspaceShell({
     highlightWorkspaceFiles([file.path], { scroll: false });
 
     if (!canOpenFileInPanel(file.path)) {
-      await downloadFileSource(
+      handleFileDownload(
         { kind: 'workspace', id: workspace.workspace.id },
         file.path,
         file.name,
@@ -1161,7 +1168,7 @@ function WorkspaceShell({
       filePath: file.path,
     }]);
     setSelectedPanelIds(new Set([panelId]));
-  }, [agent, focusTile, getExistingFileTileId, highlightWorkspaceFiles, workspace.workspace.id]);
+  }, [agent, focusTile, getExistingFileTileId, handleFileDownload, highlightWorkspaceFiles, workspace.workspace.id]);
 
   const openFilesPanel = useCallback(async () => {
     const existing = artifactPanels.find((panel) => panel.id === 'workspace_files');
@@ -1967,7 +1974,7 @@ function WorkspaceShell({
       .replace(/^-+|-+$/g, '') || 'panel';
 
     if (format === 'file' && 'filePath' in panel && panel.filePath) {
-      void downloadFileSource(
+      handleFileDownload(
         { kind: 'workspace', id: workspace.workspace.id },
         panel.filePath,
         getFileName(panel.filePath),
@@ -2014,7 +2021,7 @@ function WorkspaceShell({
     if (format === 'txt' && panel.type === 'markdown') {
       downloadBlob(new Blob([panel.content], { type: 'text/plain;charset=utf-8' }), `${baseName}.md`);
     }
-  }, [downloadPanelAsPng, workspace.workspace.id]);
+  }, [downloadPanelAsPng, handleFileDownload, workspace.workspace.id]);
 
   const renderPanelMenuContent = useCallback((panel: WorkspacePanel) => (
     <PanelMenu
@@ -2325,6 +2332,7 @@ function WorkspaceShell({
         void handleUpload(files);
       }}
       onOpenFilesPanel={() => void openFilesPanel()}
+      onDownloadFile={handleFileDownload}
       filesTileActionLabel={filesTileActionLabel}
       activeFilePillPopover={activeFilePillPopover}
       onSetActiveFilePillPopover={setActiveFilePillPopover}
@@ -2496,6 +2504,7 @@ function WorkspaceShell({
             onOpenFile={(file) => {
               void openFileOnCanvas(file);
             }}
+            onDownloadFile={handleFileDownload}
             onPanelRef={(panelId, node) => {
               panelRefs.current[panelId] = node;
             }}
@@ -2716,6 +2725,7 @@ function WorkspaceShell({
         onOpenFile={(file) => {
           void openFileOnCanvas(file);
         }}
+        onDownloadFile={handleFileDownload}
         onClose={() => setMaximizedPanelId(null)}
       />
     </div>
@@ -2863,6 +2873,13 @@ export default function App() {
     setSelectedGalleryId(galleryId);
   }, []);
 
+  const handleGalleryFileDownload = useCallback((source: FileSource, filePath: string, filename: string) => {
+    setError(null);
+    void downloadFileSource(source, filePath, filename).catch((nextError) => {
+      setError(nextError instanceof Error ? nextError.message : 'The file didn’t download. Try again.');
+    });
+  }, []);
+
   const handleImportBundle = useCallback(async (file: File | null) => {
     if (!file) return;
     setImporting(true);
@@ -2945,6 +2962,7 @@ export default function App() {
           description={selectedGallery.description}
           state={selectedGallery.state}
           onGoHome={handleGoHome}
+          onDownloadFile={handleGalleryFileDownload}
         />
       </div>
     );

@@ -2,7 +2,7 @@ import type { RefObject } from 'react';
 import { cn } from '../../lib/utils';
 import { formatFileSize } from '../../lib/format';
 import { canOpenFileInPanel, getFileName, getFileTypeBadge } from '../../lib/panelFiles';
-import { downloadFileSource } from '../../lib/fileUrls';
+import type { FileDownloadHandler } from '../../lib/fileUrls';
 import type { WorkspaceFileInfo } from '../../types';
 
 /**
@@ -20,6 +20,7 @@ export function FilesShelf({
   onToggleCollapsed,
   onUpload,
   onOpenFilesPanel,
+  onDownloadFile,
   filesTileActionLabel,
   activeFilePillPopover,
   onSetActiveFilePillPopover,
@@ -36,6 +37,7 @@ export function FilesShelf({
   onToggleCollapsed: () => void;
   onUpload: (files: File[]) => void;
   onOpenFilesPanel: () => void;
+  onDownloadFile: FileDownloadHandler;
   filesTileActionLabel: string;
   activeFilePillPopover: string | null;
   onSetActiveFilePillPopover: (updater: (current: string | null) => string | null) => void;
@@ -146,7 +148,7 @@ export function FilesShelf({
                       <button
                         role="menuitem"
                         onClick={() => {
-                          void downloadFileSource({ kind: 'workspace', id: workspaceId }, file.path, file.name);
+                          onDownloadFile({ kind: 'workspace', id: workspaceId }, file.path, file.name);
                           onSetActiveFilePillPopover(() => null);
                         }}
                         className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

@@ -26,6 +26,7 @@ function makeProps(overrides: Partial<Parameters<typeof FilesShelf>[0]> = {}) {
     onToggleCollapsed: vi.fn(),
     onUpload: vi.fn(),
     onOpenFilesPanel: vi.fn(),
+    onDownloadFile: vi.fn(),
     filesTileActionLabel: 'Show Files on Canvas',
     activeFilePillPopover: null,
     onSetActiveFilePillPopover: vi.fn(),
@@ -86,5 +87,25 @@ describe('FilesShelf', () => {
     render(<FilesShelf {...makeProps({ onOpenFilesPanel })} />);
     await user.click(screen.getByRole('button', { name: 'Show Files on Canvas' }));
     expect(onOpenFilesPanel).toHaveBeenCalledOnce();
+  });
+
+  it('forwards a file download without owning the error state', async () => {
+    const onDownloadFile = vi.fn();
+    const onSetActiveFilePillPopover = vi.fn();
+    const user = userEvent.setup();
+    render(<FilesShelf {...makeProps({
+      activeFilePillPopover: 'notes.md',
+      onDownloadFile,
+      onSetActiveFilePillPopover,
+    })} />);
+
+    await user.click(screen.getByRole('menuitem', { name: 'Download' }));
+
+    expect(onDownloadFile).toHaveBeenCalledWith(
+      { kind: 'workspace', id: 'ws1' },
+      'notes.md',
+      'notes.md',
+    );
+    expect(onSetActiveFilePillPopover).toHaveBeenCalledWith(expect.any(Function));
   });
 });

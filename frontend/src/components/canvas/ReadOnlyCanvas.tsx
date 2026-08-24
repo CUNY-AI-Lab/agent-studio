@@ -1,5 +1,6 @@
 import { Layout } from 'lucide-react';
 import { CanvasFlow } from './CanvasFlow';
+import type { FileDownloadHandler } from '../../lib/fileUrls';
 import type { WorkspaceState } from '../../types';
 
 export function ReadOnlyCanvas({
@@ -8,12 +9,14 @@ export function ReadOnlyCanvas({
   description,
   state,
   onGoHome,
+  onDownloadFile,
 }: {
   galleryId: string;
   title: string;
   description: string;
   state: WorkspaceState;
   onGoHome: () => void;
+  onDownloadFile: FileDownloadHandler;
 }) {
   const visiblePanels = state.panels.filter((panel) => panel.type !== 'chat');
 
@@ -43,6 +46,7 @@ export function ReadOnlyCanvas({
         connections={state.connections}
         viewport={state.viewport}
         fileSource={{ kind: 'gallery', id: galleryId }}
+        onDownloadFile={onDownloadFile}
         readOnly
         emptyState={visiblePanels.length === 0 ? (
           <div className="canvas-empty pointer-events-none absolute inset-0">

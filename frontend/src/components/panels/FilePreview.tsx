@@ -15,7 +15,7 @@ export function FilePreview({
   cacheKey?: string | null;
   fetchFile?: WorkspaceFileFetcher;
 }) {
-  const { url, error } = useFileObjectUrl(fileSource, panel.filePath, cacheKey, fetchFile);
+  const { url, blob, error } = useFileObjectUrl(fileSource, panel.filePath, cacheKey, fetchFile);
   const isImage = /\.(png|jpe?g|gif|webp|svg)$/i.test(panel.filePath);
   const isPdf = panel.type === 'pdf';
   const isHtml = /\.html?$/i.test(panel.filePath);
@@ -45,7 +45,7 @@ export function FilePreview({
   }
 
   if (/\.(md|txt|csv|json|xml|ya?ml|js|ts|tsx|jsx|css)$/i.test(panel.filePath)) {
-    return <TextFilePreview url={url} filePath={panel.filePath} />;
+    return <TextFilePreview url={url} blob={blob} filePath={panel.filePath} />;
   }
 
   // Raw same-origin open is safe: the file-serving route sends

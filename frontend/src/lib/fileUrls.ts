@@ -1,11 +1,13 @@
 import { getWorkspaceFileUrl, getGalleryFileUrl } from '../api';
 import { fetchWorkspaceFile } from '../api';
+import { downloadBlob } from './download';
 import { useEffect, useState } from 'react';
 import type { WorkspaceFileInfo } from '../types';
 import { z } from 'zod';
 
 export interface FileObjectUrlState {
   url: string | null;
+  blob: Blob | null;
   error: string | null;
 }
 
@@ -14,6 +16,18 @@ export type WorkspaceFileFetcher = (workspaceId: string, filePath: string) => Pr
 export type FileSource =
   | { kind: 'workspace'; id: string }
   | { kind: 'gallery'; id: string };
+
+export type FileDownloadHandler = (
+  source: FileSource,
+  filePath: string,
+  filename: string,
+) => void;
+
+type FileSourceFetcher = (source: FileSource, filePath: string) => Promise<Response>;
+
+const fetchFileSource: FileSourceFetcher = (source, filePath) => source.kind === 'workspace'
+  ? fetchWorkspaceFile(source.id, filePath)
+  : fetch(getGalleryFileUrl(source.id, filePath));
 
 export function getFileUrl(source: FileSource, filePath: string): string {
   return source.kind === 'workspace'
@@ -52,27 +66,34 @@ export function useFileObjectUrl(
     ? withCacheKey(getGalleryFileUrl(source.id, filePath), cacheKey)
     : null;
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [blob, setBlob] = useState<Blob | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (source.kind === 'gallery') {
       setObjectUrl(null);
+      setBlob(null);
       setError(null);
       return;
     }
     let active = true;
     let created: string | null = null;
+    setObjectUrl(null);
+    setBlob(null);
     setError(null);
     void fetcher(source.id, filePath)
       .then(async (response) => {
         if (!response.ok) throw new Error(`Failed to load file (${response.status})`);
-        created = URL.createObjectURL(await response.blob());
-        if (active) setObjectUrl(created);
-        else URL.revokeObjectURL(created);
+        const fetchedBlob = await response.blob();
+        if (!active) return;
+        created = URL.createObjectURL(fetchedBlob);
+        setBlob(fetchedBlob);
+        setObjectUrl(created);
       })
       .catch((fetchError) => {
         if (active) {
           setObjectUrl(null);
+          setBlob(null);
           setError(fetchError instanceof Error ? fetchError.message : 'Failed to load file');
         }
       });
@@ -82,29 +103,18 @@ export function useFileObjectUrl(
     };
   }, [source.kind, source.id, filePath, cacheKey, fetcher]);
 
-  return { url: publicUrl ?? objectUrl, error: publicUrl ? null : error };
+  return { url: publicUrl ?? objectUrl, blob: publicUrl ? null : blob, error: publicUrl ? null : error };
 }
 
 export async function downloadFileSource(
   source: FileSource,
   filePath: string,
   filename: string,
+  fetcher: FileSourceFetcher = fetchFileSource,
 ): Promise<void> {
-  const response = source.kind === 'workspace'
-    ? await fetchWorkspaceFile(source.id, filePath)
-    : await fetch(getGalleryFileUrl(source.id, filePath));
+  const response = await fetcher(source, filePath);
   if (!response.ok) throw new Error(`File request failed with ${response.status}`);
-  const objectUrl = URL.createObjectURL(await response.blob());
-  try {
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = filename;
-    document.body.append(anchor);
-    anchor.click();
-    anchor.remove();
-  } finally {
-    URL.revokeObjectURL(objectUrl);
-  }
+  downloadBlob(await response.blob(), filename);
 }
 
 export async function openFileSource(source: FileSource, filePath: string): Promise<void> {

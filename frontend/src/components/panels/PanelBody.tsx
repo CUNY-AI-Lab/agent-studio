@@ -1,5 +1,5 @@
 import { Suspense, lazy } from 'react';
-import { type FileSource, getWorkspaceFileCacheKey } from '../../lib/fileUrls';
+import { type FileDownloadHandler, type FileSource, getWorkspaceFileCacheKey } from '../../lib/fileUrls';
 import type { WorkspaceFileInfo, WorkspacePanel } from '../../types';
 import { DetailPanelView } from './DetailPanelView';
 import { FilePreview, PreviewPanelView } from './FilePreview';
@@ -18,6 +18,7 @@ export function PanelBody({
   highlightedFilePaths,
   getFileActionLabel,
   onOpenFile,
+  onDownloadFile,
 }: {
   fileSource: FileSource;
   panel: WorkspacePanel;
@@ -26,6 +27,7 @@ export function PanelBody({
   highlightedFilePaths?: Set<string>;
   getFileActionLabel?: (filePath: string) => string;
   onOpenFile?: (file: WorkspaceFileInfo) => void;
+  onDownloadFile?: FileDownloadHandler;
 }) {
   switch (panel.type) {
     case 'markdown':
@@ -77,6 +79,7 @@ export function PanelBody({
           highlightedPaths={highlightedFilePaths}
           getFileActionLabel={getFileActionLabel}
           onOpenFile={onOpenFile}
+          onDownloadFile={onDownloadFile}
         />
       );
     default:

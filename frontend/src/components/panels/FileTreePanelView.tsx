@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
 import { cn } from '../../lib/utils';
-import { downloadFileSource, type FileSource } from '../../lib/fileUrls';
+import type { FileDownloadHandler, FileSource } from '../../lib/fileUrls';
 import { formatFileSize, formatRelativeTime } from '../../lib/format';
 import { canOpenFileInPanel } from '../../lib/panelFiles';
 import type { WorkspaceFileInfo } from '../../types';
@@ -11,12 +11,14 @@ export function FileTreePanelView({
   highlightedPaths,
   getFileActionLabel,
   onOpenFile,
+  onDownloadFile,
 }: {
   fileSource: FileSource;
   files?: WorkspaceFileInfo[];
   highlightedPaths?: Set<string>;
   getFileActionLabel?: (filePath: string) => string;
   onOpenFile?: (file: WorkspaceFileInfo) => void;
+  onDownloadFile?: FileDownloadHandler;
 }) {
   const entries = useMemo(
     () => [...(files || [])].sort((left, right) => left.path.localeCompare(right.path)),
@@ -64,12 +66,14 @@ export function FileTreePanelView({
                       {getFileActionLabel?.(file.path) ?? 'Open'}
                     </button>
                   ) : null}
-                  <button
-                    onClick={() => void downloadFileSource(fileSource, file.path, file.name)}
-                    className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
-                  >
-                    Download File
-                  </button>
+                  {onDownloadFile ? (
+                    <button
+                      onClick={() => onDownloadFile(fileSource, file.path, file.name)}
+                      className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
+                    >
+                      Download File
+                    </button>
+                  ) : null}
                 </div>
               ) : null}
             </div>
