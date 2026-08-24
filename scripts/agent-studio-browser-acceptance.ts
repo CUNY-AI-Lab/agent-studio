@@ -367,10 +367,16 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
         schema: WorkspacePayloadSchema,
       }),
     );
-    await page.mouse.move(canvasBox.x + canvasBox.width - 80, canvasBox.y + canvasBox.height - 80);
-    await page.mouse.down({ button: 'middle' });
-    await page.mouse.move(canvasBox.x + canvasBox.width - 280, canvasBox.y + canvasBox.height - 280, { steps: 10 });
-    await page.mouse.up({ button: 'middle' });
+    await canvas.focus();
+    await page.keyboard.down('Space');
+    try {
+      await page.mouse.move(canvasBox.x + canvasBox.width - 80, canvasBox.y + canvasBox.height - 80);
+      await page.mouse.down();
+      await page.mouse.move(canvasBox.x + canvasBox.width - 280, canvasBox.y + canvasBox.height - 280, { steps: 10 });
+      await page.mouse.up();
+    } finally {
+      await page.keyboard.up('Space');
+    }
     const stateAfterPan = await waitForStateChange(
       page,
       baseUrl,
