@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CanvasFlow, flowEdgesMatch, flowNodesMatch } from './CanvasFlow';
-import type { MarkdownPanel, WorkspacePanel } from '../../types';
+import { ContextualChatPopover } from './ContextualChatPopover';
+import type { ChartPanel, MarkdownPanel, WorkspacePanel } from '../../types';
 
 const panels: MarkdownPanel[] = [
   {
@@ -19,6 +21,33 @@ const panels: MarkdownPanel[] = [
     layout: { x: 360, y: 40, width: 280, height: 180 },
   },
 ];
+
+const chartContextualPanels: WorkspacePanel[] = [
+  {
+    id: 'chart-notes',
+    type: 'markdown',
+    title: 'Chart notes',
+    content: 'Double-click me to ask a question.',
+    layout: { x: 40, y: 40, width: 320, height: 200 },
+  },
+  {
+    id: 'chart-enrollment',
+    type: 'chart',
+    title: 'Enrollment',
+    chartType: 'bar',
+    data: [
+      { label: 'Fall', value: 24 },
+      { label: 'Spring', value: 31 },
+      { label: 'Summer', value: 18 },
+    ],
+    layout: { x: 400, y: 40, width: 520, height: 320 },
+  } satisfies ChartPanel,
+];
+
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+  configurable: true,
+  value: () => undefined,
+});
 
 function renderCanvas(
   selectedPanelIds: Set<string>,
@@ -39,6 +68,61 @@ function renderCanvas(
 }
 
 describe('CanvasFlow selection state', () => {
+  it('keeps a chart mounted while opening contextual chat from another tile', async () => {
+    function ChartContextualHarness() {
+      const [contextualOpen, setContextualOpen] = useState(false);
+      const [viewport, setViewport] = useState({ x: 0, y: 0, zoom: 1 });
+
+      return (
+        <>
+          <CanvasFlow
+            panels={chartContextualPanels}
+            allPanels={chartContextualPanels}
+            groups={[]}
+            connections={[{ id: 'chart-association', sourceId: 'chart-notes', targetId: 'chart-enrollment' }]}
+            viewport={viewport}
+            fileSource={{ kind: 'workspace', id: 'chart-contextual-test' }}
+            selectedPanelIds={new Set()}
+            readOnly
+            onNodeDoubleClick={() => {
+              setContextualOpen(true);
+              setViewport({ x: -120, y: -40, zoom: 1 });
+            }}
+          />
+          {contextualOpen ? (
+            <ContextualChatPopover
+              anchor={{ x: 40, y: 40, width: 320, height: 200 }}
+              viewport={viewport}
+              title="Chart notes"
+              typeLabel="Markdown"
+              input=""
+              onInputChange={() => undefined}
+              onSubmit={() => undefined}
+              onClose={() => setContextualOpen(false)}
+            />
+          ) : null}
+        </>
+      );
+    }
+
+    render(<ChartContextualHarness />);
+
+    await waitFor(() => {
+      const chartTile = screen.getByRole('group', { name: 'Enrollment (chart tile)' });
+      expect(chartTile).toBeInTheDocument();
+      expect(chartTile.querySelector('[data-chart]')).toBeInTheDocument();
+    });
+
+    fireEvent.doubleClick(screen.getByRole('group', { name: 'Chart notes (markdown tile)' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('dialog', { name: 'Ask about Chart notes' })).toBeInTheDocument();
+      const chartTile = screen.getByRole('group', { name: 'Enrollment (chart tile)' });
+      expect(chartTile).toBeInTheDocument();
+      expect(chartTile.querySelector('[data-chart]')).toBeInTheDocument();
+    });
+  });
+
   it('updates every selected tile’s accessible label when controlled selection changes', async () => {
     const { rerender } = renderCanvas(new Set(['panel-one']));
 
