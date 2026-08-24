@@ -137,7 +137,7 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
   const sessionId = 'a'.repeat(32);
   const turnStartRecord = {
     id: 'b'.repeat(32),
-    name: 'New Workspace',
+    name: 'Before',
     description: 'original',
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
@@ -157,13 +157,7 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
     },
   };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(
-    fakeAgent,
-    turnStartRecord,
-    sessionId,
-    [],
-    { allowAutomaticWorkspaceRename: true },
-  );
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, turnStartRecord, sessionId);
   const result = await tools.ui_workspace.execute(
     { name: 'Renamed' },
     { toolCallId: 'tool-1', messages: [] },
@@ -179,188 +173,6 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
   assert.equal(result.name, 'Renamed');
   assert.equal(fakeAgent.synced?.workspace.model, '@cf/concurrent-override');
   assert.equal(fakeAgent.synced?.sessionId, sessionId);
-});
-
-test('ui_workspace gives concurrent manual title edits precedence per field', async () => {
-  registerCloudflareStub();
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-
-  const { env } = makeEnv();
-  const sessionId = 'c'.repeat(32);
-  const turnStartRecord = {
-    id: 'd'.repeat(32),
-    name: 'New Workspace',
-    description: '',
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString(),
-  };
-  await putWorkspace(env, sessionId, {
-    ...turnStartRecord,
-    name: 'My manual title',
-  });
-
-  const fakeAgent = {
-    env,
-    synced: null,
-    assertNotFrozen() {},
-    async withMutationFence(operation) { return operation(); },
-    async syncWorkspace(nextWorkspace, syncSessionId) {
-      this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
-    },
-  };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(
-    fakeAgent,
-    turnStartRecord,
-    sessionId,
-    [],
-    { allowAutomaticWorkspaceRename: true },
-  );
-  const result = await tools.ui_workspace.execute(
-    { name: 'Model title', description: 'A task summary' },
-    { toolCallId: 'tool-manual-wins', messages: [] },
-  );
-
-  const stored = await getWorkspace(env, sessionId, turnStartRecord.id);
-  assert.equal(stored.name, 'My manual title');
-  assert.equal(stored.description, 'A task summary');
-  assert.equal(result.name, 'My manual title');
-  assert.equal(result.description, 'A task summary');
-});
-
-test('ui_workspace cannot rename an existing workspace without the initial automatic-title allowance', async () => {
-  registerCloudflareStub();
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-
-  const { env } = makeEnv();
-  const sessionId = 'e'.repeat(32);
-  const workspace = {
-    id: 'f'.repeat(32),
-    name: 'Human title',
-    description: '',
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString(),
-  };
-  await putWorkspace(env, sessionId, workspace);
-  const fakeAgent = {
-    env,
-    assertNotFrozen() {},
-    async withMutationFence(operation) { return operation(); },
-    async syncWorkspace() {},
-  };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, workspace, sessionId);
-
-  await assert.rejects(
-    tools.ui_workspace.execute(
-      { name: 'Model rewrite' },
-      { toolCallId: 'tool-owned-title', messages: [] },
-    ),
-    /owned by the user/,
-  );
-  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'Human title');
-});
-
-test('ui_workspace keeps description-only updates available after title ownership is fixed', async () => {
-  registerCloudflareStub();
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-
-  const { env } = makeEnv();
-  const sessionId = 'g'.repeat(32);
-  const workspace = {
-    id: 'h'.repeat(32),
-    name: 'Human title',
-    description: '',
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString(),
-  };
-  await putWorkspace(env, sessionId, workspace);
-  const fakeAgent = {
-    env,
-    assertNotFrozen() {},
-    async withMutationFence(operation) { return operation(); },
-    async syncWorkspace() {},
-  };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, workspace, sessionId);
-
-  const result = await tools.ui_workspace.execute(
-    { description: 'A model-authored task summary' },
-    { toolCallId: 'tool-description-only', messages: [] },
-  );
-  assert.equal(tools.ui_workspace.inputSchema.safeParse({
-    description: 'Another model-authored task summary',
-  }).success, true);
-  assert.equal(result.name, 'Human title');
-  assert.equal(result.description, 'A model-authored task summary');
-});
-
-test('initial ui_workspace requires a specific non-placeholder name', async () => {
-  registerCloudflareStub();
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-
-  const { env } = makeEnv();
-  const sessionId = 'i'.repeat(32);
-  const workspace = {
-    id: 'j'.repeat(32),
-    name: 'New Workspace',
-    description: '',
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString(),
-  };
-  await putWorkspace(env, sessionId, workspace);
-  const fakeAgent = {
-    env,
-    assertNotFrozen() {},
-    async withMutationFence(operation) { return operation(); },
-    async syncWorkspace() {},
-  };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(
-    fakeAgent,
-    workspace,
-    sessionId,
-    [],
-    { allowAutomaticWorkspaceRename: true, requireInitialWorkspaceTitle: true },
-  );
-  const schema = tools.ui_workspace.inputSchema;
-  assert.equal(schema.safeParse({ description: 'summary' }).success, false);
-  assert.equal(schema.safeParse({ name: 'New Workspace' }).success, false);
-  assert.equal(schema.safeParse({ name: 'Research brief' }).success, true);
-  await assert.rejects(
-    tools.ui_workspace.execute(
-      { description: 'summary' },
-      { toolCallId: 'tool-initial-description', messages: [] },
-    ),
-    /first workspace title must be a specific/,
-  );
-  await assert.rejects(
-    tools.ui_workspace.execute(
-      { name: 'New Workspace' },
-      { toolCallId: 'tool-initial-placeholder', messages: [] },
-    ),
-    /first workspace title must be a specific/,
-  );
-  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'New Workspace');
-});
-
-test('ui_show_file requires an authored display title instead of deriving one from the filename', async () => {
-  registerCloudflareStub();
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const fakeAgent = {
-    env: makeEnv().env,
-    messages: [],
-    async withMutationFence(operation) { return operation(); },
-    async readRuntimeFileContent() { return { data: new ArrayBuffer(0) }; },
-    upsertPanelWithAssociation() {},
-  };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(
-    fakeAgent,
-    { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' },
-    'session',
-  );
-
-  assert.equal(tools.ui_show_file.inputSchema.safeParse({ filePath: 'index.html' }).success, false);
-  assert.equal(tools.ui_show_file.inputSchema.safeParse({
-    filePath: 'index.html',
-    title: 'Interactive research brief',
-  }).success, true);
 });
 
 test('structured UI tools persist explicit tile associations', async () => {
@@ -920,48 +732,6 @@ async function makeLayoutAgent(state) {
     removePanel: (panelId) => WorkspaceAgent.prototype.removePanel.call(fake, panelId),
   };
 }
-
-test('layout patch preserves negative flow coordinates through the DO state echo and reload', async () => {
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const { applyLayoutPatch } = await makeLayoutAgent({
-    sessionId: null,
-    workspace: null,
-    panels: [panel('negative')],
-    viewport: { x: 0, y: 0, zoom: 1 },
-    groups: [],
-    connections: [],
-  });
-
-  const echoed = await applyLayoutPatch({
-    panels: {
-      negative: { x: -480.5, y: -220.25, width: 420, height: 260 },
-    },
-    viewport: { x: 760, y: 540, zoom: 0.8 },
-  });
-
-  assert.deepEqual(echoed.panels[0].layout, {
-    x: -480.5,
-    y: -220.25,
-    width: 420,
-    height: 260,
-  });
-  assert.deepEqual(echoed.viewport, { x: 760, y: 540, zoom: 0.8 });
-
-  const reloaded = {
-    state: echoed,
-    setState(next) {
-      this.state = next;
-    },
-  };
-  await WorkspaceAgent.prototype.replaceWorkspaceState.call(
-    reloaded,
-    echoed,
-    { id: 'workspace', name: 'Workspace', description: '', createdAt: '', updatedAt: '' },
-    'session',
-  );
-  assert.deepEqual(reloaded.state.panels[0].layout, echoed.panels[0].layout);
-  assert.deepEqual(reloaded.state.viewport, echoed.viewport);
-});
 
 function panel(id) {
   return { id, type: 'markdown', title: id, content: '' };

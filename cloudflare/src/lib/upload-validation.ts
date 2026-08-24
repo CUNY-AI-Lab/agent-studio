@@ -35,17 +35,12 @@ export function isAllowedUpload(file: UploadFileLike) {
   const dot = file.name.lastIndexOf('.');
   const ext = dot >= 0 ? file.name.slice(dot).toLowerCase() : '';
   if (!ALLOWED_UPLOAD_EXTENSIONS.has(ext)) {
-    return {
-      allowed: false,
-      reason: ext
-        ? `'${ext}' files can't be uploaded. Upload documents, data files, or images instead.`
-        : "Files of this type can't be uploaded. Upload documents, data files, or images instead.",
-    };
+    return { allowed: false, reason: `File extension '${ext || '(none)'}' not allowed` };
   }
 
   if (file.type && !ALLOWED_UPLOAD_TYPES.has(file.type)) {
     if (file.type !== 'application/octet-stream') {
-      return { allowed: false, reason: "Files of this type can't be uploaded. Upload documents, data files, or images instead." };
+      return { allowed: false, reason: `File type '${file.type}' not allowed` };
     }
   }
 

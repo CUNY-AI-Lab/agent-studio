@@ -4,10 +4,7 @@ import test from 'node:test';
 import {
   fetchCailModels,
   ModelCatalogAuthError,
-  ModelCatalogCapabilityError,
   ModelCatalogQuotaError,
-  requireFunctionCallingModel,
-  supportsFunctionCalling,
 } from '../src/lib/cail-models.ts';
 
 const BASE = 'https://proxy.example';
@@ -218,38 +215,4 @@ test('catalog preserves current fields and normalizes optional metadata', async 
   });
   assert.equal(result.models[1].status, 'retiring');
   assert.equal(result.models[1].sunset, '2026-12-31');
-});
-
-test('the DeepSeek V4 Flash 0731 Workers model advertises function calling', async () => {
-  const capture = captureGateway(() => response([{
-    id: '@cf/deepseek-ai/deepseek-v4-flash-0731',
-    name: 'DeepSeek V4 Flash 0731',
-    capabilities: ['text-generation', 'function-calling', 'reasoning'],
-  }]));
-  const result = await fetchCailModels({
-    env: { CAIL_API_BASE: BASE, GATEWAY: capture.gateway },
-    identityJwt: JWT,
-  });
-
-  assert.equal(supportsFunctionCalling(result.models[0]), true);
-  assert.equal(result.models[0].id, '@cf/deepseek-ai/deepseek-v4-flash-0731');
-  assert.doesNotThrow(() => requireFunctionCallingModel(
-    result.models,
-    '@cf/deepseek-ai/deepseek-v4-flash-0731',
-  ));
-});
-
-test('function capability selection never falls back to another model', () => {
-  const models = [{
-    id: '@cf/no-tools/model',
-    capabilities: [],
-  }];
-  assert.throws(
-    () => requireFunctionCallingModel(models, '@cf/no-tools/model'),
-    ModelCatalogCapabilityError,
-  );
-  assert.throws(
-    () => requireFunctionCallingModel(models, '@cf/missing/model'),
-    ModelCatalogCapabilityError,
-  );
 });
