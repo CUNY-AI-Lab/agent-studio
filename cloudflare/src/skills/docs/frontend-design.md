@@ -31,13 +31,16 @@ maximalism and refined minimalism both work — the key is intentionality, not i
 
 Create a complete HTML document with embedded CSS and JavaScript:
 
+Give the document a concise, task-specific `<title>` that names the artifact.
+Do not leave a generic title such as `App` or use the filename as the title.
+
 ```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>App</title>
+  <title>Campus research dashboard</title>
   <style>
     /* Your CSS here */
   </style>
