@@ -23,7 +23,7 @@ export function buildWorkspaceAgentSystemPrompt(scopedPanelPrompt?: string | nul
     'When the user asks for a webpage, app, or site, do not paste the raw HTML, CSS, or JS into the chat response unless they explicitly ask for inline source.',
     'After creating a webpage or app file, immediately surface it on the canvas with ui_show_file so the user sees a rendered artifact instead of source text.',
     'When the user asks to modify an existing tile or file, update it in place by reusing the existing panel id or rewriting the existing file unless they explicitly ask for a separate version, comparison, or alternative.',
-    'On the first substantive turn in a new placeholder workspace, call ui_workspace with one concise, readable, task-specific name before using other UI tools. Keep existing or human-named workspace titles unchanged unless the user explicitly asks to rename them.',
+    'On the first substantive turn in a new placeholder workspace, call ui_workspace with one concise, readable, task-specific name before using other UI tools. Keep existing or human-named workspace titles unchanged; later title changes belong in the workspace header.',
     'Every file-backed tile surfaced with ui_show_file must have a concise, readable, task-specific display title; never omit the title or use a filename as the display title.',
     '',
     '## Execution',

@@ -108,11 +108,12 @@ import type {
   WorkspaceState,
 } from './types';
 import { reconcileWorkspaceDraft } from './lib/workspaceDraft';
+import { replaceWorkspaceInHomeList } from './lib/workspaceHome';
 
 function WorkspaceShell({
   workspace,
   onWorkspaceRefresh,
-  onWorkspaceServerUpdate,
+  onWorkspaceHomeMetadataUpdate,
   onGoHome,
   onDelete,
   initialPrompt,
@@ -120,7 +121,7 @@ function WorkspaceShell({
 }: {
   workspace: WorkspaceResponse;
   onWorkspaceRefresh: (workspaceId: string) => Promise<void>;
-  onWorkspaceServerUpdate: (workspace: WorkspaceRecord) => void;
+  onWorkspaceHomeMetadataUpdate: (workspace: WorkspaceRecord) => void;
   onGoHome: () => void;
   onDelete: () => Promise<void>;
   initialPrompt?: string | null;
@@ -220,8 +221,11 @@ function WorkspaceShell({
     ).model);
     setPublishTitle((current) => current === previousServer.name ? nextWorkspace.name : current);
     setPublishDescription((current) => current === previousServer.description ? nextWorkspace.description : current);
-    onWorkspaceServerUpdate(nextWorkspace);
-  }, [onWorkspaceServerUpdate]);
+    // The home list owns this metadata update. The selected workspace keeps
+    // its live state/files in this shell; replacing the parent response here
+    // would feed its older snapshot back through the same-ID refresh effect.
+    onWorkspaceHomeMetadataUpdate(nextWorkspace);
+  }, [onWorkspaceHomeMetadataUpdate]);
 
   const agent = useAgent<WorkspaceAgentClient, WorkspaceState>({
     agent: workspace.agent.className,
@@ -2741,15 +2745,8 @@ export default function App() {
     }
   }, []);
 
-  const handleWorkspaceServerUpdate = useCallback((nextWorkspace: WorkspaceRecord) => {
-    setSelectedWorkspace((current) => (
-      current && current.workspace.id === nextWorkspace.id
-        ? { ...current, workspace: nextWorkspace }
-        : current
-    ));
-    setWorkspaces((current) => current.map((item) => (
-      item.id === nextWorkspace.id ? nextWorkspace : item
-    )));
+  const handleWorkspaceHomeMetadataUpdate = useCallback((nextWorkspace: WorkspaceRecord) => {
+    setWorkspaces((current) => replaceWorkspaceInHomeList(current, nextWorkspace));
   }, []);
 
   useEffect(() => {
@@ -2956,7 +2953,7 @@ export default function App() {
               await loadWorkspaces();
               await loadGallery();
             }}
-            onWorkspaceServerUpdate={handleWorkspaceServerUpdate}
+            onWorkspaceHomeMetadataUpdate={handleWorkspaceHomeMetadataUpdate}
           />
         ) : null}
       </div>

@@ -753,5 +753,54 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   assert.equal(payload.error.message, quotaMessage);
   assert.equal(payload.error.cail.retry_after_seconds, 1800);
   // The APICallError must not be SDK-retried: one wire call, no retry storm.
-  assert.equal(wireCalls, 1);
+  assert.equal(wireCalls, 1, 'the AI SDK must not retry the chat request');
+});
+
+test('chat refuses a non-function-capable model before the forced title tool step', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = {
+    assertNotFrozen() {},
+    requireWorkspace() {
+      return {
+        id: 'workspace-1',
+        name: 'New Workspace',
+        description: '',
+        createdAt: '',
+        updatedAt: '',
+        model: '@cf/no-tools/model',
+      };
+    },
+    requireSessionId() {
+      return 'session-1';
+    },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() {
+      return { status: 'valid' };
+    },
+    env: {
+      CAIL_API_BASE: 'https://cail.test',
+      GATEWAY: {
+        async fetch(input) {
+          assert.equal(String(input), 'https://cail.test/v1/models');
+          return Response.json({
+            object: 'list',
+            data: [{ id: '@cf/no-tools/model', capabilities: ['text-generation'] }],
+          });
+        },
+      },
+    },
+    messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'Build a dashboard' }] }],
+    buildHostTools() {
+      throw new Error('tools must not be built for an unsupported model');
+    },
+  };
+
+  const response = await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, {
+    requestId: 'unsupported-model',
+  });
+  const body = await response.text();
+  const event = JSON.parse(body.split('\n')[0].slice('data: '.length));
+  const payload = JSON.parse(event.errorText);
+  assert.equal(payload.error.code, 'model_capability_required');
+  assert.equal(payload.error.cail.retryable, false);
 });

@@ -1631,7 +1631,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
         data: [{
           id: '@cf/zai-org/glm-5.2',
           object: 'model',
-          capabilities: ['function-calling'],
+          capabilities: ['text-generation', 'function-calling'],
         }],
       });
     },
@@ -1648,7 +1648,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
       tier: 'recommended',
       status: 'active',
       sunset: null,
-      capabilities: ['function-calling'],
+      capabilities: ['text-generation', 'function-calling'],
       contextLength: null,
       registryUrl: null,
       name: null,
@@ -1688,7 +1688,9 @@ test('/api/models uses the configured default only when it is function-calling c
     headers: keyringHeaders(token, gatewayToken),
   });
   assert.equal(res.status, 200);
-  assert.equal((await res.json()).default, DEFAULT_CAIL_MODEL);
+  const body = await res.json();
+  assert.equal(body.default, DEFAULT_CAIL_MODEL);
+  assert.deepEqual(body.models.map((model) => model.id), [DEFAULT_CAIL_MODEL]);
   assert.equal(calls.length, 1);
 });
 
@@ -1709,7 +1711,6 @@ test('/api/models fails closed when the configured default is absent or lacks fu
     assert.equal((await readError(res)).code, 'model_unavailable');
   }
 });
-
 test('/api/models surfaces direct catalog auth and quota failures without fallback', async () => {
   const { env } = makeEnv();
   const { token, gatewayToken, jwks } = await makeRouteCredential();

@@ -8,6 +8,8 @@ import { CAIL_MODEL_ID_PATTERN } from './workspace-validation';
 export type CailModelTier = 'recommended' | 'advanced';
 export type CailModelStatus = 'active' | 'deprecated' | 'retiring';
 
+export const FUNCTION_CALLING_CAPABILITY = 'function-calling';
+
 export interface CailModelInfo {
   id: string;
   recommended: boolean;
@@ -28,12 +30,30 @@ export interface CailModelsResult {
 export class ModelCatalogAuthError extends Error {}
 export class ModelCatalogQuotaError extends Error {}
 export class ModelCatalogDefaultError extends Error {}
+export class ModelCatalogCapabilityError extends Error {}
 
 export interface FetchCailModelsOptions {
   env: CailModelEnv;
   identityJwt: string | null;
   /** Injectable transport for unit tests; deployed code uses env.GATEWAY. */
   fetchImpl?: typeof fetch;
+}
+
+export function supportsFunctionCalling(model: Pick<CailModelInfo, 'capabilities'>): boolean {
+  return model.capabilities.includes(FUNCTION_CALLING_CAPABILITY);
+}
+
+export function requireFunctionCallingModel(
+  models: readonly CailModelInfo[],
+  modelId: string,
+): CailModelInfo {
+  const model = models.find((entry) => entry.id === modelId);
+  if (!model || !supportsFunctionCalling(model)) {
+    throw new ModelCatalogCapabilityError(
+      'Agent Studio requires a function-capable model; choose one marked for tools.',
+    );
+  }
+  return model;
 }
 
 const modelEntrySchema = z.object({

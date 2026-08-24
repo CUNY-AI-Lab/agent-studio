@@ -137,7 +137,7 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
   const sessionId = 'a'.repeat(32);
   const turnStartRecord = {
     id: 'b'.repeat(32),
-    name: 'Before',
+    name: 'New Workspace',
     description: 'original',
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
@@ -157,7 +157,13 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
     },
   };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, turnStartRecord, sessionId);
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fakeAgent,
+    turnStartRecord,
+    sessionId,
+    [],
+    { allowAutomaticWorkspaceRename: true },
+  );
   const result = await tools.ui_workspace.execute(
     { name: 'Renamed' },
     { toolCallId: 'tool-1', messages: [] },
@@ -202,7 +208,13 @@ test('ui_workspace gives concurrent manual title edits precedence per field', as
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
     },
   };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, turnStartRecord, sessionId);
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fakeAgent,
+    turnStartRecord,
+    sessionId,
+    [],
+    { allowAutomaticWorkspaceRename: true },
+  );
   const result = await tools.ui_workspace.execute(
     { name: 'Model title', description: 'A task summary' },
     { toolCallId: 'tool-manual-wins', messages: [] },
@@ -213,6 +225,68 @@ test('ui_workspace gives concurrent manual title edits precedence per field', as
   assert.equal(stored.description, 'A task summary');
   assert.equal(result.name, 'My manual title');
   assert.equal(result.description, 'A task summary');
+});
+
+test('ui_workspace cannot rename an existing workspace without the initial automatic-title allowance', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+
+  const { env } = makeEnv();
+  const sessionId = 'e'.repeat(32);
+  const workspace = {
+    id: 'f'.repeat(32),
+    name: 'Human title',
+    description: '',
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+  await putWorkspace(env, sessionId, workspace);
+  const fakeAgent = {
+    env,
+    assertNotFrozen() {},
+    async withMutationFence(operation) { return operation(); },
+    async syncWorkspace() {},
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, workspace, sessionId);
+
+  await assert.rejects(
+    tools.ui_workspace.execute(
+      { name: 'Model rewrite' },
+      { toolCallId: 'tool-owned-title', messages: [] },
+    ),
+    /owned by the user/,
+  );
+  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'Human title');
+});
+
+test('ui_workspace keeps description-only updates available after title ownership is fixed', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+
+  const { env } = makeEnv();
+  const sessionId = 'g'.repeat(32);
+  const workspace = {
+    id: 'h'.repeat(32),
+    name: 'Human title',
+    description: '',
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  };
+  await putWorkspace(env, sessionId, workspace);
+  const fakeAgent = {
+    env,
+    assertNotFrozen() {},
+    async withMutationFence(operation) { return operation(); },
+    async syncWorkspace() {},
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, workspace, sessionId);
+
+  const result = await tools.ui_workspace.execute(
+    { description: 'A model-authored task summary' },
+    { toolCallId: 'tool-description-only', messages: [] },
+  );
+  assert.equal(result.name, 'Human title');
+  assert.equal(result.description, 'A model-authored task summary');
 });
 
 test('ui_show_file requires an authored display title instead of deriving one from the filename', async () => {

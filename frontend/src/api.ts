@@ -354,6 +354,8 @@ export interface ModelPickerView {
   advanced: ModelOption[];
   /** Sunset note for the effective model when it is retiring; else null. */
   effectiveRetiringNote: string | null;
+  /** A stored override that cannot support Agent Studio's tool loop. */
+  unsupportedEffectiveModel: string | null;
 }
 
 function buildOption(entry: ModelCatalogEntry, catalogDefault: string): ModelOption {
@@ -373,10 +375,11 @@ function buildOption(entry: ModelCatalogEntry, catalogDefault: string): ModelOpt
 /**
  * Partition the catalog into the picker's recommended/advanced groups, honoring
  * the override and the contract's visibility rules:
- *  - effective model = workspace override ?? catalog default (data[0]).
+ *  - effective model = workspace override ?? catalog default.
  *  - deprecated models are hidden unless they are the currently-selected model.
- *  - a stored override that dropped from the catalog is kept selectable,
- *    prepended into the group matching its tier (or recommended by default).
+ *  - the server catalog contains only models advertising function-calling;
+ *    an effective model absent from it is shown as unavailable rather than
+ *    replaced with a fallback.
  */
 export function buildModelPickerView(
   catalog: ModelCatalog,
@@ -408,16 +411,15 @@ export function buildModelPickerView(
     (entry.tier === 'advanced' ? advanced : recommended).push(option);
   }
 
-  // Keep a stored override selectable even if it dropped from the catalog.
-  if (!effectiveInCatalog) {
-    recommended.unshift({
-      id: effectiveModel,
-      label: modelDisplayName(effectiveModel),
-      title: effectiveModel,
-    });
-  }
+  const unsupportedEffectiveModel = effectiveInCatalog ? null : effectiveModel;
 
-  return { effectiveModel, recommended, advanced, effectiveRetiringNote };
+  return {
+    effectiveModel,
+    recommended,
+    advanced,
+    effectiveRetiringNote,
+    unsupportedEffectiveModel,
+  };
 }
 
 export async function updateWorkspace(

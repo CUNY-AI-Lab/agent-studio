@@ -38,6 +38,7 @@ import {
   ModelCatalogAuthError,
   ModelCatalogDefaultError,
   ModelCatalogQuotaError,
+  supportsFunctionCalling,
 } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
 import { cailAuthRequiredResponse } from './lib/cail-identity';
@@ -331,11 +332,12 @@ app.get('/api/models', async (c) => {
   });
   const configuredDefault = resolveCailModelName(c.env);
   const defaultEntry = models.find((model) => model.id === configuredDefault);
-  if (!defaultEntry || !defaultEntry.capabilities.includes('function-calling')) {
+  if (!defaultEntry || !supportsFunctionCalling(defaultEntry)) {
     throw new ModelCatalogDefaultError();
   }
+  const functionCallingModels = models.filter(supportsFunctionCalling);
   return c.json({
-    models,
+    models: functionCallingModels,
     default: defaultEntry.id,
   });
 });
