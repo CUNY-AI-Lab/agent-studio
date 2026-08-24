@@ -333,15 +333,9 @@ hr.editorial {
    Canvas Workspace Styles - "Paper Studio" Aesthetic
    ═══════════════════════════════════════════════════════════════════════════ */
 
-/* Canvas background with subtle dot pattern */
+/* Canvas surface; the viewport-aware React Flow Background owns the dots. */
 .canvas-bg {
   background-color: var(--background);
-  background-image: radial-gradient(circle, oklch(0.75 0.02 250 / 0.25) 1px, transparent 1px);
-  background-size: 24px 24px;
-}
-
-.dark .canvas-bg {
-  background-image: radial-gradient(circle, oklch(0.4 0.02 250 / 0.3) 1px, transparent 1px);
 }
 
 /* Artifact card - flat surface with a navy top rule (teal lead segment) */
@@ -638,11 +632,16 @@ hr.editorial {
 
 .agent-studio-react-flow {
   --xy-background-color: transparent;
+  --canvas-grid-color: oklch(0.75 0.02 250 / 0.25);
   --xy-edge-stroke-default: oklch(0.6 0.12 75 / 0.36);
   --xy-edge-stroke-selected-default: oklch(0.6 0.12 75 / 0.9);
   --xy-node-boxshadow-default: none;
   --xy-node-border-default: transparent;
   background: transparent;
+}
+
+.dark .agent-studio-react-flow {
+  --canvas-grid-color: oklch(0.4 0.02 250 / 0.3);
 }
 
 .agent-studio-react-flow .react-flow__renderer {
