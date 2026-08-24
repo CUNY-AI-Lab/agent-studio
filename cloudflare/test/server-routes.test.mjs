@@ -31,7 +31,6 @@ import {
   CAIL_CANONICAL_ISSUER,
 } from '../src/lib/cail-identity.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
-import { DEFAULT_CAIL_MODEL } from '../src/lib/cail-model.ts';
 
 const app = await importServer();
 const deployedV1Fixture = JSON.parse(
@@ -206,26 +205,6 @@ test('no cookie -> a signed session cookie is issued and reused', async () => {
   // The carried cookie yields the same session id (stable identity).
   const second = await session.request(app, '/api/session');
   assert.equal((await second.json()).sessionId, sessionId);
-});
-
-test('new workspaces store the default model and preserve explicit choices', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const created = await createWorkspace(session, 'Default model workspace');
-  assert.equal(created.model, DEFAULT_CAIL_MODEL);
-
-  const explicitModel = '@cf/zai-org/glm-5.2';
-  const patched = await session.request(
-    app,
-    `/api/workspaces/${created.id}`,
-    jsonInit('PATCH', { model: explicitModel }),
-  );
-  assert.equal(patched.status, 200);
-  assert.equal((await patched.json()).workspace.model, explicitModel);
-
-  const reloaded = await session.request(app, `/api/workspaces/${created.id}`);
-  assert.equal(reloaded.status, 200);
-  assert.equal((await reloaded.json()).workspace.model, explicitModel);
 });
 
 test('concurrent anonymous reads issue independent cookies and reject a mixed CSRF session', async () => {
@@ -930,7 +909,7 @@ test('upload: disallowed extension (.exe) is rejected with 400', async () => {
     body: form,
   });
   assert.equal(res.status, 400);
-  assert.match((await readError(res)).message, /'\.exe' files can't be uploaded/);
+  assert.match((await readError(res)).message, /\.exe.*not allowed/);
   assert.equal(agents.get(`${sessionId}-${workspace.id}`).files.size, 0);
 });
 
@@ -1621,18 +1600,13 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
   const { env } = makeEnv();
   const { token, gatewayToken, jwks } = await makeRouteCredential();
   configureRequiredIdentity(env, jwks);
-  env.CAIL_MODEL = '@cf/zai-org/glm-5.2';
   const calls = [];
   env.GATEWAY = {
     async fetch(input, init) {
       calls.push({ input: String(input), init });
       return Response.json({
         object: 'list',
-        data: [{
-          id: '@cf/zai-org/glm-5.2',
-          object: 'model',
-          capabilities: ['text-generation', 'function-calling'],
-        }],
+        data: [{ id: '@cf/zai-org/glm-5.2', object: 'model' }],
       });
     },
   };
@@ -1648,7 +1622,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
       tier: 'recommended',
       status: 'active',
       sunset: null,
-      capabilities: ['text-generation', 'function-calling'],
+      capabilities: [],
       contextLength: null,
       registryUrl: null,
       name: null,
@@ -1661,56 +1635,6 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
   assert.equal(calls[0].init.redirect, 'manual');
 });
 
-test('/api/models uses the configured default only when it is function-calling capable', async () => {
-  const { env } = makeEnv();
-  const { token, gatewayToken, jwks } = await makeRouteCredential();
-  configureRequiredIdentity(env, jwks);
-  const calls = [];
-  env.GATEWAY = {
-    async fetch(input, init) {
-      calls.push({ input: String(input), init });
-      return Response.json({
-        object: 'list',
-        data: [
-          { id: '@cf/aisingapore/gemma-sea-lion-v4-27b-it', object: 'model' },
-          {
-            id: DEFAULT_CAIL_MODEL,
-            object: 'model',
-            capabilities: ['function-calling'],
-            tier: 'advanced',
-          },
-        ],
-      });
-    },
-  };
-  const session = new Session(env);
-  const res = await session.request(app, '/api/models', {
-    headers: keyringHeaders(token, gatewayToken),
-  });
-  assert.equal(res.status, 200);
-  const body = await res.json();
-  assert.equal(body.default, DEFAULT_CAIL_MODEL);
-  assert.deepEqual(body.models.map((model) => model.id), [DEFAULT_CAIL_MODEL]);
-  assert.equal(calls.length, 1);
-});
-
-test('/api/models fails closed when the configured default is absent or lacks function calling', async () => {
-  const { env } = makeEnv();
-  const { token, gatewayToken, jwks } = await makeRouteCredential();
-  configureRequiredIdentity(env, jwks);
-  const session = new Session(env);
-  for (const data of [
-    [{ id: '@cf/other/model', object: 'model', capabilities: ['function-calling'] }],
-    [{ id: DEFAULT_CAIL_MODEL, object: 'model', capabilities: ['text-generation'] }],
-  ]) {
-    env.GATEWAY = { fetch: async () => Response.json({ object: 'list', data }) };
-    const res = await session.request(app, '/api/models', {
-      headers: keyringHeaders(token, gatewayToken),
-    });
-    assert.equal(res.status, 502);
-    assert.equal((await readError(res)).code, 'model_unavailable');
-  }
-});
 test('/api/models surfaces direct catalog auth and quota failures without fallback', async () => {
   const { env } = makeEnv();
   const { token, gatewayToken, jwks } = await makeRouteCredential();

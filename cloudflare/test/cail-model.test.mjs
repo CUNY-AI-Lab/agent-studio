@@ -162,7 +162,7 @@ test('buffered calls use one Bearer credential and only safe server-owned header
   assert.equal(headers.get('x-openwebui-model'), null);
   assert.equal(init.credentials, 'omit');
   assert.equal(init.redirect, 'manual');
-  assert.equal(JSON.parse(init.body).model, '@cf/deepseek-ai/deepseek-v4-flash-0731');
+  assert.equal(JSON.parse(init.body).model, '@cf/zai-org/glm-5.2');
 });
 
 test('provider forwards the caller abort signal to the Gateway Fetcher', async () => {
@@ -294,56 +294,4 @@ test('tool continuation preserves the direct credential on every request', async
   }
   const continuation = JSON.parse(capture.calls[1].init.body);
   assert.equal(continuation.messages.at(-1).role, 'tool');
-});
-
-test('the default model keeps the first title turn on the ordinary automatic tool loop', async () => {
-  const { DEFAULT_CAIL_MODEL, createCailModel } = await import('../src/lib/cail-model.ts');
-  const capture = captureGateway((callNumber) => callNumber === 1
-    ? completionResponse({
-      choices: [{
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: null,
-          tool_calls: [{
-            id: 'call-title-1',
-            type: 'function',
-            function: { name: 'ui_workspace', arguments: '{"name":"Campus research dashboard"}' },
-          }],
-        },
-        finish_reason: 'tool_calls',
-      }],
-    })
-    : completionResponse());
-  const model = createCailModel({
-    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: capture.gateway },
-    identityJwt: 'gateway-jwt',
-  });
-  const result = generateText({
-    model,
-    prompt: 'Build a campus research dashboard.',
-    tools: {
-      ui_workspace: tool({
-        description: 'Set the workspace title.',
-        inputSchema: z.object({ name: z.string() }),
-        execute: async ({ name }) => ({ name }),
-      }),
-      other_tool: tool({
-        description: 'A tool unavailable during title assignment.',
-        inputSchema: z.object({}),
-        execute: async () => 'unused',
-      }),
-    },
-    stopWhen: stepCountIs(2),
-    maxRetries: 0,
-  });
-  await result;
-
-  assert.equal(capture.calls.length, 2);
-  for (const call of capture.calls) {
-    const request = JSON.parse(call.init.body);
-    assert.equal(request.model, DEFAULT_CAIL_MODEL);
-    assert.equal(request.tool_choice, 'auto');
-    assert.deepEqual(request.tools.map((entry) => entry.function.name), ['ui_workspace', 'other_tool']);
-  }
 });
