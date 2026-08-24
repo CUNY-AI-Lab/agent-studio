@@ -540,8 +540,8 @@ app.post('/api/workspaces/import', async (c) => {
   let bundle;
   try {
     bundle = parseWorkspaceImportBundle(JSON.parse(await bundleFile.text()));
-  } catch (error) {
-    return jsonError(c, 400, 'invalid_bundle', error instanceof Error ? error.message : 'Invalid workspace bundle');
+  } catch {
+    return jsonError(c, 400, 'invalid_bundle', "That file isn't a workspace export from Agent Studio. Choose a .agent-studio.json export and try again.");
   }
   if (bundle.files.length > MAX_IMPORT_FILE_COUNT) {
     return jsonError(c, 400, 'payload_too_large', `Workspace bundle exceeds the ${MAX_IMPORT_FILE_COUNT} file import limit`);
@@ -917,7 +917,7 @@ app.put('/api/workspaces/:id/files/*', async (c) => {
   const putContentType = c.req.header('content-type')?.split(';', 1)[0]?.trim() || undefined;
   const uploadVerdict = isAllowedUpload({ name: filePath, type: putContentType });
   if (!uploadVerdict.allowed) {
-    return jsonError(c, 400, 'invalid_upload', uploadVerdict.reason || 'File type not allowed');
+    return jsonError(c, 400, 'invalid_upload', uploadVerdict.reason || "Files of this type can't be uploaded. Upload documents, data files, or images instead.");
   }
   const declaredLength = Number(c.req.header('content-length'));
   if (Number.isFinite(declaredLength) && declaredLength > MAX_UPLOAD_FILE_BYTES) {
