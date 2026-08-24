@@ -110,6 +110,18 @@ import type {
 import { reconcileWorkspaceDraft } from './lib/workspaceDraft';
 import { replaceWorkspaceInHomeList } from './lib/workspaceHome';
 
+export function startFileDownload(
+  source: FileSource,
+  filePath: string,
+  filename: string,
+  setError: (message: string | null) => void,
+): void {
+  setError(null);
+  void downloadFileSource(source, filePath, filename).catch((nextError) => {
+    setError(nextError instanceof Error ? nextError.message : 'The file didn’t download. Try again.');
+  });
+}
+
 function WorkspaceShell({
   workspace,
   onWorkspaceRefresh,
@@ -1053,10 +1065,7 @@ function WorkspaceShell({
   }, [highlightWorkspaceFiles, showToast, workspace.workspace.id]);
 
   const handleFileDownload = useCallback((source: FileSource, filePath: string, filename: string) => {
-    setError(null);
-    void downloadFileSource(source, filePath, filename).catch((nextError) => {
-      setError(nextError instanceof Error ? nextError.message : 'The file didn’t download. Try again.');
-    });
+    startFileDownload(source, filePath, filename, setError);
   }, []);
 
   useEffect(() => {
@@ -2732,6 +2741,36 @@ function WorkspaceShell({
   );
 }
 
+export function GalleryView({
+  gallery,
+  error,
+  onGoHome,
+  onDownloadFile,
+}: {
+  gallery: GalleryItemFull;
+  error: string | null;
+  onGoHome: () => void;
+  onDownloadFile: (source: FileSource, filePath: string, filename: string) => void;
+}) {
+  return (
+    <div className="grain h-screen flex flex-col">
+      {error ? (
+        <div role="alert" className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
+          {error}
+        </div>
+      ) : null}
+      <ReadOnlyCanvas
+        galleryId={gallery.id}
+        title={gallery.title}
+        description={gallery.description}
+        state={gallery.state}
+        onGoHome={onGoHome}
+        onDownloadFile={onDownloadFile}
+      />
+    </div>
+  );
+}
+
 export default function App() {
   const browserLocation = globalThis.window?.location;
   const initialWorkspaceId = browserLocation
@@ -2874,10 +2913,7 @@ export default function App() {
   }, []);
 
   const handleGalleryFileDownload = useCallback((source: FileSource, filePath: string, filename: string) => {
-    setError(null);
-    void downloadFileSource(source, filePath, filename).catch((nextError) => {
-      setError(nextError instanceof Error ? nextError.message : 'The file didn’t download. Try again.');
-    });
+    startFileDownload(source, filePath, filename, setError);
   }, []);
 
   const handleImportBundle = useCallback(async (file: File | null) => {
@@ -2954,18 +2990,12 @@ export default function App() {
 
   // Gallery view
   if (!selectedWorkspace && selectedGallery) {
-    return (
-      <div className="grain h-screen flex flex-col">
-        <ReadOnlyCanvas
-          galleryId={selectedGallery.id}
-          title={selectedGallery.title}
-          description={selectedGallery.description}
-          state={selectedGallery.state}
-          onGoHome={handleGoHome}
-          onDownloadFile={handleGalleryFileDownload}
-        />
-      </div>
-    );
+    return <GalleryView
+      gallery={selectedGallery}
+      error={error}
+      onGoHome={handleGoHome}
+      onDownloadFile={handleGalleryFileDownload}
+    />;
   }
 
   // Workspace view
