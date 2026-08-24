@@ -302,6 +302,10 @@ function preserveNodeMeasurements(next: CanvasNode[], current: CanvasNode[]): Ca
   });
 }
 
+function panelIdSetsMatch(left: Set<string>, right: Set<string>): boolean {
+  return left.size === right.size && Array.from(left).every((panelId) => right.has(panelId));
+}
+
 function connectionsMatch(left: PanelConnection | undefined, right: PanelConnection | undefined): boolean {
   if (left === right) return true;
   if (!left || !right) return false;
@@ -752,9 +756,21 @@ function CanvasFlowInner({
   const edgeSelectionRef = useRef(false);
   const reactFlow = useReactFlow<CanvasNode, AssociationFlowEdge>();
   const store = useStoreApi<CanvasNode, AssociationFlowEdge>();
+  const lastFlowNodesRef = useRef(flowNodes);
+  const previousSelectedPanelIdsRef = useRef<Set<string> | null>(null);
+  const pendingSelectionTransitionRef = useRef<Set<string> | null>(null);
+
+  if (!panelIdSetsMatch(previousSelectedPanelIdsRef.current ?? EMPTY_SELECTION, selectedPanelIds)) {
+    pendingSelectionTransitionRef.current = previousSelectedPanelIdsRef.current
+      ? new Set(previousSelectedPanelIdsRef.current)
+      : EMPTY_SELECTION;
+    previousSelectedPanelIdsRef.current = new Set(selectedPanelIds);
+  }
 
   useEffect(() => {
-    setNodes((current) => flowNodesMatch(current, flowNodes) ? current : preserveNodeMeasurements(flowNodes, current));
+    if (flowNodesMatch(lastFlowNodesRef.current, flowNodes)) return;
+    lastFlowNodesRef.current = flowNodes;
+    setNodes((current) => preserveNodeMeasurements(flowNodes, current));
   }, [flowNodes, setNodes]);
 
   useEffect(() => {
@@ -809,8 +825,23 @@ function CanvasFlowInner({
   const handleSelectionChange = useCallback(({ nodes: selectedNodes }: { nodes: CanvasNode[] }) => {
     if (edgeSelectionRef.current || (selectedConnectionIds.size > 0 && selectedNodes.length === 0)) return;
     if (selectedNodes.some((node) => node.type === 'groupBoundary')) return;
-    onSelectionChange?.(selectedNodes.filter((node) => node.type === 'panel').map((node) => node.id));
-  }, [onSelectionChange, selectedConnectionIds]);
+    const nextPanelIds = selectedNodes.filter((node) => node.type === 'panel').map((node) => node.id);
+    const nextSelection = new Set(nextPanelIds);
+    const pendingSelection = pendingSelectionTransitionRef.current;
+    if (pendingSelection && panelIdSetsMatch(nextSelection, pendingSelection)) {
+      pendingSelectionTransitionRef.current = null;
+      return;
+    }
+    pendingSelectionTransitionRef.current = null;
+    // React Flow reports a transient empty selection while controlled nodes are
+    // being reconciled. The parent owns selection, and pane clicks already
+    // clear it explicitly; forwarding this transient event would make the
+    // controlled `selected` prop oscillate between the user selection and []
+    // until React hits its maximum update depth.
+    if (nextPanelIds.length === 0 && selectedPanelIds.size > 0) return;
+    if (panelIdSetsMatch(nextSelection, selectedPanelIds)) return;
+    onSelectionChange?.(nextPanelIds);
+  }, [onSelectionChange, selectedConnectionIds, selectedPanelIds]);
 
   const handleNodeDragStart = useCallback<OnNodeDrag<CanvasNode>>((_event, node) => {
     if (node.type === 'groupBoundary') {

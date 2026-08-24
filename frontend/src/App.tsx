@@ -52,13 +52,10 @@ import {
   buildPanelLayouts,
   getGroupBounds,
   getLayoutsBounds,
-  hasOverlappingPanels,
   inferPanelLayout,
   layoutOverlapsBounds,
-  resolveCollisions,
   resolveVisibleLayoutCollisions,
   type CanvasPanelLayout,
-  type LayoutMap,
 } from './lib/panelLayout';
 import { escapeCsvCell, serializeTableAsCsv } from './lib/csv';
 import { computeGroupsDelta } from './lib/groupDelta';
@@ -161,7 +158,6 @@ function WorkspaceShell({
   const [focusedPanelId, setFocusedPanelId] = useState<string | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
   const [groupNameInput, setGroupNameInput] = useState('');
-  const [draggingGroupId, setDraggingGroupId] = useState<string | null>(null);
   const [minimizedPanelIds, setMinimizedPanelIds] = useState<Set<string>>(new Set());
   const [maximizedPanelId, setMaximizedPanelId] = useState<string | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -180,7 +176,6 @@ function WorkspaceShell({
   const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
   const panelSourceRef = useRef<Record<string, string>>({});
-  const lastLayoutInteractionRef = useRef(Date.now());
   const clearFileHighlightTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const hoverClearTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
@@ -333,7 +328,6 @@ function WorkspaceShell({
     setFocusedPanelId(null);
     setEditingGroupId(null);
     setGroupNameInput('');
-    setDraggingGroupId(null);
     setMinimizedPanelIds(new Set());
     setMaximizedPanelId(null);
     setOpenMenuId(null);
@@ -557,60 +551,6 @@ function WorkspaceShell({
   }, [artifactPanels]);
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      if (draggingGroupId) return;
-      if (Date.now() - lastLayoutInteractionRef.current < 1500) return;
-      if (visiblePanelIds.size < 2) return;
-
-      const visibleLayouts: LayoutMap = {};
-      visiblePanelIds.forEach((panelId) => {
-        const layout = panelLayoutsRef.current[panelId];
-        if (layout) {
-          visibleLayouts[panelId] = { ...layout };
-        }
-      });
-
-      if (Object.keys(visibleLayouts).length < 2) return;
-      if (!hasOverlappingPanels(visibleLayouts)) return;
-
-      const resolved = resolveCollisions(visibleLayouts, new Set());
-      const changed = Object.keys(resolved).some((panelId) => {
-        const current = panelLayoutsRef.current[panelId];
-        const next = resolved[panelId];
-        return !current || current.x !== next.x || current.y !== next.y;
-      });
-
-      if (!changed) return;
-
-      panelLayoutsRef.current = {
-        ...panelLayoutsRef.current,
-        ...resolved,
-      };
-
-      setWorkspaceState((current) => ({
-        ...current,
-        panels: current.panels.map((panel) => {
-          const nextLayout = resolved[panel.id];
-          if (!nextLayout) return panel;
-          return {
-            ...panel,
-            layout: {
-              ...panel.layout,
-              ...nextLayout,
-            },
-          };
-        }),
-      }));
-
-      void agent.call('applyLayoutPatch', [{ panels: resolved }]);
-    }, 3000);
-
-    return () => {
-      clearInterval(intervalId);
-    };
-  }, [agent, draggingGroupId, visiblePanelIds]);
-
-  useEffect(() => {
     if (selectedPanelIds.size > 0) {
       setHoveredPanelId(null);
       setHoveredToolbarPanelId(null);
@@ -797,6 +737,13 @@ function WorkspaceShell({
   const updateViewport = useCallback((updater: (current: WorkspaceState['viewport']) => WorkspaceState['viewport']) => {
     setWorkspaceState((current) => {
       const nextViewport = updater(current.viewport);
+      if (
+        nextViewport.x === current.viewport.x &&
+        nextViewport.y === current.viewport.y &&
+        nextViewport.zoom === current.viewport.zoom
+      ) {
+        return current;
+      }
       persistViewport(nextViewport);
       return {
         ...current,
@@ -1417,7 +1364,6 @@ function WorkspaceShell({
   }, [saveGroups, showToast, workspaceState.groups]);
 
   const handlePanelLayoutChange = useCallback((panelId: string, layout: Partial<CanvasPanelLayout>) => {
-    lastLayoutInteractionRef.current = Date.now();
     setWorkspaceState((current) => {
       const nextPanels = current.panels.map((panel, index) => {
         if (panel.id !== panelId) return panel;
@@ -1505,8 +1451,6 @@ function WorkspaceShell({
     const group = workspaceState.groups.find((entry) => entry.id === groupId);
     if (!group) return;
 
-    setDraggingGroupId(groupId);
-    lastLayoutInteractionRef.current = Date.now();
     const groupPanelIds = new Set(group.panelIds);
 
     setWorkspaceState((current) => {
@@ -1534,7 +1478,6 @@ function WorkspaceShell({
   }, [workspaceState.groups]);
 
   const handleGroupDragEnd = useCallback(async (groupId: string) => {
-    setDraggingGroupId(null);
     const group = workspaceState.groups.find((entry) => entry.id === groupId);
     if (!group) return;
 
@@ -1660,7 +1603,6 @@ function WorkspaceShell({
       }
 
       if (finalLayouts) {
-        lastLayoutInteractionRef.current = Date.now();
         await savePanelLayouts(finalLayouts);
       }
     }

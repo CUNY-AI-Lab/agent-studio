@@ -432,6 +432,64 @@ describe('CanvasFlow selection state', () => {
     expect(onPanelDelete).toHaveBeenCalledOnce();
     expect(onPanelDelete).toHaveBeenCalledWith(['panel-two']);
   });
+
+  it('keeps the controlled workspace selection stable when the header clears it', async () => {
+    const nativeResizeObserver = globalThis.ResizeObserver;
+    const nativeDOMMatrixReadOnly = globalThis.DOMMatrixReadOnly;
+    vi.stubGlobal('ResizeObserver', ManualResizeObserver);
+    vi.stubGlobal('DOMMatrixReadOnly', class { readonly m22 = 1; });
+
+    try {
+      function WorkspaceSelectionHarness() {
+        const [selectedPanelIds, setSelectedPanelIds] = useState<Set<string>>(new Set());
+        return (
+          <>
+            {selectedPanelIds.size > 0 ? (
+              <button onClick={() => setSelectedPanelIds(new Set())}>
+                {selectedPanelIds.size} selected
+              </button>
+            ) : null}
+            <CanvasFlow
+              panels={panels}
+              allPanels={panels}
+              groups={[]}
+              connections={[{ id: 'workspace-association', sourceId: 'panel-one', targetId: 'panel-two' }]}
+              viewport={{ x: 0, y: 0, zoom: 1 }}
+              fileSource={{ kind: 'workspace', id: 'workspace-selection-test' }}
+              selectedPanelIds={selectedPanelIds}
+              readOnly
+              onSelectionChange={(panelIds) => setSelectedPanelIds(new Set(panelIds))}
+              onPaneClick={() => setSelectedPanelIds(new Set())}
+            />
+          </>
+        );
+      }
+
+      render(<WorkspaceSelectionHarness />);
+      ManualResizeObserver.notifyAll();
+
+      await waitFor(() => {
+        expect(screen.getByRole('group', { name: 'One (markdown tile)' })).toBeInTheDocument();
+        expect(screen.getByRole('group', { name: 'Two (markdown tile)' })).toBeInTheDocument();
+        expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(1);
+      });
+
+      fireEvent.click(screen.getByRole('group', { name: 'One (markdown tile)' }));
+      const selectedButton = await screen.findByRole('button', { name: '1 selected' });
+      expect(screen.getByRole('group', { name: 'One (markdown tile), selected' })).toBeInTheDocument();
+
+      fireEvent.click(selectedButton);
+
+      expect(screen.queryByRole('button', { name: '1 selected' })).not.toBeInTheDocument();
+      expect(screen.getByRole('group', { name: 'One (markdown tile)' })).toBeInTheDocument();
+      expect(screen.getByRole('group', { name: 'Two (markdown tile)' })).toBeInTheDocument();
+      expect(document.querySelectorAll('.react-flow__edge')).toHaveLength(1);
+    } finally {
+      vi.stubGlobal('ResizeObserver', nativeResizeObserver);
+      vi.stubGlobal('DOMMatrixReadOnly', nativeDOMMatrixReadOnly);
+      manualResizeObservers.clear();
+    }
+  });
 });
 
 describe('CanvasFlow keyboard view shortcuts', () => {
