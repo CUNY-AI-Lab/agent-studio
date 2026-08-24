@@ -670,6 +670,7 @@ test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
 test('gateway 429 quota_exceeded streams the verbatim quota message to the user', async (t) => {
   t.mock.method(console, 'error', () => {});
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
   const { tool } = await import('ai');
   const { z } = await import('zod');
 
@@ -677,7 +678,13 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     'You have reached your CAIL usage quota for this period. Try again in about 1800 seconds.';
   let wireCalls = 0;
   const gateway = {
-    async fetch() {
+    async fetch(input) {
+      if (String(input) === 'https://cail.test/v1/models') {
+        return Response.json({
+          object: 'list',
+          data: [{ id: DEFAULT_CAIL_MODEL, capabilities: ['text-generation', 'function-calling'] }],
+        });
+      }
       wireCalls += 1;
       return Response.json({
         error: {
@@ -753,5 +760,137 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
   assert.equal(payload.error.message, quotaMessage);
   assert.equal(payload.error.cail.retry_after_seconds, 1800);
   // The APICallError must not be SDK-retried: one wire call, no retry storm.
-  assert.equal(wireCalls, 1);
+  assert.equal(wireCalls, 1, 'the AI SDK must not retry the chat request');
+});
+
+test('chat refuses a named non-function-capable model before inference', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const agent = {
+    assertNotFrozen() {},
+    requireWorkspace() {
+      return {
+        id: 'workspace-1',
+        name: 'Human title',
+        description: '',
+        createdAt: '',
+        updatedAt: '',
+        model: '@cf/no-tools/model',
+      };
+    },
+    requireSessionId() {
+      return 'session-1';
+    },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() {
+      return { status: 'valid' };
+    },
+    env: {
+      CAIL_API_BASE: 'https://cail.test',
+      GATEWAY: {
+        async fetch(input) {
+          if (String(input) !== 'https://cail.test/v1/models') {
+            throw new Error('inference must not run for an unsupported model');
+          }
+          return Response.json({
+            object: 'list',
+            data: [{ id: '@cf/no-tools/model', capabilities: ['text-generation'] }],
+          });
+        },
+      },
+    },
+    messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'Build a dashboard' }] }],
+    buildHostTools() {
+      throw new Error('tools must not be built for an unsupported model');
+    },
+  };
+
+  const response = await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, {
+    requestId: 'unsupported-model',
+  });
+  const body = await response.text();
+  const event = JSON.parse(body.split('\n')[0].slice('data: '.length));
+  const payload = JSON.parse(event.errorText);
+  assert.equal(payload.error.code, 'model_capability_required');
+  assert.equal(payload.error.cail.retryable, false);
+});
+
+test('chat caches function capability per model and revalidates a changed model', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  let workspaceModel = '@cf/model-a';
+  let catalogCalls = 0;
+  let inferenceCalls = 0;
+  const gateway = {
+    async fetch(input) {
+      const url = String(input);
+      if (url === 'https://cail.test/v1/models') {
+        catalogCalls += 1;
+        return Response.json({
+          object: 'list',
+          data: [
+            { id: '@cf/model-a', capabilities: ['text-generation', 'function-calling'] },
+            { id: '@cf/model-b', capabilities: ['text-generation', 'function-calling'] },
+          ],
+        });
+      }
+      inferenceCalls += 1;
+      return new Response(
+        'data: {"id":"chatcmpl-cache","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}\n\n'
+        + 'data: {"id":"chatcmpl-cache","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  };
+  const noopTool = tool({
+    description: 'noop',
+    inputSchema: z.object({}),
+    execute: async () => 'ok',
+  });
+  const agent = {
+    assertNotFrozen() {},
+    requireWorkspace() {
+      return {
+        id: 'workspace-1',
+        name: 'Human title',
+        description: '',
+        createdAt: '',
+        updatedAt: '',
+        model: workspaceModel,
+      };
+    },
+    requireSessionId() {
+      return 'session-1';
+    },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() {
+      return { status: 'valid' };
+    },
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
+    state: { panels: [] },
+    messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+    buildHostTools() {
+      return {};
+    },
+    createCodeModeTool() {
+      return noopTool;
+    },
+    buildModelTools() {
+      return {};
+    },
+  };
+
+  await (await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, { requestId: 'cache-1' })).text();
+  assert.equal(catalogCalls, 1);
+  assert.equal(inferenceCalls, 1);
+
+  await (await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, { requestId: 'cache-2' })).text();
+  assert.equal(catalogCalls, 1, 'the same model should use the warm capability proof');
+  assert.equal(inferenceCalls, 2, 'the second turn should still make one inference request');
+
+  workspaceModel = '@cf/model-b';
+  await (await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, { requestId: 'cache-3' })).text();
+  assert.equal(catalogCalls, 2, 'a changed model must be validated once');
+  assert.equal(inferenceCalls, 3, 'the changed model should still make one inference request');
 });

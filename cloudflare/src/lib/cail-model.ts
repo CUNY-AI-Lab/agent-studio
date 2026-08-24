@@ -26,13 +26,11 @@ import { CAIL_APP_SLUG } from './cail-identity';
 import { isAllowedCailModelId } from './workspace-validation';
 
 /**
- * Default model slug. CAIL policy (2026-07-04) is Workers AI catalog only —
- * `@cf/...` ids resolved by the AI Gateway. GLM-5.2 is the catalog's flagship
- * agentic model (262k context, function calling, parallel tool calls), which
- * fits this tool's multi-step tool-loop + codemode workload. Ops can override
- * via CAIL_MODEL — e.g. `@cf/openai/gpt-oss-120b` as a cheaper general model.
+ * Default model slug. CAIL policy is Workers AI catalog only — `@cf/...` ids
+ * resolved by the AI Gateway. Ops can override via CAIL_MODEL, and an
+ * individual workspace can persist its own model choice.
  */
-export const DEFAULT_CAIL_MODEL = '@cf/zai-org/glm-5.2';
+export const DEFAULT_CAIL_MODEL = '@cf/deepseek-ai/deepseek-v4-flash-0731';
 
 export interface CailModelEnv {
   /**
