@@ -113,6 +113,10 @@ import {
   useAutomaticLayoutPersistence,
   type AutomaticPanelLayouts,
 } from './lib/automaticLayout';
+import {
+  createViewportPersistenceQueue,
+  type ViewportPersistenceQueue,
+} from './lib/viewportPersistence';
 
 function WorkspaceShell({
   workspace,
@@ -137,6 +141,7 @@ function WorkspaceShell({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [automaticLayoutSaveError, setAutomaticLayoutSaveError] = useState<string | null>(null);
+  const [viewportSaveError, setViewportSaveError] = useState<string | null>(null);
   const [chatErrorNotice, setChatErrorNotice] = useState<string | null>(null);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState(workspace.workspace.name);
@@ -184,7 +189,19 @@ function WorkspaceShell({
   const fileCardRefs = useRef<Record<string, HTMLElement | null>>({});
   const panelRefs = useRef<Record<string, HTMLElement | null>>({});
   const workspaceFilesRef = useRef(workspace.files);
-  const viewportSaveTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const viewportRef = useRef(workspace.state.viewport);
+  const viewportInteractionRef = useRef(false);
+  const viewportPersistenceRef = useRef<{ workspaceId: string; queue: ViewportPersistenceQueue }>({
+    workspaceId: workspace.workspace.id,
+    queue: createViewportPersistenceQueue(workspace.workspace.id, workspace.state.viewport),
+  });
+  if (viewportPersistenceRef.current.workspaceId !== workspace.workspace.id) {
+    viewportPersistenceRef.current = {
+      workspaceId: workspace.workspace.id,
+      queue: createViewportPersistenceQueue(workspace.workspace.id, workspace.state.viewport),
+    };
+  }
+  const [viewportPersistenceRevision, setViewportPersistenceRevision] = useState(0);
   const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
   const panelSourceRef = useRef<Record<string, string>>({});
@@ -248,9 +265,16 @@ function WorkspaceShell({
     query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
       if (!state.workspace || state.workspace.id !== workspace.workspace.id) return;
+      const viewportPersistence = viewportPersistenceRef.current;
+      const nextState = viewportInteractionRef.current
+        ? { ...state, viewport: viewportRef.current }
+        : viewportPersistence.queue.reapply(state);
+      viewportRef.current = nextState.viewport;
       const automaticLayoutPersistence = automaticLayoutPersistenceRef.current;
-      setWorkspaceState(automaticLayoutPersistence ? automaticLayoutPersistence.acknowledgeServerState(state) : state);
-      pendingWorkspaceMetadataRef.current = state.workspace;
+      setWorkspaceState(automaticLayoutPersistence
+        ? automaticLayoutPersistence.acknowledgeServerState(nextState)
+        : nextState);
+      pendingWorkspaceMetadataRef.current = nextState.workspace;
     },
   });
   const agentCallRef = useRef(agent.call);
@@ -310,6 +334,27 @@ function WorkspaceShell({
     onSaveSuccess: () => setAutomaticLayoutSaveError(null),
   });
   automaticLayoutPersistenceRef.current = automaticLayoutPersistence;
+
+  useEffect(() => {
+    const controller = viewportPersistenceRef.current;
+    if (!controller.queue.hasPending() || controller.queue.hasFailure()) return;
+
+    void controller.queue.flush((viewport) => (
+      agentCallRef.current('applyLayoutPatch', [{ viewport }]).then(() => undefined)
+    )).then((result) => {
+      if (controller !== viewportPersistenceRef.current) return;
+      if (result === 'failed') {
+        setViewportSaveError('Your canvas view could not be saved. Retry viewport save.');
+        return;
+      }
+      if (result === 'saved') {
+        setViewportSaveError(null);
+      }
+      if ((result === 'saved' || result === 'superseded') && controller.queue.hasPending()) {
+        setViewportPersistenceRevision((current) => current + 1);
+      }
+    });
+  }, [viewportPersistenceRevision, workspace.workspace.id]);
 
   // The pending record lives in a ref so onStateUpdate never renders metadata
   // during a chat message commit. This effect intentionally runs after every
@@ -405,11 +450,15 @@ function WorkspaceShell({
     const workspaceChanged = previousServer.id !== workspace.workspace.id;
     serverWorkspaceRef.current = workspace.workspace;
     pendingWorkspaceMetadataRef.current = null;
-    setWorkspaceState(workspace.state);
+    const nextWorkspaceState = viewportPersistenceRef.current.queue.reapply(workspace.state);
+    viewportInteractionRef.current = false;
+    viewportRef.current = nextWorkspaceState.viewport;
+    setWorkspaceState(nextWorkspaceState);
     setWorkspaceFiles(workspace.files);
     workspaceFilesRef.current = workspace.files;
     if (workspaceChanged) {
       setAutomaticLayoutSaveError(null);
+      setViewportSaveError(null);
       setWorkspaceName(workspace.workspace.name);
       setWorkspaceDescription(workspace.workspace.description);
       setWorkspaceModel(workspace.workspace.model);
@@ -807,12 +856,6 @@ function WorkspaceShell({
     }
   }, [isDockedChatLayout, viewportWidth]);
 
-  useEffect(() => () => {
-    if (viewportSaveTimeoutRef.current) {
-      clearTimeout(viewportSaveTimeoutRef.current);
-    }
-  }, []);
-
   useEffect(() => {
     if (!openMenuId) return;
 
@@ -842,17 +885,23 @@ function WorkspaceShell({
   }, [publishModalOpen, publishing]);
 
   const persistViewport = useCallback((viewport: WorkspaceState['viewport']) => {
-    if (viewportSaveTimeoutRef.current) {
-      clearTimeout(viewportSaveTimeoutRef.current);
+    const controller = viewportPersistenceRef.current;
+    if (controller.queue.enqueue(viewport)) {
+      setViewportPersistenceRevision((current) => current + 1);
     }
-    viewportSaveTimeoutRef.current = window.setTimeout(() => {
-      void agent.call('applyLayoutPatch', [{ viewport }]);
-    }, 180);
-  }, [agent]);
+  }, []);
 
   const updateViewport = useCallback((updater: (current: WorkspaceState['viewport']) => WorkspaceState['viewport']) => {
+    const nextViewport = updater(viewportRef.current);
+    if (
+      nextViewport.x === viewportRef.current.x &&
+      nextViewport.y === viewportRef.current.y &&
+      nextViewport.zoom === viewportRef.current.zoom
+    ) {
+      return nextViewport;
+    }
+    viewportRef.current = nextViewport;
     setWorkspaceState((current) => {
-      const nextViewport = updater(current.viewport);
       if (
         nextViewport.x === current.viewport.x &&
         nextViewport.y === current.viewport.y &&
@@ -860,17 +909,24 @@ function WorkspaceShell({
       ) {
         return current;
       }
-      persistViewport(nextViewport);
       return {
         ...current,
         viewport: nextViewport,
       };
     });
-  }, [persistViewport]);
+    return nextViewport;
+  }, []);
 
   const handleViewportChange = useCallback((nextViewport: WorkspaceState['viewport']) => {
+    viewportInteractionRef.current = true;
     updateViewport(() => nextViewport);
   }, [updateViewport]);
+
+  const handleViewportChangeEnd = useCallback((nextViewport: WorkspaceState['viewport']) => {
+    updateViewport(() => nextViewport);
+    viewportInteractionRef.current = false;
+    persistViewport(nextViewport);
+  }, [persistViewport, updateViewport]);
 
   const focusCanvasBounds = useCallback((bounds: { x: number; y: number; width: number; height: number }) => {
     if (!canvasViewportRef.current) return;
@@ -879,12 +935,13 @@ function WorkspaceShell({
     const centerX = bounds.x + bounds.width / 2;
     const centerY = bounds.y + bounds.height / 2;
 
-    updateViewport((current) => ({
+    const nextViewport = updateViewport((current) => ({
       ...current,
       x: viewportWidth / 2 - centerX * current.zoom,
       y: viewportHeight / 2 - centerY * current.zoom,
     }));
-  }, [updateViewport]);
+    persistViewport(nextViewport);
+  }, [persistViewport, updateViewport]);
 
   useEffect(() => {
     if (!contextualChatTarget) {
@@ -952,6 +1009,10 @@ function WorkspaceShell({
   useEffect(() => {
     if (automaticLayoutSaveError) announce(automaticLayoutSaveError);
   }, [announce, automaticLayoutSaveError]);
+
+  useEffect(() => {
+    if (viewportSaveError) announce(viewportSaveError);
+  }, [announce, viewportSaveError]);
 
   const consumeDownloads = useCallback((downloads?: DownloadRequest[]) => {
     if (!downloads || downloads.length === 0) return;
@@ -2474,10 +2535,10 @@ function WorkspaceShell({
           onOpenShortcuts={() => setShortcutsOpen(true)}
         />
 
-        {error || automaticLayoutSaveError ? (
+        {error || automaticLayoutSaveError || viewportSaveError ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
             <div className="flex items-center justify-between gap-3">
-              <span>{automaticLayoutSaveError || error}</span>
+              <span>{automaticLayoutSaveError || viewportSaveError || error}</span>
               {automaticLayoutSaveError ? (
                 <button
                   type="button"
@@ -2485,6 +2546,19 @@ function WorkspaceShell({
                   onClick={retryAutomaticPanelLayouts}
                 >
                   Retry layout save
+                </button>
+              ) : null}
+              {viewportSaveError ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  onClick={() => {
+                    setViewportSaveError(null);
+                    viewportPersistenceRef.current.queue.retry();
+                    setViewportPersistenceRevision((current) => current + 1);
+                  }}
+                >
+                  Retry viewport save
                 </button>
               ) : null}
             </div>
@@ -2666,6 +2740,7 @@ function WorkspaceShell({
               setGroupNameInput(nextGroup?.name || '');
             }}
             onViewportChange={handleViewportChange}
+            onViewportChangeEnd={handleViewportChangeEnd}
             onOpenShortcuts={() => setShortcutsOpen(true)}
             emptyState={visiblePanels.length === 0 ? (
               <div className="canvas-empty pointer-events-none absolute inset-0">

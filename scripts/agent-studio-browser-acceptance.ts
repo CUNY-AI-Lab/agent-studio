@@ -351,11 +351,43 @@ async function emptyCanvasPoint(page: Page, canvas: Locator): Promise<CanvasPoin
   };
 }
 
+async function reactFlowViewport(page: Page): Promise<WorkspaceViewport> {
+  const transform = await page.locator('.react-flow__viewport').getAttribute('style');
+  const match = transform?.match(/translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\) scale\((-?[\d.]+)\)/);
+  if (!match) fail('React Flow did not expose a numeric viewport transform');
+  return {
+    x: Number(match[1]),
+    y: Number(match[2]),
+    zoom: Number(match[3]),
+  };
+}
+
+async function settledReactFlowViewport(page: Page): Promise<WorkspaceViewport> {
+  await delay(240);
+  const first = await reactFlowViewport(page);
+  await delay(40);
+  const second = await reactFlowViewport(page);
+  if (
+    Math.abs(first.x - second.x) > 0.01
+    || Math.abs(first.y - second.y) > 0.01
+    || Math.abs(first.zoom - second.zoom) > 0.0001
+  ) {
+    fail('React Flow viewport was still moving after the animation boundary');
+  }
+  return second;
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
   context.setDefaultTimeout(10_000);
   const page = await context.newPage();
+  let applyLayoutPatchCalls = 0;
+  page.on('websocket', (socket) => {
+    socket.on('framesent', (frame) => {
+      if (frame.payload.toString().includes('applyLayoutPatch')) applyLayoutPatchCalls += 1;
+    });
+  });
   await page.setViewportSize({ width: 1440, height: 1000 });
   let workspaceId: string | undefined;
   let cleanupViaUi = false;
@@ -431,12 +463,41 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     }
 
     const zoomLabel = page.getByLabel(/^Zoom \d+ percent$/);
-    const zoomBefore = await zoomLabel.getAttribute('aria-label');
+    const zoomBeforeLabel = await zoomLabel.getAttribute('aria-label');
+    const zoomBefore = await settledReactFlowViewport(page);
+    const callsBeforeZoomOut = applyLayoutPatchCalls;
     await page.getByRole('button', { name: 'Zoom out' }).click();
-    await expect(zoomLabel).not.toHaveAttribute('aria-label', zoomBefore ?? '');
+    const zoomOut = await settledReactFlowViewport(page);
+    if (applyLayoutPatchCalls - callsBeforeZoomOut !== 1) {
+      fail('Zoom out did not coalesce its viewport write to one terminal patch');
+    }
+    if (zoomOut.zoom >= zoomBefore.zoom - 0.02) {
+      fail('Zoom out did not complete its animation');
+    }
+    await expect(zoomLabel).not.toHaveAttribute('aria-label', zoomBeforeLabel ?? '');
+    const callsBeforeZoomIn = applyLayoutPatchCalls;
     await page.getByRole('button', { name: 'Zoom in' }).click();
+    const zoomIn = await settledReactFlowViewport(page);
+    if (applyLayoutPatchCalls - callsBeforeZoomIn !== 1) {
+      fail('Zoom in did not coalesce its viewport write to one terminal patch');
+    }
+    if (zoomIn.zoom <= zoomOut.zoom + 0.02) {
+      fail('Zoom in did not complete its animation');
+    }
 
+    const callsBeforeReset = applyLayoutPatchCalls;
     await page.getByRole('button', { name: 'Reset zoom and position' }).click();
+    const resetViewport = await settledReactFlowViewport(page);
+    if (applyLayoutPatchCalls - callsBeforeReset !== 1) {
+      fail('Reset view did not coalesce its viewport write to one terminal patch');
+    }
+    if (
+      Math.abs(resetViewport.x - zoomIn.x) <= 0.01
+      && Math.abs(resetViewport.y - zoomIn.y) <= 0.01
+      && Math.abs(resetViewport.zoom - zoomIn.zoom) <= 0.0001
+    ) {
+      fail('Reset view did not complete its animation');
+    }
     await expect(multiToolbar).toBeVisible();
     const secondClearPoint = await emptyCanvasPoint(page, canvas);
     await canvas.click({ position: secondClearPoint.position });

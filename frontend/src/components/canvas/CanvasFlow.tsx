@@ -20,6 +20,7 @@ import {
   type NodeChange,
   type NodeProps,
   type OnNodeDrag,
+  type OnMoveEnd,
   type Viewport,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -546,6 +547,7 @@ interface CanvasFlowProps {
   onGroupNameInputChange?: (value: string) => void;
   onEditGroupStart?: (groupId: string) => void;
   onViewportChange?: (viewport: WorkspaceViewport) => void;
+  onViewportChangeEnd?: (viewport: WorkspaceViewport) => void;
   onOpenShortcuts?: () => void;
   readOnly?: boolean;
   emptyState?: React.ReactNode;
@@ -664,6 +666,7 @@ function CanvasFlowInner({
   onGroupNameInputChange,
   onEditGroupStart,
   onViewportChange,
+  onViewportChangeEnd,
   onOpenShortcuts,
   readOnly = false,
   emptyState,
@@ -941,6 +944,10 @@ function CanvasFlowInner({
     onViewportChange?.({ x: nextViewport.x, y: nextViewport.y, zoom: nextViewport.zoom });
   }, [onViewportChange]);
 
+  const handleViewportChangeEnd = useCallback<OnMoveEnd>((_event, nextViewport) => {
+    onViewportChangeEnd?.({ x: nextViewport.x, y: nextViewport.y, zoom: nextViewport.zoom });
+  }, [onViewportChangeEnd]);
+
   const handleCanvasKeyDownCapture = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
     const target = event.target instanceof Element ? event.target : null;
     if (!target) return;
@@ -1113,6 +1120,7 @@ function CanvasFlowInner({
         onEdgeClick={handleEdgeClick}
         onPaneClick={onPaneClick}
         onViewportChange={handleViewportChange}
+        onMoveEnd={handleViewportChangeEnd}
         viewport={viewport}
         minZoom={0.35}
         maxZoom={2.5}
