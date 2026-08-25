@@ -6,7 +6,7 @@
 // §3¾ invariant: tool-served user/agent bytes must NEVER be interpretable as an
 // active SAME-ORIGIN document. An attacker-authored .html/.svg — or an inline
 // `type:'preview'` panel whose `content` is attacker/agent-authored HTML — that
-// reaches a workspace (or the public gallery) and is opened top-level would
+// reaches a workspace (or the authenticated gallery) and is opened top-level would
 // otherwise run script on the app origin and read the non-HttpOnly CSRF cookie
 // (cross-tenant account takeover).
 //

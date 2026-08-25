@@ -106,7 +106,7 @@ export function HomePage({
           <section className="mb-12 animate-fade-in-up" style={{ animationDelay: '150ms' }}>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-medium text-muted-foreground">Gallery</h2>
-              <span className="text-xs text-muted-foreground/70">{galleryItems.length} shared</span>
+              <span className="text-xs text-muted-foreground/70">{galleryItems.length} shared with CAIL members</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
               {galleryItems.map((item) => (

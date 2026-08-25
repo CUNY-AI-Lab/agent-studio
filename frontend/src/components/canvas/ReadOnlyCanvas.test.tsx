@@ -34,7 +34,7 @@ describe('ReadOnlyCanvas', () => {
       <ReadOnlyCanvas
         galleryId="gallery-1"
         title="Shared research"
-        description="A public workspace"
+        description="A shared workspace"
         state={emptyState}
         onGoHome={onGoHome}
       />
@@ -49,7 +49,7 @@ describe('ReadOnlyCanvas', () => {
       <ReadOnlyCanvas
         galleryId="gallery-1"
         title="Shared research"
-        description="A public workspace"
+        description="A shared workspace"
         state={stateWithTable}
         onGoHome={vi.fn()}
       />

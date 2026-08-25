@@ -24,7 +24,8 @@ describe('PublishDialog', () => {
 
   it('summarizes the shared tile and file counts with correct pluralization', () => {
     render(<PublishDialog {...baseProps} publishablePanelCount={2} fileCount={1} />);
-    expect(screen.getByText(/Publishing makes 2 tile views and 1 file public to anyone with the gallery link/)).toBeInTheDocument();
+    expect(screen.getByText(/Publishing makes 2 tile views and 1 file available to signed-in CAIL members through the Agent Studio gallery/)).toBeInTheDocument();
+    expect(screen.getByText(/Gallery links open only for signed-in CAIL members/)).toBeInTheDocument();
     expect(screen.getByText(/Don’t publish private or sensitive files/)).toBeInTheDocument();
   });
 

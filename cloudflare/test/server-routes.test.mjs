@@ -193,6 +193,23 @@ test('identity-required session bootstrap returns the canonical login challenge'
   assert.equal(Object.keys(body.error).sort().join(','), 'code,launch,message');
 });
 
+test('identity-required gallery routes reject anonymous callers', async () => {
+  const { env } = makeEnv();
+  const issuer = await createTestIdentityIssuer({ kid: 'gallery-auth-required-key' });
+  configureRequiredIdentity(env, issuer.jwksJson);
+
+  for (const path of [
+    '/agent-studio/api/gallery',
+    '/agent-studio/api/gallery/abcdef12-3',
+    '/agent-studio/api/gallery/abcdef12-3/files/readme.md',
+    '/agent-studio/api/gallery/abcdef12-3/panels/panel/preview',
+  ]) {
+    const res = await app.fetch(new Request(`https://studio.test${path}`), env, {});
+    assert.equal(res.status, 401, `expected sign-in for ${path}`);
+    assert.equal((await readError(res)).code, 'authentication_required');
+  }
+});
+
 test('no cookie -> a signed session cookie is issued and reused', async () => {
   const { env } = makeEnv();
   const session = new Session(env);
@@ -586,7 +603,7 @@ test('DELETE workspace removes its separate runtime R2 prefix', async () => {
   assert.equal(await r2.get(runtimeKey), null);
 });
 
-test('DELETE workspace removes its public gallery item', async () => {
+test('DELETE workspace removes its shared gallery item', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session, 'Published cleanup');

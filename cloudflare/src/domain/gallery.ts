@@ -5,7 +5,7 @@ export interface GalleryItem {
   title: string;
   description: string;
   prompt?: string;
-  /** Legacy manifests only. Never returned by current public APIs. */
+  /** Legacy manifests only. Never returned by current API responses. */
   authorId?: string;
   publishedAt: string;
   artifactCount: number;

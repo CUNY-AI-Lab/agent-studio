@@ -5,7 +5,7 @@
 //
 // Full chain reproduced: POST /api/workspaces/:id/panels plants a content-only
 // preview panel whose content is a `<script>` payload → POST /publish writes it
-// verbatim into the PUBLIC gallery state → GET both the workspace preview URL
+// verbatim into the session-bound gallery state → GET both the workspace preview URL
 // and the gallery preview URL.
 //
 // Assertions per §3¾: the served CSP carries `sandbox allow-scripts` (opaque
@@ -54,7 +54,7 @@ function assertOpaqueScriptSandbox(res) {
 const SCRIPT_PAYLOAD =
   "<script>fetch('/api/session').then(()=>document.cookie)</script>";
 
-test('inline preview content is served opaque-origin on both preview routes (workspace + public gallery)', async () => {
+test('inline preview content is served opaque-origin on both preview routes (workspace + session-bound gallery)', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session, 'Attack');
@@ -77,7 +77,7 @@ test('inline preview content is served opaque-origin on both preview routes (wor
   assertOpaqueScriptSandbox(wsRes);
   assert.equal(await wsRes.text(), SCRIPT_PAYLOAD, 'workspace preview serves the panel content');
 
-  // Publish to the PUBLIC gallery (unauthenticated cross-user surface).
+  // Publish to the gallery through the session-bound route.
   const publishRes = await session.request(
     app,
     `/api/workspaces/${workspace.id}/publish`,
@@ -87,7 +87,8 @@ test('inline preview content is served opaque-origin on both preview routes (wor
   const { item } = await publishRes.json();
   assert.ok(item?.id, 'expected a published gallery id');
 
-  // Gallery preview route is PUBLIC (no session) — a fresh session (victim).
+  // The anonymous-mode fixture represents another member viewing the item;
+  // production identity enforcement requires this to be a signed-in CAIL member.
   const { session: victim } = await openSession(app, env);
   const galRes = await victim.request(
     app,

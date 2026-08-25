@@ -80,10 +80,12 @@ workspace record. If a step fails, the same authorized delete operation is the
 recovery action; operators do not recreate the identifier while cleanup is
 incomplete.
 
-Gallery publication writes private ownership and state before the public
-manifest and uses a client operation identifier to make a repeated request
-safe. Public records do not contain owner identifiers. The private owner tag is
-keyed by `SESSION_SECRET` and is never logged.
+Gallery publication writes private ownership and state before the shared
+gallery manifest and uses a client operation identifier to make a repeated
+request safe. Gallery links open only for signed-in CAIL members; gallery
+records are returned through authenticated routes and do not contain owner
+identifiers. The private owner tag is keyed by `SESSION_SECRET` and is never
+logged.
 
 The only compatibility bridge is the [one-time first-login
 import](./legacy-account-import.md). A verified current identity and a verified

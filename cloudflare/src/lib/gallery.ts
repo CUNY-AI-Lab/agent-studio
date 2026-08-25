@@ -57,9 +57,9 @@ async function ownerRecordMatches(env: Env, record: GalleryOwnerRecord, sessionI
     && timingSafeEqual(tag, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
 }
 
-function publicGalleryItem(item: GalleryItem): GalleryItem {
-  const { authorId: _legacyOwner, ...publicItem } = item;
-  return publicItem;
+function sharedGalleryItem(item: GalleryItem): GalleryItem {
+  const { authorId: _legacyOwner, ...sharedItem } = item;
+  return sharedItem;
 }
 
 async function listGalleryIds(env: Env): Promise<string[]> {
@@ -98,7 +98,7 @@ export async function listGalleryItemsPage(
     const id = prefix.slice(getGalleryPrefix().length).replace(/\/$/, '');
     if (!id) return null;
     const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
-    return object ? publicGalleryItem(await object.json<GalleryItem>()) : null;
+    return object ? sharedGalleryItem(await object.json<GalleryItem>()) : null;
   }));
   const result: GalleryItemsPage = {
     items: items.filter((item): item is GalleryItem => Boolean(item)),
@@ -108,8 +108,8 @@ export async function listGalleryItemsPage(
 }
 
 /**
- * Opaque keyed owner tag. Tags live in a private owner record; the public
- * manifest contains no stable author identifier.
+ * Opaque keyed owner tag. Tags live in a private owner record; the shared
+ * gallery manifest contains no stable author identifier.
  */
 export async function galleryOwnerTag(sessionId: string, secret: string): Promise<string> {
   const keyMaterial = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
@@ -134,7 +134,7 @@ export async function listGalleryItems(env: Env): Promise<GalleryItem[]> {
     ids.map(async (id) => {
       const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
       if (!object) return null;
-      return publicGalleryItem(await object.json<GalleryItem>());
+      return sharedGalleryItem(await object.json<GalleryItem>());
     })
   );
 
@@ -152,7 +152,7 @@ export async function getGalleryItem(env: Env, id: string): Promise<GalleryItemF
   if (!manifest || !state) return null;
 
   return {
-    ...publicGalleryItem(await manifest.json<GalleryItem>()),
+    ...sharedGalleryItem(await manifest.json<GalleryItem>()),
     state: await state.json<WorkspaceState>(),
   };
 }
@@ -190,7 +190,7 @@ export async function publishWorkspace(args: {
     // The manifest is written last, so its presence marks a complete publish.
     // A retry with the same idempotency key returns that committed result
     // without touching files or risking rollback of the existing item.
-    return publicGalleryItem(await existingManifest.json<GalleryItem>());
+    return sharedGalleryItem(await existingManifest.json<GalleryItem>());
   }
   const shareablePanelCount = args.state.panels.filter(
     (panel) => panel.type !== 'chat' && panel.type !== 'fileTree' && !('filePath' in panel)
@@ -220,7 +220,7 @@ export async function publishWorkspace(args: {
     });
 
   // §3¾ defense-in-depth: an inline `type:'preview'` panel (content, no
-  // filePath) carries active HTML that the public gallery preview route serves
+  // filePath) carries active HTML that the authenticated gallery preview route serves
   // top-level. We intentionally KEEP the content rather than dropping it here: a
   // live HTML preview is the legitimate published-workspace feature, so stripping
   // it would break sharing a working preview. The containment is the served CSP
@@ -301,7 +301,7 @@ export async function unpublishGalleryItem(env: Env, galleryId: string, sessionI
  * Move gallery-item ownership from one session id to another (first-login
  * migration): every private owner record matching `fromSessionId` is rewritten
  * for `toSessionId` so unpublish rights follow the user into their subject
- * namespace. Legacy public owner tags are converted on contact. Items authored
+ * namespace. Legacy owner tags are converted on contact. Items authored
  * by anyone else are untouched. Idempotent.
  * Returns the number of manifests rewritten.
  */
@@ -327,11 +327,11 @@ export async function reassignGalleryAuthor(
     const matches = owner
       ? await ownerRecordMatches(env, owner, fromSessionId)
         // Retry a prior attempt that switched the private owner but failed
-        // before removing the matching public legacy tag from the manifest.
+        // before removing the matching legacy owner tag from the manifest.
         || (legacyMatches && await ownerRecordMatches(env, owner, toSessionId))
       : legacyMatches;
     if (!matches) continue;
-    const next = publicGalleryItem(item);
+    const next = sharedGalleryItem(item);
     await env.WORKSPACE_FILES.put(
       galleryOwnerKey(id),
       JSON.stringify(await galleryOwnerRecord(env, toSessionId)),
