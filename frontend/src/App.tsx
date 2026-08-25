@@ -109,6 +109,11 @@ import type {
 } from './types';
 import { reconcileWorkspaceDraft } from './lib/workspaceDraft';
 import { replaceWorkspaceInHomeList } from './lib/workspaceHome';
+import {
+  createAutomaticLayoutQueue,
+  isAutomaticLayoutFlushReady,
+  type AutomaticPanelLayouts,
+} from './lib/automaticLayout';
 
 function WorkspaceShell({
   workspace,
@@ -132,6 +137,8 @@ function WorkspaceShell({
   const [composer, setComposer] = useState('');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [automaticLayoutSaveError, setAutomaticLayoutSaveError] = useState<string | null>(null);
+  const [automaticLayoutQueueVersion, setAutomaticLayoutQueueVersion] = useState(0);
   const [chatErrorNotice, setChatErrorNotice] = useState<string | null>(null);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState(workspace.workspace.name);
@@ -183,6 +190,7 @@ function WorkspaceShell({
   const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
   const panelSourceRef = useRef<Record<string, string>>({});
+  const automaticLayoutQueueRef = useRef(createAutomaticLayoutQueue());
   const clearFileHighlightTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const hoverClearTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
@@ -241,12 +249,14 @@ function WorkspaceShell({
     // as the page, API, and path-scoped token cookie.
     query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
-      setWorkspaceState(state);
+      setWorkspaceState(automaticLayoutQueueRef.current.reapply(state));
       if (state.workspace && state.workspace.id === workspace.workspace.id) {
         pendingWorkspaceMetadataRef.current = state.workspace;
       }
     },
   });
+  const agentCallRef = useRef(agent.call);
+  agentCallRef.current = agent.call;
 
   const chat = useAgentChat<WorkspaceState>({
     agent,
@@ -384,6 +394,9 @@ function WorkspaceShell({
     setWorkspaceFiles(workspace.files);
     workspaceFilesRef.current = workspace.files;
     if (workspaceChanged) {
+      automaticLayoutQueueRef.current.reset();
+      setAutomaticLayoutQueueVersion((current) => current + 1);
+      setAutomaticLayoutSaveError(null);
       setWorkspaceName(workspace.workspace.name);
       setWorkspaceDescription(workspace.workspace.description);
       setWorkspaceModel(workspace.workspace.model);
@@ -923,6 +936,10 @@ function WorkspaceShell({
     if (error) announce(`Error: ${error}`);
   }, [announce, error]);
 
+  useEffect(() => {
+    if (automaticLayoutSaveError) announce(automaticLayoutSaveError);
+  }, [announce, automaticLayoutSaveError]);
+
   const consumeDownloads = useCallback((downloads?: DownloadRequest[]) => {
     if (!downloads || downloads.length === 0) return;
     downloads.forEach((download) => {
@@ -1186,6 +1203,8 @@ function WorkspaceShell({
   }, [agent, artifactPanels, focusTile]);
 
   const removePanel = useCallback(async (panelId: string) => {
+    automaticLayoutQueueRef.current.discard([panelId]);
+    setAutomaticLayoutSaveError(null);
     await agent.call('removePanel', [panelId]);
   }, [agent]);
 
@@ -1321,6 +1340,67 @@ function WorkspaceShell({
     await agent.call('applyLayoutPatch', [{ panels: layouts }]);
   }, [agent]);
 
+  const queueAutomaticPanelLayouts = useCallback((layouts: AutomaticPanelLayouts) => {
+    if (!automaticLayoutQueueRef.current.enqueue(layouts)) return;
+    setAutomaticLayoutQueueVersion((current) => current + 1);
+    setWorkspaceState((current) => automaticLayoutQueueRef.current.reapply(current));
+  }, []);
+
+  const flushAutomaticPanelLayouts = useCallback(async () => {
+    const result = await automaticLayoutQueueRef.current.flush(async (layouts) => {
+      await agentCallRef.current('applyLayoutPatch', [{ panels: layouts }]);
+    });
+
+    if (result === 'saved') {
+      setAutomaticLayoutSaveError(null);
+    } else if (result === 'failed') {
+      setAutomaticLayoutSaveError('New tile positions could not be saved. Retry layout save.');
+    }
+  }, []);
+
+  const retryAutomaticPanelLayouts = useCallback(() => {
+    if (!isAutomaticLayoutFlushReady({
+      status: chat.status,
+      isStreaming: chat.isStreaming,
+      isServerStreaming: chat.isServerStreaming,
+      isRecovering: chat.isRecovering,
+      isToolContinuation: chat.isToolContinuation,
+    })) {
+      return;
+    }
+    setAutomaticLayoutSaveError(null);
+    void flushAutomaticPanelLayouts();
+  }, [
+    chat.isRecovering,
+    chat.isServerStreaming,
+    chat.isStreaming,
+    chat.isToolContinuation,
+    chat.status,
+    flushAutomaticPanelLayouts,
+  ]);
+
+  useEffect(() => {
+    if (!isAutomaticLayoutFlushReady({
+      status: chat.status,
+      isStreaming: chat.isStreaming,
+      isServerStreaming: chat.isServerStreaming,
+      isRecovering: chat.isRecovering,
+      isToolContinuation: chat.isToolContinuation,
+    })) {
+      return;
+    }
+    if (!automaticLayoutQueueRef.current.hasPending()) return;
+    void flushAutomaticPanelLayouts();
+  }, [
+    automaticLayoutQueueVersion,
+    chat.isRecovering,
+    chat.isServerStreaming,
+    chat.isStreaming,
+    chat.isToolContinuation,
+    chat.status,
+    flushAutomaticPanelLayouts,
+  ]);
+
   useEffect(() => {
     const gap = PANEL_GAP;
     const occupiedRects: CanvasPanelLayout[] = [];
@@ -1405,9 +1485,9 @@ function WorkspaceShell({
     });
 
     if (Object.keys(addedLayouts).length > 0) {
-      void savePanelLayouts(addedLayouts);
+      queueAutomaticPanelLayouts(addedLayouts);
     }
-  }, [panelLayouts, savePanelLayouts, visiblePanels, workspaceState.viewport]);
+  }, [panelLayouts, queueAutomaticPanelLayouts, visiblePanels, workspaceState.viewport]);
 
   useEffect(() => {
     if (pendingAutoFocusRef.current.size === 0) return;
@@ -1452,6 +1532,10 @@ function WorkspaceShell({
   }, [saveGroups, showToast, workspaceState.groups]);
 
   const handlePanelLayoutChange = useCallback((panelId: string, layout: Partial<CanvasPanelLayout>) => {
+    // A direct user edit supersedes an automatic placement that has not yet
+    // reached the server. The drag/resize save below remains authoritative.
+    automaticLayoutQueueRef.current.discard([panelId]);
+    setAutomaticLayoutSaveError(null);
     setWorkspaceState((current) => {
       const nextPanels = current.panels.map((panel, index) => {
         if (panel.id !== panelId) return panel;
@@ -1540,6 +1624,7 @@ function WorkspaceShell({
     if (!group) return;
 
     const groupPanelIds = new Set(group.panelIds);
+    automaticLayoutQueueRef.current.discard(groupPanelIds);
 
     setWorkspaceState((current) => {
       const nextLayouts = { ...panelLayoutsRef.current };
@@ -2390,9 +2475,20 @@ function WorkspaceShell({
           onOpenShortcuts={() => setShortcutsOpen(true)}
         />
 
-        {error ? (
+        {error || automaticLayoutSaveError ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
-            {error}
+            <div className="flex items-center justify-between gap-3">
+              <span>{automaticLayoutSaveError || error}</span>
+              {automaticLayoutSaveError ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  onClick={retryAutomaticPanelLayouts}
+                >
+                  Retry layout save
+                </button>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
