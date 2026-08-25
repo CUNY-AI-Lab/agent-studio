@@ -1,7 +1,6 @@
 import { downloadBlob } from '../../lib/download';
 import { canExportPanelSnapshot, getPanelTitle, type ToolbarDownloadFormat } from '../../lib/panelFiles';
 import { openFileSource } from '../../lib/fileUrls';
-import type { ContextualChatTarget } from '../../lib/messages';
 import type { WorkspacePanel } from '../../types';
 
 /**
@@ -19,8 +18,6 @@ export function PanelMenu({
   onCloseMenu,
   onMinimize,
   onMaximize,
-  onSetContextualChatTarget,
-  onClearContextualDraft,
   onSetMaximizedPanelId,
   onRemovePanel,
 }: {
@@ -33,8 +30,6 @@ export function PanelMenu({
   onCloseMenu: () => void;
   onMinimize: (panelId: string) => void;
   onMaximize: (panelId: string) => void;
-  onSetContextualChatTarget: (updater: (current: ContextualChatTarget | null) => ContextualChatTarget | null) => void;
-  onClearContextualDraft: () => void;
   onSetMaximizedPanelId: (panelId: string | null) => void;
   onRemovePanel: (panelId: string) => void;
 }) {
@@ -195,11 +190,6 @@ export function PanelMenu({
         role="menuitem"
         onClick={() => {
           onMinimize(panel.id);
-          onSetContextualChatTarget((current) => {
-            if (!current) return null;
-            return current.panelIds.includes(panel.id) ? null : current;
-          });
-          onClearContextualDraft();
           if (maximizedPanelId === panel.id) {
             onSetMaximizedPanelId(null);
           }

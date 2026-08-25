@@ -77,7 +77,6 @@ import { quotaMessageFromChatError } from './lib/quotaError';
 import {
   contextualFailureMessage,
   getContextualTurnMessages,
-  type ContextualTurn,
 } from './lib/contextualTurn';
 import {
   type ContextualChatTarget,
@@ -85,6 +84,14 @@ import {
   extractMessageText,
   getContextualStatusLabel,
 } from './lib/messages';
+import { getChatActivity } from './lib/chatActivity';
+import {
+  INITIAL_CONTEXTUAL_LIFECYCLE,
+  transitionContextualLifecycle,
+  type ContextualLifecycleAction,
+  type ContextualLifecycleState,
+  type ContextualTurnRecord,
+} from './lib/contextualLifecycle';
 import {
   type ToolbarDownloadFormat,
   canOpenFileInPanel,
@@ -180,10 +187,8 @@ function WorkspaceShell({
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [contextualComposer, setContextualComposer] = useState('');
-  const [contextualChatTarget, setContextualChatTarget] = useState<ContextualChatTarget | null>(null);
+  const [contextualLifecycle, setContextualLifecycle] = useState<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
   const [contextualThreads, setContextualThreads] = useState<Record<string, ContextualThreadMessage[]>>({});
-  const [contextualLoading, setContextualLoading] = useState<Record<string, boolean>>({});
-  const [contextualStatus, setContextualStatus] = useState<Record<string, string | null>>({});
   const canvasViewportRef = useRef<HTMLDivElement | null>(null);
   const filesSectionRef = useRef<HTMLElement | null>(null);
   const fileCardRefs = useRef<Record<string, HTMLElement | null>>({});
@@ -220,10 +225,17 @@ function WorkspaceShell({
   const initialPromptSentRef = useRef(false);
   const publishOperationIdRef = useRef<string | null>(null);
   const chatStopRef = useRef<() => void>(() => undefined);
-  const contextualPendingRef = useRef<ContextualTurn & {
-    turnId: string;
-    scopeKey: string;
-  } | null>(null);
+  const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
+
+  const transitionContextualTurn = useCallback((action: ContextualLifecycleAction) => {
+    const current = contextualLifecycleRef.current;
+    const next = transitionContextualLifecycle(current, action);
+    if (next === current) return current;
+    contextualLifecycleRef.current = next;
+    setContextualLifecycle(next);
+    return next;
+  }, []);
+  const contextualChatTarget = contextualLifecycle.target;
 
   const reconcileWorkspaceFromServer = useCallback((nextWorkspace: WorkspaceRecord) => {
     const previousServer = serverWorkspaceRef.current;
@@ -382,9 +394,9 @@ function WorkspaceShell({
   chatStopRef.current = chat.stop;
 
   const openContextualTarget = useCallback((target: ContextualChatTarget) => {
-    setContextualChatTarget(target);
-    setContextualComposer('');
-  }, []);
+    const next = transitionContextualTurn({ type: 'open', target });
+    if (next.target?.key === target.key) setContextualComposer('');
+  }, [transitionContextualTurn]);
 
   const sendChatMessage = useCallback((
     text: string,
@@ -395,21 +407,14 @@ function WorkspaceShell({
     return chat.sendMessage({ text }, options);
   }, [chat]);
 
-  const clearContextualPending = useCallback((turnId?: string): ContextualTurn & {
-    turnId: string;
-    scopeKey: string;
-  } | null => {
-    const pending = contextualPendingRef.current;
-    if (!pending || (turnId !== undefined && pending.turnId !== turnId)) return null;
-    contextualPendingRef.current = null;
-    return pending;
-  }, []);
-
   const finishContextualTurn = useCallback((
-    pending: ContextualTurn & { turnId: string; scopeKey: string },
+    pending: ContextualTurnRecord,
     reason: 'cancel' | 'error' | 'empty',
   ) => {
-    if (contextualPendingRef.current?.turnId !== pending.turnId) return;
+    if (
+      contextualLifecycleRef.current.phase !== 'active' ||
+      contextualLifecycleRef.current.turn.turnId !== pending.turnId
+    ) return;
     const content = contextualFailureMessage(reason);
     setContextualThreads((current) => {
       const thread = current[pending.scopeKey] || [];
@@ -423,27 +428,26 @@ function WorkspaceShell({
         ],
       };
     });
-    setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
-    setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
-    clearContextualPending(pending.turnId);
-  }, [clearContextualPending]);
+    transitionContextualTurn({ type: 'finish', turnId: pending.turnId });
+  }, [transitionContextualTurn]);
 
   const clearContextualDraft = useCallback(() => {
     setContextualComposer('');
-    clearContextualPending();
-  }, [clearContextualPending]);
+  }, []);
 
   const closeContextualChat = useCallback(() => {
     // Closing the scoped popover is an explicit local cancellation. Stop the
     // attached stream so a later turn cannot inherit it.
-    const pending = contextualPendingRef.current;
+    const pending = contextualLifecycleRef.current.phase === 'active'
+      ? contextualLifecycleRef.current.turn
+      : null;
     if (pending) {
       void chatStopRef.current();
       finishContextualTurn(pending, 'cancel');
     }
-    setContextualChatTarget(null);
+    transitionContextualTurn({ type: 'close' });
     clearContextualDraft();
-  }, [clearContextualDraft, finishContextualTurn]);
+  }, [clearContextualDraft, finishContextualTurn, transitionContextualTurn]);
 
   useEffect(() => {
     const previousServer = serverWorkspaceRef.current;
@@ -479,8 +483,6 @@ function WorkspaceShell({
       setOpenMenuId(null);
       closeContextualChat();
       setContextualThreads({});
-      setContextualLoading({});
-      setContextualStatus({});
       panelSourceRef.current = {};
       previousArtifactIdsRef.current = new Set(
         workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
@@ -640,6 +642,17 @@ function WorkspaceShell({
   const contextualMessages = useMemo(
     () => contextualChatTarget ? (contextualThreads[contextualChatTarget.key] ?? []) : [],
     [contextualChatTarget, contextualThreads]
+  );
+  const contextualTurn = contextualLifecycle.phase === 'active' ? contextualLifecycle.turn : null;
+  const contextualAssistantMessage = useMemo(
+    () => contextualTurn ? getContextualTurnMessages(chat.messages, contextualTurn).assistantMessage : null,
+    [chat.messages, contextualTurn]
+  );
+  const contextualStatusLabel = contextualChatTarget && contextualTurn?.scopeKey === contextualChatTarget.key
+    ? getContextualStatusLabel(chat.status, contextualAssistantMessage) || 'Thinking...'
+    : null;
+  const contextualIsLoading = Boolean(
+    contextualChatTarget && contextualTurn?.scopeKey === contextualChatTarget.key && chat.status !== 'error'
   );
   const hoveredPanel = useMemo(() => {
     if (selectedPanelIds.size > 0) return null;
@@ -818,9 +831,10 @@ function WorkspaceShell({
     if (!contextualChatTarget) return;
     const visibleIds = new Set(visiblePanels.map((panel) => panel.id));
     if (!contextualChatTarget.panelIds.every((panelId) => visibleIds.has(panelId))) {
-      closeContextualChat();
+      transitionContextualTurn({ type: 'hide', panelIds: contextualChatTarget.panelIds });
+      clearContextualDraft();
     }
-  }, [closeContextualChat, contextualChatTarget, visiblePanels]);
+  }, [clearContextualDraft, contextualChatTarget, transitionContextualTurn, visiblePanels]);
 
 
   useEffect(() => {
@@ -1748,15 +1762,15 @@ function WorkspaceShell({
       return next;
     });
     setSelectedPanelIds((current) => new Set(Array.from(current).filter((panelId) => !panelIdSet.has(panelId))));
-    setContextualChatTarget((current) => {
-      if (!current) return null;
-      return current.panelIds.some((panelId) => panelIdSet.has(panelId)) ? null : current;
-    });
-    clearContextualDraft();
+    const target = contextualLifecycleRef.current.target;
+    if (target && target.panelIds.some((panelId) => panelIdSet.has(panelId))) {
+      transitionContextualTurn({ type: 'hide', panelIds });
+      clearContextualDraft();
+    }
     if (maximizedPanelId && panelIdSet.has(maximizedPanelId)) {
       setMaximizedPanelId(null);
     }
-  }, [clearContextualDraft, maximizedPanelId]);
+  }, [clearContextualDraft, maximizedPanelId, transitionContextualTurn]);
 
   const restorePanel = useCallback((panelId: string) => {
     setMinimizedPanelIds((current) => {
@@ -2005,26 +2019,24 @@ function WorkspaceShell({
 
   const handleContextualSubmit = useCallback(() => {
     const next = contextualComposer.trim();
-    if (!contextualChatTarget || !next) return;
-    if (contextualPendingRef.current) return;
-    if (chat.status === 'submitted' || chat.status === 'streaming' || chat.isStreaming || chat.isRecovering) {
-      setContextualStatus((current) => ({
-        ...current,
-        [contextualChatTarget.key]: 'Finish the current response first.',
-      }));
-      return;
-    }
+    const target = contextualLifecycle.target;
+    if (!target || !next || contextualLifecycle.phase !== 'idle') return;
+    if (
+      chat.status === 'submitted' ||
+      chat.status === 'streaming' ||
+      chat.isStreaming ||
+      chat.isServerStreaming ||
+      chat.isRecovering ||
+      chat.isToolContinuation
+    ) return;
 
     const previousAssistantId = [...chat.messages]
       .reverse()
       .find((message) => message.role === 'assistant')?.id || null;
     const turnId = makeClientId('context-turn');
-    const pending: ContextualTurn & {
-      turnId: string;
-      scopeKey: string;
-    } = {
+    const pending: ContextualTurnRecord = {
       turnId,
-      scopeKey: contextualChatTarget.key,
+      scopeKey: target.key,
       previousAssistantId,
       previousMessageIds: new Set(chat.messages.map((message) => message.id)),
       userMessageId: null,
@@ -2032,8 +2044,8 @@ function WorkspaceShell({
 
     setContextualThreads((current) => ({
       ...current,
-      [contextualChatTarget.key]: [
-        ...(current[contextualChatTarget.key] || []),
+      [target.key]: [
+        ...(current[target.key] || []),
         {
           id: makeClientId('context-user'),
           role: 'user',
@@ -2041,21 +2053,13 @@ function WorkspaceShell({
         },
       ],
     }));
-    contextualPendingRef.current = pending;
-    setContextualLoading((current) => ({
-      ...current,
-      [contextualChatTarget.key]: true,
-    }));
-    setContextualStatus((current) => ({
-      ...current,
-      [contextualChatTarget.key]: 'Thinking...',
-    }));
+    transitionContextualTurn({ type: 'submit', turn: pending });
     const request = sendChatMessage(next, {
-      body: { scopePanelIds: contextualChatTarget.panelIds },
+      body: { scopePanelIds: target.panelIds },
     });
     void request.catch(() => finishContextualTurn(pending, 'error'));
     setContextualComposer('');
-  }, [chat, contextualChatTarget, contextualComposer, finishContextualTurn, sendChatMessage]);
+  }, [chat, contextualComposer, contextualLifecycle, finishContextualTurn, sendChatMessage, transitionContextualTurn]);
 
   const handleChatClear = useCallback(() => {
     chat.clearHistory();
@@ -2178,21 +2182,18 @@ function WorkspaceShell({
       onPanelDownload={handlePanelDownload}
       onCloseMenu={() => setOpenMenuId(null)}
       onMinimize={(panelId) => {
-        setMinimizedPanelIds((current) => new Set(current).add(panelId));
-        setSelectedPanelIds((current) => new Set(Array.from(current).filter((id) => id !== panelId)));
+        minimizePanels([panelId]);
       }}
       onMaximize={setMaximizedPanelId}
-      onSetContextualChatTarget={setContextualChatTarget}
-      onClearContextualDraft={clearContextualDraft}
       onSetMaximizedPanelId={setMaximizedPanelId}
       onRemovePanel={(panelId) => {
         void removePanels([panelId]);
       }}
     />
   ), [
-    clearContextualDraft,
     handlePanelDownload,
     maximizedPanelId,
+    minimizePanels,
     openContextualChatForPanel,
     revealFileInWorkspace,
     removePanels,
@@ -2294,8 +2295,22 @@ function WorkspaceShell({
   }, [workspace.workspace.id]);
 
   useEffect(() => {
-    const pending = contextualPendingRef.current;
+    const pending = contextualLifecycleRef.current.phase === 'active'
+      ? contextualLifecycleRef.current.turn
+      : null;
     if (!pending) return;
+
+    const chatStillWorking = chat.status === 'submitted'
+      || chat.status === 'streaming'
+      || chat.isStreaming
+      || chat.isServerStreaming
+      || chat.isRecovering
+      || chat.isToolContinuation;
+    // The status can briefly be terminal while a server/tool continuation or
+    // recovery is still active. Keep the contextual turn open until every
+    // maintained activity flag is idle, otherwise an intermediate error or
+    // empty assistant message would make the next response disappear.
+    if (chatStillWorking) return;
 
     if (chat.status === 'error') {
       finishContextualTurn(pending, 'error');
@@ -2305,15 +2320,6 @@ function WorkspaceShell({
     const turnMessages = getContextualTurnMessages(chat.messages, pending);
     if (turnMessages.userMessageId) pending.userMessageId = turnMessages.userMessageId;
     const assistantMessage = turnMessages.assistantMessage;
-
-    setContextualLoading((current) => ({
-      ...current,
-      [pending.scopeKey]: chat.status !== 'ready',
-    }));
-    setContextualStatus((current) => ({
-      ...current,
-      [pending.scopeKey]: getContextualStatusLabel(chat.status, assistantMessage),
-    }));
 
     if (assistantMessage) {
       const content = extractMessageText(assistantMessage);
@@ -2339,14 +2345,21 @@ function WorkspaceShell({
 
     if (chat.status === 'ready') {
       if (assistantMessage && extractMessageText(assistantMessage).trim()) {
-        setContextualLoading((current) => ({ ...current, [pending.scopeKey]: false }));
-        setContextualStatus((current) => ({ ...current, [pending.scopeKey]: null }));
-        clearContextualPending(pending.turnId);
+        transitionContextualTurn({ type: 'finish', turnId: pending.turnId });
       } else {
         finishContextualTurn(pending, 'empty');
       }
     }
-  }, [chat.messages, chat.status, clearContextualPending, finishContextualTurn]);
+  }, [
+    chat.isRecovering,
+    chat.isServerStreaming,
+    chat.isStreaming,
+    chat.isToolContinuation,
+    chat.messages,
+    chat.status,
+    finishContextualTurn,
+    transitionContextualTurn,
+  ]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -2429,12 +2442,24 @@ function WorkspaceShell({
     ungroupSelection,
   ]);
 
-  const contextualTurnActive = Object.values(contextualLoading).some(Boolean);
+  const contextualTurnActive = contextualLifecycle.phase === 'active';
   const handleChatStop = useCallback(() => {
-    const pending = contextualPendingRef.current;
+    const pending = contextualLifecycleRef.current.phase === 'active'
+      ? contextualLifecycleRef.current.turn
+      : null;
     void chatStopRef.current();
     if (pending) finishContextualTurn(pending, 'cancel');
   }, [finishContextualTurn]);
+
+  const chatActivity = getChatActivity({
+    status: chat.status,
+    isStreaming: chat.isStreaming,
+    isServerStreaming: chat.isServerStreaming,
+    isRecovering: chat.isRecovering,
+    isToolContinuation: chat.isToolContinuation,
+    contextualTurnActive,
+    canRetry: Boolean(lastUserPrompt),
+  });
 
   const canvasViewportSize = canvasViewportRef.current
     ? {
@@ -2448,8 +2473,7 @@ function WorkspaceShell({
     : null;
   const chatPanelContent = (
     <ChatPanel
-      status={chat.status}
-      isBusy={contextualTurnActive || chat.status === 'submitted' || chat.isStreaming || chat.isRecovering}
+      activity={chatActivity}
       messages={chat.messages}
       composer={composer}
       onComposerChange={setComposer}
@@ -2457,7 +2481,6 @@ function WorkspaceShell({
       onStop={handleChatStop}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
-      canRetry={Boolean(lastUserPrompt)}
       errorNotice={chatErrorNotice}
       selectedScopeLabel={selectedScopeLabel}
       onClearScope={clearSelection}
@@ -2813,11 +2836,15 @@ function WorkspaceShell({
                 typeLabel={contextualChatTarget.typeLabel}
                 messages={contextualMessages}
                 input={contextualComposer}
-                statusLabel={contextualStatus[contextualChatTarget.key] || null}
-                isLoading={!!contextualLoading[contextualChatTarget.key]}
+                statusLabel={contextualStatusLabel}
+                isLoading={contextualIsLoading}
                 onInputChange={setContextualComposer}
                 onSubmit={handleContextualSubmit}
                 onClose={closeContextualChat}
+                onDismiss={() => {
+                  transitionContextualTurn({ type: 'hide', panelIds: contextualChatTarget.panelIds });
+                  clearContextualDraft();
+                }}
               />
             ) : null}
           </CanvasFlow>

@@ -21,6 +21,7 @@ interface ContextualChatPopoverProps {
   onInputChange: (value: string) => void;
   onSubmit: () => void;
   onClose: () => void;
+  onDismiss?: () => void;
 }
 
 type Placement = 'right' | 'left' | 'bottom';
@@ -39,6 +40,7 @@ export function ContextualChatPopover({
   onInputChange,
   onSubmit,
   onClose,
+  onDismiss,
 }: ContextualChatPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -103,7 +105,8 @@ export function ContextualChatPopover({
       const eventTarget = event.target;
       const targetNode = eventTarget instanceof Node ? eventTarget : null;
       if (popoverRef.current && targetNode && !popoverRef.current.contains(targetNode)) {
-        onClose();
+        if (onDismiss) onDismiss();
+        else onClose();
       }
     };
 
@@ -119,7 +122,7 @@ export function ContextualChatPopover({
       document.removeEventListener('mousedown', handleClickOutside);
       document.removeEventListener('keydown', handleEscape);
     };
-  }, [onClose]);
+  }, [onClose, onDismiss]);
 
   return (
     <div

@@ -17,6 +17,11 @@ export interface ContextualChatTarget {
   typeLabel: string;
 }
 
+export interface ToolNotice {
+  kind: 'error' | 'denied' | 'approval';
+  message: string;
+}
+
 export function extractMessageText(message: UIMessage): string {
   if (!Array.isArray(message.parts)) return '';
   return message.parts
@@ -27,6 +32,28 @@ export function extractMessageText(message: UIMessage): string {
     })
     .filter(Boolean)
     .join('\n');
+}
+
+/** Keep exceptional tool outcomes visible without exposing tool internals. */
+export function getToolNotices(message: UIMessage): ToolNotice[] {
+  if (!Array.isArray(message.parts)) return [];
+
+  const states = new Set(
+    message.parts
+      .filter(isToolUIPart)
+      .map((part) => part.state)
+  );
+  const notices: ToolNotice[] = [];
+  if (states.has('output-error')) {
+    notices.push({ kind: 'error', message: "A tool couldn't complete this request. Try again." });
+  }
+  if (states.has('output-denied')) {
+    notices.push({ kind: 'denied', message: "A tool wasn't allowed to run." });
+  }
+  if (states.has('approval-requested')) {
+    notices.push({ kind: 'approval', message: 'Approval is needed before this can continue.' });
+  }
+  return notices;
 }
 
 export function getContextualStatusLabel(status: string, assistantMessage: UIMessage | null): string | null {
