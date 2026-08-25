@@ -526,10 +526,10 @@ test('route: workspace file GET rejects URL tokens and accepts the protected hea
   assert.equal(await header.text(), '# protected');
 });
 
-test('route: public gallery GET remains ungated', async () => {
+test('route: gallery GET remains available through the session pipeline', async () => {
   const { env } = makeEnv();
-  const session = new Session(env);
-  const res = await session.request(app, '/api/gallery', { csrfToken: '' });
+  const { session } = await openSession(app, env);
+  const res = await session.request(app, '/api/gallery');
   assert.equal(res.status, 200);
 });
 

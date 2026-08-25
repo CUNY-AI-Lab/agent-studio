@@ -2271,7 +2271,7 @@ function WorkspaceShell({
       await refreshWorkspace();
       showToast('Removed from gallery', 'info');
     } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'The workspace is still public. Try unpublishing again.');
+      setError(nextError instanceof Error ? nextError.message : 'The workspace is still shared. Try unpublishing again.');
     } finally {
       setPublishing(false);
     }

@@ -62,7 +62,7 @@ export function useFileObjectUrl(
   cacheKey?: string | null,
   fetcher: WorkspaceFileFetcher = fetchWorkspaceFile,
 ): FileObjectUrlState {
-  const publicUrl = source.kind === 'gallery'
+  const galleryUrl = source.kind === 'gallery'
     ? withCacheKey(getGalleryFileUrl(source.id, filePath), cacheKey)
     : null;
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -103,7 +103,7 @@ export function useFileObjectUrl(
     };
   }, [source.kind, source.id, filePath, cacheKey, fetcher]);
 
-  return { url: publicUrl ?? objectUrl, blob: publicUrl ? null : blob, error: publicUrl ? null : error };
+  return { url: galleryUrl ?? objectUrl, blob: galleryUrl ? null : blob, error: galleryUrl ? null : error };
 }
 
 export async function downloadFileSource(

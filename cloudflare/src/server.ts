@@ -831,7 +831,7 @@ app.post('/api/workspaces/:id/publish', async (c) => {
       await unpublishGalleryItem(c.env, item.id, sessionId);
     } catch (error) {
       if (error instanceof GalleryError && error.status === 404) {
-        // Concurrent deletion already confirmed the public copy is absent.
+        // Concurrent deletion already confirmed the shared gallery copy is absent.
       } else {
         throw new Error('publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed');
       }
@@ -865,7 +865,7 @@ app.delete('/api/workspaces/:id', async (c) => {
     try {
       await unpublishGalleryItem(c.env, marked.workspace.galleryId, sessionId);
     } catch (error) {
-      // A prior attempt may have removed the public copy before a later
+      // A prior attempt may have removed the shared gallery copy before a later
       // workspace-cleanup step failed. Retrying deletion must finish cleanup.
       if (!(error instanceof GalleryError) || error.status !== 404) throw error;
     }

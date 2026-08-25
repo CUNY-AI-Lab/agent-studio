@@ -95,7 +95,7 @@ function ProtectedPreviewFrame({
   cacheKey?: string | null;
   fetchPreview: WorkspaceFileFetcher;
 }) {
-  const publicUrl = fileSource.kind === 'gallery'
+  const galleryUrl = fileSource.kind === 'gallery'
     ? getGalleryPanelPreviewUrl(fileSource.id, panel.id)
     : null;
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
@@ -121,7 +121,7 @@ function ProtectedPreviewFrame({
       if (created) URL.revokeObjectURL(created);
     };
   }, [fileSource.kind, fileSource.id, panel.id, cacheKey, fetchPreview]);
-  const previewUrl = publicUrl ?? objectUrl;
+  const previewUrl = galleryUrl ?? objectUrl;
   if (!previewUrl && loadError) return <div className="panel-empty">{loadError}</div>;
   if (!previewUrl) return <div className="panel-empty">Loading preview…</div>;
   return (

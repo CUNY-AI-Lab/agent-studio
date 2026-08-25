@@ -40,7 +40,7 @@ async function publish(targetEnv, operationId) {
     sessionId: SESSION,
     workspace: WORKSPACE,
     state: STATE,
-    title: 'Public item',
+    title: 'Shared item',
     description: 'Description',
     operationId,
     files: [],
@@ -48,7 +48,7 @@ async function publish(targetEnv, operationId) {
   });
 }
 
-test('publish retries are idempotent and public records contain no owner identifier', async () => {
+test('publish retries are idempotent and shared records contain no owner identifier', async () => {
   const r2 = new MockR2();
   const targetEnv = env(r2);
   const first = await publish(targetEnv, 'operation-one');
@@ -83,7 +83,7 @@ test('a committed publish retry does not read files or delete the existing item'
   assert.ok(await r2.get(`agent-studio/gallery/items/${first.id}/manifest.json`));
 });
 
-test('private owner records authorize unpublish without exposing an owner publicly', async () => {
+test('private owner records authorize unpublish without exposing an owner identifier', async () => {
   const r2 = new MockR2();
   const targetEnv = env(r2);
   const item = await publish(targetEnv, 'private-owner');

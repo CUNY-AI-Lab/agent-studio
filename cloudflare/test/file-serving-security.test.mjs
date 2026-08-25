@@ -5,7 +5,9 @@
 // `PUT /files/*` when the type slips through, AND via the agent write_file tool
 // path — simulated by writing straight through the FakeWorkspaceAgent double's
 // `writeWorkspaceFileContent`, the exact method the tool invokes) → published to
-// the PUBLIC gallery → GET both the workspace file URL and the gallery file URL.
+// the gallery through its session-bound route → GET both the workspace file URL
+// and the gallery file URL. Production identity enforcement makes that session
+// a signed-in CAIL member.
 //
 // Assertions per §3¾: every file-serving response carries nosniff + the bare
 // sandbox CSP (opaque origin, scripting disabled); active types additionally
@@ -75,7 +77,7 @@ test('active-type files written via the agent write_file tool path are sandboxed
     await agent.writeWorkspaceFileContent(payload.path, payload.body, payload.type);
   }
 
-  // Publish to the PUBLIC gallery.
+  // Publish to the gallery through the session-bound route.
   const publishRes = await session.request(
     app,
     `/api/workspaces/${workspace.id}/publish`,

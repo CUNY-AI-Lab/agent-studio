@@ -90,7 +90,7 @@ describe('FilePreview failure surfacing', () => {
     }
   });
 
-  it('keeps gallery text previews on their public URL fetch', async () => {
+  it('keeps gallery text previews on their session-bound gallery URL fetch', async () => {
     const browserFetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response('Gallery text', { status: 200 }),
     );

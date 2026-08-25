@@ -84,7 +84,7 @@ challenge.
   and R2 records.
 - Authenticated streaming chat with the CAIL model gateway.
 - Workspace files, rendered file previews, canvas tiles, groups, associations,
-  gallery publication, and cloning.
+  gallery publication for sharing with signed-in CAIL members, and cloning.
 - Isolated JavaScript execution through Cloudflare Dynamic Workers.
 - Guarded public web fetches remain available, with optional server-side
   credentials for Primo, WorldCat, and LibGuides when those integrations are

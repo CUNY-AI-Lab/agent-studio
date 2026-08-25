@@ -86,7 +86,7 @@ export function PublishDialog({
             />
           </div>
           <p id={disclosureId} className="text-xs text-muted-foreground">
-            Agent Studio saves this workspace privately. Model-provider routes are configured not to retain prompts or outputs, but Agent Studio still stores the workspace. Publishing makes {publishablePanelCount} tile view{publishablePanelCount !== 1 ? 's' : ''} and {fileCount} file{fileCount !== 1 ? 's' : ''} public to anyone with the gallery link. Don’t publish private or sensitive files.
+            Agent Studio saves this workspace privately. Model-provider routes are configured not to retain prompts or outputs, but Agent Studio still stores the workspace. Publishing makes {publishablePanelCount} tile view{publishablePanelCount !== 1 ? 's' : ''} and {fileCount} file{fileCount !== 1 ? 's' : ''} available to signed-in CAIL members through the Agent Studio gallery. Gallery links open only for signed-in CAIL members. Don’t publish private or sensitive files.
           </p>
         </div>
         <div className="mt-6 flex justify-end gap-3">
