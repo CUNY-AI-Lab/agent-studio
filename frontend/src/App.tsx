@@ -109,6 +109,10 @@ import type {
 } from './types';
 import { reconcileWorkspaceDraft } from './lib/workspaceDraft';
 import { replaceWorkspaceInHomeList } from './lib/workspaceHome';
+import {
+  useAutomaticLayoutPersistence,
+  type AutomaticPanelLayouts,
+} from './lib/automaticLayout';
 
 function WorkspaceShell({
   workspace,
@@ -132,6 +136,7 @@ function WorkspaceShell({
   const [composer, setComposer] = useState('');
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [automaticLayoutSaveError, setAutomaticLayoutSaveError] = useState<string | null>(null);
   const [chatErrorNotice, setChatErrorNotice] = useState<string | null>(null);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState(workspace.workspace.name);
@@ -183,6 +188,7 @@ function WorkspaceShell({
   const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
   const panelSourceRef = useRef<Record<string, string>>({});
+  const automaticLayoutPersistenceRef = useRef<ReturnType<typeof useAutomaticLayoutPersistence> | null>(null);
   const clearFileHighlightTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
   const hoverClearTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
@@ -241,12 +247,14 @@ function WorkspaceShell({
     // as the page, API, and path-scoped token cookie.
     query: async () => ({ csrfToken: await ensureCsrfToken() }),
     onStateUpdate: (state) => {
-      setWorkspaceState(state);
-      if (state.workspace && state.workspace.id === workspace.workspace.id) {
-        pendingWorkspaceMetadataRef.current = state.workspace;
-      }
+      if (!state.workspace || state.workspace.id !== workspace.workspace.id) return;
+      const automaticLayoutPersistence = automaticLayoutPersistenceRef.current;
+      setWorkspaceState(automaticLayoutPersistence ? automaticLayoutPersistence.acknowledgeServerState(state) : state);
+      pendingWorkspaceMetadataRef.current = state.workspace;
     },
   });
+  const agentCallRef = useRef(agent.call);
+  agentCallRef.current = agent.call;
 
   const chat = useAgentChat<WorkspaceState>({
     agent,
@@ -285,6 +293,23 @@ function WorkspaceShell({
       }
     },
   });
+
+  const automaticLayoutPersistence = useAutomaticLayoutPersistence({
+    workspaceId: workspace.workspace.id,
+    chat: {
+      status: chat.status,
+      isStreaming: chat.isStreaming,
+      isServerStreaming: chat.isServerStreaming,
+      isRecovering: chat.isRecovering,
+      isToolContinuation: chat.isToolContinuation,
+    },
+    saveLayouts: async (layouts) => {
+      await agentCallRef.current('applyLayoutPatch', [{ panels: layouts }]);
+    },
+    onSaveError: setAutomaticLayoutSaveError,
+    onSaveSuccess: () => setAutomaticLayoutSaveError(null),
+  });
+  automaticLayoutPersistenceRef.current = automaticLayoutPersistence;
 
   // The pending record lives in a ref so onStateUpdate never renders metadata
   // during a chat message commit. This effect intentionally runs after every
@@ -384,6 +409,7 @@ function WorkspaceShell({
     setWorkspaceFiles(workspace.files);
     workspaceFilesRef.current = workspace.files;
     if (workspaceChanged) {
+      setAutomaticLayoutSaveError(null);
       setWorkspaceName(workspace.workspace.name);
       setWorkspaceDescription(workspace.workspace.description);
       setWorkspaceModel(workspace.workspace.model);
@@ -923,6 +949,10 @@ function WorkspaceShell({
     if (error) announce(`Error: ${error}`);
   }, [announce, error]);
 
+  useEffect(() => {
+    if (automaticLayoutSaveError) announce(automaticLayoutSaveError);
+  }, [announce, automaticLayoutSaveError]);
+
   const consumeDownloads = useCallback((downloads?: DownloadRequest[]) => {
     if (!downloads || downloads.length === 0) return;
     downloads.forEach((download) => {
@@ -1186,8 +1216,26 @@ function WorkspaceShell({
   }, [agent, artifactPanels, focusTile]);
 
   const removePanel = useCallback(async (panelId: string) => {
-    await agent.call('removePanel', [panelId]);
-  }, [agent]);
+    const automaticLayoutPersistence = automaticLayoutPersistenceRef.current;
+    automaticLayoutPersistence?.recordRemoved([panelId]);
+    if (!automaticLayoutPersistence?.hasFailure()) setAutomaticLayoutSaveError(null);
+    try {
+      const nextState = await agent.call('removePanel', [panelId]);
+      if (
+        automaticLayoutPersistence
+        && automaticLayoutPersistenceRef.current === automaticLayoutPersistence
+        && (!nextState.workspace || nextState.workspace.id === workspace.workspace.id)
+      ) {
+        setWorkspaceState(automaticLayoutPersistence.acknowledgeServerState(nextState));
+      }
+    } catch (nextError) {
+      if (automaticLayoutPersistence && automaticLayoutPersistenceRef.current === automaticLayoutPersistence) {
+        automaticLayoutPersistence.cancelRemoved([panelId]);
+        setError(nextError instanceof Error ? nextError.message : 'The tile could not be removed. Try again.');
+      }
+      throw nextError;
+    }
+  }, [agent, workspace.workspace.id]);
 
   const saveGroups = useCallback(async (groups: WorkspaceState['groups']) => {
     // Every caller computes `groups` from the same workspaceState.groups
@@ -1293,6 +1341,13 @@ function WorkspaceShell({
   }, [agent, showToast, workspaceState.connections]);
 
   const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
+    const manualLayouts: AutomaticPanelLayouts = {};
+    for (const [panelId, layout] of Object.entries(layouts)) {
+      const baseLayout = panelLayoutsRef.current[panelId];
+      if (!baseLayout) continue;
+      manualLayouts[panelId] = { ...baseLayout, ...layout };
+    }
+    automaticLayoutPersistenceRef.current?.recordManualLayouts(manualLayouts);
     setWorkspaceState((current) => {
       let changed = false;
       const panels = current.panels.map((panel) => {
@@ -1320,6 +1375,17 @@ function WorkspaceShell({
     });
     await agent.call('applyLayoutPatch', [{ panels: layouts }]);
   }, [agent]);
+
+  const queueAutomaticPanelLayouts = useCallback((layouts: AutomaticPanelLayouts) => {
+    const automaticLayoutPersistence = automaticLayoutPersistenceRef.current;
+    if (!automaticLayoutPersistence?.enqueue(layouts)) return;
+    setWorkspaceState((current) => automaticLayoutPersistence.reapply(current));
+  }, []);
+
+  const retryAutomaticPanelLayouts = useCallback(() => {
+    setAutomaticLayoutSaveError(null);
+    automaticLayoutPersistenceRef.current?.retry();
+  }, []);
 
   useEffect(() => {
     const gap = PANEL_GAP;
@@ -1405,9 +1471,9 @@ function WorkspaceShell({
     });
 
     if (Object.keys(addedLayouts).length > 0) {
-      void savePanelLayouts(addedLayouts);
+      queueAutomaticPanelLayouts(addedLayouts);
     }
-  }, [panelLayouts, savePanelLayouts, visiblePanels, workspaceState.viewport]);
+  }, [panelLayouts, queueAutomaticPanelLayouts, visiblePanels, workspaceState.viewport]);
 
   useEffect(() => {
     if (pendingAutoFocusRef.current.size === 0) return;
@@ -1452,6 +1518,17 @@ function WorkspaceShell({
   }, [saveGroups, showToast, workspaceState.groups]);
 
   const handlePanelLayoutChange = useCallback((panelId: string, layout: Partial<CanvasPanelLayout>) => {
+    // A direct user edit supersedes an automatic placement that has not yet
+    // reached the server. The drag/resize save below remains authoritative.
+    const baseLayout = panelLayoutsRef.current[panelId];
+    if (baseLayout) {
+      automaticLayoutPersistenceRef.current?.recordManualLayouts({
+        [panelId]: { ...baseLayout, ...layout },
+      });
+    } else {
+      automaticLayoutPersistenceRef.current?.discard([panelId]);
+    }
+    if (!automaticLayoutPersistenceRef.current?.hasFailure()) setAutomaticLayoutSaveError(null);
     setWorkspaceState((current) => {
       const nextPanels = current.panels.map((panel, index) => {
         if (panel.id !== panelId) return panel;
@@ -1540,30 +1617,37 @@ function WorkspaceShell({
     if (!group) return;
 
     const groupPanelIds = new Set(group.panelIds);
+    const nextLayouts: AutomaticPanelLayouts = {};
+    workspaceState.panels.forEach((panel, index) => {
+      if (!groupPanelIds.has(panel.id)) return;
+      const baseLayout = panelLayoutsRef.current[panel.id] ?? inferPanelLayout(panel, index);
+      nextLayouts[panel.id] = {
+        ...baseLayout,
+        x: baseLayout.x + dx,
+        y: baseLayout.y + dy,
+      };
+    });
+    automaticLayoutPersistenceRef.current?.recordManualLayouts(nextLayouts);
 
     setWorkspaceState((current) => {
-      const nextLayouts = { ...panelLayoutsRef.current };
-      const nextPanels = current.panels.map((panel, index) => {
-        if (!groupPanelIds.has(panel.id)) return panel;
-        const baseLayout = nextLayouts[panel.id] ?? inferPanelLayout(panel, index);
-        const nextLayout = {
-          ...baseLayout,
-          x: baseLayout.x + dx,
-          y: baseLayout.y + dy,
-        };
-        nextLayouts[panel.id] = nextLayout;
+      const nextPanels = current.panels.map((panel) => {
+        const nextLayout = nextLayouts[panel.id];
+        if (!nextLayout) return panel;
         return {
           ...panel,
           layout: nextLayout,
         };
       });
-      panelLayoutsRef.current = nextLayouts;
+      panelLayoutsRef.current = {
+        ...panelLayoutsRef.current,
+        ...nextLayouts,
+      };
       return {
         ...current,
         panels: nextPanels,
       };
     });
-  }, [workspaceState.groups]);
+  }, [workspaceState.groups, workspaceState.panels]);
 
   const handleGroupDragEnd = useCallback(async (groupId: string) => {
     const group = workspaceState.groups.find((entry) => entry.id === groupId);
@@ -2390,9 +2474,20 @@ function WorkspaceShell({
           onOpenShortcuts={() => setShortcutsOpen(true)}
         />
 
-        {error ? (
+        {error || automaticLayoutSaveError ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
-            {error}
+            <div className="flex items-center justify-between gap-3">
+              <span>{automaticLayoutSaveError || error}</span>
+              {automaticLayoutSaveError ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  onClick={retryAutomaticPanelLayouts}
+                >
+                  Retry layout save
+                </button>
+              ) : null}
+            </div>
           </div>
         ) : null}
 
