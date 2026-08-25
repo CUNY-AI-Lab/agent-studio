@@ -75,8 +75,34 @@ describe('automatic layout queue', () => {
 
     expect(await queue.flush(save)).toBe('failed');
     expect(queue.pending()).toEqual({ first: layoutA });
+    expect(await queue.flush(save)).toBe('blocked');
+    queue.retry();
     expect(await queue.flush(save)).toBe('saved');
     expect(queue.hasPending()).toBe(false);
+    expect(save).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not latch a failure after a manual edit supersedes the in-flight placement', async () => {
+    const queue = createAutomaticLayoutQueue();
+    let rejectOld!: (reason: Error) => void;
+    const oldSave = new Promise<void>((_, reject) => {
+      rejectOld = reject;
+    });
+    const save = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(async () => oldSave)
+      .mockResolvedValueOnce(undefined);
+
+    queue.enqueue({ first: layoutA });
+    const firstFlush = queue.flush(save);
+    queue.recordManualLayouts({ first: { ...layoutA, x: -640 } });
+    queue.enqueue({ second: layoutB });
+    rejectOld(new Error('superseded by manual edit'));
+
+    expect(await firstFlush).toBe('superseded');
+    expect(queue.hasFailure()).toBe(false);
+    expect(queue.pending()).toEqual({ second: layoutB });
+    expect(await queue.flush(save)).toBe('saved');
     expect(save).toHaveBeenCalledTimes(2);
   });
 
