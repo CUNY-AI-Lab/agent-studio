@@ -15,8 +15,6 @@ function makeProps(panel: WorkspacePanel, overrides: Partial<Parameters<typeof P
     onCloseMenu: vi.fn(),
     onMinimize: vi.fn(),
     onMaximize: vi.fn(),
-    onSetContextualChatTarget: vi.fn(),
-    onClearContextualDraft: vi.fn(),
     onSetMaximizedPanelId: vi.fn(),
     onRemovePanel: vi.fn(),
     ...overrides,
@@ -80,13 +78,11 @@ describe('PanelMenu', () => {
     expect(onCloseMenu).toHaveBeenCalledOnce();
   });
 
-  it('minimizes and clears contextual draft together', async () => {
+  it('minimizes through the shell lifecycle owner', async () => {
     const onMinimize = vi.fn();
-    const onClearContextualDraft = vi.fn();
     const user = userEvent.setup();
-    render(<PanelMenu {...makeProps(tablePanel, { onMinimize, onClearContextualDraft })} />);
+    render(<PanelMenu {...makeProps(tablePanel, { onMinimize })} />);
     await user.click(screen.getByRole('menuitem', { name: 'Minimize' }));
     expect(onMinimize).toHaveBeenCalledWith('p1');
-    expect(onClearContextualDraft).toHaveBeenCalledOnce();
   });
 });

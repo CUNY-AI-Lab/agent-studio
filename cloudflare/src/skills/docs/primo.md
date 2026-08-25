@@ -124,7 +124,7 @@ deployment provides a discovery UI base URL, direct links follow this format:
 - If you don't know the deployment's discovery base URL, show the record ID, call number,
   and library location instead of fabricating a URL.
 - Never display a raw URL to users — render links as markdown (`[View in Catalog](url)`)
-  in panels, tables, or files, with descriptive text like "View in Catalog".
+  in tiles, tables, or files, with descriptive text like "View in Catalog".
 
 ## Example Code (codemode)
 

@@ -19,6 +19,10 @@ path, while the `GATEWAY` service binding supplies the same-account request
 path. Model calls carry the verified gateway credential and
 `X-CAIL-App: agent-studio`; Agent Studio stores no provider key.
 
+Gateway spend and quota are attributed to the verified canonical Gateway JWT
+subject for each user; Agent Studio also limits heavy Durable Object RPC calls
+to 20 per minute per session, which is a separate application safeguard.
+
 ## CAIL identity
 
 Only `X-CAIL-Identity-JWT` is an application identity credential. The Worker
