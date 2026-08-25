@@ -193,6 +193,12 @@ but equal streamed updates do not reseed them. This ownership boundary prevents
 feedback loops and visible canvas vibration while preserving live agent
 changes.
 
+Viewport interaction updates the local view on every React Flow frame, but
+persists only the final `onMoveEnd` value (including the completed value from
+programmatic zoom, reset, and fit actions). Persistence uses one in-flight
+write with a latest-wins pending value, so rapid movement cannot pile up RPCs;
+an unsuccessful save remains visible and can be retried explicitly.
+
 For a newly created workspace, the model replaces the placeholder with one
 concise task-specific title. Once that title is established, later title edits
 belong to the user in the workspace header. Files and surfaced tiles likewise

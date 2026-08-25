@@ -1,6 +1,6 @@
 import { Suspense, lazy } from 'react';
 import { MessageSquare, Send, Square } from 'lucide-react';
-import { getToolName, isTextUIPart, isToolUIPart, type UIMessage } from 'ai';
+import { isTextUIPart, type UIMessage } from 'ai';
 import { cn } from '../../lib/utils';
 import { extractMessageText } from '../../lib/messages';
 
@@ -15,25 +15,6 @@ function statusLabelFor(status: string): string {
     case 'error': return 'Something went wrong';
     default: return 'Working…';
   }
-}
-
-function toolStateLabelFor(state: string): string {
-  switch (state) {
-    case 'input-streaming': return 'Starting';
-    case 'input-available': return 'Running';
-    case 'approval-requested': return 'Needs approval';
-    case 'approval-responded': return 'Continuing';
-    case 'output-available': return 'Done';
-    case 'output-error': return 'Failed';
-    case 'output-denied': return 'Not run';
-    default: return 'Working';
-  }
-}
-
-function toolDisplayName(name: string): string {
-  const words = name.replace(/^(ui_|tool_)/, '').replaceAll('_', ' ').trim();
-  if (!words) return 'Tool';
-  return `${words[0].toUpperCase()}${words.slice(1)}`;
 }
 
 /**
@@ -175,14 +156,6 @@ export function ChatPanel({
             );
           }
           const textParts: string[] = [];
-          const toolParts = Array.isArray(message.parts)
-            ? message.parts
-              .filter(isToolUIPart)
-              .map((part) => ({
-                name: getToolName(part),
-                state: part.state,
-              }))
-            : [];
           if (Array.isArray(message.parts)) {
             for (const part of message.parts) {
               if (isTextUIPart(part) && part.text) {
@@ -192,31 +165,6 @@ export function ChatPanel({
           }
           return (
             <article key={message.id} className="max-w-[90%] self-start space-y-2">
-              {toolParts.length > 0 && (
-                <div className="rounded-2xl border border-border/60 bg-card/80 px-3 py-2">
-                  <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
-                    Agent activity
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                  {toolParts.map((tool, index) => (
-                    <span
-                      key={`${message.id}-${tool.name}-${index}`}
-                      className={cn(
-                        'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono border',
-                        tool.state === 'output-error' || tool.state === 'output-denied'
-                          ? 'bg-destructive/10 text-destructive border border-destructive/20'
-                          : tool.state === 'output-available'
-                            ? 'bg-accent/10 text-accent border-accent/20'
-                            : 'bg-secondary text-secondary-foreground border-border'
-                      )}
-                    >
-                      {toolDisplayName(tool.name)}
-                      <span className="opacity-60">{toolStateLabelFor(tool.state)}</span>
-                    </span>
-                  ))}
-                  </div>
-                </div>
-              )}
               {textParts.length > 0 && (
                 <div className="bg-secondary text-secondary-foreground rounded-2xl rounded-bl-sm p-3">
                   <Suspense fallback={<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{textParts.join('\n')}</div>}>

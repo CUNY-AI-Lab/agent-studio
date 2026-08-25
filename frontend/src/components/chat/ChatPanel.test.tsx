@@ -43,15 +43,20 @@ describe('ChatPanel', () => {
     expect(screen.getByText('hello there')).toBeInTheDocument();
   });
 
-  it('shows tool progress in plain words instead of raw SDK states', () => {
+  it('keeps tool protocol details out of the conversation while rendering the assistant text', () => {
     const message: UIMessage = {
       id: 'a1',
       role: 'assistant',
-      parts: [{ type: 'tool-write_file', toolCallId: 't1', state: 'output-available', input: {}, output: {} }],
+      parts: [
+        { type: 'tool-write_file', toolCallId: 't1', state: 'output-available', input: {}, output: {} },
+        { type: 'text', text: 'The file is ready.' },
+      ],
     };
     render(<ChatPanel {...baseProps} messages={[message]} />);
-    expect(screen.getByText('Write file')).toBeInTheDocument();
-    expect(screen.getByText('Done')).toBeInTheDocument();
+    expect(screen.getByText('The file is ready.')).toBeInTheDocument();
+    expect(screen.queryByText('Agent activity')).not.toBeInTheDocument();
+    expect(screen.queryByText('Write file')).not.toBeInTheDocument();
+    expect(screen.queryByText('Done')).not.toBeInTheDocument();
     expect(screen.queryByText('output-available')).not.toBeInTheDocument();
     expect(screen.queryByText('write_file')).not.toBeInTheDocument();
   });

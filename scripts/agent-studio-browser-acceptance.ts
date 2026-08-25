@@ -396,6 +396,8 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await page.getByRole('button', { name: 'Start blank' }).click();
     await page.waitForURL(/workspace=/);
     workspaceId = workspaceIdFromUrl(page.url());
+    await expect(page.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
+    await expect(page.getByText('Agent activity')).toHaveCount(0);
 
     await seedCards(page, baseUrl, workspaceId);
     await page.reload({ waitUntil: 'networkidle' });
@@ -558,7 +560,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await page.getByRole('button', { name: 'Delete workspace' }).click();
     await expect(page.getByRole('button', { name: 'Start blank' })).toBeVisible();
     cleanupViaUi = true;
-    console.log('[browser] visible workspace creation, cards, title save, association, disconnect, clear selection, pan, zoom, keyboard resize, download, reload, and UI cleanup passed');
+    console.log('[browser] visible workspace creation, ready chat without internal activity, cards, title save, association, disconnect, clear selection, pan, zoom, keyboard resize, download, reload, and UI cleanup passed');
   } finally {
     if (workspaceId && !cleanupViaUi) {
       try {

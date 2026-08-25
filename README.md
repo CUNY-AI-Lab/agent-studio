@@ -68,6 +68,10 @@ The production-configured default is
 supported Workers AI model selected by its user; the default is used only when
 no valid workspace or environment override exists.
 
+Gateway spend and quota are attributed to the verified canonical Gateway JWT
+subject for each user; Agent Studio also limits heavy Durable Object RPC calls
+to 20 per minute per session, which is a separate application safeguard.
+
 Agent-owned authentication challenges use the strict cail-identity 5.2.5
 envelope `{ "error": { "code", "message", "launch"? } }`. The
 OpenAI-compatible `type`/`param`/`cail` envelope remains scoped to errors
