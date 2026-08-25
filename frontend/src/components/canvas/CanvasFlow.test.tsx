@@ -502,13 +502,16 @@ describe('CanvasFlow selection state', () => {
 describe('CanvasFlow keyboard view shortcuts', () => {
   it('uses the React Flow viewport helpers and opens the shortcut dialog', async () => {
     const onViewportChange = vi.fn();
+    const onViewportChangeEnd = vi.fn();
     const onOpenShortcuts = vi.fn();
-    renderCanvas(new Set(), { onViewportChange, onOpenShortcuts });
+    renderCanvas(new Set(), { onViewportChange, onViewportChangeEnd, onOpenShortcuts });
 
     const canvas = screen.getByRole('region', { name: /Workspace canvas, 2 tiles/ });
     canvas.focus();
     fireEvent.keyDown(canvas, { key: '+' });
     await waitFor(() => expect(onViewportChange).toHaveBeenCalled());
+    await waitFor(() => expect(onViewportChangeEnd).toHaveBeenCalledOnce());
+    expect(onViewportChangeEnd).toHaveBeenCalledWith(expect.objectContaining({ zoom: expect.any(Number) }));
 
     onViewportChange.mockClear();
     fireEvent.keyDown(canvas, { key: '-' });
