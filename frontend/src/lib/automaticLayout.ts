@@ -94,6 +94,7 @@ export interface AutomaticLayoutQueue {
   hasFailure(): boolean;
   pending(): AutomaticPanelLayouts;
   reapply(state: WorkspaceState): WorkspaceState;
+  acknowledgeServerState(state: WorkspaceState): WorkspaceState;
   flush(save: (layouts: AutomaticPanelLayouts) => Promise<void>): Promise<AutomaticLayoutFlushResult>;
   retry(): void;
   reset(): void;
@@ -108,6 +109,44 @@ export function createAutomaticLayoutQueue(): AutomaticLayoutQueue {
   const removedPanelIds = new Set<string>();
   const clearFailureWhenEmpty = () => {
     if (Object.keys(pendingLayouts).length === 0) failureLatched = false;
+  };
+  const reapplyState = (state: WorkspaceState): WorkspaceState => {
+    let changed = false;
+    const panels = state.panels
+      .filter((panel) => {
+        if (!removedPanelIds.has(panel.id)) return true;
+        changed = true;
+        return false;
+      })
+      .map((panel) => {
+        const manualLayout = manualLayouts[panel.id];
+        const automaticLayout = pendingLayouts[panel.id];
+        const layout = manualLayout ?? automaticLayout;
+        if (!layout || layoutsEqual(panel.layout, layout)) return panel;
+        changed = true;
+        return {
+          ...panel,
+          layout: {
+            ...panel.layout,
+            ...layout,
+          },
+        };
+      });
+
+    return changed ? { ...state, panels } : state;
+  };
+  const acknowledgeServerState = (state: WorkspaceState): WorkspaceState => {
+    const panelsById = new Map(state.panels.map((panel) => [panel.id, panel]));
+    for (const [panelId, layout] of Object.entries(manualLayouts)) {
+      const serverPanel = panelsById.get(panelId);
+      if (serverPanel && layoutsEqual(serverPanel.layout, layout)) {
+        delete manualLayouts[panelId];
+      }
+    }
+    for (const panelId of removedPanelIds) {
+      if (!panelsById.has(panelId)) removedPanelIds.delete(panelId);
+    }
+    return reapplyState(state);
   };
 
   return {
@@ -161,31 +200,8 @@ export function createAutomaticLayoutQueue(): AutomaticLayoutQueue {
       return cloneLayouts(pendingLayouts);
     },
 
-    reapply(state) {
-      let changed = false;
-      const panels = state.panels
-        .filter((panel) => {
-          if (!removedPanelIds.has(panel.id)) return true;
-          changed = true;
-          return false;
-        })
-        .map((panel) => {
-          const manualLayout = manualLayouts[panel.id];
-          const automaticLayout = pendingLayouts[panel.id];
-          const layout = manualLayout ?? automaticLayout;
-          if (!layout || layoutsEqual(panel.layout, layout)) return panel;
-          changed = true;
-          return {
-            ...panel,
-            layout: {
-              ...panel.layout,
-              ...layout,
-            },
-          };
-        });
-
-      return changed ? { ...state, panels } : state;
-    },
+    reapply: reapplyState,
+    acknowledgeServerState,
 
     async flush(save) {
       if (failureLatched) return 'blocked';
@@ -238,6 +254,7 @@ export interface AutomaticLayoutPersistenceOptions {
 
 export interface AutomaticLayoutPersistence {
   reapply(state: WorkspaceState): WorkspaceState;
+  acknowledgeServerState(state: WorkspaceState): WorkspaceState;
   enqueue(layouts: AutomaticPanelLayouts): boolean;
   recordManualLayouts(layouts: AutomaticPanelLayouts): void;
   recordRemoved(panelIds: Iterable<string>): void;
@@ -287,6 +304,9 @@ export function useAutomaticLayoutPersistence({
 
   const reapply = useCallback((state: WorkspaceState) => (
     controllerRef.current.queue.reapply(state)
+  ), []);
+  const acknowledgeServerState = useCallback((state: WorkspaceState) => (
+    controllerRef.current.queue.acknowledgeServerState(state)
   ), []);
   const enqueue = useCallback((layouts: AutomaticPanelLayouts) => {
     const changed = controllerRef.current.queue.enqueue(layouts);
@@ -341,6 +361,7 @@ export function useAutomaticLayoutPersistence({
 
   return {
     reapply,
+    acknowledgeServerState,
     enqueue,
     recordManualLayouts,
     recordRemoved,

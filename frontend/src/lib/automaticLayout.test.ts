@@ -106,6 +106,37 @@ describe('automatic layout queue', () => {
     expect(save).toHaveBeenCalledTimes(2);
   });
 
+  it('holds manual geometry through stale state, then adopts later server geometry after an exact ack', () => {
+    const queue = createAutomaticLayoutQueue();
+    const manualLayout = { x: -640, y: 96, width: 420, height: 280 };
+    queue.recordManualLayouts({ first: manualLayout });
+
+    const stale = queue.reapply(stateWithLayouts(layoutA, layoutB));
+    expect(stale.panels[0].layout).toEqual(manualLayout);
+
+    const acknowledged = queue.acknowledgeServerState(stateWithLayouts(manualLayout, layoutB));
+    expect(acknowledged.panels[0].layout).toEqual(manualLayout);
+
+    const newerLayout = { x: 900, y: 180, width: 500, height: 300 };
+    const newer = queue.reapply(stateWithLayouts(newerLayout, layoutB));
+    expect(newer.panels[0].layout).toEqual(newerLayout);
+  });
+
+  it('holds a removed tile out of stale state, then permits the same id after absence is acknowledged', () => {
+    const queue = createAutomaticLayoutQueue();
+    queue.recordRemoved(['first']);
+
+    const stale = queue.reapply(stateWithLayouts(layoutA, layoutB));
+    expect(stale.panels.map((panel) => panel.id)).toEqual(['second']);
+
+    const absent = stateWithLayouts(undefined, layoutB);
+    absent.panels = absent.panels.filter((panel) => panel.id !== 'first');
+    expect(queue.acknowledgeServerState(absent).panels.map((panel) => panel.id)).toEqual(['second']);
+
+    const readded = queue.reapply(stateWithLayouts(layoutA, layoutB));
+    expect(readded.panels.map((panel) => panel.id)).toEqual(['first', 'second']);
+  });
+
   it('does not flush until every chat stream and continuation flag is settled', () => {
     const base = {
       status: 'ready',

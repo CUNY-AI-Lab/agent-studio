@@ -249,7 +249,7 @@ function WorkspaceShell({
     onStateUpdate: (state) => {
       if (!state.workspace || state.workspace.id !== workspace.workspace.id) return;
       const automaticLayoutPersistence = automaticLayoutPersistenceRef.current;
-      setWorkspaceState(automaticLayoutPersistence ? automaticLayoutPersistence.reapply(state) : state);
+      setWorkspaceState(automaticLayoutPersistence ? automaticLayoutPersistence.acknowledgeServerState(state) : state);
       pendingWorkspaceMetadataRef.current = state.workspace;
     },
   });
@@ -1226,7 +1226,7 @@ function WorkspaceShell({
         && automaticLayoutPersistenceRef.current === automaticLayoutPersistence
         && (!nextState.workspace || nextState.workspace.id === workspace.workspace.id)
       ) {
-        setWorkspaceState(automaticLayoutPersistence.reapply(nextState));
+        setWorkspaceState(automaticLayoutPersistence.acknowledgeServerState(nextState));
       }
     } catch (nextError) {
       if (automaticLayoutPersistence && automaticLayoutPersistenceRef.current === automaticLayoutPersistence) {

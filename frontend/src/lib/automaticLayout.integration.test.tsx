@@ -46,6 +46,16 @@ function workspaceState(
   };
 }
 
+function workspaceStateWithoutFirst(
+  secondLayout: WorkspaceState['panels'][number]['layout'],
+): WorkspaceState {
+  const state = workspaceState(undefined, secondLayout);
+  return {
+    ...state,
+    panels: state.panels.filter((panel) => panel.id !== 'first'),
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason: Error) => void;
@@ -95,12 +105,12 @@ function PersistenceHarness({
     onSaveError: setSaveError,
     onSaveSuccess: () => setSaveError(''),
   });
-  const { enqueue, reapply } = persistence;
+  const { acknowledgeServerState, enqueue, reapply } = persistence;
 
   useEffect(() => {
     if (!snapshot) return;
-    setState(reapply(snapshot));
-  }, [reapply, snapshot]);
+    setState(acknowledgeServerState(snapshot));
+  }, [acknowledgeServerState, snapshot]);
 
   useEffect(() => {
     if (!automaticLayouts) return;
@@ -306,19 +316,73 @@ describe('automatic layout persistence integration', () => {
     await act(async () => undefined);
     expect(observer.read().panels.map((panel) => panel.layout)).toEqual([manualFirst, manualSecond]);
 
+    view.rerender(
+      <PersistenceHarness
+        workspaceId="workspace-a"
+        chat={streaming}
+        initialState={workspaceState(layoutFirst, layoutSecond)}
+        snapshot={workspaceState(manualFirst, manualSecond)}
+        saveLayouts={saves}
+        onStateChange={observer.observe}
+      />,
+    );
+    await act(async () => undefined);
+    expect(observer.read().panels.map((panel) => panel.layout)).toEqual([manualFirst, manualSecond]);
+
+    const newerFirst = { x: 900, y: 180, width: 500, height: 300 };
+    const newerSecond = { x: 1200, y: 180, width: 500, height: 300 };
+    view.rerender(
+      <PersistenceHarness
+        workspaceId="workspace-a"
+        chat={streaming}
+        initialState={workspaceState(layoutFirst, layoutSecond)}
+        snapshot={workspaceState(newerFirst, newerSecond)}
+        saveLayouts={saves}
+        onStateChange={observer.observe}
+      />,
+    );
+    await act(async () => undefined);
+    expect(observer.read().panels.map((panel) => panel.layout)).toEqual([newerFirst, newerSecond]);
+
     screen.getByRole('button', { name: 'Remove first' }).click();
     view.rerender(
       <PersistenceHarness
         workspaceId="workspace-a"
         chat={streaming}
         initialState={workspaceState(layoutFirst, layoutSecond)}
-        snapshot={workspaceState(undefined, undefined)}
+        snapshot={workspaceState(layoutFirst, newerSecond)}
         saveLayouts={saves}
         onStateChange={observer.observe}
       />,
     );
     await act(async () => undefined);
     expect(observer.read().panels.map((panel) => panel.id)).toEqual(['second']);
+
+    view.rerender(
+      <PersistenceHarness
+        workspaceId="workspace-a"
+        chat={streaming}
+        initialState={workspaceState(layoutFirst, layoutSecond)}
+        snapshot={workspaceStateWithoutFirst(newerSecond)}
+        saveLayouts={saves}
+        onStateChange={observer.observe}
+      />,
+    );
+    await act(async () => undefined);
+    expect(observer.read().panels.map((panel) => panel.id)).toEqual(['second']);
+
+    view.rerender(
+      <PersistenceHarness
+        workspaceId="workspace-a"
+        chat={streaming}
+        initialState={workspaceState(layoutFirst, layoutSecond)}
+        snapshot={workspaceState(newerFirst, newerSecond)}
+        saveLayouts={saves}
+        onStateChange={observer.observe}
+      />,
+    );
+    await act(async () => undefined);
+    expect(observer.read().panels.map((panel) => panel.id)).toEqual(['first', 'second']);
     expect(saves).not.toHaveBeenCalled();
   });
 
