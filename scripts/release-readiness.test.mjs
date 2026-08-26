@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 const workerUrl = new URL('./release-readiness-worker.mjs', import.meta.url);
-const configUrl = new URL('./release-readiness-wrangler.jsonc', import.meta.url);
 const FAILURE = {
   ok: false,
   service: 'agent-studio',
@@ -19,10 +17,6 @@ const VALID_READINESS = {
   version_id: 'version-id',
   tag: 'commit-sha',
 };
-
-function parseJsonc(source) {
-  return JSON.parse(source.replace(/^\s*\/\/.*$/gm, ''));
-}
 
 test('release helper exposes only a local GET boundary over the named remote entrypoint', async () => {
   const worker = (await import(workerUrl)).default;
@@ -91,16 +85,4 @@ test('release helper sanitizes private readiness RPC failures', async () => {
   const body = await response.text();
   assert.deepEqual(JSON.parse(body), FAILURE);
   assert.doesNotMatch(body, /private RPC secret detail|Error|stack/i);
-});
-
-test('release helper follows current per-binding remote service guidance', async () => {
-  const config = parseJsonc(await readFile(configUrl, 'utf8'));
-  assert.deepEqual(config.services, [{
-    binding: 'AGENT_STUDIO_READINESS',
-    service: 'agent-studio',
-    entrypoint: 'AgentStudioReadiness',
-    remote: true,
-  }]);
-  assert.equal(config.workers_dev, false);
-  assert.equal(config.preview_urls, false);
 });

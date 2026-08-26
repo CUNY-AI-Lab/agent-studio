@@ -309,7 +309,7 @@ async function selectPanel(
   page: Page,
   title: string,
   type: string,
-  modifier?: 'Meta',
+  modifier?: 'ControlOrMeta',
 ): Promise<void> {
   const panel = panelLocator(page, title, type);
   await expect(panel).toBeVisible();
@@ -410,7 +410,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await expect(nameInput).toHaveValue('Agent Studio browser acceptance');
 
     await selectPanel(page, 'Source cards', 'cards');
-    await selectPanel(page, 'Related cards', 'cards', 'Meta');
+    await selectPanel(page, 'Related cards', 'cards', 'ControlOrMeta');
     const multiToolbar = page.getByRole('toolbar', { name: 'Actions for selected tiles' });
     await expect(multiToolbar).toBeVisible();
 
@@ -429,7 +429,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await expect(multiToolbar).toHaveCount(0);
 
     await selectPanel(page, 'Source cards', 'cards');
-    await selectPanel(page, 'Related cards', 'cards', 'Meta');
+    await selectPanel(page, 'Related cards', 'cards', 'ControlOrMeta');
     await page.getByRole('button', { name: 'Associate selected tiles' }).click();
     await expect(association).toHaveCount(1);
 

@@ -64,7 +64,7 @@ function containsForbiddenControl(value: string): boolean {
   });
 }
 
-function canonicalCailApiBase(apiBase: string): string {
+export function canonicalCailApiBase(apiBase: string): string {
   if (apiBase.trim() !== apiBase || containsForbiddenControl(apiBase) || /[\s\\]/.test(apiBase)) {
     throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
   }
@@ -81,6 +81,8 @@ function canonicalCailApiBase(apiBase: string): string {
     || parsed.password !== ''
     || apiBase.includes('?')
     || apiBase.includes('#')
+    || parsed.hostname.endsWith('.invalid')
+    || parsed.href.includes('REPLACE')
   ) {
     throw new Error(
       'CAIL_API_BASE must use HTTPS and cannot contain credentials, a query, or a fragment.',
@@ -88,6 +90,16 @@ function canonicalCailApiBase(apiBase: string): string {
   }
 
   return apiBase.replace(/\/+$/, '');
+}
+
+export function isValidCailApiBase(apiBase: string | undefined): boolean {
+  if (apiBase === undefined) return false;
+  try {
+    canonicalCailApiBase(apiBase);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

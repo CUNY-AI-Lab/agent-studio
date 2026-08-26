@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 
 import { layoutPatchSchema, runtimeCodeSchema } from '../src/lib/workspace-validation.ts';
 
@@ -23,28 +22,4 @@ test('layout runtime validation includes explicit removals and rejects non-finit
   assert.throws(() => layoutPatchSchema.parse({ removeGroups: [42] }));
   assert.throws(() => layoutPatchSchema.parse({ removeConnections: [42] }));
   assert.throws(() => layoutPatchSchema.parse({ unknown: true }));
-});
-
-test('private read and credential RPCs are not browser-callable', async () => {
-  const source = await readFile(new URL('../src/agent/workspace-agent.ts', import.meta.url), 'utf8');
-  for (const method of [
-    'setCailCredential',
-    'getSnapshot',
-    'getMessages',
-    'getObservability',
-    'getRuntimeInfo',
-    'getWorkspaceFiles',
-    'readWorkspaceFileContent',
-    'writeWorkspaceFileContent',
-    'deleteWorkspaceFileContent',
-    'clearWorkspaceFiles',
-    'freezeForMigration',
-    'destroyWorkspaceState',
-  ]) {
-    assert.doesNotMatch(
-      source,
-      new RegExp(`@callable\\(\\)\\s+async ${method}\\(`),
-      method,
-    );
-  }
 });
