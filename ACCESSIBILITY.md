@@ -15,9 +15,8 @@ tile into view when needed.
 
 The same map is available in-app: press **`?`** while the canvas region is
 focused, or use the **keyboard icon** in the workspace header. The in-app dialog renders
-directly from the shared source `frontend/src/lib/keyboardMap.ts`; the tables
-below are hand-maintained mirrors of that source, and a vitest drift check
-(`keyboardMap.drift.test.ts`) fails the suite if they fall out of sync.
+directly from `frontend/src/lib/keyboardMap.ts`. The tables below document the
+same user-facing shortcuts.
 
 ### Focus & selection
 

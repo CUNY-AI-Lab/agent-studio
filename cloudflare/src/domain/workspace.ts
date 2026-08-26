@@ -1,10 +1,8 @@
 /**
  * Canonical set of panel `type` literals (AS-3-7). The same enum is restated in
- * several hand-maintained places — the WorkspacePanelBase union below, the
- * import.ts zod discriminatedUnion, the workspace-agent panel switch, and the
- * frontend types.ts — with no compile-time link between them. This array is the
- * single source of truth the zod schema and the drift test reference so a new
- * panel type can't silently land in one copy but not the others.
+ * several places — the WorkspacePanelBase union below, the import schema, the
+ * workspace-agent panel switch, and the frontend types. This array owns the
+ * domain union; executed import and workspace tests cover the other boundaries.
  *
  * When you add a panel type: add it here. WorkspacePanelBase.type is typed as
  * `PanelType` (= PANEL_TYPES[number]) below, so the panel-object union is locked

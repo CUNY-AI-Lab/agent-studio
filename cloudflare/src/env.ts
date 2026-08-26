@@ -4,6 +4,7 @@ import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
 import { z } from 'zod';
 import { isValidBasePath, normalizeBasePath } from './lib/base-path';
 import { CAIL_CANONICAL_ISSUER, CAIL_IDENTITY_AUDIENCE } from './lib/cail-identity';
+import { isValidCailApiBase } from './lib/cail-model';
 import { isAllowedCailModelId } from './lib/workspace-validation';
 
 /** Runtime bindings and settings used by the worker. */
@@ -99,33 +100,6 @@ export interface AgentStudioConfigInput {
 const stringSchema = z.string();
 const gatewayBindingSchema = z.object({ fetch: z.function() });
 
-function containsForbiddenControl(value: string): boolean {
-  return Array.from(value).some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
-  });
-}
-
-function validHttpsBase(value: string | undefined): boolean {
-  const candidate = stringSchema.safeParse(value).data;
-  if (candidate === undefined) return false;
-  try {
-    const parsed = new URL(candidate);
-    return parsed.protocol === 'https:'
-      && parsed.username === ''
-      && parsed.password === ''
-      && parsed.search === ''
-      && parsed.hash === ''
-      && !parsed.hostname.endsWith('.invalid')
-      && !parsed.href.includes('REPLACE')
-      && candidate === candidate.trim()
-      && !containsForbiddenControl(candidate)
-      && !/[\s\\]/.test(candidate);
-  } catch {
-    return false;
-  }
-}
-
 function validCanonicalOrigin(value: string | undefined): boolean {
   const candidate = stringSchema.safeParse(value).data;
   if (candidate === undefined) return false;
@@ -156,7 +130,7 @@ export async function validateAgentStudioConfig(env: AgentStudioConfigInput): Pr
   if (env.CAIL_MODEL !== undefined && !isAllowedCailModelId(env.CAIL_MODEL)) {
     return { ok: false, errorCode: 'cail_model_invalid' };
   }
-  if (env.CAIL_API_BASE !== undefined && !validHttpsBase(env.CAIL_API_BASE)) {
+  if (env.CAIL_API_BASE !== undefined && !isValidCailApiBase(env.CAIL_API_BASE)) {
     return { ok: false, errorCode: 'cail_api_base_invalid' };
   }
 
@@ -201,7 +175,7 @@ export async function validateAgentStudioConfig(env: AgentStudioConfigInput): Pr
   // A deployed identity profile has no anonymous model transport. The service
   // binding and authenticated base URL are both explicit requirements.
   if (required) {
-    if (!validHttpsBase(env.CAIL_API_BASE)) {
+    if (!isValidCailApiBase(env.CAIL_API_BASE)) {
       return { ok: false, errorCode: 'cail_api_base_invalid' };
     }
     if (!gatewayBindingSchema.safeParse(env.GATEWAY).success) {

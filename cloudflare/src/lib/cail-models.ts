@@ -2,7 +2,11 @@
 
 import { z } from 'zod';
 import { CAIL_APP_SLUG } from './cail-identity';
-import { resolveCailModelName, type CailModelEnv } from './cail-model';
+import {
+  canonicalCailApiBase,
+  resolveCailModelName,
+  type CailModelEnv,
+} from './cail-model';
 import { CAIL_MODEL_ID_PATTERN } from './workspace-validation';
 
 export type CailModelTier = 'recommended' | 'advanced';
@@ -78,26 +82,6 @@ const supportedModelIdSchema = z.object({
   id: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200),
 });
 
-function canonicalBase(value: string): string {
-  const containsForbiddenControl = Array.from(value).some((character) => {
-    const code = character.charCodeAt(0);
-    return code <= 0x1f || code === 0x7f;
-  });
-  if (value.trim() !== value || containsForbiddenControl || /[\s\\]/.test(value)) {
-    throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new Error('CAIL_API_BASE must be a trimmed absolute HTTPS URL.');
-  }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.search || parsed.hash) {
-    throw new Error('CAIL_API_BASE must use HTTPS and cannot contain credentials, a query, or a fragment.');
-  }
-  return value.replace(/\/+$/, '');
-}
-
 function normalizeEntry(entry: z.infer<typeof modelEntrySchema>, index: number): CailModelInfo {
   const tier: CailModelTier = entry.tier === 'recommended' || entry.tier === 'advanced'
     ? entry.tier
@@ -121,7 +105,7 @@ function normalizeEntry(entry: z.infer<typeof modelEntrySchema>, index: number):
 export async function fetchCailModels(options: FetchCailModelsOptions): Promise<CailModelsResult> {
   const { env, identityJwt } = options;
   if (!identityJwt) throw new ModelCatalogAuthError('CAIL authentication is required to list models.');
-  const apiBase = canonicalBase(env.CAIL_API_BASE ?? '');
+  const apiBase = canonicalCailApiBase(env.CAIL_API_BASE ?? '');
   const gateway = env.GATEWAY;
   const fetchImpl = options.fetchImpl
     ?? (gateway ? (input: RequestInfo | URL, init?: RequestInit) => gateway.fetch(input, init) : null);
