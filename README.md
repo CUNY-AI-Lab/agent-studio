@@ -54,8 +54,10 @@ installs that verified credential into the workspace Durable Object before a
 chat request. `CAIL_API_BASE` is the public Gateway origin
 `https://tools.ailab.gc.cuny.edu`; the transport appends the canonical `/v1`
 path. The `GATEWAY` Cloudflare service binding carries the direct Vercel AI SDK
-OpenAI-compatible transport. Agent Studio stores no provider key and does not
-select a second model path.
+OpenAI-compatible transport. Each chat turn uses the workspace id as the
+Gateway session identifier; Gateway namespaces and hashes it before provider
+egress. Agent Studio stores no provider key and does not select a second model
+path.
 
 The shared Gateway can publish models for several CAIL applications. Agent
 Studio intentionally consumes only `@cf/...` Workers AI entries because its

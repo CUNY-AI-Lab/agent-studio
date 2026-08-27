@@ -644,6 +644,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const model = createCailModel({
         env: this.env,
         identityJwt,
+        sessionId: workspace.id,
         model: modelName,
       });
 
