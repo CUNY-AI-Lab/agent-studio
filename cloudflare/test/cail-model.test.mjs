@@ -130,6 +130,7 @@ test('buffered calls use one Bearer credential and only safe server-owned header
   const model = createCailModel({
     env: { CAIL_API_BASE: 'https://cail.test/gateway///', GATEWAY: capture.gateway },
     identityJwt: 'verified-gateway-jwt',
+    sessionId: 'workspace-123',
   });
   await generateText({
     model,
@@ -142,6 +143,7 @@ test('buffered calls use one Bearer credential and only safe server-owned header
       'x-cail-identity-jwt': 'attacker',
       'cf-aig-provider': 'attacker',
       'x-openwebui-model': 'attacker',
+      'x-cail-session-id': 'attacker',
       accept: 'text/plain',
       'content-type': 'text/plain',
     },
@@ -154,6 +156,7 @@ test('buffered calls use one Bearer credential and only safe server-owned header
   assert.equal(headers.get('authorization'), 'Bearer verified-gateway-jwt');
   assert.equal([...headers.keys()].filter((name) => name === 'authorization').length, 1);
   assert.equal(headers.get('x-cail-app'), 'agent-studio');
+  assert.equal(headers.get('x-cail-session-id'), 'workspace-123');
   assert.equal(headers.get('content-type'), 'application/json');
   assert.equal(headers.get('accept'), 'text/plain');
   assert.equal(headers.get('cookie'), null);

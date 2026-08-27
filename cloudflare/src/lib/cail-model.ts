@@ -53,6 +53,8 @@ export interface CreateCailModelOptions {
   env: CailModelEnv;
   /** The caller's verified gateway JWT, forwarded as the Bearer credential. */
   identityJwt: string;
+  /** Stable workspace identifier used for Gateway session affinity. */
+  sessionId: string;
   /** Optional per-call model override (falls back to env / default). */
   model?: string;
 }
@@ -150,6 +152,7 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
       // stamp these last so options.headers cannot replace or add authority.
       safeHeaders.set('authorization', `Bearer ${identityJwt}`);
       safeHeaders.set('x-cail-app', CAIL_APP_SLUG);
+      if (options.sessionId) safeHeaders.set('x-cail-session-id', options.sessionId);
       return safeHeaders;
     })(),
     // Model requests never need browser cookies or other ambient credentials.
