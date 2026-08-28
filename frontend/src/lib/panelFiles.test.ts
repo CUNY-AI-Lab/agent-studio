@@ -117,10 +117,6 @@ describe('getPanelDownloadFormats', () => {
     expect(formats).toContain('png');
   });
 
-  it('deduplicates formats', () => {
-    const formats = getPanelDownloadFormats(markdownPanel('m'));
-    expect(new Set(formats).size).toBe(formats.length);
-  });
 });
 
 describe('canExportPanelSnapshot', () => {

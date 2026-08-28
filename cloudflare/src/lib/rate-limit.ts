@@ -33,6 +33,15 @@ function isHeavyRequest(method: string, path: string): boolean {
   return HEAVY_PATH_PATTERNS.some((pattern) => path.includes(pattern));
 }
 
+async function consumeHeavyLimit(
+  limiter: RateLimit | undefined,
+  key: string,
+): Promise<boolean> {
+  if (!limiter) return true;
+  const { success } = await limiter.limit({ key });
+  return success;
+}
+
 /**
  * Enforce the HEAVY limit for an operation invoked OUTSIDE the HTTP middleware
  * (for example, a @callable Agent RPC). Same fail-open contract: no binding
@@ -42,10 +51,7 @@ export async function checkHeavyRpcLimit(
   env: { HEAVY_RATE_LIMIT?: RateLimit },
   key: string,
 ): Promise<boolean> {
-  const limiter = env.HEAVY_RATE_LIMIT;
-  if (!limiter) return true;
-  const { success } = await limiter.limit({ key });
-  return success;
+  return consumeHeavyLimit(env.HEAVY_RATE_LIMIT, key);
 }
 
 export const rateLimitMiddleware: MiddlewareHandler<{
@@ -53,17 +59,8 @@ export const rateLimitMiddleware: MiddlewareHandler<{
   Variables: SessionVariables;
 }> = async (c, next) => {
   if (!isHeavyRequest(c.req.method, c.req.path)) return next();
-  const limiter = c.env.HEAVY_RATE_LIMIT;
-
-  // Fail open: no binding -> no limiting. Keeps local dev, tests, and CI smoke
-  // working without the unsafe binding configured.
-  if (!limiter) {
-    return next();
-  }
-
   const key = c.get('sessionId');
-  const { success } = await limiter.limit({ key });
-  if (!success) {
+  if (!(await consumeHeavyLimit(c.env.HEAVY_RATE_LIMIT, key))) {
     return c.json(
       canonicalError(
         'rate_limited',

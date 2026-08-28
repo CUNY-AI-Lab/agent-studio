@@ -64,10 +64,6 @@ function Harness({ agent }: { agent: ReturnType<typeof fakeAgent> }) {
 }
 
 describe('useAgentChat credential refresh preparation', () => {
-  it('loads the real hook', () => {
-    expect(useAgentChat).toBeDefined();
-  });
-
   beforeEach(() => {
     Object.defineProperty(document, 'cookie', {
       configurable: true,

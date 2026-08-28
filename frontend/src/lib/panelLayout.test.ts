@@ -11,6 +11,7 @@ import {
   layoutOverlapsBounds,
   resolveCollisions,
   resolveVisibleLayoutCollisions,
+  rectsOverlapWithGap,
   type LayoutMap,
 } from './panelLayout';
 import type { MarkdownPanel, TablePanel, WorkspaceState } from '../types';
@@ -56,6 +57,19 @@ describe('hasOverlappingPanels', () => {
       b: { x: 100 + PANEL_GAP + 1, y: 0, width: 100, height: 100 },
     };
     expect(hasOverlappingPanels(layouts)).toBe(false);
+  });
+});
+
+describe('rectsOverlapWithGap', () => {
+  const left = { x: 0, y: 0, width: 100, height: 100 };
+
+  it('treats the explicit gap boundary as non-overlapping', () => {
+    expect(rectsOverlapWithGap(left, { x: 120, y: 0, width: 100, height: 100 }, 20)).toBe(false);
+    expect(rectsOverlapWithGap(left, { x: 119, y: 0, width: 100, height: 100 }, 20)).toBe(true);
+  });
+
+  it('uses the supplied gap rather than the canvas default', () => {
+    expect(rectsOverlapWithGap(left, { x: 117, y: 0, width: 100, height: 100 }, 16)).toBe(false);
   });
 });
 
