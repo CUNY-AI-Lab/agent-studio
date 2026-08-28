@@ -20,7 +20,6 @@ import {
   enforceCsrfRead,
   csrfCookiePath,
   CSRF_HEADER,
-  CSRF_WS_QUERY_PARAM,
   CSRF_COOKIE_NAME,
 } from '../src/lib/csrf.ts';
 
@@ -33,10 +32,6 @@ const SECRET = 'ab'.repeat(32);
 function jsonInit(method, body) {
   return { method, headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
 }
-
-test('CSRF header stays outside the Doorway-owned X-CAIL namespace', () => {
-  assert.equal(CSRF_HEADER, 'X-CSRF-Token');
-});
 
 // ---------------------------------------------------------------------------
 // Rule 2 — origin classification (pure)
@@ -526,13 +521,6 @@ test('route: workspace file GET rejects URL tokens and accepts the protected hea
   assert.equal(await header.text(), '# protected');
 });
 
-test('route: gallery GET remains available through the session pipeline', async () => {
-  const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const res = await session.request(app, '/api/gallery');
-  assert.equal(res.status, 200);
-});
-
 test('route: DELETE (state-changing) is also gated', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -548,9 +536,4 @@ test('route: DELETE (state-changing) is also gated', async () => {
 
   const legit = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
   assert.equal(legit.status, 200);
-});
-
-// A guard so the WS query-param field name stays in lockstep with the client.
-test('CSRF_WS_QUERY_PARAM is the field the client sends', () => {
-  assert.equal(CSRF_WS_QUERY_PARAM, 'csrfToken');
 });

@@ -80,6 +80,17 @@ export async function buildSkillDocs(rootDir = root) {
 
 async function main() {
   const { content, count, outFile } = await buildSkillDocs(root);
+  if (process.argv.includes('--check')) {
+    const committed = await readFile(outFile, 'utf-8');
+    if (content !== committed) {
+      console.error(`Generated skill docs are stale: ${outFile}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Checked ${outFile} (${count} docs)`);
+    return;
+  }
+
   await writeFile(outFile, content);
   console.log(`Wrote ${outFile} (${count} docs)`);
 }

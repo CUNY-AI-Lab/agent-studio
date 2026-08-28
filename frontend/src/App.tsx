@@ -56,6 +56,7 @@ import {
   getLayoutsBounds,
   inferPanelLayout,
   layoutOverlapsBounds,
+  rectsOverlapWithGap,
   resolveVisibleLayoutCollisions,
   type CanvasPanelLayout,
 } from './lib/panelLayout';
@@ -1469,12 +1470,10 @@ function WorkspaceShell({
     const canvasWidth = canvasViewportRef.current?.clientWidth || globalThis.window?.innerWidth || 1440;
     const canvasHeight = canvasViewportRef.current?.clientHeight || globalThis.window?.innerHeight || 900;
 
-    const overlaps = (x: number, y: number, width: number, height: number) => occupiedRects.some((rect) => !(
-      x + width + gap <= rect.x ||
-      rect.x + rect.width + gap <= x ||
-      y + height + gap <= rect.y ||
-      rect.y + rect.height + gap <= y
-    ));
+    const overlaps = (x: number, y: number, width: number, height: number) => {
+      const candidate = { x, y, width, height };
+      return occupiedRects.some((rect) => rectsOverlapWithGap(candidate, rect, gap));
+    };
 
     visiblePanels.forEach((panel) => {
       if (panel.layout?.x === undefined || panel.layout?.y === undefined) return;
@@ -1806,13 +1805,6 @@ function WorkspaceShell({
       centerX /= selectedLayouts.length;
       centerY /= selectedLayouts.length;
 
-      const rectsOverlap = (left: CanvasPanelLayout, right: CanvasPanelLayout, gap = 16) => !(
-        left.x + left.width + gap <= right.x ||
-        right.x + right.width + gap <= left.x ||
-        left.y + left.height + gap <= right.y ||
-        right.y + right.height + gap <= left.y
-      );
-
       const pullFactors = [0.25, 0.15, 0.08, 0];
       let finalLayouts: Record<string, CanvasPanelLayout> | null = null;
 
@@ -1836,7 +1828,7 @@ function WorkspaceShell({
         const ids = Object.keys(testLayouts);
         outer: for (let index = 0; index < ids.length; index += 1) {
           for (let nextIndex = index + 1; nextIndex < ids.length; nextIndex += 1) {
-            if (rectsOverlap(testLayouts[ids[index]], testLayouts[ids[nextIndex]])) {
+            if (rectsOverlapWithGap(testLayouts[ids[index]], testLayouts[ids[nextIndex]], 16)) {
               hasOverlap = true;
               break outer;
             }
@@ -2281,14 +2273,7 @@ function WorkspaceShell({
     setError(null);
     try {
       const { blob, filename } = await fetchWorkspaceExport(workspace.workspace.id);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = filename;
-      document.body.append(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      downloadBlob(blob, filename);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to export workspace');
     }

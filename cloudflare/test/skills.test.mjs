@@ -31,22 +31,16 @@ test('core research sources ship full reference docs', () => {
   }
 });
 
-test('docs teach the codemode web-fetch path, not raw fetch or Bash', () => {
+test('skill docs retain codemode and host-managed credential boundaries', () => {
   for (const [name, doc] of Object.entries(SKILL_DOCS)) {
     // Capability docs teach their own codemode.* tools, not codemode.web_fetch.
     if (['frontend-design', 'leaflet', 'citation', 'pdf', 'xlsx', 'docx'].includes(name)) continue;
     assert.match(doc, /codemode\.web_fetch/, `${name} should reference codemode.web_fetch`);
     assert.doesNotMatch(doc, /\bcurl\b|\bpython\b|\brequests\.get\b/i, `${name} should not reference Bash/Python tooling`);
   }
-});
 
-test('primo doc defers credentials to the host', () => {
-  const doc = SKILL_DOCS.primo;
-  assert.match(doc, /automatically attaches/i);
-  assert.doesNotMatch(doc, /env\(/);
-});
-
-test('OAuth docs defer credentials to the host and never mention env()', () => {
+  assert.match(SKILL_DOCS.primo, /automatically attaches/i);
+  assert.doesNotMatch(SKILL_DOCS.primo, /env\(/);
   for (const name of ['worldcat', 'libguides']) {
     const doc = SKILL_DOCS[name];
     assert.match(doc, /handled by the host/i, `${name} should defer auth to the host`);

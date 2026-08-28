@@ -13,7 +13,6 @@ const streamSseReply = Object.getOwnPropertyDescriptor(
 ).value;
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 
 const streamEvents = [
   { type: 'start', messageId: 'assistant-1' },
@@ -100,21 +99,6 @@ function oneByteChunks(bytes) {
     { length: bytes.byteLength },
     (_, index) => bytes.slice(index, index + 1),
   );
-}
-
-function readLegacyEvents(chunks) {
-  const events = [];
-  for (const chunk of chunks) {
-    for (const line of decoder.decode(chunk).split('\n')) {
-      if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
-      try {
-        events.push(JSON.parse(line.slice(6)));
-      } catch {
-        // Match the old transport's per-line error handling.
-      }
-    }
-  }
-  return events;
 }
 
 function makeAgent() {
@@ -228,16 +212,6 @@ function assertCompletedToolTurn({ context, message, result, streamCompleted }) 
     1,
   );
 }
-
-test('the old per-read parser loses SSE events at byte boundaries', () => {
-  const bytes = encodeSse([streamEvents[4]]);
-  let lostBoundaries = 0;
-  for (let split = 1; split < bytes.byteLength; split += 1) {
-    const events = readLegacyEvents([bytes.slice(0, split), bytes.slice(split)]);
-    if (events.length === 0) lostBoundaries += 1;
-  }
-  assert.ok(lostBoundaries > 0);
-});
 
 test('the framed chat transport preserves tool and terminal events at every split', async () => {
   const bytes = encodeSse(streamEvents);

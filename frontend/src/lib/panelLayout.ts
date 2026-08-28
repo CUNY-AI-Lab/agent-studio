@@ -13,6 +13,13 @@ export function inferPanelLayout(panel: WorkspacePanel, index: number) {
 export type CanvasPanelLayout = ReturnType<typeof inferPanelLayout>;
 export type LayoutMap = Record<string, CanvasPanelLayout>;
 
+export interface CanvasRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface CanvasViewportSize {
   width: number;
   height: number;
@@ -29,18 +36,16 @@ export function buildPanelLayouts(panels: WorkspacePanel[]): Record<string, Canv
   );
 }
 
-function overlapsWithGap(
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  rect: CanvasPanelLayout,
+export function rectsOverlapWithGap(
+  left: CanvasRect,
+  right: CanvasRect,
+  gap: number,
 ): boolean {
   return !(
-    x + width + PANEL_GAP <= rect.x ||
-    rect.x + rect.width + PANEL_GAP <= x ||
-    y + height + PANEL_GAP <= rect.y ||
-    rect.y + rect.height + PANEL_GAP <= y
+    left.x + left.width + gap <= right.x ||
+    right.x + right.width + gap <= left.x ||
+    left.y + left.height + gap <= right.y ||
+    right.y + right.height + gap <= left.y
   );
 }
 
@@ -51,7 +56,8 @@ function hasLayoutOverlap(
   height: number,
   layouts: CanvasPanelLayout[],
 ): boolean {
-  return layouts.some((rect) => overlapsWithGap(x, y, width, height, rect));
+  const candidate = { x, y, width, height };
+  return layouts.some((rect) => rectsOverlapWithGap(candidate, rect, PANEL_GAP));
 }
 
 /**
@@ -117,13 +123,7 @@ export function hasOverlappingPanels(layouts: LayoutMap): boolean {
     for (let nextIndex = index + 1; nextIndex < panelIds.length; nextIndex += 1) {
       const left = layouts[panelIds[index]];
       const right = layouts[panelIds[nextIndex]];
-      const overlaps = !(
-        left.x + left.width + PANEL_GAP <= right.x ||
-        right.x + right.width + PANEL_GAP <= left.x ||
-        left.y + left.height + PANEL_GAP <= right.y ||
-        right.y + right.height + PANEL_GAP <= left.y
-      );
-      if (overlaps) return true;
+      if (rectsOverlapWithGap(left, right, PANEL_GAP)) return true;
     }
   }
   return false;
@@ -131,12 +131,6 @@ export function hasOverlappingPanels(layouts: LayoutMap): boolean {
 
 export function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>): LayoutMap {
   const panelIds = Object.keys(layouts);
-  const rectsOverlap = (left: CanvasPanelLayout, right: CanvasPanelLayout) => !(
-    left.x + left.width + PANEL_GAP <= right.x ||
-    right.x + right.width + PANEL_GAP <= left.x ||
-    left.y + left.height + PANEL_GAP <= right.y ||
-    right.y + right.height + PANEL_GAP <= left.y
-  );
 
   for (let iteration = 0; iteration < 15; iteration += 1) {
     let hadCollision = false;
@@ -148,7 +142,7 @@ export function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>
         const left = layouts[leftId];
         const right = layouts[rightId];
 
-        if (!rectsOverlap(left, right)) continue;
+        if (!rectsOverlapWithGap(left, right, PANEL_GAP)) continue;
         if (fixedPanelIds.has(leftId) && fixedPanelIds.has(rightId)) continue;
 
         hadCollision = true;
