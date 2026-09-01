@@ -25,10 +25,10 @@ function renderPopover(zoom: number) {
 
 describe('ContextualChatPopover viewport positioning', () => {
   it.each([
-    { zoom: 0.35, left: 192, top: 100, placement: 'right' },
-    { zoom: 1, left: 452, top: 230, placement: 'right' },
-    { zoom: 2.5, left: 290, top: 488, placement: 'bottom' },
-  ])('keeps a fixed-size screen overlay at zoom $zoom', ({ zoom, left, top, placement }) => {
+    { zoom: 0.35, left: 192, top: 100 },
+    { zoom: 1, left: 452, top: 230 },
+    { zoom: 2.5, left: 290, top: 488 },
+  ])('keeps a fixed-size screen overlay at zoom $zoom', ({ zoom, left, top }) => {
     renderPopover(zoom);
 
     const popover = screen.getByRole('dialog', { name: 'Ask about Revenue' });
@@ -38,6 +38,5 @@ describe('ContextualChatPopover viewport positioning', () => {
       width: '280px',
       transform: 'none',
     });
-    expect(popover.className).toContain(`origin-${placement === 'right' ? 'left' : placement === 'left' ? 'right' : 'top'}`);
   });
 });

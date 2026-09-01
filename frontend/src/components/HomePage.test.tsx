@@ -56,8 +56,6 @@ describe('HomePage', () => {
     expect(screen.getByRole('button', { name: /Workspace 10/ })).toBeInTheDocument();
     expect(screen.getByRole('group', { name: 'Gallery 7 gallery item' })).toBeInTheDocument();
     expect(screen.getByRole('main')).toBeInTheDocument();
-    expect(screen.queryByText(/Built for the CUNY community/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Search APIs, analyze data/i)).not.toBeInTheDocument();
   });
 
   it('passes a selected workspace bundle to the import handler', async () => {

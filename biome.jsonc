@@ -6,7 +6,7 @@
 // This is deliberately a minimal single-rule config (recommended rules off,
 // formatter off): it enforces the primitive boundary, not a style regime.
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.4/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.5.8/schema.json",
   "vcs": { "enabled": false, "clientKind": "git", "useIgnoreFile": false },
   "formatter": { "enabled": false },
   "assist": { "enabled": false },
