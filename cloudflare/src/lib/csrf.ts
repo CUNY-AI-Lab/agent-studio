@@ -205,34 +205,10 @@ export function classifyOrigin(
   return 'absent';
 }
 
-/**
- * Verify the origin + token contract for one HTTP request. Returns null when
- * the request is allowed, or a 403 Response when it must be rejected. Safe
- * methods pass untouched (rule 1 forbids state changes on them anyway).
- * Origin headers can only reject; every unsafe cookie-authenticated request
- * must carry the per-session token.
- *
- * Bearer sk-cail-* API clients (no ambient cookie in play) would be accepted on
- * the key alone; Agent Studio has no Bearer path today, so this is a documented
- * no-op — if one is added, short-circuit here before the origin check.
- */
-export async function enforceCsrf(
+/** Require the per-session CSRF token shared by unsafe and sensitive reads. */
+async function requireCsrfToken(
   c: Context<{ Bindings: Env; Variables: SessionVariables }>,
 ): Promise<Response | null> {
-  if (SAFE_METHODS.has(c.req.method.toUpperCase())) return null;
-
-  const canonical = canonicalOrigin(c);
-  const verdict = classifyOrigin(
-    c.req.header('Sec-Fetch-Site') ?? null,
-    c.req.header('Origin') ?? null,
-    canonical,
-  );
-
-  if (verdict === 'reject') {
-    return c.json(canonicalError('csrf_origin_mismatch', 'Request origin is not allowed', { type: 'authentication_error', retryable: false }), 403);
-  }
-
-  // Same-origin and absent headers both prove nothing about sibling tools.
   const provided = c.req.header(CSRF_HEADER);
   if (!provided) {
     return c.json(canonicalError('csrf_token_missing', 'CSRF token is required', { type: 'authentication_error', retryable: false }), 403);
@@ -246,45 +222,47 @@ export async function enforceCsrf(
 }
 
 /**
- * Require the per-session CSRF token on a sensitive READ (rule 3 extended to GET). The
- * token proves first-party origin: a same-origin sibling cannot read the path-scoped
- * cookie, so it cannot supply the custom header. Capabilities are never accepted in
- * URLs, where browser history, referrers, and platform request logs could retain them.
- * Only enforces GET/HEAD; other methods are covered by enforceCsrf. Returns 403 or null.
- */
-export async function enforceCsrfRead(
-  c: Context<{ Bindings: Env; Variables: SessionVariables }>,
-): Promise<Response | null> {
-  const method = c.req.method.toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD') return null;
-  const provided = c.req.header(CSRF_HEADER);
-  if (!provided) return c.json(canonicalError('csrf_token_missing', 'CSRF token is required', { type: 'authentication_error', retryable: false }), 403);
-  const sessionId = c.get('sessionId');
-  const principalKind = c.get('cailIdentity') ? 'subject' : 'anonymous';
-  if (!(await verifyCsrfToken(provided, sessionId, c.env.SESSION_SECRET, principalKind))) {
-    return c.json(canonicalError('csrf_token_invalid', 'CSRF token is invalid', { type: 'authentication_error', retryable: false }), 403);
-  }
-  return null;
-}
-
-/**
- * Hono middleware wrapping enforceCsrf. Mount AFTER sessionMiddleware so
- * c.get('sessionId') is populated (the token keys off it).
+ * Hono middleware for state-changing requests. Safe methods pass untouched
+ * (rule 1 forbids state changes on them anyway). Origin headers can only reject;
+ * every unsafe cookie-authenticated request must carry the per-session token.
+ *
+ * Bearer sk-cail-* API clients (no ambient cookie in play) would be accepted on
+ * the key alone; Agent Studio has no Bearer path today, so this is a documented
+ * no-op — if one is added, short-circuit here before the origin check.
  */
 export const csrfMiddleware: MiddlewareHandler<{
   Bindings: Env;
   Variables: SessionVariables;
 }> = async (c, next) => {
-  const rejection = await enforceCsrf(c);
+  if (SAFE_METHODS.has(c.req.method.toUpperCase())) return next();
+  const canonical = canonicalOrigin(c);
+  const verdict = classifyOrigin(
+    c.req.header('Sec-Fetch-Site') ?? null,
+    c.req.header('Origin') ?? null,
+    canonical,
+  );
+  if (verdict === 'reject') {
+    return c.json(canonicalError('csrf_origin_mismatch', 'Request origin is not allowed', { type: 'authentication_error', retryable: false }), 403);
+  }
+  const rejection = await requireCsrfToken(c);
   if (rejection) return rejection;
   return next();
 };
 
+/**
+ * Hono middleware for sensitive reads. The token proves first-party origin: a
+ * same-origin sibling cannot read the path-scoped cookie, so it cannot supply
+ * the custom header. Capabilities are never accepted in URLs, where browser
+ * history, referrers, and platform request logs could retain them. Other
+ * methods are covered by csrfMiddleware.
+ */
 export const csrfReadMiddleware: MiddlewareHandler<{
   Bindings: Env;
   Variables: SessionVariables;
 }> = async (c, next) => {
-  const rejection = await enforceCsrfRead(c);
+  const method = c.req.method.toUpperCase();
+  if (method !== 'GET' && method !== 'HEAD') return next();
+  const rejection = await requireCsrfToken(c);
   if (rejection) return rejection;
   return next();
 };

@@ -95,35 +95,24 @@ export function isCailIdentityConfigError(value: IdentityConfigValue): value is 
 
 const encoder = new TextEncoder();
 
-export function resolveCailIdentityIssuer(env: CailIdentityEnv): string | null {
-  const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
-  return issuer === CAIL_CANONICAL_ISSUER ? CAIL_CANONICAL_ISSUER : null;
-}
-
 /**
- * Load the verification config via the shared parseIdentityConfig primitive.
- *
- * Returns `null` — identity feature OFF — only when NOTHING is configured and
- * enforcement is off (anonymous dev/preview environments). Any partial or
- * malformed configuration, or enforcement without configuration, is a config
- * error: the operator intended identity to work and it cannot.
+ * Load one verification config via the shared identity verifier primitive.
+ * Snapshots are cached independently for each audience so the application and
+ * gateway legs can never share a verifier with the wrong audience.
  */
-async function loadIdentityConfig(
+async function loadVerifierConfig(
   env: CailIdentityEnv,
+  expectedAudience: string,
   now?: number,
-): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError | null> {
+): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError> {
   const jwks = readIdentityConfigString(env.CAIL_IDENTITY_JWKS);
   const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
-  const requireIdentity = readIdentityConfigString(env.CAIL_REQUIRE_IDENTITY);
   if (env.CAIL_IDENTITY_JWKS !== undefined && jwks === undefined) return { configError: 'jwks_malformed' };
   if (env.CAIL_IDENTITY_ISSUER !== undefined && issuer === undefined) return { configError: 'issuer_unsupported' };
-  if (env.CAIL_REQUIRE_IDENTITY !== undefined && requireIdentity === undefined) return { configError: 'required_flag_invalid' };
-  const jwksConfigured = Boolean(jwks?.trim());
-  const issuerConfigured = Boolean(issuer);
-  if (!jwksConfigured && !issuerConfigured && !cailIdentityRequired(env)) return null;
   // A pinned clock (tests, replay analysis) must never be served from — or
   // written to — the shared snapshot cache.
-  const cacheKey = `${issuer ?? ''}\u0000${jwks ?? ''}`;
+  const cachePrefix = expectedAudience === CAIL_GATEWAY_AUDIENCE ? 'gateway-leg\u0000' : '';
+  const cacheKey = `${cachePrefix}${issuer ?? ''}\u0000${jwks ?? ''}`;
   if (now === undefined) {
     const cached = verifierCache.get(cacheKey);
     if (cached) return { ok: true, config: cached };
@@ -133,7 +122,7 @@ async function loadIdentityConfig(
   const loaded = await loadIdentityVerifierConfig({
     jwks,
     issuer,
-    expectedAudience: CAIL_IDENTITY_AUDIENCE,
+    expectedAudience,
     ...loaderOptions,
   });
   if (!loaded.ok) return { configError: loaded.reason };
@@ -165,7 +154,15 @@ async function verifyCailIdentityToken(
   // sign-in loop and non-enforcement silently serves anonymous traffic.
   // 5.0.0 moved the clock from the verify call into the loaded snapshot, so a
   // pinned `now` has to be threaded through the loader.
-  const config = await loadIdentityConfig(env, now);
+  const jwks = readIdentityConfigString(env.CAIL_IDENTITY_JWKS);
+  const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
+  const requireIdentity = readIdentityConfigString(env.CAIL_REQUIRE_IDENTITY);
+  if (env.CAIL_IDENTITY_JWKS !== undefined && jwks === undefined) return { configError: 'jwks_malformed' };
+  if (env.CAIL_IDENTITY_ISSUER !== undefined && issuer === undefined) return { configError: 'issuer_unsupported' };
+  if (env.CAIL_REQUIRE_IDENTITY !== undefined && requireIdentity === undefined) return { configError: 'required_flag_invalid' };
+  if (!jwks?.trim() && !issuer && !cailIdentityRequired(env)) return null;
+
+  const config = await loadVerifierConfig(env, CAIL_IDENTITY_AUDIENCE, now);
   if (isCailIdentityConfigError(config)) return config;
   if (!token) return null;
   if (config === null) return null;
@@ -265,36 +262,6 @@ export function cailAuthRequiredResponse(
 
 
 /**
- * Load the verifier config for keyring gateway legs (aud "cail:gateway").
- * Same issuer/JWKS discipline as the app-audience config.
- */
-async function loadGatewayLegConfig(
-  env: CailIdentityEnv,
-  now?: number,
-): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError> {
-  const jwks = readIdentityConfigString(env.CAIL_IDENTITY_JWKS);
-  const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
-  if (env.CAIL_IDENTITY_JWKS !== undefined && jwks === undefined) return { configError: 'jwks_malformed' };
-  if (env.CAIL_IDENTITY_ISSUER !== undefined && issuer === undefined) return { configError: 'issuer_unsupported' };
-  const cacheKey = `gateway-leg\u0000${issuer ?? ''}\u0000${jwks ?? ''}`;
-  if (now === undefined) {
-    const cached = verifierCache.get(cacheKey);
-    if (cached) return { ok: true, config: cached };
-  }
-  const loaderOptions: IdentityLoaderOptions = {};
-  if (now !== undefined) loaderOptions.now = now;
-  const loaded = await loadIdentityVerifierConfig({
-    jwks,
-    issuer,
-    expectedAudience: CAIL_GATEWAY_AUDIENCE,
-    ...loaderOptions,
-  });
-  if (!loaded.ok) return { configError: loaded.reason };
-  if (now === undefined) verifierCache.set(cacheKey, loaded.config);
-  return { ok: true, config: loaded.config };
-}
-
-/**
  * Verify the gateway-audience credential installed into a WorkspaceAgent and
  * bind it to that Durable Object's session. This is intentionally separate
  * from verifyCredentialForSession: application-leg validation remains closed
@@ -307,7 +274,7 @@ export async function verifyGatewayCredentialForSession(
   env: CailIdentityEnv,
   now?: number,
 ): Promise<CailIdentity | CailIdentityConfigError | null> {
-  const config = await loadGatewayLegConfig(env, now);
+  const config = await loadVerifierConfig(env, CAIL_GATEWAY_AUDIENCE, now);
   if (isCailIdentityConfigError(config)) return config;
   if (!token) return null;
   const identity = await verifyIdentityJwt(token, config.config);
@@ -334,7 +301,7 @@ export async function resolveKeyringGatewayJwt(
   const keyring = readIdentityKeyring(request.headers);
   if (keyring === null) return 'invalid';
   if (keyring.gatewayJwt === undefined) return null;
-  const config = await loadGatewayLegConfig(env);
+  const config = await loadVerifierConfig(env, CAIL_GATEWAY_AUDIENCE);
   if (!('ok' in config)) return 'invalid';
   const identity = await verifyKeyringGatewayJwt(keyring, config.config, verifiedSubject);
   return identity === null ? 'invalid' : keyring.gatewayJwt;

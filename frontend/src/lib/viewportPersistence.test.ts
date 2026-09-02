@@ -92,10 +92,5 @@ describe('viewport persistence queue', () => {
 
     expect(queue.reapply(workspaceState('workspace-one', firstViewport)).viewport).toEqual(finalViewport);
     expect(queue.reapply(workspaceState('workspace-two', firstViewport)).viewport).toEqual(firstViewport);
-
-    queue.reset();
-    expect(queue.pending()).toBeNull();
-    expect(queue.latest()).toBeNull();
-    expect(await queue.flush(async () => undefined)).toBe('idle');
   });
 });

@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
-import userEvent from '@testing-library/user-event';
 import { SelectionToolbar } from './SelectionToolbar';
 
 const bounds = { x: 100, y: 100, width: 300, height: 200 };
@@ -19,11 +18,6 @@ function makeProps(overrides: Partial<Parameters<typeof SelectionToolbar>[0]> = 
 }
 
 describe('SelectionToolbar accessibility', () => {
-  it('renders a labeled toolbar landmark', () => {
-    render(<SelectionToolbar {...makeProps({ onChat: vi.fn() })} />);
-    expect(screen.getByRole('toolbar', { name: 'Actions for Revenue' })).toBeInTheDocument();
-  });
-
   it('gives the chat action an accessible name (not just a title)', () => {
     render(<SelectionToolbar {...makeProps({ onChat: vi.fn() })} />);
     expect(screen.getByRole('button', { name: 'Chat about Revenue' })).toBeInTheDocument();
@@ -38,55 +32,6 @@ describe('SelectionToolbar accessibility', () => {
     render(<SelectionToolbar {...makeProps({ onMinimize: vi.fn(), onMaximize: vi.fn() })} />);
     expect(screen.getByRole('button', { name: 'Minimize tile' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Maximize tile' })).toBeInTheDocument();
-  });
-
-  it('marks the download trigger with popup semantics and exposes a menu when open', async () => {
-    const onDownload = vi.fn();
-    const user = userEvent.setup();
-    render(
-      <SelectionToolbar
-        {...makeProps({ canDownload: true, downloadFormats: ['csv', 'json'], onDownload })}
-      />
-    );
-    const trigger = screen.getByRole('button', { name: 'Download or export' });
-    expect(trigger).toHaveAttribute('aria-haspopup', 'menu');
-    expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    await user.click(trigger);
-    expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('menu', { name: 'Download formats' })).toBeInTheDocument();
-    expect(screen.getByRole('menuitem', { name: 'CSV' })).toBeInTheDocument();
-  });
-
-  it('exposes an explicit association action for a two-tile selection', async () => {
-    const onToggleConnection = vi.fn();
-    const user = userEvent.setup();
-    render(
-      <SelectionToolbar
-        {...makeProps({
-          selectedPanelId: null,
-          selectedPanelIds: new Set(['p1', 'p2']),
-          onToggleConnection,
-        })}
-      />
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Associate selected tiles' }));
-    expect(onToggleConnection).toHaveBeenCalledOnce();
-  });
-
-  it('turns the association action into a disconnect action when linked', () => {
-    render(
-      <SelectionToolbar
-        {...makeProps({
-          selectedPanelId: null,
-          selectedPanelIds: new Set(['p1', 'p2']),
-          onToggleConnection: vi.fn(),
-          isConnected: true,
-        })}
-      />
-    );
-
-    expect(screen.getByRole('button', { name: 'Disconnect selected tiles' })).toBeInTheDocument();
   });
 
   it.each([

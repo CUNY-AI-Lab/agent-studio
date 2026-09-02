@@ -1,4 +1,4 @@
-import { getWorkspaceFileUrl, getGalleryFileUrl } from '../api';
+import { getGalleryFileUrl } from '../api';
 import { fetchWorkspaceFile } from '../api';
 import { downloadBlob } from './download';
 import { useEffect, useState } from 'react';
@@ -28,12 +28,6 @@ type FileSourceFetcher = (source: FileSource, filePath: string) => Promise<Respo
 const fetchFileSource: FileSourceFetcher = (source, filePath) => source.kind === 'workspace'
   ? fetchWorkspaceFile(source.id, filePath)
   : fetch(getGalleryFileUrl(source.id, filePath));
-
-export function getFileUrl(source: FileSource, filePath: string): string {
-  return source.kind === 'workspace'
-    ? getWorkspaceFileUrl(source.id, filePath)
-    : getGalleryFileUrl(source.id, filePath);
-}
 
 export function withCacheKey(url: string, cacheKey?: string | null): string {
   if (!cacheKey) return url;

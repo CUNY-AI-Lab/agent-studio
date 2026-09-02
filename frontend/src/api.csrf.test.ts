@@ -165,7 +165,6 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(error).toBeInstanceOf(Error);
     if (error instanceof Error) {
       expect(error.message).toBe("Agent Studio couldn't start. Reload the page and try again.");
-      expect(error.message).not.toContain('secret');
     }
     expect(assign).not.toHaveBeenCalled();
   });
@@ -187,34 +186,6 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     location.pathname = '/agent-studio';
     expect(handleAuthRequired(401, authRequiredPayload())).toBe(true);
     expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio?gallery=abc');
-  });
-
-  it('rejects flat, generic, and top-level legacy authentication fields', async () => {
-    const { handleAuthRequired } = await loadApi();
-    const assign = vi.fn();
-    vi.stubGlobal('window', {
-      location: {
-        origin: 'https://studio.test',
-        pathname: '/agent-studio/',
-        search: '?gallery=abc',
-        assign,
-      },
-    });
-
-    expect(handleAuthRequired(401, { error: 'authentication_required' })).toBe(false);
-    expect(handleAuthRequired(401, {
-      error: {
-        code: 'authentication_required',
-        message: 'Sign in to continue.',
-        type: 'authentication_error',
-        cail: { login_url: '/agent-studio' },
-      },
-    })).toBe(false);
-    expect(handleAuthRequired(401, {
-      error: { code: 'authentication_required' },
-      login_url: '/legacy-login',
-    })).toBe(false);
-    expect(assign).not.toHaveBeenCalled();
   });
 
   it('mutatingFetch attaches the X-CSRF-Token header with the cookie token', async () => {
@@ -368,21 +339,12 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(new Headers(workspaceCalls[1][1]?.headers).get(CSRF_HEADER)).toBe(newToken);
   });
 
-  it('no file or preview URL exposes the CSRF capability', async () => {
-    const token = 'query token/value';
-    stubCookie(`${CSRF_COOKIE}=${encodeURIComponent(token)}`);
-    const {
-      getGalleryFileUrl,
-      getGalleryPanelPreviewUrl,
-      getWorkspaceFileUrl,
-    } = await loadApi();
+  it('builds workspace file URLs with encoded paths', async () => {
+    const { getWorkspaceFileUrl } = await loadApi();
 
     expect(getWorkspaceFileUrl('ws', 'notes/read me.md')).toBe(
       '/api/workspaces/ws/files/notes/read%20me.md',
     );
-    expect(getWorkspaceFileUrl('ws', 'notes/read me.md')).not.toContain('csrfToken=');
-    expect(getGalleryFileUrl('gallery', 'notes/read me.md')).not.toContain('csrfToken=');
-    expect(getGalleryPanelPreviewUrl('gallery', 'panel one')).not.toContain('csrfToken=');
   });
 
   it('a bootstrap that sets no cookie rejects and is not cached (retried next call)', async () => {

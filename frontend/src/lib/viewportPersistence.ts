@@ -6,7 +6,6 @@ export type ViewportPersistenceResult =
   | 'saved'
   | 'failed'
   | 'blocked'
-  | 'stale'
   | 'superseded';
 
 export interface ViewportPersistenceQueue {
@@ -18,7 +17,6 @@ export interface ViewportPersistenceQueue {
   reapply(state: WorkspaceState): WorkspaceState;
   flush(save: (viewport: WorkspaceViewport) => Promise<void>): Promise<ViewportPersistenceResult>;
   retry(): void;
-  reset(): void;
 }
 
 function viewportsEqual(left: WorkspaceViewport | null, right: WorkspaceViewport | null): boolean {
@@ -45,9 +43,8 @@ export function createViewportPersistenceQueue(
   initialViewport?: WorkspaceViewport,
 ): ViewportPersistenceQueue {
   let pendingViewport: WorkspaceViewport | null = null;
-  let inFlight: { viewport: WorkspaceViewport; generation: number } | null = null;
+  let inFlight: { viewport: WorkspaceViewport } | null = null;
   let lastSavedViewport = initialViewport ? cloneViewport(initialViewport) : null;
-  let generation = 0;
   let failureLatched = false;
 
   return {
@@ -89,35 +86,24 @@ export function createViewportPersistenceQueue(
 
       const viewport = cloneViewport(pendingViewport);
       pendingViewport = null;
-      const flushGeneration = generation;
-      inFlight = { viewport, generation: flushGeneration };
+      inFlight = { viewport };
 
       try {
         await save(viewport);
-        if (flushGeneration !== generation) return 'stale';
         if (viewportsEqual(pendingViewport, viewport)) pendingViewport = null;
         lastSavedViewport = viewport;
         return 'saved';
       } catch {
-        if (flushGeneration !== generation) return 'stale';
         if (pendingViewport) return 'superseded';
         pendingViewport = viewport;
         failureLatched = true;
         return 'failed';
       } finally {
-        if (inFlight?.generation === flushGeneration) inFlight = null;
+        inFlight = null;
       }
     },
 
     retry() {
-      failureLatched = false;
-    },
-
-    reset() {
-      generation += 1;
-      pendingViewport = null;
-      inFlight = null;
-      lastSavedViewport = null;
       failureLatched = false;
     },
   };

@@ -16,13 +16,11 @@ export const FUNCTION_CALLING_CAPABILITY = 'function-calling';
 
 export interface CailModelInfo {
   id: string;
-  recommended: boolean;
   tier: CailModelTier;
   status: CailModelStatus;
   sunset: string | null;
   capabilities: string[];
   contextLength: number | null;
-  registryUrl: string | null;
   name: string | null;
   description: string | null;
 }
@@ -70,7 +68,6 @@ const modelEntrySchema = z.object({
   sunset: z.string().nullable().optional(),
   capabilities: z.array(z.string()).optional(),
   context_length: z.number().nullable().optional(),
-  registry_url: z.string().nullable().optional(),
 });
 
 const modelListEnvelopeSchema = z.object({
@@ -90,13 +87,11 @@ function normalizeEntry(entry: z.infer<typeof modelEntrySchema>, index: number):
     || entry.status === 'retiring' || entry.status === 'active' ? entry.status : 'active';
   return {
     id: entry.id,
-    recommended: index === 0,
     tier,
     status,
     sunset: entry.sunset ?? null,
     capabilities: entry.capabilities ?? [],
     contextLength: entry.context_length ?? null,
-    registryUrl: entry.registry_url ?? null,
     name: entry.name ?? null,
     description: entry.description ?? null,
   };

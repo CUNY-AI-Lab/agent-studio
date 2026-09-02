@@ -249,7 +249,7 @@ function sharedPanelDataMatches(left: PanelNodeData, right: PanelNodeData): bool
     highlightedPathsMatch(left.highlightedFilePaths, right.highlightedFilePaths);
 }
 
-export function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
+function flowNodesMatch(left: CanvasNode[], right: CanvasNode[]): boolean {
   if (left.length !== right.length) return false;
   const leftShared = left.find((node): node is PanelFlowNode => node.type === 'panel')?.data;
   const rightShared = right.find((node): node is PanelFlowNode => node.type === 'panel')?.data;
@@ -319,7 +319,7 @@ function connectionsMatch(left: PanelConnection | undefined, right: PanelConnect
     left.targetId === right.targetId;
 }
 
-export function flowEdgesMatch(left: AssociationFlowEdge[], right: AssociationFlowEdge[]): boolean {
+function flowEdgesMatch(left: AssociationFlowEdge[], right: AssociationFlowEdge[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((edge, index) => {
     const next = right[index];

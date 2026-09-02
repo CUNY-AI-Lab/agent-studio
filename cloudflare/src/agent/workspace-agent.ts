@@ -141,102 +141,33 @@ interface SerializedPanelContextBase {
   layout?: WorkspacePanel['layout'];
 }
 
-type TablePanel = Extract<WorkspacePanel, { type: 'table' }>;
-type CardsPanel = Extract<WorkspacePanel, { type: 'cards' }>;
-
-type SerializedPanelContext =
-  | (SerializedPanelContextBase & { type: 'chat' })
-  | (SerializedPanelContextBase & { type: 'markdown'; content: string })
-  | (SerializedPanelContextBase & {
-    type: 'table';
-    columns: TablePanel['columns'];
-    rows: TablePanel['rows'];
-  })
-  | (SerializedPanelContextBase & {
-    type: 'chart';
-    chartType: 'bar' | 'line' | 'pie' | 'area';
-    data: Array<Record<string, string | number | boolean | null>>;
-  })
-  | (SerializedPanelContextBase & { type: 'cards'; items: CardsPanel['items'] })
-  | (SerializedPanelContextBase & { type: 'preview'; filePath?: string; content?: string })
-  | (SerializedPanelContextBase & { type: 'pdf' | 'editor' | 'file'; filePath: string })
-  | (SerializedPanelContextBase & { type: 'fileTree'; kind: 'workspace-files' })
-  | (SerializedPanelContextBase & {
-    type: 'detail';
-    linkedTo?: string;
-    linkedPanel: SerializedPanelContext | null;
-  });
+type SerializedPanelContext = WorkspacePanel & {
+  kind?: 'workspace-files';
+  linkedPanel?: SerializedPanelContext | null;
+};
 
 function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePanel[]): SerializedPanelContext {
-  const base = {
+  const base: SerializedPanelContextBase = {
     id: panel.id,
     title: panel.title,
     sourcePanelId: panel.sourcePanelId,
     layout: panel.layout,
   };
 
-  switch (panel.type) {
-    case 'markdown':
-      return {
-        ...base,
-        type: 'markdown',
-        content: panel.content,
-      };
-    case 'table':
-      return {
-        ...base,
-        type: 'table',
-        columns: panel.columns,
-        rows: panel.rows,
-      };
-    case 'chart':
-      return {
-        ...base,
-        type: 'chart',
-        chartType: panel.chartType,
-        data: panel.data,
-      };
-    case 'cards':
-      return {
-        ...base,
-        type: 'cards',
-        items: panel.items,
-      };
-    case 'preview':
-      return {
-        ...base,
-        type: 'preview',
-        filePath: panel.filePath,
-        content: panel.content,
-      };
-    case 'pdf':
-    case 'editor':
-    case 'file':
-      return {
-        ...base,
-        type: panel.type,
-        filePath: panel.filePath,
-      };
-    case 'fileTree':
-      return {
-        ...base,
-        type: 'fileTree',
-        kind: 'workspace-files',
-      };
-    case 'detail': {
-      const linkedPanel = panel.linkedTo
-        ? allPanels.find((candidate) => candidate.id === panel.linkedTo)
-        : null;
-      return {
-        ...base,
-        type: 'detail',
-        linkedTo: panel.linkedTo,
-        linkedPanel: linkedPanel ? serializePanelForContext(linkedPanel, allPanels) : null,
-      };
-    }
-    case 'chat':
-      return { ...base, type: 'chat' };
+  const linkedPanel = panel.type === 'detail' && panel.linkedTo
+    ? allPanels.find((candidate) => candidate.id === panel.linkedTo)
+    : null;
+  const serialized: SerializedPanelContext = {
+    ...base,
+    ...panel,
+  };
+  if (panel.type === 'detail') {
+    serialized.linkedPanel = linkedPanel ? serializePanelForContext(linkedPanel, allPanels) : null;
   }
+  if (panel.type === 'fileTree') {
+    serialized.kind = 'workspace-files';
+  }
+  return serialized;
 }
 
 const CAIL_CREDENTIAL_STORAGE_KEY = 'cail:identity-jwt';
@@ -712,20 +643,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.messages;
   }
 
-  async getRuntimeInfo(): Promise<{
-    provider: 'dynamic-workers';
-    codemode: true;
-    git: true;
-    outbound: 'tool-only';
-  }> {
-    return {
-      provider: 'dynamic-workers',
-      codemode: true,
-      git: true,
-      outbound: 'tool-only',
-    };
-  }
-
   @callable()
   async executeCode(code: string): Promise<ExecuteResult> {
     return this.withMutationFence(() => this.executeCodeFenced(code));
@@ -1002,6 +919,42 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       generatedPanelOccurrences.set(toolName, occurrence + 1);
       return deterministicPanelId(turnMessageId, toolName, occurrence);
     };
+    type UiPanelType = 'markdown' | 'table' | 'chart' | 'cards';
+    type UiPanelInput = {
+      id?: string;
+      title: string;
+      sourcePanelId?: string;
+    };
+    const createUiPanelInputSchema = <PayloadFields extends Record<string, z.ZodType>>(
+      payloadFields: PayloadFields,
+    ) => z.object({
+      id: z.string().optional(),
+      title: z.string(),
+      ...payloadFields,
+      sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
+    });
+    const createUiPanelTool = <Input extends UiPanelInput>(
+      name: string,
+      type: UiPanelType,
+      description: string,
+      inputSchema: z.ZodType<Input>,
+    ) => {
+      const execute = async ({ id, title, sourcePanelId, ...payload }: Input) => {
+        const panelId = panelIdForTool(id, name);
+        this.upsertPanelWithAssociation(panelSchema.parse({
+          id: panelId,
+          type,
+          title,
+          ...payload,
+        }), sourcePanelId);
+        return { ok: true, panelId };
+      };
+      const definition = { description, inputSchema, execute };
+      if (type === 'markdown') {
+        return tool({ ...definition, strict: true });
+      }
+      return tool(definition);
+    };
     const tools = {
       list_files: tool({
         description: 'List all files in the current workspace.',
@@ -1176,30 +1129,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           return { ok: true, filePath: relativePath, bytes: bytes.byteLength, blocks: content.length };
         },
       }),
-      ui_markdown: tool({
-        description: [
+      ui_markdown: createUiPanelTool(
+        'ui_markdown',
+        'markdown',
+        [
           'Create or update a concise markdown panel on the canvas.',
           'Use file-backed panels for durable long-form documents.',
           'When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
         ].join(' '),
-        inputSchema: z.object({
-          id: z.string().optional(),
-          title: z.string(),
+        createUiPanelInputSchema({
           content: z.string(),
-          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        strict: true,
-        execute: async ({ id, title, content, sourcePanelId }) => {
-          const panelId = panelIdForTool(id, 'ui_markdown');
-          this.upsertPanelWithAssociation({
-            id: panelId,
-            type: 'markdown',
-            title,
-            content,
-          }, sourcePanelId);
-          return { ok: true, panelId };
-        },
-      }),
+      ),
       ui_detail: tool({
         description: 'Create or update a detail panel linked to another panel, usually a table. The linkedTo relationship is persisted as a visible tile association.',
         inputSchema: z.object({
@@ -1218,53 +1159,29 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           return { ok: true, panelId };
         },
       }),
-      ui_table: tool({
-        description: 'Create or update a table panel on the canvas as a structured view over concise data. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
-        inputSchema: z.object({
-          id: z.string().optional(),
-          title: z.string(),
+      ui_table: createUiPanelTool(
+        'ui_table',
+        'table',
+        'Create or update a table panel on the canvas as a structured view over concise data. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
+        createUiPanelInputSchema({
           columns: z.array(z.object({ key: z.string(), label: z.string() })),
           rows: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))),
-          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        execute: async ({ id, title, columns, rows, sourcePanelId }) => {
-          const panelId = panelIdForTool(id, 'ui_table');
-          this.upsertPanelWithAssociation({
-            id: panelId,
-            type: 'table',
-            title,
-            columns,
-            rows,
-          }, sourcePanelId);
-          return { ok: true, panelId };
-        },
-      }),
-      ui_chart: tool({
-        description: 'Create or update a chart panel on the canvas as a structured view over concise data. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
-        inputSchema: z.object({
-          id: z.string().optional(),
-          title: z.string(),
+      ),
+      ui_chart: createUiPanelTool(
+        'ui_chart',
+        'chart',
+        'Create or update a chart panel on the canvas as a structured view over concise data. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
+        createUiPanelInputSchema({
           chartType: z.enum(['bar', 'line', 'pie', 'area']),
           data: z.array(z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))),
-          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        execute: async ({ id, title, chartType, data, sourcePanelId }) => {
-          const panelId = panelIdForTool(id, 'ui_chart');
-          this.upsertPanelWithAssociation({
-            id: panelId,
-            type: 'chart',
-            title,
-            chartType,
-            data,
-          }, sourcePanelId);
-          return { ok: true, panelId };
-        },
-      }),
-      ui_cards: tool({
-        description: 'Create or update a cards panel on the canvas for concise derived summaries. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
-        inputSchema: z.object({
-          id: z.string().optional(),
-          title: z.string(),
+      ),
+      ui_cards: createUiPanelTool(
+        'ui_cards',
+        'cards',
+        'Create or update a cards panel on the canvas for concise derived summaries. When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
+        createUiPanelInputSchema({
           items: z.array(z.object({
             id: z.string().optional(),
             title: z.string(),
@@ -1273,19 +1190,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
             badge: z.string().optional(),
             metadata: z.record(z.string(), z.string()).optional(),
           })),
-          sourcePanelId: z.string().optional().describe('Existing tile id to associate explicitly with this tile.'),
         }),
-        execute: async ({ id, title, items, sourcePanelId }) => {
-          const panelId = panelIdForTool(id, 'ui_cards');
-          this.upsertPanelWithAssociation({
-            id: panelId,
-            type: 'cards',
-            title,
-            items,
-          }, sourcePanelId);
-          return { ok: true, panelId };
-        },
-      }),
+      ),
       ui_show_file: tool({
         description: [
           'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs.',
