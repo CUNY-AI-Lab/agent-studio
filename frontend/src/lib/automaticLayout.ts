@@ -10,7 +10,6 @@ export type AutomaticLayoutFlushResult =
   | 'saved'
   | 'failed'
   | 'blocked'
-  | 'stale'
   | 'superseded';
 
 export interface AutomaticLayoutTerminalState {
@@ -97,13 +96,11 @@ export interface AutomaticLayoutQueue {
   acknowledgeServerState(state: WorkspaceState): WorkspaceState;
   flush(save: (layouts: AutomaticPanelLayouts) => Promise<void>): Promise<AutomaticLayoutFlushResult>;
   retry(): void;
-  reset(): void;
 }
 
 export function createAutomaticLayoutQueue(): AutomaticLayoutQueue {
   let pendingLayouts: AutomaticPanelLayouts = {};
-  let generation = 0;
-  let inFlightGeneration: number | null = null;
+  let inFlight = false;
   let failureLatched = false;
   const manualLayouts: AutomaticPanelLayouts = {};
   const removedPanelIds = new Set<string>();
@@ -205,19 +202,16 @@ export function createAutomaticLayoutQueue(): AutomaticLayoutQueue {
 
     async flush(save) {
       if (failureLatched) return 'blocked';
-      if (inFlightGeneration !== null) return 'in-flight';
+      if (inFlight) return 'in-flight';
       if (Object.keys(pendingLayouts).length === 0) return 'idle';
 
       const savedLayouts = cloneLayouts(pendingLayouts);
-      const flushGeneration = generation;
-      inFlightGeneration = flushGeneration;
+      inFlight = true;
       try {
         await save(savedLayouts);
-        if (flushGeneration !== generation) return 'stale';
         pendingLayouts = acknowledgeAutomaticLayouts(pendingLayouts, savedLayouts);
         return 'saved';
       } catch {
-        if (flushGeneration !== generation) return 'stale';
         const savedLayoutsStillPending = Object.entries(savedLayouts).some(
           ([panelId, layout]) => pendingLayouts[panelId] && layoutsEqual(pendingLayouts[panelId], layout),
         );
@@ -225,21 +219,12 @@ export function createAutomaticLayoutQueue(): AutomaticLayoutQueue {
         failureLatched = true;
         return 'failed';
       } finally {
-        if (inFlightGeneration === flushGeneration) inFlightGeneration = null;
+        inFlight = false;
       }
     },
 
     retry() {
       failureLatched = false;
-    },
-
-    reset() {
-      generation += 1;
-      pendingLayouts = {};
-      inFlightGeneration = null;
-      failureLatched = false;
-      for (const panelId of Object.keys(manualLayouts)) delete manualLayouts[panelId];
-      removedPanelIds.clear();
     },
   };
 }
@@ -267,7 +252,7 @@ export interface AutomaticLayoutPersistence {
 /**
  * React boundary for automatic layout persistence. The coordinator is scoped
  * to one workspace instance; a switch replaces it so an unresolved old RPC
- * can only settle as stale and cannot affect the new workspace.
+ * cannot affect the new workspace.
  */
 export function useAutomaticLayoutPersistence({
   workspaceId,

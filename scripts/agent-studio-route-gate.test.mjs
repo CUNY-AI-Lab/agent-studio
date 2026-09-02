@@ -1,18 +1,14 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
-import { createServer } from 'node:http';
-import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   FAILURE_MESSAGE,
+  formatRouteGateError,
   verifyAgentStudioRoutes,
 } from './agent-studio-route-gate.mjs';
 
 const API_BASE = 'https://api.example.test/client/v4';
 const ACCOUNT_ID = 'account-id';
 const TOKEN = 'token';
-const GATE_SCRIPT = fileURLToPath(new URL('./agent-studio-route-gate.mjs', import.meta.url));
 
 function jsonResponse(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -264,142 +260,15 @@ test('route gate fails closed on malformed or non-empty custom-domain results', 
   }
 });
 
-test('CLI emits only the fixed route-gate failure for a forbidden custom domain', async () => {
-  const server = createServer((request, response) => {
-    if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(scriptsResponse([agentStudioScript()])));
-      return;
-    }
-    if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/domains?service=agent-studio`) {
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify({
-        errors: null,
-        messages: null,
-        result: [{
-          cert_id: 'secret-cert',
-          hostname: 'secret.example.test',
-          id: 'secret-domain',
-          service: 'agent-studio',
-          zone_id: 'secret-zone-id',
-          zone_name: 'secret-zone.example.test',
-        }],
-        success: true,
-      }));
-      return;
-    }
-    response.statusCode = 404;
-    response.end();
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address !== null && address !== undefined);
-  assert.ok(Number.isInteger(address.port));
-  const child = spawn(process.execPath, [GATE_SCRIPT], {
-    env: {
-      ...process.env,
-      CLOUDFLARE_API_BASE: `http://127.0.0.1:${address.port}/client/v4`,
-      CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
-      CLOUDFLARE_API_TOKEN: TOKEN,
+test('route gate formats failures with only the bounded stage and reason', async () => {
+  await assert.rejects(
+    verifyAgentStudioRoutes(API_BASE, '', TOKEN),
+    (error) => {
+      assert.equal(
+        formatRouteGateError(error),
+        `${FAILURE_MESSAGE} [configuration: missing-input]`,
+      );
+      return true;
     },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const stdout = [];
-  const stderr = [];
-  child.stdout.on('data', (chunk) => stdout.push(chunk));
-  child.stderr.on('data', (chunk) => stderr.push(chunk));
-  const [status] = await once(child, 'close');
-  await new Promise((resolve) => server.close(resolve));
-
-  assert.equal(status, 1);
-  assert.equal(Buffer.concat(stdout).toString(), '');
-  assert.equal(
-    Buffer.concat(stderr).toString(),
-    `${FAILURE_MESSAGE} [domains: unexpected-routing]\n`,
   );
-  assert.doesNotMatch(Buffer.concat(stderr).toString(), /secret|hostname|zone/i);
-});
-
-test('CLI emits only the fixed route-gate failure for an associated route', async () => {
-  const server = createServer((request, response) => {
-    if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
-      response.setHeader('content-type', 'application/json');
-      response.end(JSON.stringify(scriptsResponse([agentStudioScript([
-        {
-          id: 'secret-route-id',
-          pattern: 'secret.example.test/*',
-          script: 'agent-studio',
-        },
-      ])])));
-      return;
-    }
-    response.statusCode = 404;
-    response.end();
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address !== null && address !== undefined);
-  assert.ok(Number.isInteger(address.port));
-  const child = spawn(process.execPath, [GATE_SCRIPT], {
-    env: {
-      ...process.env,
-      CLOUDFLARE_API_BASE: `http://127.0.0.1:${address.port}/client/v4`,
-      CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
-      CLOUDFLARE_API_TOKEN: TOKEN,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const stdout = [];
-  const stderr = [];
-  child.stdout.on('data', (chunk) => stdout.push(chunk));
-  child.stderr.on('data', (chunk) => stderr.push(chunk));
-  const [status] = await once(child, 'close');
-  await new Promise((resolve) => server.close(resolve));
-
-  assert.equal(status, 1);
-  assert.equal(Buffer.concat(stdout).toString(), '');
-  assert.equal(
-    Buffer.concat(stderr).toString(),
-    `${FAILURE_MESSAGE} [scripts: unexpected-routing]\n`,
-  );
-  assert.doesNotMatch(Buffer.concat(stderr).toString(), /secret|hostname|zone/i);
-});
-
-test('CLI reports only the bounded endpoint and status for a forbidden script inventory', async () => {
-  const server = createServer((request, response) => {
-    if (request.url === `/client/v4/accounts/${ACCOUNT_ID}/workers/scripts`) {
-      response.statusCode = 403;
-      response.end('secret provider response');
-      return;
-    }
-    response.statusCode = 404;
-    response.end('unexpected request');
-  });
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address !== null && address !== undefined);
-  assert.ok(Number.isInteger(address.port));
-  const child = spawn(process.execPath, [GATE_SCRIPT], {
-    env: {
-      ...process.env,
-      CLOUDFLARE_API_BASE: `http://127.0.0.1:${address.port}/client/v4`,
-      CLOUDFLARE_ACCOUNT_ID: ACCOUNT_ID,
-      CLOUDFLARE_API_TOKEN: TOKEN,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const stdout = [];
-  const stderr = [];
-  child.stdout.on('data', (chunk) => stdout.push(chunk));
-  child.stderr.on('data', (chunk) => stderr.push(chunk));
-  const [status] = await once(child, 'close');
-  await new Promise((resolve) => server.close(resolve));
-
-  assert.equal(status, 1);
-  assert.equal(Buffer.concat(stdout).toString(), '');
-  assert.equal(
-    Buffer.concat(stderr).toString(),
-    `${FAILURE_MESSAGE} [scripts: http-403]\n`,
-  );
-  assert.doesNotMatch(Buffer.concat(stderr).toString(), /secret|provider|response/i);
 });

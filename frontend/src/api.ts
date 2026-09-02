@@ -289,13 +289,11 @@ export type ModelStatus = 'active' | 'deprecated' | 'retiring';
 
 export interface ModelCatalogEntry {
   id: string;
-  recommended: boolean;
   tier: ModelTier;
   status: ModelStatus;
   sunset: string | null;
   capabilities: string[];
   contextLength: number | null;
-  registryUrl: string | null;
   name: string | null;
   description: string | null;
 }

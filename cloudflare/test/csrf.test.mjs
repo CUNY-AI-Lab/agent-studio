@@ -16,10 +16,7 @@ import {
   wsAgentCsrfValid,
   wsAgentSessionIdFromPath,
   wsOriginAllowed,
-  enforceCsrf,
-  enforceCsrfRead,
   csrfCookiePath,
-  CSRF_HEADER,
   CSRF_COOKIE_NAME,
 } from '../src/lib/csrf.ts';
 
@@ -198,128 +195,6 @@ test('route: agent WebSocket without a token is rejected before routing to the D
     {},
   );
   assert.equal(response.status, 403);
-});
-
-// ---------------------------------------------------------------------------
-// enforceCsrf (pure, with a minimal Hono-like context double)
-// ---------------------------------------------------------------------------
-
-function fakeContext({
-  method,
-  headers = {},
-  sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef',
-  env = {},
-  url = 'https://studio.test/api/workspaces',
-}) {
-  const lower = {};
-  for (const [k, v] of Object.entries(headers)) lower[k.toLowerCase()] = v;
-  return {
-    env: { SESSION_SECRET: SECRET, ...env },
-    req: {
-      method,
-      url,
-      header: (name) => lower[name.toLowerCase()] ?? undefined,
-    },
-    get: (key) => (key === 'sessionId' ? sessionId : undefined),
-    json: (body, status) => ({ __json: body, status }),
-  };
-}
-
-test('enforceCsrf: GET passes untouched', async () => {
-  const rejection = await enforceCsrf(fakeContext({ method: 'GET' }));
-  assert.equal(rejection, null);
-});
-
-test('enforceCsrfRead: GET/HEAD require a valid token in the header', async () => {
-  const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
-
-  assert.equal(
-    await enforceCsrfRead(fakeContext({ method: 'GET', sessionId, headers: { [CSRF_HEADER]: token } })),
-    null,
-  );
-  assert.equal(await enforceCsrfRead(fakeContext({
-    method: 'HEAD', sessionId, headers: { [CSRF_HEADER]: token },
-  })), null);
-
-  const missing = await enforceCsrfRead(fakeContext({ method: 'GET', sessionId }));
-  assert.equal(missing.status, 403);
-  assert.equal(missing.__json.error.code, 'csrf_token_missing');
-  assert.equal(missing.__json.error.type, 'authentication_error');
-
-  const invalid = await enforceCsrfRead(fakeContext({
-    method: 'GET',
-    sessionId,
-    headers: { [CSRF_HEADER]: 'wrong' },
-  }));
-  assert.equal(invalid.status, 403);
-  assert.equal(invalid.__json.error.code, 'csrf_token_invalid');
-  assert.equal(invalid.__json.error.type, 'authentication_error');
-  assert.equal(await enforceCsrfRead(fakeContext({ method: 'POST', sessionId })), null);
-});
-
-test('enforceCsrf: POST with Sec-Fetch-Site same-origin and no token is rejected 403', async () => {
-  const rejection = await enforceCsrf(
-    fakeContext({ method: 'POST', headers: { 'Sec-Fetch-Site': 'same-origin' } }),
-  );
-  assert.equal(rejection.status, 403);
-  assert.equal(rejection.__json.error.code, 'csrf_token_missing');
-  assert.equal(rejection.__json.error.type, 'authentication_error');
-});
-
-test('enforceCsrf: POST with Sec-Fetch-Site same-origin requires a valid token', async () => {
-  const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
-
-  const good = await enforceCsrf(
-    fakeContext({ method: 'POST', sessionId, headers: { 'Sec-Fetch-Site': 'same-origin', [CSRF_HEADER]: token } }),
-  );
-  assert.equal(good, null);
-
-  const wrong = await enforceCsrf(
-    fakeContext({ method: 'POST', sessionId, headers: { 'Sec-Fetch-Site': 'same-origin', [CSRF_HEADER]: 'nope' } }),
-  );
-  assert.equal(wrong.status, 403);
-  assert.equal(wrong.__json.error.code, 'csrf_token_invalid');
-  assert.equal(wrong.__json.error.type, 'authentication_error');
-});
-
-test('enforceCsrf: POST with Sec-Fetch-Site same-site is rejected 403', async () => {
-  const rejection = await enforceCsrf(
-    fakeContext({ method: 'POST', headers: { 'Sec-Fetch-Site': 'same-site' } }),
-  );
-  assert.equal(rejection.status, 403);
-});
-
-test('enforceCsrf: POST with exact Origin still requires a valid token; wrong Origin 403', async () => {
-  const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
-  const ok = await enforceCsrf(
-    fakeContext({ method: 'POST', sessionId, headers: { Origin: 'https://studio.test', [CSRF_HEADER]: token } }),
-  );
-  assert.equal(ok, null);
-  const bad = await enforceCsrf(
-    fakeContext({ method: 'POST', headers: { Origin: 'https://evil.example' } }),
-  );
-  assert.equal(bad.status, 403);
-});
-
-test('enforceCsrf: no origin headers + valid token passes; wrong token 403; missing token 403', async () => {
-  const sessionId = 'deadbeefdeadbeefdeadbeefdeadbeef';
-  const token = await mintCsrfToken(sessionId, SECRET, 'anonymous');
-
-  const good = await enforceCsrf(
-    fakeContext({ method: 'POST', sessionId, headers: { [CSRF_HEADER]: token } }),
-  );
-  assert.equal(good, null);
-
-  const wrong = await enforceCsrf(
-    fakeContext({ method: 'POST', sessionId, headers: { [CSRF_HEADER]: 'not-the-token' } }),
-  );
-  assert.equal(wrong.status, 403);
-
-  const missing = await enforceCsrf(fakeContext({ method: 'POST', sessionId }));
-  assert.equal(missing.status, 403);
 });
 
 // ---------------------------------------------------------------------------

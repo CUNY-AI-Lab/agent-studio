@@ -57,9 +57,9 @@ test('catalog makes one direct authenticated service-binding request', async (t)
   assert.equal(headers.get('x-cail-app'), 'agent-studio');
   assert.equal(capture.calls[0].init.credentials, 'omit');
   assert.equal(capture.calls[0].init.redirect, 'manual');
-  assert.deepEqual(result.models.map(({ id, recommended }) => ({ id, recommended })), [
-    { id: '@cf/zai-org/glm-5.2', recommended: true },
-    { id: '@cf/openai/gpt-oss-120b', recommended: false },
+  assert.deepEqual(result.models.map(({ id, tier }) => ({ id, tier })), [
+    { id: '@cf/zai-org/glm-5.2', tier: 'recommended' },
+    { id: '@cf/openai/gpt-oss-120b', tier: 'advanced' },
   ]);
 });
 
@@ -76,9 +76,9 @@ test('catalog ignores unsupported Gateway provider entries without hiding Worker
     identityJwt: JWT,
   });
 
-  assert.deepEqual(result.models.map(({ id, recommended }) => ({ id, recommended })), [
-    { id: '@cf/zai-org/glm-5.2', recommended: true },
-    { id: '@cf/openai/gpt-oss-120b', recommended: false },
+  assert.deepEqual(result.models.map(({ id, tier }) => ({ id, tier })), [
+    { id: '@cf/zai-org/glm-5.2', tier: 'recommended' },
+    { id: '@cf/openai/gpt-oss-120b', tier: 'advanced' },
   ]);
 });
 
@@ -195,9 +195,9 @@ test('catalog preserves current fields and normalizes optional metadata', async 
       status: 'active',
       capabilities: ['function-calling'],
       context_length: 131072,
-      registry_url: 'https://registry.example/model',
     },
     { id: '@cf/old', tier: 'advanced', status: 'retiring', sunset: '2026-12-31' },
+    { id: '@cf/recommended/model', recommended: true },
   ]));
   const result = await fetchCailModels({
     env: { CAIL_API_BASE: BASE },
@@ -206,18 +206,17 @@ test('catalog preserves current fields and normalizes optional metadata', async 
   });
   assert.deepEqual(result.models[0], {
     id: '@cf/zai-org/glm-5.2',
-    recommended: true,
     tier: 'recommended',
     status: 'active',
     sunset: null,
     capabilities: ['function-calling'],
     contextLength: 131072,
-    registryUrl: 'https://registry.example/model',
     name: 'GLM 5.2',
     description: 'General model.',
   });
   assert.equal(result.models[1].status, 'retiring');
   assert.equal(result.models[1].sunset, '2026-12-31');
+  assert.equal(result.models[2].tier, 'recommended');
 });
 
 test('the DeepSeek V4 Flash 0731 Workers model advertises function calling', async () => {

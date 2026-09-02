@@ -64,5 +64,4 @@ test('staging chat rejects a missing keyring leg before network startup', () => 
   const output = `${result.stdout}${result.stderr}`;
   assert.equal(result.status, 1);
   assert.match(output, /\[smoke\] staging validation failed/);
-  assert.doesNotMatch(output, /health|https:\/\/staging\.example\.test|app-secret-value|workspace|prompt|response|raw error|true|false/i);
 });

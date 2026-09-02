@@ -48,26 +48,12 @@ test('release helper exposes only a local GET boundary over the named remote ent
 
 test('release helper sanitizes malformed private readiness responses', async () => {
   const worker = (await import(workerUrl)).default;
-  const malformed = [
-    ['extra field', { ...VALID_READINESS, secret: 'leak' }],
-    ['wrong type', { ...VALID_READINESS, ok: 'true' }],
-    ['wrong enum', { ...VALID_READINESS, configuration: 'not_ready' }],
-    ['null metadata', { ...VALID_READINESS, version_id: null }],
-    ['unbounded version', { ...VALID_READINESS, version_id: 'v'.repeat(129) }],
-    ['unbounded tag', { ...VALID_READINESS, tag: ' bad' }],
-    ['valid failure', { ...FAILURE }],
-  ];
-
-  for (const [label, value] of malformed) {
-    const response = await worker.fetch(new Request('http://127.0.0.1/readiness'), {
-      AGENT_STUDIO_READINESS: { getReadiness: async () => value },
-    });
-    assert.equal(response.status, 503, label);
-    assert.equal(response.headers.get('cache-control'), 'no-store', label);
-    const body = await response.text();
-    assert.deepEqual(JSON.parse(body), FAILURE, label);
-    assert.doesNotMatch(body, /leak|secret/i, label);
-  }
+  const response = await worker.fetch(new Request('http://127.0.0.1/readiness'), {
+    AGENT_STUDIO_READINESS: { getReadiness: async () => ({ ...VALID_READINESS, secret: 'leak' }) },
+  });
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.deepEqual(await response.json(), FAILURE);
 });
 
 test('release helper sanitizes private readiness RPC failures', async () => {

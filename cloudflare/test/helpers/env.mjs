@@ -283,10 +283,6 @@ export class FakeWorkspaceAgent {
     return this.messages;
   }
 
-  async getRuntimeInfo() {
-    return { provider: 'dynamic-workers', codemode: true, git: true, outbound: 'tool-only' };
-  }
-
   async executeCode(code) {
     return { ok: true, stdout: `ran:${code}`, stderr: '', logs: [] };
   }
