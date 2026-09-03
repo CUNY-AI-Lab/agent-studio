@@ -1,4 +1,4 @@
-import type { DownloadRequest } from '../types';
+import type { DownloadRequest, QueuedDownload } from '../types';
 import { z } from 'zod';
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -45,14 +45,15 @@ export function triggerQueuedDownload(download: DownloadRequest) {
  *
  * A workspace can ask the shell to drain from more than one lifecycle edge
  * (initial readiness and a same-workspace refresh). Keep one in-flight read,
- * consume, and clear operation so two edges cannot trigger the same download
- * before the server-side clear completes. The server endpoint still owns
- * cross-client ordering and acknowledgement semantics.
+ * consume, and acknowledge operation so two edges cannot trigger the same
+ * download before the server-side acknowledgement completes. IDs are
+ * acknowledged only after browser consumption succeeds; the server endpoint
+ * still owns cross-client ordering and acknowledgement semantics.
  */
 export function createDownloadQueueDrainer(
-  read: () => Promise<DownloadRequest[]>,
-  clear: () => Promise<void>,
-  consume: (downloads: DownloadRequest[]) => void,
+  read: () => Promise<QueuedDownload[]>,
+  clear: (ids: readonly string[]) => Promise<void>,
+  consume: (downloads: QueuedDownload[]) => void,
 ): () => Promise<void> {
   let inFlight: Promise<void> | null = null;
 
@@ -63,7 +64,7 @@ export function createDownloadQueueDrainer(
       const downloads = await read();
       if (downloads.length === 0) return;
       consume(downloads);
-      await clear();
+      await clear(downloads.map((download) => download.id));
     })();
     inFlight = operation;
 

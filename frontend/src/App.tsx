@@ -1083,11 +1083,20 @@ function WorkspaceShell({
   const drainWorkspaceDownloads = useMemo(
     () => createDownloadQueueDrainer(
       () => fetchWorkspaceDownloads(workspace.workspace.id),
-      () => clearWorkspaceDownloads(workspace.workspace.id),
+      (ids) => clearWorkspaceDownloads(workspace.workspace.id, ids),
       consumeDownloads,
     ),
     [consumeDownloads, workspace.workspace.id],
   );
+
+  // The initial workspace response can contain queued downloads even when the
+  // agent socket is terminal or has not reached ready. Keep that delivery edge
+  // independent of chat status; the ready edge below shares this drainer.
+  useEffect(() => {
+    void drainWorkspaceDownloads().catch(() => {
+      // Ignore background download drain failures; the queue remains pending.
+    });
+  }, [drainWorkspaceDownloads, workspace.downloads]);
 
   const focusTile = useCallback((panelId: string) => {
     setMinimizedPanelIds((current) => {

@@ -17,14 +17,14 @@ describe('ensureDownloadFilename', () => {
 
 describe('createDownloadQueueDrainer', () => {
   it('coalesces overlapping drains until the queue is cleared', async () => {
-    const download = { filename: 'report', data: 'ready', format: 'txt' as const };
+    const download = { id: 'download-1', filename: 'report', data: 'ready', format: 'txt' as const };
     const read = vi.fn(async () => [download]);
     const consume = vi.fn();
     let releaseClear: () => void = () => undefined;
     const clearPromise = new Promise<void>((resolve) => {
       releaseClear = resolve;
     });
-    const clear = vi.fn(() => clearPromise);
+    const clear = vi.fn((_ids: readonly string[]) => clearPromise);
     const drain = createDownloadQueueDrainer(read, clear, consume);
 
     const first = drain();
@@ -33,8 +33,22 @@ describe('createDownloadQueueDrainer', () => {
     expect(read).toHaveBeenCalledOnce();
     expect(consume).toHaveBeenCalledOnce();
     expect(clear).toHaveBeenCalledOnce();
+    expect(clear).toHaveBeenCalledWith(['download-1']);
 
     releaseClear();
     await Promise.all([first, second]);
+  });
+
+  it('does not acknowledge downloads when browser consumption fails', async () => {
+    const download = { id: 'download-1', filename: 'report', data: 'ready', format: 'txt' as const };
+    const read = vi.fn(async () => [download]);
+    const consume = vi.fn(() => {
+      throw new Error('browser rejected download');
+    });
+    const clear = vi.fn(async (_ids: readonly string[]) => undefined);
+    const drain = createDownloadQueueDrainer(read, clear, consume);
+
+    await expect(drain()).rejects.toThrow('browser rejected download');
+    expect(clear).not.toHaveBeenCalled();
   });
 });
