@@ -383,11 +383,17 @@ async function settledReactFlowViewport(page: Page): Promise<WorkspaceViewport> 
 
 async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promise<void> {
   const note = '# Research note\n\nA durable artifact with café and 数字.\n';
-  await page.getByLabel('Upload files to workspace').setInputFiles({
+  const binaryText = Buffer.from([0xff, 0xfe, 0x00, 0x61]);
+  const bomText = Buffer.from([0xef, 0xbb, 0xbf, 0x48, 0x69]);
+  await page.getByLabel('Upload files to workspace').setInputFiles([{
     name: 'research.md',
     mimeType: 'text/markdown',
     buffer: Buffer.from(note),
-  });
+  }, {
+    name: 'encoded.txt', mimeType: 'application/octet-stream', buffer: binaryText,
+  }, {
+    name: 'bom.txt', mimeType: 'text/plain', buffer: bomText,
+  }]);
   const fileActions = page.getByRole('button', { name: /^research\.md, .*File actions$/ });
   await fileActions.click();
   await page.getByRole('menuitem', { name: 'Show on Canvas', exact: true }).click();
@@ -450,6 +456,15 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
     await expect(otherPage.getByRole('button', {
       name: associationName('Source cards', 'Related cards'),
     })).toHaveCount(1);
+    for (const [name, bytes] of [['encoded.txt', binaryText], ['bom.txt', bomText]] as const) {
+      await otherPage.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}, .*File actions$`) }).click();
+      const downloadPromise = otherPage.waitForEvent('download');
+      await otherPage.getByRole('menuitem', { name: 'Download', exact: true }).click();
+      const download = await downloadPromise;
+      const path = await download.path();
+      if (!path) fail('Imported file download did not finish');
+      expect(await readFile(path)).toEqual(bytes);
+    }
     otherPage.once('dialog', (confirmation) => void confirmation.accept());
     await otherPage.getByRole('button', { name: 'Delete workspace' }).click();
     await expect(otherPage.getByRole('button', { name: 'Start blank' })).toBeVisible();

@@ -58,7 +58,7 @@ export interface CailIdentityEnv {
 }
 
 const identityConfigStringSchema = z.string();
-const identityRequireFlagSchema = z.enum(['true', 'false']).optional();
+export const identityRequireFlagSchema = z.enum(['true', 'false']).optional();
 
 function readIdentityConfigString(value: string | undefined): string | undefined {
   return identityConfigStringSchema.safeParse(value).data;

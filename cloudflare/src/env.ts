@@ -3,7 +3,7 @@ import type { MigrationRegistry } from './migration-registry';
 import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
 import { z } from 'zod';
 import { isValidBasePath, normalizeBasePath } from './lib/base-path';
-import { CAIL_CANONICAL_ISSUER, CAIL_IDENTITY_AUDIENCE } from './lib/cail-identity';
+import { CAIL_CANONICAL_ISSUER, CAIL_IDENTITY_AUDIENCE, identityRequireFlagSchema } from './lib/cail-identity';
 import { isValidCailApiBase } from './lib/cail-model';
 import { isAllowedCailModelId } from './lib/workspace-validation';
 
@@ -99,7 +99,6 @@ export interface AgentStudioConfigInput {
 }
 
 const stringSchema = z.string();
-const identityRequireFlagSchema = z.enum(['true', 'false']).optional();
 const gatewayBindingSchema = z.object({ fetch: z.function() });
 
 function validCanonicalOrigin(value: string | undefined): boolean {
