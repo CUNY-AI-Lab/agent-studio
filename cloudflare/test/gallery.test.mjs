@@ -8,6 +8,7 @@ import {
   reassignGalleryAuthor,
   unpublishGalleryItem,
 } from '../src/lib/gallery.ts';
+import { listGalleryFilesRecursive } from '../src/lib/files.ts';
 import { MockR2, seedGalleryItem } from './helpers/env.mjs';
 
 const SESSION = 'a'.repeat(32);
@@ -81,6 +82,74 @@ test('a committed publish retry does not read files or delete the existing item'
   assert.equal(second.id, first.id);
   assert.equal(second.title, first.title);
   assert.ok(await r2.get(`agent-studio/gallery/items/${first.id}/manifest.json`));
+});
+
+test('a retry clears artifacts left by a failed publish cleanup before committing', async () => {
+  const r2 = new MockR2();
+  const targetEnv = env(r2);
+  const operationId = 'cleanup-retry';
+  const originalPut = r2.put.bind(r2);
+  const originalDelete = r2.delete.bind(r2);
+  let failStatePut = true;
+  let failCleanupDelete = true;
+  r2.put = async (key, value, options = {}) => {
+    if (failStatePut && key.endsWith('/state.json')) {
+      failStatePut = false;
+      throw new Error('injected state write failure');
+    }
+    return originalPut(key, value, options);
+  };
+  r2.delete = async (keys) => {
+    if (failCleanupDelete) {
+      failCleanupDelete = false;
+      throw new Error('injected cleanup failure');
+    }
+    return originalDelete(keys);
+  };
+
+  await assert.rejects(
+    publishWorkspace({
+      env: targetEnv,
+      sessionId: SESSION,
+      workspace: WORKSPACE,
+      state: STATE,
+      title: 'Retry me',
+      description: 'First attempt fails',
+      operationId,
+      files: [{ path: 'stale.md', isDirectory: false }],
+      readFile: async () => ({
+        contentType: 'text/markdown; charset=utf-8',
+        data: new TextEncoder().encode('stale').buffer,
+      }),
+    }),
+  );
+
+  const digest = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(`${SESSION}:${WORKSPACE.id}:${operationId}`),
+  );
+  const galleryId = Array.from(new Uint8Array(digest).slice(0, 12), (byte) =>
+    byte.toString(16).padStart(2, '0')).join('');
+  assert.deepEqual(
+    r2.keysWithPrefix(`agent-studio/gallery/items/${galleryId}/files/`),
+    [`agent-studio/gallery/items/${galleryId}/files/stale.md`],
+    'failure injection must leave a stale artifact for the retry to clean',
+  );
+
+  await publish(targetEnv, operationId);
+  assert.deepEqual(
+    await listGalleryFilesRecursive(targetEnv, galleryId),
+    [],
+    'a successful retry must not expose the prior attempt\'s file',
+  );
+  assert.deepEqual(
+    r2.keysWithPrefix(`agent-studio/gallery/items/${galleryId}/`).sort(),
+    [
+      `agent-studio/gallery/items/${galleryId}/manifest.json`,
+      `agent-studio/gallery/items/${galleryId}/owner.json`,
+      `agent-studio/gallery/items/${galleryId}/state.json`,
+    ],
+  );
 });
 
 test('private owner records authorize unpublish without exposing an owner identifier', async () => {

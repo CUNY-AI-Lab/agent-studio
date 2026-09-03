@@ -68,6 +68,7 @@ const HOOKS_MODULE = `data:text/javascript,${encodeURIComponent(`
 `)}`;
 
 let registered = false;
+let workspaceAgentPrototype = null;
 
 /** Install the cloudflare:* stub loader once. Idempotent. */
 export function registerCloudflareStub() {
@@ -83,6 +84,7 @@ export function registerCloudflareStub() {
 export async function importServer() {
   registerCloudflareStub();
   const mod = await import('../../src/server.ts');
+  workspaceAgentPrototype = mod.WorkspaceAgent.prototype;
   return mod.default;
 }
 
@@ -216,13 +218,25 @@ const DEFAULT_STATE = () => ({
 export class FakeWorkspaceAgent {
   constructor(name) {
     this.name = name;
+    this.env = null;
     this.state = DEFAULT_STATE();
     this.messages = [];
     this.files = new Map(); // path -> { bytes: Uint8Array, contentType }
+    this.directories = new Set(['/']);
     this.credential = null;
     this.syncCount = 0;
     this.frozen = false;
     this.destroyed = false;
+    this.activeMutations = 0;
+    this.storageOperationTail = Promise.resolve();
+    this.runtime = null;
+    this.uploadInProgress = false;
+    this.uploadForwardPhase = false;
+    this.uploadWriteIndex = 0;
+    this.uploadEntries = [];
+    this.uploadFailureInjected = false;
+    this.afterUploadWrite = null;
+    this.uploadWriteFailure = null;
   }
 
   async fetch() {
@@ -245,6 +259,9 @@ export class FakeWorkspaceAgent {
   }
 
   async freezeForMigration() {
+    if (this.activeMutations > 0) {
+      throw new Error('workspace has an active mutation; retry migration');
+    }
     this.frozen = true;
   }
 
@@ -253,7 +270,11 @@ export class FakeWorkspaceAgent {
   }
 
   async destroyWorkspaceState() {
+    if (this.activeMutations > 0) {
+      throw new Error('workspace has an active mutation; retry destructive cleanup');
+    }
     this.files.clear();
+    this.directories = new Set(['/']);
     this.messages = [];
     this.credential = null;
     this.state = DEFAULT_STATE();
@@ -312,31 +333,242 @@ export class FakeWorkspaceAgent {
     };
   }
 
-  async writeWorkspaceFileContent(filePath, data, contentType) {
-    const key = sanitizeRelativePath(filePath);
-    let bytes;
-    const stringData = z.string().safeParse(data).data;
-    if (stringData !== undefined) {
-      bytes = new TextEncoder().encode(stringData);
-    } else if (data instanceof ArrayBuffer) {
-      bytes = new Uint8Array(data);
-    } else if (ArrayBuffer.isView(data)) {
-      bytes = new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
-    } else {
-      bytes = new TextEncoder().encode(data);
+  async publishGalleryWorkspace(args) {
+    return workspaceAgentPrototype.publishGalleryWorkspace.call(this, args);
+  }
+
+  async unpublishGalleryWorkspace(args) {
+    return workspaceAgentPrototype.unpublishGalleryWorkspace.call(this, args);
+  }
+
+  async uploadWorkspaceFiles(entries) {
+    this.uploadInProgress = true;
+    this.uploadForwardPhase = true;
+    this.uploadWriteIndex = 0;
+    this.uploadEntries = entries;
+    this.uploadFailureInjected = false;
+    try {
+      return await workspaceAgentPrototype.uploadWorkspaceFiles.call(this, entries);
+    } finally {
+      this.uploadInProgress = false;
+      this.uploadForwardPhase = false;
+      this.uploadEntries = [];
     }
-    this.files.set(key, { bytes, contentType: contentType || 'application/octet-stream' });
-    return { ok: true, filePath: key };
   }
 
-  async deleteWorkspaceFileContent(filePath) {
-    const key = sanitizeRelativePath(filePath);
-    this.files.delete(key);
-    return { ok: true, filePath: key };
+  async writeWorkspaceFileContent(...args) {
+    return workspaceAgentPrototype.writeWorkspaceFileContent.call(this, ...args);
   }
 
-  async clearWorkspaceFiles() {
-    this.files.clear();
+  async writeWorkspaceFileContentUnchecked(...args) {
+    return workspaceAgentPrototype.writeWorkspaceFileContentUnchecked.call(this, ...args);
+  }
+
+  async writeRuntimeFileBytes(...args) {
+    return workspaceAgentPrototype.writeRuntimeFileBytes.call(this, ...args);
+  }
+
+  async deleteWorkspaceFileContent(...args) {
+    return workspaceAgentPrototype.deleteWorkspaceFileContent.call(this, ...args);
+  }
+
+  async clearWorkspaceFiles(...args) {
+    return workspaceAgentPrototype.clearWorkspaceFiles.call(this, ...args);
+  }
+
+  async clearRuntimeFilesUnchecked(...args) {
+    return workspaceAgentPrototype.clearRuntimeFilesUnchecked.call(this, ...args);
+  }
+
+  async withStorageOperation(operation) {
+    return workspaceAgentPrototype.withStorageOperation.call(this, operation);
+  }
+
+  async withMutationFence(operation) {
+    return workspaceAgentPrototype.withMutationFence.call(this, operation);
+  }
+
+  assertAuthorizedRpc() {
+    return workspaceAgentPrototype.assertAuthorizedRpc.call(this);
+  }
+
+  assertStorageOperationSession(sessionId) {
+    return workspaceAgentPrototype.assertStorageOperationSession.call(this, sessionId);
+  }
+
+  csrfSessionId() {
+    return workspaceAgentPrototype.csrfSessionId.call(this);
+  }
+
+  serializeProviderWrites(...args) {
+    return workspaceAgentPrototype.serializeProviderWrites.call(this, ...args);
+  }
+
+  buildSerializedStateTools(...args) {
+    return workspaceAgentPrototype.buildSerializedStateTools.call(this, ...args);
+  }
+
+  buildSerializedGitTools(...args) {
+    return workspaceAgentPrototype.buildSerializedGitTools.call(this, ...args);
+  }
+
+  assertNotFrozen() {
+    if (this.frozen) throw new Error('workspace is frozen for migration');
+  }
+
+  getRuntimeWorkspace() {
+    if (this.runtime) return this.runtime;
+    const toBytes = (data) => data instanceof Uint8Array
+      ? data
+      : data instanceof ArrayBuffer
+        ? new Uint8Array(data)
+        : new TextEncoder().encode(data);
+    const parentDirectories = (key) => {
+      const parents = [];
+      let current = key;
+      while (current.includes('/')) {
+        current = current.slice(0, current.lastIndexOf('/')) || '/';
+        parents.push(current);
+        if (current === '/') break;
+      }
+      return parents;
+    };
+    const ensureParents = (key) => {
+      for (const parent of parentDirectories(key)) this.directories.add(parent);
+    };
+    const statFor = (key) => {
+      if (this.files.has(key)) {
+        return {
+          type: 'file',
+          size: this.files.get(key).bytes.byteLength,
+          updatedAt: new Date(0).toISOString(),
+        };
+      }
+      if (this.directories.has(key)) {
+        return {
+          type: 'directory',
+          size: 0,
+          updatedAt: new Date(0).toISOString(),
+        };
+      }
+      return null;
+    };
+    this.runtime = {
+      readFile: async (filePath) => {
+        const key = sanitizeRelativePath(filePath);
+        const entry = this.files.get(key);
+        return entry ? new TextDecoder().decode(entry.bytes) : null;
+      },
+      readFileBytes: async (filePath) => {
+        const key = sanitizeRelativePath(filePath);
+        const entry = this.files.get(key);
+        return entry ? entry.bytes.slice() : null;
+      },
+      writeFile: async (filePath, data, contentType) => {
+        const key = sanitizeRelativePath(filePath);
+        const bytes = toBytes(data);
+        ensureParents(key);
+        this.files.set(key, {
+          bytes: bytes.slice(),
+          contentType: contentType || 'application/octet-stream',
+        });
+      },
+      writeFileBytes: async (filePath, data, contentType) => {
+        const key = sanitizeRelativePath(filePath);
+        if (this.uploadInProgress && this.uploadForwardPhase) {
+          const index = this.uploadWriteIndex++;
+          const entry = this.uploadEntries[index];
+          try {
+            if (!this.uploadFailureInjected && this.uploadWriteFailure?.(entry, index)) {
+              this.uploadFailureInjected = true;
+              this.uploadForwardPhase = false;
+              throw new Error('injected upload failure');
+            }
+            const bytes = new Uint8Array(data).slice();
+            ensureParents(key);
+            this.files.set(key, {
+              bytes,
+              contentType: contentType || 'application/octet-stream',
+            });
+            await this.afterUploadWrite?.(index, entry);
+            return;
+          } catch (error) {
+            this.uploadForwardPhase = false;
+            throw error;
+          }
+        }
+        const bytes = new Uint8Array(data).slice();
+        ensureParents(key);
+        this.files.set(key, {
+          bytes,
+          contentType: contentType || 'application/octet-stream',
+        });
+      },
+      appendFile: async (filePath, data, contentType) => {
+        const key = sanitizeRelativePath(filePath);
+        const current = this.files.get(key)?.bytes || new Uint8Array();
+        const bytes = toBytes(data);
+        const combined = new Uint8Array(current.byteLength + bytes.byteLength);
+        combined.set(current);
+        combined.set(bytes, current.byteLength);
+        ensureParents(key);
+        this.files.set(key, {
+          bytes: combined,
+          contentType: contentType || this.files.get(key)?.contentType || 'application/octet-stream',
+        });
+      },
+      exists: async (filePath) => Boolean(statFor(sanitizeRelativePath(filePath))),
+      stat: async (filePath) => statFor(sanitizeRelativePath(filePath)),
+      lstat: async (filePath) => statFor(sanitizeRelativePath(filePath)),
+      mkdir: async (filePath, options = {}) => {
+        const key = sanitizeRelativePath(filePath) || '/';
+        if (options.recursive !== false) {
+          this.directories.add(key);
+          for (const parent of parentDirectories(key)) this.directories.add(parent);
+        } else {
+          this.directories.add(key);
+        }
+      },
+      readDir: async (filePath) => {
+        const key = sanitizeRelativePath(filePath) || '/';
+        const prefix = key === '/' ? '/' : `${key}/`;
+        const children = new Map();
+        for (const directory of this.directories) {
+          if (!directory.startsWith(prefix) || directory === prefix) continue;
+          const remainder = directory.slice(prefix.length);
+          const name = remainder.split('/')[0];
+          if (name) children.set(name, 'directory');
+        }
+        for (const file of this.files.keys()) {
+          if (!file.startsWith(prefix)) continue;
+          const remainder = file.slice(prefix.length);
+          const name = remainder.split('/')[0];
+          if (name && !children.has(name)) children.set(name, 'file');
+        }
+        return [...children].map(([name, type]) => ({ name, type }));
+      },
+      rm: async (filePath, options = {}) => {
+        const key = sanitizeRelativePath(filePath) || '/';
+        if (options.recursive) {
+          const prefix = key === '/' ? '/' : `${key}/`;
+          for (const file of this.files.keys()) {
+            if (file === key || file.startsWith(prefix)) this.files.delete(file);
+          }
+          for (const directory of this.directories) {
+            if (directory === key || directory.startsWith(prefix)) this.directories.delete(directory);
+          }
+          this.directories.add('/');
+          return;
+        }
+        this.files.delete(key);
+        if (key !== '/') this.directories.delete(key);
+      },
+      glob: async () => [
+        ...[...this.directories].map((key) => ({ path: key })),
+        ...[...this.files.keys()].map((key) => ({ path: `/${key}` })),
+      ],
+    };
+    return this.runtime;
   }
 
   async addPanel(panel) {
@@ -445,13 +677,22 @@ export class FakeWorkspaceAgent {
  */
 export function makeWorkspaceAgentNamespace() {
   const agents = new Map();
+  let configuredEnv = null;
   const ensure = (name) => {
-    if (!agents.has(name)) agents.set(name, new FakeWorkspaceAgent(name));
+    if (!agents.has(name)) {
+      const agent = new FakeWorkspaceAgent(name);
+      agent.env = configuredEnv;
+      agents.set(name, agent);
+    }
     return agents.get(name);
   };
   return {
     agents,
     ensure,
+    setEnv(env) {
+      configuredEnv = env;
+      for (const agent of agents.values()) agent.env = env;
+    },
     namespace: {
       idFromName: (name) => ({ name, toString: () => name }),
       get: (id) => ensure(id.name),
@@ -533,6 +774,7 @@ export function makeEnv() {
     WorkspaceAgent: workspaceAgent.namespace,
     MIGRATION_REGISTRY: migrationRegistry.namespace,
   };
+  workspaceAgent.setEnv(env);
   return { env, r2, agents: workspaceAgent.agents, ensureAgent: workspaceAgent.ensure };
 }
 

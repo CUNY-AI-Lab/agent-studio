@@ -3,7 +3,7 @@
 // V2: three writers stored a workspace record captured EARLIER (turn start /
 // request start) with a blind putWorkspace, silently reverting a concurrent
 // PATCH (e.g. a model override) that the putWorkspaceIfMatch CAS loop (A12)
-// exists to protect: the publish galleryId stamp, the gallery-delete record
+// exists to protect: the publish galleryId stamp, the workspace-unpublish record
 // rewrite, and the ui_workspace chat tool.
 //
 // V3: applyLayoutPatch replaced the whole `connections`/`groups` arrays from a
@@ -81,10 +81,10 @@ test('publish stamps galleryId without reverting a PATCH that landed mid-publish
 });
 
 // ---------------------------------------------------------------------------
-// V2 — gallery delete record rewrite
+// V2 — workspace-unpublish record rewrite
 // ---------------------------------------------------------------------------
 
-test('gallery delete clears galleryId without reverting a concurrent workspace update', async () => {
+test('workspace unpublish clears galleryId without reverting a concurrent workspace update', async () => {
   const { env, r2 } = makeEnv();
   const { session, sessionId } = await openSession(app, env);
   const workspace = await createWorkspace(session, 'To unpublish');
@@ -95,11 +95,10 @@ test('gallery delete clears galleryId without reverting a concurrent workspace u
     body: JSON.stringify({ title: 'Published', description: 'desc' }),
   });
   assert.equal(published.status, 201);
-  const { item } = await published.json();
+  await published.json();
 
-  // Simulate a concurrent update landing between the delete route's
-  // listWorkspaces read and its record rewrite: apply it right after the
-  // route's first read of this workspace record, which returns the stale copy.
+  // Simulate a concurrent update landing between the workspace-unpublish
+  // route's initial record read and its CAS rewrite.
   const key = workspaceKey(sessionId, workspace.id);
   const originalGet = r2.get.bind(r2);
   let fired = false;
@@ -113,7 +112,7 @@ test('gallery delete clears galleryId without reverting a concurrent workspace u
     return result;
   };
 
-  const deleted = await session.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
+  const deleted = await session.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
   assert.equal(deleted.status, 200);
   assert.equal(fired, true, 'test wiring: the concurrent update must have fired mid-delete');
 
@@ -153,6 +152,7 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
     env,
     synced: null,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace(nextWorkspace, syncSessionId) {
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
@@ -203,6 +203,7 @@ test('ui_workspace gives concurrent manual title edits precedence per field', as
     env,
     synced: null,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace(nextWorkspace, syncSessionId) {
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
@@ -243,6 +244,7 @@ test('ui_workspace cannot rename an existing workspace after title ownership is 
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -275,6 +277,7 @@ test('ui_workspace keeps description-only updates available after title ownershi
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -308,6 +311,7 @@ test('ui_workspace treats a repeated generated title as a no-op within one model
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -351,6 +355,7 @@ test('ui_workspace rejects a different second generated title within one model t
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -392,6 +397,7 @@ test('placeholder ui_workspace requires a specific non-placeholder name', async 
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -428,6 +434,7 @@ test('ui_show_file requires an authored display title instead of deriving one fr
   const fakeAgent = {
     env: makeEnv().env,
     messages: [],
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async readRuntimeFileContent() { return { data: new ArrayBuffer(0) }; },
     upsertPanelWithAssociation() {},
@@ -460,6 +467,9 @@ test('structured UI tools persist explicit tile associations', async () => {
     },
     setState(next) {
       this.state = next;
+    },
+    async withStorageOperation(operation) {
+      return operation();
     },
     async withMutationFence(operation) {
       return operation();
@@ -518,6 +528,9 @@ test('implicit UI panel ids remain stable when the same turn is retried', async 
     setState(next) {
       this.state = next;
     },
+    async withStorageOperation(operation) {
+      return operation();
+    },
     async withMutationFence(operation) {
       return operation();
     },
@@ -551,6 +564,9 @@ test('structured UI tools reject an association to a missing tile', async () => 
     },
     setState(next) {
       this.state = next;
+    },
+    async withStorageOperation(operation) {
+      return operation();
     },
     async withMutationFence(operation) {
       return operation();

@@ -19,6 +19,7 @@ import { signValue } from '../src/lib/session.ts';
 import {
   makeMigrationRegistryNamespace,
   makeWorkspaceAgentNamespace,
+  importServer,
   MockR2,
   registerCloudflareStub,
 } from './helpers/env.mjs';
@@ -511,6 +512,10 @@ test('gallery ownership reassignment repairs a failed manifest write on retry', 
 const identityIssuer = await createTestIdentityIssuer({ kid: 'login-import-key' });
 
 async function createMiddlewareFixture() {
+  // Ensure the namespace double delegates storage RPCs to the production
+  // WorkspaceAgent methods; its runtime/R2 maps remain the only low-level
+  // seams in this middleware fixture.
+  await importServer();
   const { Hono } = await import('hono');
   const { sessionMiddleware } = await import('../src/lib/session.ts');
   const r2 = createR2();

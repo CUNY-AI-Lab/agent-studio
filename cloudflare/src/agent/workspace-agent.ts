@@ -12,7 +12,7 @@ import {
 } from '@cloudflare/codemode/ai';
 import { Workspace as RuntimeWorkspace } from '@cloudflare/shell';
 import { gitTools } from '@cloudflare/shell/git';
-import { stateTools } from '@cloudflare/shell/workers';
+import { STATE_METHODS, stateTools } from '@cloudflare/shell/workers';
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -37,6 +37,7 @@ import {
   type WorkspaceRecord,
   type WorkspaceState,
 } from '../domain/workspace';
+import type { GalleryItem } from '../domain/gallery';
 import type { Env } from '../env';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import {
@@ -82,9 +83,20 @@ import {
   resolveMimeType,
   sanitizeRelativePath,
   toRuntimePath,
+  deleteByPrefix,
+  getGalleryPrefix,
 } from '../lib/files';
+import {
+  GalleryError,
+  publishWorkspace as publishGalleryWorkspace,
+  unpublishGalleryItem,
+} from '../lib/gallery';
 import { addWorkspaceDownload } from '../lib/downloads';
-import { updateWorkspaceWithRetry } from '../lib/workspaces';
+import {
+  getWorkspace,
+  updateWorkspaceWithRetry,
+  type StoredWorkspaceRecord,
+} from '../lib/workspaces';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
@@ -104,6 +116,35 @@ const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // tool plan cannot spend indefinitely. This is a loop safety boundary, not an
 // output/token cap.
 const MODEL_TOOL_LOOP_STEPS = 12;
+
+const STATE_WRITE_METHODS = new Set(
+  Object.entries(STATE_METHODS)
+    .filter(([, spec]) => spec.kind === 'write')
+    .map(([name]) => name),
+);
+const GIT_WRITE_METHODS = new Set([
+  'init',
+  'clone',
+  'add',
+  'rm',
+  'commit',
+  'branch',
+  'checkout',
+  'fetch',
+  'pull',
+  'push',
+  'remote',
+]);
+
+type ProviderToolValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | Uint8Array
+  | ProviderToolValue[]
+  | { readonly [key: string]: ProviderToolValue };
 
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
@@ -260,6 +301,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private runtimeWorkspace?: RuntimeWorkspace;
   private migrationFrozen = false;
   private activeMutations = 0;
+  /**
+   * Complete workspace storage operations in one Durable Object invocation.
+   * The tail is intentionally in-memory: the operation itself owns all R2
+   * side effects, and a retry reconstructs the state after an isolate reset.
+   */
+  private storageOperationTail: Promise<void> = Promise.resolve();
   /**
    * The caller's selected verified identity JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
@@ -567,6 +614,189 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     });
   }
 
+  /**
+   * Publish and stamp one workspace through the workspace Durable Object. The
+   * caller supplies only the already-authenticated request values; all reads,
+   * gallery writes, CAS, and compensation stay inside one serialized DO
+   * operation so another publish/unpublish cannot observe a half-complete
+   * publication.
+   */
+  async publishGalleryWorkspace(args: {
+    workspace: WorkspaceRecord;
+    sessionId: string;
+    title: string;
+    description: string;
+    operationId: string;
+  }): Promise<
+    | { ok: true; item: GalleryItem; workspace: StoredWorkspaceRecord }
+    | { ok: false; reason: 'not-found' | 'conflict' }
+  > {
+    return this.withStorageOperation(async () => {
+      this.assertAuthorizedRpc();
+      this.assertStorageOperationSession(args.sessionId);
+      const [state, files] = await Promise.all([
+        this.getSnapshot(),
+        this.getWorkspaceFiles(),
+      ]);
+      const item = await publishGalleryWorkspace({
+        env: this.env,
+        sessionId: args.sessionId,
+        workspace: args.workspace,
+        state,
+        title: args.title,
+        description: args.description,
+        operationId: args.operationId,
+        files,
+        readFile: (filePath) => this.readWorkspaceFileContent(filePath),
+      });
+
+      const result = await updateWorkspaceWithRetry(
+        this.env,
+        args.sessionId,
+        args.workspace.id,
+        (current) => {
+          if (current.deleting || (current.galleryId && current.galleryId !== item.id)) return null;
+          return {
+            ...current,
+            galleryId: item.id,
+            updatedAt: new Date().toISOString(),
+          };
+        },
+      );
+      if (!result.ok || result.workspace.deleting || result.workspace.galleryId !== item.id) {
+        try {
+          await unpublishGalleryItem(this.env, item.id, args.sessionId);
+        } catch (error) {
+          if (!(error instanceof GalleryError && error.status === 404)) {
+            throw new Error(
+              'publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed',
+              { cause: error },
+            );
+          }
+        }
+        return {
+          ok: false,
+          reason: !result.ok && result.reason === 'not-found' ? 'not-found' : 'conflict',
+        };
+      }
+
+      this.syncWorkspace(result.workspace, args.sessionId);
+      return { ok: true, item, workspace: result.workspace };
+    });
+  }
+
+  /**
+   * Unpublish the gallery item currently owned by one workspace. Missing
+   * manifests are treated as an incomplete prior cleanup: workspace ownership
+   * is sufficient to finish deleting the deterministic prefix before clearing
+   * the metadata marker, so a retry cannot strand private gallery objects.
+   */
+  async unpublishGalleryWorkspace(args: {
+    workspace: StoredWorkspaceRecord;
+    sessionId: string;
+  }): Promise<
+    | { ok: true; workspace: StoredWorkspaceRecord }
+    | { ok: false; reason: 'not-found' }
+  > {
+    return this.withStorageOperation(async () => {
+      this.assertAuthorizedRpc();
+      this.assertStorageOperationSession(args.sessionId);
+      const current = await getWorkspace(this.env, args.sessionId, args.workspace.id);
+      const galleryId = current?.galleryId;
+      if (!current || !galleryId) {
+        return { ok: false, reason: 'not-found' };
+      }
+
+      try {
+        await unpublishGalleryItem(this.env, galleryId, args.sessionId);
+      } catch (error) {
+        if (!(error instanceof GalleryError && error.status === 404)) throw error;
+        // The manifest may already have been removed before an earlier delete
+        // failed. The workspace record is the authenticated ownership marker
+        // for this retry, so finish deleting any remaining gallery objects.
+        await deleteByPrefix(this.env, getGalleryPrefix(galleryId));
+      }
+
+      const result = await updateWorkspaceWithRetry(
+        this.env,
+        args.sessionId,
+        args.workspace.id,
+        (next) => next.galleryId === galleryId
+          ? { ...next, galleryId: undefined, updatedAt: new Date().toISOString() }
+          : null,
+      );
+      if (!result.ok) {
+        throw new Error(
+          'unpublish_outcome_unknown: gallery cleanup succeeded but workspace metadata was not updated',
+        );
+      }
+      this.syncWorkspace(result.workspace, args.sessionId);
+      return { ok: true, workspace: result.workspace };
+    });
+  }
+
+  /**
+   * Upload a validated batch and roll it back while holding the same workspace
+   * operation boundary as competing uploads and direct file RPCs.
+   */
+  async uploadWorkspaceFiles(entries: Array<{
+    path: string;
+    body: ReadableStream<Uint8Array>;
+    contentType?: string;
+  }>): Promise<Array<{ name: string; path: string; size: number }>> {
+    return this.withStorageOperation(async () => {
+      this.assertAuthorizedRpc();
+      const normalized = entries.map((entry) => ({
+        ...entry,
+        path: sanitizeRelativePath(entry.path),
+      }));
+      const originals = new Map<string, Awaited<ReturnType<typeof this.readWorkspaceFileContent>>>();
+      for (const entry of normalized) {
+        if (!originals.has(entry.path)) {
+          originals.set(entry.path, await this.readWorkspaceFileContent(entry.path));
+        }
+      }
+
+      try {
+        const uploaded: Array<{ name: string; path: string; size: number }> = [];
+        for (const entry of normalized) {
+          // RPC streams transfer ownership to this DO and avoid the 32 MiB
+          // serialized-message ceiling. Buffer only the current file because
+          // RuntimeWorkspace.writeFileBytes accepts bytes, not a stream.
+          const bytes = new Uint8Array(await new Response(entry.body).arrayBuffer());
+          await this.writeRuntimeFileBytes(entry.path, bytes, entry.contentType);
+          uploaded.push({
+            name: entry.path.split('/').pop() || entry.path,
+            path: entry.path,
+            size: bytes.byteLength,
+          });
+        }
+        return uploaded;
+      } catch (error) {
+        const rollbackFailures: string[] = [];
+        for (const [filePath, original] of originals) {
+          try {
+            if (original) {
+              await this.writeRuntimeFileBytes(
+                filePath,
+                new Uint8Array(original.data),
+                original.contentType,
+              );
+            } else {
+              await this.getRuntimeWorkspace().rm(toRuntimePath(filePath), { force: true });
+            }
+          } catch {
+            rollbackFailures.push(filePath);
+          }
+        }
+        if (rollbackFailures.length > 0) {
+          throw new Error('upload_outcome_unknown: rollback did not complete', { cause: error });
+        }
+        throw error;
+      }
+    });
+  }
+
   protected override resetTurnState(): void {
     this.assertNotFrozen();
     super.resetTurnState();
@@ -782,25 +1012,39 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     data: string | ArrayBuffer | Uint8Array,
     contentType?: string
   ): Promise<{ ok: true; filePath: string }> {
-    return this.withMutationFence(async () => {
-      const runtime = this.getRuntimeWorkspace();
-      const relativePath = sanitizeRelativePath(filePath);
-      const textData = z.string().safeParse(data).data;
-      if (textData !== undefined) {
-        await runtime.writeFile(toRuntimePath(relativePath), textData, contentType || getMimeType(relativePath));
-      } else {
-        const binaryData = z.union([
-          z.instanceof(ArrayBuffer),
-          z.instanceof(Uint8Array),
-        ]).parse(data);
-        await runtime.writeFileBytes(toRuntimePath(relativePath), binaryData, contentType || getMimeType(relativePath));
-      }
-      return { ok: true, filePath: relativePath };
-    });
+    return this.withStorageOperation(() =>
+      this.writeWorkspaceFileContentUnchecked(filePath, data, contentType));
+  }
+
+  private async writeWorkspaceFileContentUnchecked(
+    filePath: string,
+    data: string | ArrayBuffer | Uint8Array,
+    contentType?: string,
+  ): Promise<{ ok: true; filePath: string }> {
+    const relativePath = sanitizeRelativePath(filePath);
+    const textData = z.string().safeParse(data).data;
+    if (textData !== undefined) {
+      await this.getRuntimeWorkspace().writeFile(
+        toRuntimePath(relativePath),
+        textData,
+        contentType || getMimeType(relativePath),
+      );
+    } else {
+      const binaryData = z.union([
+        z.instanceof(ArrayBuffer),
+        z.instanceof(Uint8Array),
+      ]).parse(data);
+      await this.getRuntimeWorkspace().writeFileBytes(
+        toRuntimePath(relativePath),
+        binaryData,
+        contentType || getMimeType(relativePath),
+      );
+    }
+    return { ok: true, filePath: relativePath };
   }
 
   async deleteWorkspaceFileContent(filePath: string): Promise<{ ok: true; filePath: string }> {
-    return this.withMutationFence(async () => {
+    return this.withStorageOperation(async () => {
       const runtime = this.getRuntimeWorkspace();
       const relativePath = sanitizeRelativePath(filePath);
       await runtime.rm(toRuntimePath(relativePath), { force: true });
@@ -809,7 +1053,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async clearWorkspaceFiles(): Promise<void> {
-    await this.withMutationFence(() => this.clearRuntimeFilesUnchecked());
+    await this.withStorageOperation(() => this.clearRuntimeFilesUnchecked());
   }
 
   private async clearRuntimeFilesUnchecked(): Promise<void> {
@@ -922,16 +1166,56 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     });
   }
 
+  /**
+   * Serialize only provider writes. Code Mode itself remains fenced for the
+   * migration active-mutation counter, while each native write enters the
+   * storage tail so HTTP file/gallery operations cannot interleave with it.
+   */
+  private serializeProviderWrites<T extends { tools: object }>(
+    provider: T,
+    writeMethods: ReadonlySet<string>,
+  ): T {
+    type ProviderTool = {
+      execute?: (...args: unknown[]) => ProviderToolValue | Promise<ProviderToolValue>;
+    };
+    // SAFETY: stateTools() and gitTools() return mutable tool maps at runtime;
+    // this method only wraps names from their documented write-method sets.
+    const tools = provider.tools as Record<string, ProviderTool>;
+    for (const method of writeMethods) {
+      const tool = tools[method];
+      const execute = tool?.execute;
+      if (!execute) continue;
+      tool.execute = (...args: unknown[]) => this.withStorageOperation(
+        async () => execute(...args),
+      );
+    }
+    return provider;
+  }
+
+  private buildSerializedStateTools() {
+    return this.serializeProviderWrites(
+      stateTools(this.getRuntimeWorkspace()),
+      STATE_WRITE_METHODS,
+    );
+  }
+
+  private buildSerializedGitTools() {
+    return this.serializeProviderWrites(
+      guardGitToken(gitTools(this.getRuntimeWorkspace()), {
+        token: this.env.GIT_AUTH_TOKEN,
+        allowedHosts: parseGitAllowedHosts(this.env),
+      }),
+      GIT_WRITE_METHODS,
+    );
+  }
+
   private createCodeModeTool(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
     const codeModeTools = this.buildCodeModeHostTools(tools);
     const codemode = createCodeTool({
       tools: [
         aiTools(codeModeTools),
-        stateTools(this.getRuntimeWorkspace()),
-        guardGitToken(gitTools(this.getRuntimeWorkspace()), {
-          token: this.env.GIT_AUTH_TOKEN,
-          allowedHosts: parseGitAllowedHosts(this.env),
-        }),
+        this.buildSerializedStateTools(),
+        this.buildSerializedGitTools(),
       ],
       executor: this.createCodeExecutor(),
       description: CODEMODE_DESCRIPTION,
@@ -958,11 +1242,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const codeModeTools = this.buildCodeModeHostTools(tools);
     return [
       resolveProvider(aiTools(codeModeTools)),
-      resolveProvider(stateTools(this.getRuntimeWorkspace())),
-      resolveProvider(guardGitToken(gitTools(this.getRuntimeWorkspace()), {
-        token: this.env.GIT_AUTH_TOKEN,
-        allowedHosts: parseGitAllowedHosts(this.env),
-      })),
+      resolveProvider(this.buildSerializedStateTools()),
+      resolveProvider(this.buildSerializedGitTools()),
     ];
   }
 
@@ -1447,7 +1728,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const original = toolDefinition?.execute;
       if (!original) continue;
       toolDefinition.execute = (...args: never[]) =>
-        this.withMutationFence(() => original(...args));
+        this.withStorageOperation(() => original(...args));
     }
 
     if (scopedPanels.length > 0) {
@@ -1569,10 +1850,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   /** Write raw bytes to a durable workspace file, returning the relative path. */
-  private async writeRuntimeFileBytes(filePath: string, bytes: Uint8Array): Promise<string> {
+  private async writeRuntimeFileBytes(
+    filePath: string,
+    bytes: Uint8Array,
+    contentType?: string,
+  ): Promise<string> {
     const runtime = this.getRuntimeWorkspace();
     const relativePath = sanitizeRelativePath(filePath);
-    await runtime.writeFileBytes(toRuntimePath(relativePath), bytes, getMimeType(relativePath));
+    await runtime.writeFileBytes(
+      toRuntimePath(relativePath),
+      bytes,
+      contentType || getMimeType(relativePath),
+    );
     return relativePath;
   }
 
@@ -1594,6 +1883,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (this.migrationFrozen) {
       throw new Error('workspace is frozen for migration');
     }
+  }
+
+  private assertStorageOperationSession(sessionId: string): void {
+    if (this.csrfSessionId() !== sessionId) {
+      throw new Error('storage operation session does not match workspace owner');
+    }
+  }
+
+  private withStorageOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const current = this.storageOperationTail.then(() => this.withMutationFence(operation));
+    this.storageOperationTail = current.then(() => undefined, () => undefined);
+    return current;
   }
 
   private async withMutationFence<T>(operation: () => Promise<T> | T): Promise<T> {

@@ -570,13 +570,7 @@ test('upload rollback restores overwritten files and removes newly created files
   const workspace = await createWorkspace(session, 'Rollback');
   const agent = agents.get(`${sessionId}-${workspace.id}`);
   await agent.writeWorkspaceFileContent('existing.txt', 'original', 'text/plain');
-  const realWrite = agent.writeWorkspaceFileContent.bind(agent);
-  let uploadWrites = 0;
-  agent.writeWorkspaceFileContent = async (...args) => {
-    uploadWrites += 1;
-    if (uploadWrites === 2) throw new Error('injected upload failure');
-    return realWrite(...args);
-  };
+  agent.uploadWriteFailure = (_entry, index) => index === 1;
 
   const form = new FormData();
   form.append('files', new File(['replacement'], 'existing.txt', { type: 'text/plain' }));
@@ -636,6 +630,63 @@ test('DELETE workspace keeps its metadata until runtime cleanup succeeds', async
   assert.equal(await r2.get(runtimeKey), null);
 });
 
+test('DELETE workspace releases its freeze when marking fails before the metadata write', async () => {
+  const { env, r2, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Retry marker write');
+  const metadataKey = `agent-studio/sessions/${sessionId}/workspaces/${workspace.id}/workspace.json`;
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+
+  const realPut = r2.put.bind(r2);
+  let failMarkerWrite = true;
+  r2.put = async (key, value, options = {}) => {
+    if (failMarkerWrite && key === metadataKey && options.onlyIf?.etagMatches) {
+      failMarkerWrite = false;
+      throw new Error('injected marker write failure before commit');
+    }
+    return realPut(key, value, options);
+  };
+
+  const firstAttempt = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(firstAttempt.status, 500);
+  assert.ok(await r2.get(metadataKey));
+  assert.equal(agent.frozen, false, 'a failed marker write must release the freeze');
+
+  const retry = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(retry.status, 200);
+  assert.equal(await r2.get(metadataKey), null);
+});
+
+test('DELETE workspace keeps its freeze when the marker write outcome is ambiguous', async () => {
+  const { env, r2, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Ambiguous marker write');
+  const metadataKey = `agent-studio/sessions/${sessionId}/workspaces/${workspace.id}/workspace.json`;
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+
+  const realPut = r2.put.bind(r2);
+  let throwAfterMarkerCommit = true;
+  r2.put = async (key, value, options = {}) => {
+    if (throwAfterMarkerCommit && key === metadataKey && options.onlyIf?.etagMatches) {
+      await realPut(key, value, options);
+      throwAfterMarkerCommit = false;
+      throw new Error('injected marker write failure after commit');
+    }
+    return realPut(key, value, options);
+  };
+
+  const firstAttempt = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(firstAttempt.status, 500);
+  const marked = await r2.get(metadataKey);
+  assert.ok(marked);
+  assert.equal((await marked.json()).deleting, true);
+  assert.equal(agent.frozen, true, 'an ambiguous marker write must remain fenced');
+
+  const retry = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(retry.status, 200);
+  assert.equal(await r2.get(metadataKey), null);
+});
+
 test('DELETE workspace removes its shared gallery item', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -656,61 +707,56 @@ test('DELETE workspace removes its shared gallery item', async () => {
   assert.equal((await session.request(app, `/api/gallery/${published.item.id}`)).status, 404);
 });
 
-test('DELETE workspace fences an in-flight first publish and removes its gallery item', async () => {
-  const { env, r2, agents } = makeEnv();
-  const { session, sessionId } = await openSession(app, env);
-  const workspace = await createWorkspace(session, 'Concurrent publish cleanup');
-  const agent = agents.get(`${sessionId}-${workspace.id}`);
+test('DELETE workspace retries after an in-flight publish instead of orphaning its gallery copy', async () => {
+  const { env, r2 } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Retry concurrent cleanup');
 
   let releaseManifest;
   const manifestReleased = new Promise((resolve) => { releaseManifest = resolve; });
   let manifestStored;
   const storedManifest = new Promise((resolve) => { manifestStored = resolve; });
-  let galleryId;
   const originalPut = r2.put.bind(r2);
-  r2.put = async (key, value, options) => {
+  r2.put = async (key, value, options = {}) => {
     const result = await originalPut(key, value, options);
     if (key.startsWith('agent-studio/gallery/items/') && key.endsWith('/manifest.json')) {
-      galleryId = key.split('/')[3];
       manifestStored();
       await manifestReleased;
     }
     return result;
   };
-
-  let releaseDestroy;
-  const destroyReleased = new Promise((resolve) => { releaseDestroy = resolve; });
-  let destroyStarted;
-  const startedDestroy = new Promise((resolve) => { destroyStarted = resolve; });
-  const originalDestroy = agent.destroyWorkspaceState.bind(agent);
-  agent.destroyWorkspaceState = async () => {
-    destroyStarted();
-    await destroyReleased;
-    return originalDestroy();
+  const originalDelete = r2.delete.bind(r2);
+  let failGalleryDelete = true;
+  r2.delete = async (keys) => {
+    const requestedKeys = Array.isArray(keys) ? keys : [keys];
+    if (failGalleryDelete && requestedKeys.some((key) => key.startsWith('agent-studio/gallery/items/'))) {
+      throw new Error('injected gallery cleanup failure');
+    }
+    return originalDelete(keys);
   };
 
   const publishing = session.request(
     app,
     `/api/workspaces/${workspace.id}/publish`,
-    jsonInit('POST', { title: 'Racing publish', description: 'Must be rolled back' }),
+    jsonInit('POST', { title: 'Racing publish', description: 'Must survive retry' }),
   );
   await storedManifest;
 
-  const deleting = session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
-  await startedDestroy;
-  const duringDelete = await (await session.request(app, '/api/workspaces')).json();
-  assert.equal(duringDelete.workspaces.some((item) => item.id === workspace.id), false);
-  assert.equal(
-    (await session.request(app, `/api/workspaces/${workspace.id}`)).status,
-    404,
-  );
-  releaseManifest();
+  // Production freezeForMigration refuses an active storage mutation before
+  // the DELETE route marks the metadata. The busy response is a retryable
+  // conflict; the route must not lose the only galleryId needed for cleanup.
+  const firstDelete = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(firstDelete.status, 409);
 
+  releaseManifest();
   const publishResponse = await publishing;
-  assert.equal(publishResponse.status, 409);
-  releaseDestroy();
-  assert.equal((await deleting).status, 200);
-  assert.equal((await session.request(app, `/api/gallery/${galleryId}`)).status, 404);
+  assert.equal(publishResponse.status, 201);
+  failGalleryDelete = false;
+
+  const retry = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(retry.status, 200);
+  const published = await publishResponse.json();
+  assert.equal((await session.request(app, `/api/gallery/${published.item.id}`)).status, 404);
 });
 
 test('DELETE workspace fences an in-flight idempotent publish retry', async () => {
@@ -1465,11 +1511,11 @@ test('gallery: publish redacts DO naming fields and keeps ownership via an opaqu
   assert.equal(publishedState.sessionId, null);
   assert.equal(publishedState.workspace.id, '');
 
-  const forbidden = await other.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
-  assert.equal(forbidden.status, 403);
-  assert.equal((await readError(forbidden)).code, 'forbidden');
+  const forbidden = await other.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
+  assert.equal(forbidden.status, 404);
+  assert.equal((await readError(forbidden)).code, 'not_found');
 
-  const removed = await author.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
+  const removed = await author.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
   assert.equal(removed.status, 200);
   assert.equal(await r2.get(`${prefix}manifest.json`), null);
 });
@@ -1647,11 +1693,11 @@ test('gallery: clone fails loud and removes the workspace when a listed gallery 
   assert.deepEqual(list.workspaces, []);
 });
 
-test('gallery: unpublish (DELETE /api/gallery/:id) by the author removes the item', async () => {
+test('gallery: workspace unpublish (DELETE /api/workspaces/:id/publish) by the author removes the item', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session, 'ToUnpublish');
-  const pub = await (
+  await (
     await session.request(
       app,
       `/api/workspaces/${workspace.id}/publish`,
@@ -1659,7 +1705,7 @@ test('gallery: unpublish (DELETE /api/gallery/:id) by the author removes the ite
     )
   ).json();
 
-  const delRes = await session.request(app, `/api/gallery/${pub.item.id}`, { method: 'DELETE' });
+  const delRes = await session.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
   assert.equal(delRes.status, 200);
   assert.deepEqual(await delRes.json(), { success: true });
 
@@ -1669,9 +1715,13 @@ test('gallery: unpublish (DELETE /api/gallery/:id) by the author removes the ite
   // The workspace record no longer references the gallery id.
   const detail = await (await session.request(app, `/api/workspaces/${workspace.id}`)).json();
   assert.equal(detail.workspace.galleryId, undefined);
+
+  const retry = await session.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
+  assert.equal(retry.status, 404);
+  assert.equal((await readError(retry)).code, 'not_found');
 });
 
-test('gallery: unpublish by a different session returns 403 and keeps the item', async () => {
+test('gallery: workspace unpublish by a different session returns 404 and keeps the item', async () => {
   const { env } = makeEnv();
   const { session: author } = await openSession(app, env);
   const { session: other } = await openSession(app, env);
@@ -1684,9 +1734,9 @@ test('gallery: unpublish by a different session returns 403 and keeps the item',
     )
   ).json();
 
-  const delRes = await other.request(app, `/api/gallery/${pub.item.id}`, { method: 'DELETE' });
-  assert.equal(delRes.status, 403);
-  assert.equal((await readError(delRes)).code, 'forbidden');
+  const delRes = await other.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
+  assert.equal(delRes.status, 404);
+  assert.equal((await readError(delRes)).code, 'not_found');
 
   const getRes = await author.request(app, `/api/gallery/${pub.item.id}`);
   assert.equal(getRes.status, 200);
