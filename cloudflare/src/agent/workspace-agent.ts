@@ -55,6 +55,7 @@ import {
   clearPanelRelationFields,
   connectionEndpointKey,
   makePanelConnection,
+  normalizePanelGroups,
   normalizePanelRelations,
   repairPanelConnectionId,
 } from '../lib/panel-connections';
@@ -266,7 +267,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
     const normalizedRelations = normalizePanelRelations(this.state.panels, this.state.connections);
-    this.setState({ ...this.state, ...normalizedRelations });
+    this.setState({
+      ...this.state, ...normalizedRelations,
+      groups: normalizePanelGroups(this.state.groups, this.state.panels),
+    });
     if (this.cailIdentityJwt === null) {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
       if (stored) {
@@ -550,7 +554,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       workspace,
       ...normalizedRelations,
       viewport: state.viewport || DEFAULT_WORKSPACE_STATE.viewport,
-      groups: state.groups || [],
+      groups: normalizePanelGroups(state.groups || [], panels),
     });
   }
 
@@ -829,9 +833,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.setState({
       ...this.state,
       ...normalizedRelations,
-      groups: this.state.groups
-        .map((group) => ({ ...group, panelIds: group.panelIds.filter((id) => id !== panelId) }))
-        .filter((group) => group.panelIds.length >= 2),
+      groups: normalizePanelGroups(this.state.groups, panels),
     });
     return this.state;
   }
@@ -893,9 +895,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     for (const groupId of parsedPatch.removeGroups ?? []) {
       groupsById.delete(groupId);
     }
-    const groups = [...groupsById.values()]
-      .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
-      .filter((group) => group.panelIds.length >= 2);
+    const groups = normalizePanelGroups([...groupsById.values()], panelsWithClearedRelations);
 
     this.setState({
       ...this.state,

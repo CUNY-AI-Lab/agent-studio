@@ -1002,6 +1002,37 @@ async function makeLayoutAgent(state) {
   };
 }
 
+test('import, boot, and edits keep only distinct existing group members', async () => {
+  const workspace = { id: 'workspace', name: 'Groups', description: '', createdAt: '', updatedAt: '' };
+  const state = {
+    sessionId: null, workspace,
+    panels: [panel('a'), panel('b'), panel('c')],
+    viewport: { x: 0, y: 0, zoom: 1 }, connections: [],
+    groups: [
+      { id: 'valid', name: 'Keep this name', panelIds: ['a', 'b', 'b', 'missing'] },
+      { id: 'singleton', panelIds: ['c', 'c', 'missing'] },
+      { id: 'valid', name: 'Latest name', panelIds: ['b', 'a', 'a'] },
+    ],
+  };
+  const { fake, applyLayoutPatch, removePanel } = await makeLayoutAgent(state);
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  await WorkspaceAgent.prototype.replaceWorkspaceState.call(fake, state, workspace, 'session');
+  const expected = [{ id: 'valid', name: 'Latest name', panelIds: ['b', 'a'] }];
+  assert.deepEqual(fake.state.groups, expected);
+
+  fake.state = state;
+  fake.cailIdentityJwt = 'already-verified-for-test';
+  fake.ctx = { storage: { get: async () => undefined } };
+  await WorkspaceAgent.prototype.onStart.call(fake);
+  assert.deepEqual(fake.state.groups, expected);
+  await applyLayoutPatch({ groups: [{ id: 'valid', panelIds: ['a', 'a', 'b', 'c'] }] });
+  assert.deepEqual(fake.state.groups, [{ id: 'valid', panelIds: ['a', 'b', 'c'] }]);
+  await removePanel('b');
+  assert.deepEqual(fake.state.groups, [{ id: 'valid', panelIds: ['a', 'c'] }]);
+  await removePanel('a');
+  assert.deepEqual(fake.state.groups, []);
+});
+
 test('layout patch preserves negative flow coordinates through the DO state echo and reload', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const { applyLayoutPatch } = await makeLayoutAgent({
