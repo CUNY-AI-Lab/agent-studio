@@ -39,6 +39,8 @@ export class ModelCatalogCapabilityError extends Error {}
 export interface FetchCailModelsOptions {
   env: CailModelEnv;
   identityJwt: string | null;
+  /** Cancellation for the chat admission request that owns this lookup. */
+  abortSignal?: AbortSignal;
   /** Injectable transport for unit tests; deployed code uses env.GATEWAY. */
   fetchImpl?: typeof fetch;
 }
@@ -103,7 +105,7 @@ function normalizeEntry(entry: z.infer<typeof modelEntrySchema>, index: number):
 }
 
 export async function fetchCailModels(options: FetchCailModelsOptions): Promise<CailModelsResult> {
-  const { env, identityJwt } = options;
+  const { env, identityJwt, abortSignal } = options;
   if (!identityJwt) throw new ModelCatalogAuthError('CAIL authentication is required to list models.');
   const apiBase = canonicalCailApiBase(env.CAIL_API_BASE ?? '');
   const gateway = env.GATEWAY;
@@ -111,6 +113,7 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
     ?? (gateway ? (input: RequestInfo | URL, init?: RequestInit) => gateway.fetch(input, init) : null);
   if (!fetchImpl) throw new Error('GATEWAY service binding is required for model catalog calls.');
 
+  abortSignal?.throwIfAborted();
   const response = await fetchImpl(`${apiBase}/v1/models`, {
     method: 'GET',
     headers: {
@@ -122,7 +125,9 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
     // Cloudflare service bindings reject `redirect:'error'`; manual handling
     // keeps redirect responses fail-closed without forwarding credentials.
     redirect: 'manual',
+    signal: abortSignal,
   });
+  abortSignal?.throwIfAborted();
   if (response.status === 401 || response.status === 403) {
     throw new ModelCatalogAuthError('Model catalog authentication failed.');
   }
@@ -133,7 +138,9 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
     throw new Error(`Model catalog request failed with status ${response.status}.`);
   }
 
-  const envelope = modelListEnvelopeSchema.safeParse(await response.json());
+  const payload = await response.json();
+  abortSignal?.throwIfAborted();
+  const envelope = modelListEnvelopeSchema.safeParse(payload);
   if (!envelope.success) throw new Error('Model catalog response did not match the CAIL schema.');
 
   // The shared Gateway serves multiple products and may include OpenRouter

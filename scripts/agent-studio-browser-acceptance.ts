@@ -79,6 +79,11 @@ type ApiCallOptions<T> = {
 
 const HealthPayloadSchema = z.object({ ok: z.literal(true) }).passthrough();
 const AcknowledgementPayloadSchema = z.object({}).passthrough();
+const ChatRequestSchema = z.object({
+  type: z.literal('cf_agent_use_chat_request'),
+  id: z.string(),
+  init: z.object({ body: z.string() }),
+});
 const WorkspacePayloadSchema = z.object({
   state: z.object({
     viewport: z.object({ x: z.number(), y: z.number(), zoom: z.number() }),
@@ -398,11 +403,20 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
     name: 'encoded.txt', mimeType: 'application/octet-stream', buffer: binaryText,
   }, {
     name: 'bom.txt', mimeType: 'text/plain', buffer: bomText,
+  }, {
+    name: 'notes.csv', mimeType: 'text/csv',
+    buffer: Buffer.from('Name,Note\r\nAda,"first line\r\nsecond line"\r\nGrace,"comma, then ""quoted"""\r\n'),
   }]);
+  await page.getByRole('button', { name: /^notes\.csv, .*File actions$/ }).click();
+  await page.getByRole('menuitem', { name: 'Show on Canvas', exact: true }).click();
+  await expect(page.getByRole('row', { name: 'Ada first line second line', exact: true })).toBeVisible();
+  await expect(page.getByRole('row', { name: 'Grace comma, then "quoted"', exact: true })).toBeVisible();
   const fileActions = page.getByRole('button', { name: /^research\.md, .*File actions$/ });
   await fileActions.click();
   await page.getByRole('menuitem', { name: 'Show on Canvas', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+
+  await verifyCompactNavigation(page);
 
   await fileActions.click();
   const fileDownloadPromise = page.waitForEvent('download');
@@ -419,6 +433,8 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   if (!exportPath) fail('Workspace export did not finish');
   const bundle = await readFile(exportPath);
 
+  await page.getByRole('textbox', { name: 'Workspace description' }).fill('Private planning note: synthetic gallery boundary check');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.getByRole('button', { name: /^Publish(?: to gallery)?$/ }).click();
   const dialog = page.getByRole('dialog', { name: 'Publish to Gallery' });
   await dialog.getByRole('textbox', { name: 'Title', exact: true }).fill('Shared research');
@@ -432,7 +448,10 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   const published = z.object({ item: z.object({ id: z.string() }) }).parse(await publication.json());
   await expect(page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ })).toBeVisible();
 
-  const otherPage = await page.context().newPage();
+  const browser = page.context().browser();
+  if (!browser) fail('Gallery acceptance requires a separate browser session');
+  const otherContext = await browser.newContext({ acceptDownloads: true });
+  const otherPage = await otherContext.newPage();
   let importedWorkspaceId: string | undefined;
   try {
     const galleryUrl = new URL(baseUrl);
@@ -440,6 +459,21 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
     await otherPage.goto(galleryUrl.toString(), { waitUntil: 'networkidle' });
     await expect(otherPage.getByRole('heading', { name: 'Shared research', exact: true })).toBeVisible();
     await expect(otherPage.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+    await apiCall(otherPage, baseUrl, `/api/gallery/${published.item.id}`, {
+      label: 'read only chosen publication metadata from another session',
+      schema: z.object({ item: z.object({
+        title: z.literal('Shared research'),
+        description: z.literal('Local browser acceptance'),
+        prompt: z.never().optional(),
+        state: z.object({
+          sessionId: z.null(),
+          workspace: z.object({
+            name: z.literal('Shared research'),
+            description: z.literal('Local browser acceptance'),
+          }),
+        }),
+      }) }),
+    });
 
     page.once('dialog', (confirmation) => void confirmation.accept());
     await page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ }).click();
@@ -484,10 +518,29 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
         method: 'DELETE', label: 'cleanup imported workspace', schema: AcknowledgementPayloadSchema,
       });
     }
-    await otherPage.close();
+    await otherContext.close();
   }
   await page.reload({ waitUntil: 'networkidle' });
   await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+}
+
+async function verifyCompactNavigation(page: Page): Promise<void> {
+  const workspaceName = await page.getByRole('textbox', { name: 'Workspace name' }).inputValue();
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+    await page.getByRole('tab', { name: 'Canvas', exact: true }).click();
+    await page.getByRole('button', { name: /^research\.md, .*File actions$/ }).click();
+    await page.getByRole('menuitem', { name: 'Go to Tile', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+    await page.getByRole('tab', { name: 'Chat', exact: true }).click();
+    await page.getByRole('button', { name: 'Back to home', exact: true }).click();
+    await expect(page.getByRole('textbox', { name: 'What would you like to work on?' })).toBeVisible();
+    await page.getByRole('button', { name: new RegExp(escapeRegExp(workspaceName)) }).click();
+    await expect(page.getByRole('textbox', { name: 'Workspace name' })).toHaveValue(workspaceName);
+    await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
 }
 
 async function verifyFileExecutionBoundary(page: Page, baseUrl: string): Promise<void> {
@@ -630,11 +683,6 @@ async function verifyConcurrentLayoutEdits(page: Page, baseUrl: string, workspac
 async function verifyContextualRetry(page: Page): Promise<void> {
   const chatPage = await page.context().newPage();
   await chatPage.setViewportSize({ width: 1440, height: 1000 });
-  const requestSchema = z.object({
-    type: z.literal('cf_agent_use_chat_request'),
-    id: z.string(),
-    init: z.object({ body: z.string() }),
-  });
   const bodySchema = z.object({
     scopePanelIds: z.array(z.string()),
     messages: z.array(z.object({ id: z.string(), role: z.string() }).passthrough()),
@@ -646,7 +694,7 @@ async function verifyContextualRetry(page: Page): Promise<void> {
   await chatPage.routeWebSocket('**/agents/**', (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
-      const request = requestSchema.safeParse(JSON.parse(message.toString()));
+      const request = ChatRequestSchema.safeParse(JSON.parse(message.toString()));
       if (!request.success) {
         server.send(message);
         return;
@@ -688,6 +736,76 @@ async function verifyContextualRetry(page: Page): Promise<void> {
   }
 }
 
+async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<void> {
+  const compactPage = await page.context().newPage();
+  let workspaceId: string | undefined;
+  let releasePreparation: (() => void) | undefined;
+  const preparation = new Promise<void>((resolvePreparation) => { releasePreparation = resolvePreparation; });
+  let credentialRequests = 0;
+  let modelRequests = 0;
+  // Deliberately stall preparation, then complete the next model response
+  // locally. The rendered App and Stop action are real; no paid call is made.
+  await compactPage.route('**/model-credential', async (route) => {
+    credentialRequests += 1;
+    if (credentialRequests === 1) await preparation;
+    await route.fulfill({ status: 204 });
+  });
+  await compactPage.routeWebSocket('**/agents/**', (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const request = ChatRequestSchema.safeParse(JSON.parse(message.toString()));
+      if (!request.success) {
+        server.send(message);
+        return;
+      }
+      modelRequests += 1;
+      socket.send(JSON.stringify({
+        type: 'cf_agent_use_chat_response', id: request.data.id,
+        body: JSON.stringify({ type: 'finish' }), done: true,
+      }));
+    });
+  });
+  try {
+    await compactPage.setViewportSize({ width: 390, height: 844 });
+    await compactPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await compactPage.getByRole('button', { name: 'Start blank' }).click();
+    await compactPage.waitForURL(/workspace=/);
+    workspaceId = workspaceIdFromUrl(compactPage.url());
+    await compactPage.getByRole('tab', { name: 'Chat', exact: true }).click();
+    const composer = compactPage.getByRole('textbox', { name: 'Message the agent' });
+    await composer.fill('Stop this synthetic turn before dispatch.');
+    await compactPage.getByRole('button', { name: 'Send message' }).click();
+    await expect.poll(() => credentialRequests).toBe(1);
+    await compactPage.getByRole('button', { name: 'Stop response' }).click();
+    await expect(compactPage.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
+    expect(modelRequests).toBe(0);
+    releasePreparation?.();
+    await composer.fill('Complete the next synthetic turn.');
+    await compactPage.getByRole('button', { name: 'Send message' }).click();
+    await expect.poll(() => modelRequests).toBe(1);
+    await expect(compactPage.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
+    await apiCall(compactPage, baseUrl, `/api/workspaces/${workspaceId}/panels`, {
+      method: 'POST', label: 'deliver a new result while the canvas is hidden',
+      body: { panel: {
+        id: 'compact-result', type: 'markdown', title: 'New research result', content: 'Ready to inspect.',
+        layout: { x: 3600, y: -2400, width: 260, height: 180 },
+      } },
+      schema: AcknowledgementPayloadSchema,
+    });
+    await expect(compactPage.getByRole('heading', { name: 'New research result', includeHidden: true })).toBeAttached();
+    // Let the existing 120ms autofocus debounce finish while Chat is active.
+    await delay(240);
+    await compactPage.getByRole('tab', { name: 'Canvas', exact: true }).click();
+    await expect(panelLocator(compactPage, 'New research result', 'markdown')).toBeInViewport({ ratio: 0.9 });
+  } finally {
+    releasePreparation?.();
+    if (workspaceId) await apiCall(compactPage, baseUrl, `/api/workspaces/${workspaceId}`, {
+      method: 'DELETE', label: 'cleanup compact result workspace', schema: AcknowledgementPayloadSchema,
+    });
+    await compactPage.close();
+  }
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -708,7 +826,6 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await page.waitForURL(/workspace=/);
     workspaceId = workspaceIdFromUrl(page.url());
     await expect(page.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
-    await expect(page.getByText('Agent activity')).toHaveCount(0);
 
     await seedCards(page, baseUrl, workspaceId);
     await page.reload({ waitUntil: 'networkidle' });
@@ -722,6 +839,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
 
     await verifyConcurrentLayoutEdits(page, baseUrl, workspaceId);
     await verifyContextualRetry(page);
+    await verifyCompactChatRecovery(page, baseUrl);
     await page.bringToFront();
 
     await selectPanel(page, 'Source cards', 'cards');

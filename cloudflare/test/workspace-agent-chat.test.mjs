@@ -647,6 +647,65 @@ test('anonymous chat streams an authentication error instead of assistant JSON',
   assert.equal(Object.keys(payload.error).sort().join(','), 'code,launch,message');
 });
 
+test('chat admission aborts a delayed model catalog before model dispatch', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  let catalogSignal;
+  let catalogStartedResolve;
+  const catalogStarted = new Promise((resolve) => { catalogStartedResolve = resolve; });
+  const gateway = {
+    async fetch(input, init) {
+      if (String(input) === 'https://cail.test/v1/models') {
+        catalogSignal = init?.signal;
+        catalogStartedResolve();
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+        });
+      }
+      throw new Error('inference must not run after admission cancellation');
+    },
+  };
+  const agent = {
+    assertNotFrozen() {},
+    requireWorkspace() {
+      return {
+        id: 'workspace-1',
+        name: 'Human title',
+        description: '',
+        createdAt: '',
+        updatedAt: '',
+        model: '@cf/model-a',
+      };
+    },
+    requireSessionId() {
+      return 'session-1';
+    },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() {
+      return { status: 'valid' };
+    },
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
+  };
+  const controller = new AbortController();
+  const pending = WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, {
+    requestId: 'catalog-abort',
+    abortSignal: controller.signal,
+  });
+  await catalogStarted;
+  controller.abort();
+
+  let timeout;
+  const outcome = await Promise.race([
+    pending.then(() => 'resolved', (error) => error),
+    new Promise((resolve) => {
+      timeout = setTimeout(() => resolve('timed-out'), 100);
+    }),
+  ]);
+  clearTimeout(timeout);
+  assert.notEqual(outcome, 'timed-out', 'chat admission should settle on Stop');
+  assert.equal(outcome, controller.signal.reason);
+  assert.equal(catalogSignal?.aborted, true);
+});
+
 test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {

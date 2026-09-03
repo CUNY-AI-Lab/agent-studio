@@ -85,8 +85,9 @@ Gallery publication writes private ownership and state before the shared
 gallery manifest and uses a client operation identifier to make a repeated
 request safe. Gallery links open only for signed-in CAIL members; gallery
 records are returned through authenticated routes and do not contain owner
-identifiers. The private owner tag is keyed by `SESSION_SECRET` and is never
-logged.
+identifiers. Shared metadata uses the title and description chosen in the
+publish dialog, not the private workspace description. The private owner tag is
+keyed by `SESSION_SECRET` and is never logged.
 
 Publish, unpublish, upload batches, and competing file/tool writes share one
 in-memory queue in the workspace Durable Object. Unpublish reads the current
@@ -132,8 +133,9 @@ context. When configured, Primo, WorldCat, and LibGuides credentials are attache
 server-side only for their approved API hosts. PDF, XLSX, and DOCX tools run
 on the host side of the Worker boundary.
 
-Stop aborts the model request, prevents later host/provider dispatches, and
-cancels supported native fetches. Queued writes recheck the turn signal before
+Stop cancels credential and model-catalog preparation as well as the model
+request, prevents later host/provider dispatches, and cancels supported native
+fetches. Queued writes recheck the turn signal before
 starting. Stop cannot undo a dispatched write or forcibly interrupt JavaScript
 already running inside Code Mode; the installed executor has no abort API.
 

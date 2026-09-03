@@ -63,6 +63,37 @@ test('catalog makes one direct authenticated service-binding request', async (t)
   ]);
 });
 
+test('catalog aborts a delayed service-binding request without retrying', async () => {
+  const controller = new AbortController();
+  let requestSignal;
+  const fetchImpl = async (_input, init) => {
+    requestSignal = init?.signal;
+    return new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    });
+  };
+  const pending = fetchCailModels({
+    env: { CAIL_API_BASE: BASE },
+    identityJwt: JWT,
+    fetchImpl,
+    abortSignal: controller.signal,
+  });
+  await new Promise((resolve) => queueMicrotask(resolve));
+  controller.abort();
+
+  let timeout;
+  const outcome = await Promise.race([
+    pending.then(() => 'resolved', (error) => error),
+    new Promise((resolve) => {
+      timeout = setTimeout(() => resolve('timed-out'), 100);
+    }),
+  ]);
+  clearTimeout(timeout);
+  assert.notEqual(outcome, 'timed-out', 'catalog fetch should settle on the caller signal');
+  assert.equal(outcome, controller.signal.reason);
+  assert.equal(requestSignal?.aborted, true);
+});
+
 test('catalog ignores unsupported Gateway provider entries without hiding Workers AI', async () => {
   const capture = captureGateway(() => response([
     { id: 'anthropic/claude-sonnet-4', provider: 'openrouter' },

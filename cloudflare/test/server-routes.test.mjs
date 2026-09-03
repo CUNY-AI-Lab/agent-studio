@@ -1467,6 +1467,11 @@ test('gallery: publish a workspace -> appears in list -> get by id', async () =>
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session, 'Publishable');
+  await session.request(
+    app,
+    `/api/workspaces/${workspace.id}`,
+    jsonInit('PATCH', { description: 'PRIVATE_SOURCE_DESCRIPTION_SENTINEL' }),
+  );
 
   const pubRes = await session.request(
     app,
@@ -1485,7 +1490,19 @@ test('gallery: publish a workspace -> appears in list -> get by id', async () =>
 
   const getRes = await session.request(app, `/api/gallery/${pub.item.id}`);
   assert.equal(getRes.status, 200);
-  assert.equal((await getRes.json()).item.id, pub.item.id);
+  const detail = await getRes.json();
+  assert.equal(detail.item.id, pub.item.id);
+  assert.equal('prompt' in detail.item, false);
+  assert.equal(detail.item.title, 'My Gallery Item');
+  assert.equal(detail.item.description, 'A description');
+  assert.equal(detail.item.state.sessionId, null);
+  assert.deepEqual(detail.item.state.workspace, {
+    id: '',
+    name: 'My Gallery Item',
+    description: 'A description',
+    createdAt: detail.item.publishedAt,
+    updatedAt: detail.item.publishedAt,
+  });
 });
 
 test('gallery: publish redacts DO naming fields and keeps ownership via an opaque tag', async () => {
@@ -1507,9 +1524,16 @@ test('gallery: publish redacts DO naming fields and keeps ownership via an opaqu
   const owner = await (await r2.get(`${prefix}owner.json`)).json();
   const publishedState = await (await r2.get(`${prefix}state.json`)).json();
   assert.equal(manifest.authorId, undefined);
+  assert.equal(manifest.prompt, undefined);
   assert.equal(owner.tag, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
   assert.equal(publishedState.sessionId, null);
-  assert.equal(publishedState.workspace.id, '');
+  assert.deepEqual(publishedState.workspace, {
+    id: '',
+    name: 'Identity Safe',
+    description: 'No DO name components',
+    createdAt: manifest.publishedAt,
+    updatedAt: manifest.publishedAt,
+  });
 
   const forbidden = await other.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
   assert.equal(forbidden.status, 404);
@@ -1620,6 +1644,13 @@ test('gallery: clone (POST /api/gallery/:id) creates a workspace from a publishe
   assert.match(clone.workspaceId, /\S/);
   assert.notEqual(clone.workspaceId, source.id);
   assert.equal(clone.workspace.name, 'Cloneable');
+
+  const clonedFile = await session.request(
+    app,
+    `/api/workspaces/${clone.workspaceId}/files/readme.md`,
+  );
+  assert.equal(clonedFile.status, 200);
+  assert.equal(await clonedFile.text(), 'clone me');
 
   // The clone shows up in the caller's workspace list.
   const list = await (await session.request(app, '/api/workspaces')).json();
