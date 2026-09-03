@@ -44,7 +44,8 @@ the Durable Object uses the already verified gateway credential.
 When identity is required, `CAIL_REQUIRE_IDENTITY=true`, a complete issuer/JWKS
 pair, and the mounted base path are mandatory. Local development may leave
 identity disabled, but a partial identity configuration is rejected rather
-than treated as anonymous.
+than treated as anonymous. The flag accepts only `true`, `false`, or omission;
+a misspelled value fails configuration instead of disabling identity.
 
 Agent-owned auth failures use cail-identity 5.2.5's strict nested envelope,
 `{ "error": { "code", "message", "launch"? } }`. OpenAI-compatible
@@ -87,6 +88,17 @@ records are returned through authenticated routes and do not contain owner
 identifiers. The private owner tag is keyed by `SESSION_SECRET` and is never
 logged.
 
+Publish, unpublish, upload batches, and competing file/tool writes share one
+in-memory queue in the workspace Durable Object. Unpublish reads the current
+publication inside that queue. Upload rollback finishes before a later writer
+can start. This serializes operations in the running isolate; it is not a
+transaction across R2 and Durable Object storage or a crash-recovery lock.
+Unconfirmed cleanup returns an error, not a success response.
+
+Queued downloads are acknowledged by the IDs actually delivered to the
+browser. A later download is not removed by an earlier acknowledgement.
+Interrupted delivery may be repeated; delivery is not exactly-once.
+
 The only compatibility bridge is the [one-time first-login
 import](./legacy-account-import.md). A verified current identity and a verified
 signed legacy Agent Studio session cookie are required. The complete content
@@ -103,15 +115,27 @@ deletes cannot touch live data.
 
 Private files are fetched through the authenticated API. Responses use
 `nosniff`, a restrictive CSP, and attachment disposition for active content;
-HTML previews run in sandboxed iframes without same-origin authority.
+HTML previews run in sandboxed iframes without same-origin authority. The
+browser does not open unknown files as top-level Blob pages. Native PDF
+previews require PDF MIME; unknown or mismatched files remain downloadable.
+Workspace export/import preserves non-UTF-8 bytes and UTF-8 byte-order marks.
 
 Dynamic Worker code receives only the declared workspace capabilities. Guarded
 web fetch remains available for public destinations, blocks private targets,
-and checks every redirect. When configured, Git credentials are injected only
-for explicitly allowed HTTPS hosts and are not placed in model context. When
-configured, Primo, WorldCat, and LibGuides credentials are attached
+and checks every redirect. Optional Git credentials are considered only for
+commands with an explicit allowlisted HTTPS URL; remote-only fetch, pull, and
+push do not receive the default token. The native shell owns remote and
+redirect handling, so this check is not a general Git egress policy. Do not
+extend credential injection to remote-only commands without checking the
+effective push URL and redirect behavior. Credentials are not placed in model
+context. When configured, Primo, WorldCat, and LibGuides credentials are attached
 server-side only for their approved API hosts. PDF, XLSX, and DOCX tools run
 on the host side of the Worker boundary.
+
+Stop aborts the model request, prevents later host/provider dispatches, and
+cancels supported native fetches. Queued writes recheck the turn signal before
+starting. Stop cannot undo a dispatched write or forcibly interrupt JavaScript
+already running inside Code Mode; the installed executor has no abort API.
 
 ## Errors and output
 

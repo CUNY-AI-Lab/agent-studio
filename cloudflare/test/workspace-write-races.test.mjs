@@ -629,7 +629,12 @@ test('download tool keeps CSV text intact and rejects records that would become 
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const { env } = makeEnv();
-  const fake = { env, withMutationFence: async (operation) => operation() };
+  const fake = {
+    env,
+    storageOperationTail: Promise.resolve(),
+    withStorageOperation: WorkspaceAgent.prototype.withStorageOperation,
+    withMutationFence: async (operation) => operation(),
+  };
   const tools = WorkspaceAgent.prototype.buildHostTools.call(
     fake, { id: 'workspace', name: 'Research' }, 'session',
   );

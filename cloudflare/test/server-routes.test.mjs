@@ -2066,7 +2066,8 @@ test('import rollback removes an ambiguously written record even if its final de
   const form = new FormData();
   form.append('bundle', new File([JSON.stringify(makeImportBundle())], 'rollback.json', { type: 'application/json' }));
   const result = await session.request(app, '/api/workspaces/import', { method: 'POST', body: form });
-  assert.equal(result.status, 400);
+  assert.equal(result.status, 500);
+  assert.equal((await result.json()).error.code, 'internal_error');
   const list = await (await session.request(app, '/api/workspaces')).json();
   assert.deepEqual(list.workspaces, []);
 });

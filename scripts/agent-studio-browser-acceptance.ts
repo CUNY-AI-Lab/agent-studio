@@ -346,7 +346,7 @@ async function emptyCanvasPoint(page: Page, canvas: Locator): Promise<CanvasPoin
       const y = bounds.y + bounds.height * yFraction;
       const target = document.elementFromPoint(x, y);
       const application = target?.closest('[role="application"]');
-      const blocked = target?.closest('button, a, input, textarea, select, [contenteditable="true"], [role="group"], [role="heading"]');
+      const blocked = target?.closest('button, a, input, textarea, select, [contenteditable="true"], [role="group"], [role="heading"], .react-flow__node, .react-flow__edge');
       if (application && !blocked) {
         return { x: x - bounds.x, y: y - bounds.y };
       }
@@ -627,6 +627,67 @@ async function verifyConcurrentLayoutEdits(page: Page, baseUrl: string, workspac
   }
 }
 
+async function verifyContextualRetry(page: Page): Promise<void> {
+  const chatPage = await page.context().newPage();
+  await chatPage.setViewportSize({ width: 1440, height: 1000 });
+  const requestSchema = z.object({
+    type: z.literal('cf_agent_use_chat_request'),
+    id: z.string(),
+    init: z.object({ body: z.string() }),
+  });
+  const bodySchema = z.object({
+    scopePanelIds: z.array(z.string()),
+    messages: z.array(z.object({ id: z.string(), role: z.string() }).passthrough()),
+  }).passthrough();
+  const requests: Array<z.infer<typeof bodySchema>> = [];
+  // Deliberately fail only the model boundary. App, React hooks, socket and
+  // workspace state are real; no chat request reaches a paid provider.
+  await chatPage.route('**/model-credential', (route) => route.fulfill({ status: 204 }));
+  await chatPage.routeWebSocket('**/agents/**', (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const request = requestSchema.safeParse(JSON.parse(message.toString()));
+      if (!request.success) {
+        server.send(message);
+        return;
+      }
+      requests.push(bodySchema.parse(JSON.parse(request.data.init.body)));
+      socket.send(JSON.stringify({
+        type: 'cf_agent_use_chat_response', id: request.data.id,
+        error: true, done: true, body: 'Deliberate browser test failure',
+      }));
+    });
+  });
+  try {
+    await chatPage.goto(page.url(), { waitUntil: 'networkidle' });
+    await selectPanel(chatPage, 'Source cards', 'cards');
+    await chatPage.getByRole('button', { name: 'Chat about Source cards', exact: true }).click();
+    const question = chatPage.getByRole('textbox', { name: 'Ask about Source cards', exact: true });
+    await question.fill('Explain the source finding.');
+    await question.press('Enter');
+    const retry = chatPage.getByRole('button', { name: 'Retry', exact: true });
+    await expect(retry).toBeEnabled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].scopePanelIds).toEqual(['browser-source-cards']);
+
+    await selectPanel(chatPage, 'Related cards', 'cards');
+    await chatPage.getByRole('button', { name: 'Chat about Related cards', exact: true }).click();
+    await expect(retry).toBeDisabled();
+    expect(requests).toHaveLength(1);
+
+    await selectPanel(chatPage, 'Source cards', 'cards');
+    await chatPage.getByRole('button', { name: 'Chat about Source cards', exact: true }).click();
+    await expect(retry).toBeEnabled();
+    await retry.click();
+    await expect.poll(() => requests.length).toBe(2);
+    expect(requests[1].scopePanelIds).toEqual(['browser-source-cards']);
+    expect(requests[1].messages.filter((message) => message.role === 'user'))
+      .toEqual(requests[0].messages.filter((message) => message.role === 'user'));
+  } finally {
+    await chatPage.close();
+  }
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -660,6 +721,8 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await expect(nameInput).toHaveValue('Agent Studio browser acceptance');
 
     await verifyConcurrentLayoutEdits(page, baseUrl, workspaceId);
+    await verifyContextualRetry(page);
+    await page.bringToFront();
 
     await selectPanel(page, 'Source cards', 'cards');
     await selectPanel(page, 'Related cards', 'cards', 'ControlOrMeta');

@@ -298,8 +298,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private activeMutations = 0;
   /**
    * Complete workspace storage operations in one Durable Object invocation.
-   * The tail is intentionally in-memory: the operation itself owns all R2
-   * side effects, and a retry reconstructs the state after an isolate reset.
+   * This in-memory tail does not survive an isolate reset and is not a
+   * transaction across Durable Object storage and R2.
    */
   private storageOperationTail: Promise<void> = Promise.resolve();
   /**
@@ -1359,6 +1359,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
           if (mode === 'append') {
             const existing = await runtime.exists(runtimePath);
+            throwIfAborted(abortSignal);
             if (existing) {
               await runtime.appendFile(runtimePath, content, mimeType);
             } else {
@@ -1470,6 +1471,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         }),
         execute: async ({ filePath, content }) => {
           const bytes = await buildDocx(content);
+          throwIfAborted(abortSignal);
           const relativePath = await this.writeRuntimeFileBytes(filePath, bytes);
           return { ok: true, filePath: relativePath, bytes: bytes.byteLength, blocks: content.length };
         },
@@ -1598,6 +1600,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         }),
         execute: async ({ id, title, filePath, sourcePanelId }) => {
           const file = await this.readRuntimeFileContent(filePath);
+          throwIfAborted(abortSignal);
           if (file === null) {
             throw new Error(`File not found: ${filePath}`);
           }
@@ -1663,6 +1666,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           // landed while this turn was streaming. Patch the freshly read
           // record through the etag CAS instead.
           const result = await updateWorkspaceWithRetry(this.env, sessionId, workspace.id, (current) => {
+            throwIfAborted(abortSignal);
             // The model is working from the turn-start record. A field-level
             // compare keeps a manual edit made during the stream authoritative
             // while still allowing unrelated fields to be updated.
