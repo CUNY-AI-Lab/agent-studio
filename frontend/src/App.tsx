@@ -242,10 +242,6 @@ function WorkspaceShell({
   const pendingAutoFocusRef = useRef<Set<string>>(new Set());
   const previousArtifactIdsRef = useRef<Set<string>>(new Set());
   const contextualAutoPanKeyRef = useRef<string | null>(null);
-  const initialPromptAttemptedRef = useRef(false);
-  const initialPromptSendingRef = useRef(false);
-  const initialPromptAcceptedRef = useRef(false);
-  const previousWorkspaceMessagesRef = useRef(JSON.stringify(workspace.messages));
   const publishOperationIdRef = useRef<string | null>(null);
   const chatStopRef = useRef<() => void>(() => undefined);
   const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
@@ -329,9 +325,6 @@ function WorkspaceShell({
     body: () => selectedPanelIds.size > 0
       ? { scopePanelIds: Array.from(selectedPanelIds) }
       : {},
-    // WorkspaceAgent is the source of truth for the transcript. Local
-    // hydration below must not echo a REST snapshot back over the socket.
-    syncMessagesToServer: false,
     prepareSendMessagesRequest: async () => {
       await refreshModelCredential(workspace.workspace.id);
       return {};
@@ -356,13 +349,6 @@ function WorkspaceShell({
         setChatErrorNotice(quotaMessage);
         return;
       }
-    },
-    onFinish: ({ isAbort, isDisconnect, isError }) => {
-      if (!initialPromptSendingRef.current) return;
-      initialPromptSendingRef.current = false;
-      if (isAbort || isDisconnect || isError || !initialPrompt || initialPromptAcceptedRef.current) return;
-      initialPromptAcceptedRef.current = true;
-      onInitialPromptConsumed?.();
     },
   });
 
@@ -543,9 +529,6 @@ function WorkspaceShell({
         workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
       );
       contextualAutoPanKeyRef.current = null;
-      initialPromptAttemptedRef.current = false;
-      initialPromptSendingRef.current = false;
-      initialPromptAcceptedRef.current = false;
       contextualRetryRef.current = null;
     } else {
       setWorkspaceName((current) => reconcileWorkspaceDraft(
@@ -567,36 +550,6 @@ function WorkspaceShell({
       setPublishDescription((current) => current === previousServer.description ? workspace.workspace.description : current);
     }
   }, [closeContextualChat, workspace]);
-
-  useEffect(() => {
-    const workspaceMessagesSnapshot = JSON.stringify(workspace.messages);
-    if (previousWorkspaceMessagesRef.current === workspaceMessagesSnapshot) return;
-    previousWorkspaceMessagesRef.current = workspaceMessagesSnapshot;
-
-    // A same-ID workspace refresh can carry messages created in another tab.
-    // Hydrate only while this client is fully idle; a live or failed local
-    // turn owns its projection until it settles and must not be overwritten by
-    // an older REST snapshot.
-    const chatStillWorking = chat.status === 'submitted'
-      || chat.status === 'streaming'
-      || chat.isStreaming
-      || chat.isServerStreaming
-      || chat.isRecovering
-      || chat.isToolContinuation;
-    if (chat.status !== 'ready' || chatStillWorking) return;
-    if (JSON.stringify(chat.messages) !== workspaceMessagesSnapshot) {
-      chat.setMessages(workspace.messages);
-    }
-  }, [
-    chat.isRecovering,
-    chat.isServerStreaming,
-    chat.isStreaming,
-    chat.isToolContinuation,
-    chat.messages,
-    chat.setMessages,
-    chat.status,
-    workspace.messages,
-  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1278,51 +1231,16 @@ function WorkspaceShell({
   }, [chat.status, drainWorkspaceDownloads, refreshWorkspaceFiles, workspace]);
 
   useEffect(() => {
-    if (!initialPrompt || initialPromptAcceptedRef.current) return;
-
-    const chatStillWorking = chat.status === 'submitted'
-      || chat.status === 'streaming'
-      || chat.isStreaming
-      || chat.isServerStreaming
-      || chat.isRecovering
-      || chat.isToolContinuation;
-    if (initialPromptSendingRef.current) {
-      // useAgentChat invokes onFinish after the transport/preflight settles.
-      // A submitted status alone is not an enqueue acknowledgement: the SDK
-      // sets it before prepareSendMessagesRequest runs.
-      return;
-    }
-
-    if (agent.connectionError || chat.status !== 'ready' || chatStillWorking) return;
-    if (!initialPromptAttemptedRef.current && chat.messages.some((message) => message.role === 'user' || message.role === 'assistant')) {
-      initialPromptAcceptedRef.current = true;
+    if (!initialPrompt) return;
+    if (chat.status !== 'ready') return;
+    if (chat.messages.some((message) => message.role === 'user' || message.role === 'assistant')) {
       onInitialPromptConsumed?.();
       return;
     }
 
-    if (initialPromptAttemptedRef.current) return;
-
-    initialPromptAttemptedRef.current = true;
-    initialPromptSendingRef.current = true;
-    try {
-      void sendChatMessage(initialPrompt).catch(() => {
-        initialPromptSendingRef.current = false;
-      });
-    } catch {
-      initialPromptSendingRef.current = false;
-    }
-  }, [
-    agent.connectionError,
-    chat.isRecovering,
-    chat.isServerStreaming,
-    chat.isStreaming,
-    chat.isToolContinuation,
-    chat.messages,
-    chat.status,
-    initialPrompt,
-    onInitialPromptConsumed,
-    sendChatMessage,
-  ]);
+    void sendChatMessage(initialPrompt);
+    onInitialPromptConsumed?.();
+  }, [chat, initialPrompt, onInitialPromptConsumed, sendChatMessage]);
 
   const revealFileInWorkspace = useCallback((filePath: string) => {
     setActiveFilePillPopover(null);
@@ -2263,14 +2181,9 @@ function WorkspaceShell({
     chat.clearError();
     setChatErrorNotice(null);
     setComposer('');
-    initialPromptSendingRef.current = false;
-    if (initialPrompt && !initialPromptAcceptedRef.current) {
-      initialPromptAcceptedRef.current = true;
-      onInitialPromptConsumed?.();
-    }
     contextualRetryRef.current = null;
     setContextualThreads({});
-  }, [chat, closeContextualChat, initialPrompt, onInitialPromptConsumed]);
+  }, [chat, closeContextualChat]);
 
   const handleChatRetry = useCallback(() => {
     if (agent.connectionError) return;
@@ -2337,13 +2250,8 @@ function WorkspaceShell({
     if (retry && contextualState.phase === 'active') return;
 
     if (!lastUserPrompt) return;
-    if (initialPrompt && !initialPromptAcceptedRef.current && lastUserPrompt.trim() === initialPrompt.trim()) {
-      initialPromptSendingRef.current = true;
-    }
     chat.clearError();
-    void chat.regenerate().catch(() => {
-      initialPromptSendingRef.current = false;
-    });
+    void chat.regenerate();
   }, [agent.connectionError, chat, finishContextualTurn, lastUserPrompt, sendChatMessage, transitionContextualTurn]);
 
   const downloadPanelAsPng = useCallback(async (panelId: string, title: string) => {

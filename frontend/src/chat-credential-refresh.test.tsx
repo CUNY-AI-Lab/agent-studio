@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
 import { refreshModelCredential } from './api';
 import { z } from 'zod';
-import type { ChatOnFinishCallback, UIMessage } from 'ai';
+import type { UIMessage } from 'ai';
 
 let hookResult: ReturnType<typeof useAgentChat> | null = null;
 const chatRequestSchema = z.object({
@@ -50,15 +50,7 @@ function fakeAgent() {
   };
 }
 
-function Harness({
-  agent,
-  onFinish,
-  syncMessagesToServer,
-}: {
-  agent: ReturnType<typeof fakeAgent>;
-  onFinish?: ChatOnFinishCallback<UIMessage>;
-  syncMessagesToServer?: boolean;
-}) {
+function Harness({ agent }: { agent: ReturnType<typeof fakeAgent> }) {
   const messages: UIMessage[] = [];
   hookResult = useAgentChat({
     agent,
@@ -69,8 +61,6 @@ function Harness({
       await refreshModelCredential('workspace-1');
       return {};
     },
-    onFinish,
-    syncMessagesToServer,
   });
   return null;
 }
@@ -134,56 +124,4 @@ describe('useAgentChat credential refresh preparation', () => {
     expect(agent.send).not.toHaveBeenCalled();
   });
 
-  it('marks a preflight failure as an error after the SDK optimistic user message', async () => {
-    const agent = fakeAgent();
-    const onFinish = vi.fn<ChatOnFinishCallback<UIMessage>>();
-    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
-      error: { code: 'internal_error', message: 'refresh failed' },
-    }, { status: 503 })));
-    render(<Harness agent={agent} onFinish={onFinish} />);
-    await waitFor(() => expect(hookResult).toBeTruthy());
-
-    await act(async () => {
-      await hookResult?.sendMessage({ text: 'hello' });
-    });
-
-    expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({
-      isAbort: false,
-      isDisconnect: false,
-      isError: true,
-    }));
-    expect(hookResult?.status).toBe('error');
-    expect(hookResult?.messages).toHaveLength(1);
-    expect(hookResult?.messages[0]).toMatchObject({ role: 'user' });
-    expect(agent.send).not.toHaveBeenCalled();
-  });
-
-  it('hydrates messages locally without echoing them, while clear and regenerate stay wired', async () => {
-    const agent = fakeAgent();
-    render(<Harness agent={agent} syncMessagesToServer={false} />);
-    await waitFor(() => expect(hookResult).toBeTruthy());
-
-    const message: UIMessage = { id: 'local-user', role: 'user', parts: [{ type: 'text', text: 'from REST' }] };
-    await act(async () => {
-      hookResult?.setMessages([message]);
-    });
-    expect(hookResult?.messages).toEqual([message]);
-    expect(agent.send).not.toHaveBeenCalled();
-
-    await act(async () => {
-      await hookResult?.sendMessage({ text: 'new turn' });
-    });
-    await act(async () => {
-      await hookResult?.regenerate();
-    });
-    expect(agent.send.mock.calls.map(([payload]) => JSON.parse(payload).type)).toEqual([
-      'cf_agent_use_chat_request',
-      'cf_agent_use_chat_request',
-    ]);
-
-    await act(async () => {
-      hookResult?.clearHistory();
-    });
-    expect(agent.send.mock.calls.map(([payload]) => JSON.parse(payload).type)).toContain('cf_agent_chat_clear');
-  });
 });
