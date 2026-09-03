@@ -2238,7 +2238,10 @@ function WorkspaceShell({
       transitionContextualTurn({ type: 'submit', turn: pending });
       chat.clearError();
       const request = userMessageId
-        ? chat.regenerate({ body: { scopePanelIds: retry.target.panelIds } })
+        ? chat.regenerate({
+          messageId: userMessageId,
+          body: { scopePanelIds: retry.target.panelIds },
+        })
         : sendChatMessage(retry.prompt, { body: { scopePanelIds: retry.target.panelIds } });
       contextualRetryRef.current = { ...retry, turn: pending };
       void request.catch(() => finishContextualTurn(pending, 'error'));
