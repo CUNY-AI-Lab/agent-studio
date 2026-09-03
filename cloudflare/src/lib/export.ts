@@ -57,7 +57,7 @@ export async function createWorkspaceExportBundle(args: {
     data: ArrayBuffer;
   } | null>;
 }): Promise<WorkspaceExportBundle> {
-  const decoder = new TextDecoder();
+  const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
   const exportedFiles = await Promise.all(
     args.files
       .filter((file) => !file.isDirectory)
@@ -69,7 +69,24 @@ export async function createWorkspaceExportBundle(args: {
         }
 
         const contentType = runtimeFile.contentType || getMimeType(file.path);
-        const encoding: FileEncoding = isTextContentType(contentType) ? 'utf8' : 'base64';
+        let encoding: FileEncoding;
+        let content: string;
+        if (isTextContentType(contentType)) {
+          try {
+            // Keep a valid UTF-8 BOM as U+FEFF so re-encoding on import
+            // reproduces the original bytes. Invalid UTF-8 stays binary.
+            content = decoder.decode(runtimeFile.data);
+            encoding = 'utf8';
+          } catch {
+            // A text MIME type does not prove that the stored bytes are UTF-8.
+            // Base64 is the lossless representation for malformed text bytes.
+            content = encodeBase64(runtimeFile.data);
+            encoding = 'base64';
+          }
+        } else {
+          content = encodeBase64(runtimeFile.data);
+          encoding = 'base64';
+        }
 
         return {
           path: file.path,
@@ -78,7 +95,7 @@ export async function createWorkspaceExportBundle(args: {
           etag: file.etag,
           contentType,
           encoding,
-          content: encoding === 'utf8' ? decoder.decode(runtimeFile.data) : encodeBase64(runtimeFile.data),
+          content,
         } satisfies WorkspaceExportFile;
       })
   );

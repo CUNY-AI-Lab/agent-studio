@@ -197,16 +197,30 @@ export async function readGalleryFile(
 
 export async function deleteWorkspaceFiles(env: Env, sessionId: string, workspaceId: string): Promise<void> {
   const prefix = getWorkspacePrefix(sessionId, workspaceId);
-  await deleteByPrefix(env, prefix);
+  // Keep the workspace record as the retry marker until every artifact is
+  // gone. The DELETE route removes this marker explicitly after runtime and
+  // workspace-prefix cleanup both succeed.
+  await deleteByPrefixExcept(env, prefix, new Set([`${prefix}workspace.json`]));
 }
 
 export async function deleteByPrefix(env: Env, prefix: string): Promise<void> {
+  await deleteByPrefixExcept(env, prefix, new Set());
+}
+
+async function deleteByPrefixExcept(
+  env: Env,
+  prefix: string,
+  excludedKeys: ReadonlySet<string>,
+): Promise<void> {
   let cursor: string | undefined;
 
   do {
     const listing = await env.WORKSPACE_FILES.list({ prefix, cursor });
-    if (listing.objects.length > 0) {
-      await env.WORKSPACE_FILES.delete(listing.objects.map((object) => object.key));
+    const keys = listing.objects
+      .map((object) => object.key)
+      .filter((key) => !excludedKeys.has(key));
+    if (keys.length > 0) {
+      await env.WORKSPACE_FILES.delete(keys);
     }
     cursor = nextR2Cursor(listing, 'prefix deletion');
   } while (cursor);

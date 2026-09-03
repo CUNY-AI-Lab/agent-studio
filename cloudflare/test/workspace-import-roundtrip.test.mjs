@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createWorkspaceExportBundle } from '../src/lib/export.ts';
-import { parseWorkspaceImportBundle } from '../src/lib/import.ts';
+import { decodeWorkspaceImportFile, parseWorkspaceImportBundle } from '../src/lib/import.ts';
 
 function baseState(workspace) {
   return {
@@ -133,4 +133,60 @@ test('round-trip: a malformed model id is still rejected on import', () => {
   };
 
   assert.throws(() => parseWorkspaceImportBundle(bundle));
+});
+
+test('round-trip: text files preserve a valid UTF-8 BOM byte-for-byte', async () => {
+  const now = new Date(0).toISOString();
+  const workspace = {
+    id: 'ws-bom',
+    name: 'UTF-8 BOM',
+    description: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const original = Uint8Array.from([0xef, 0xbb, 0xbf, 0x48, 0x69]);
+
+  const bundle = await createWorkspaceExportBundle({
+    workspace,
+    state: baseState(workspace),
+    messages: [],
+    files: [{ path: 'bom.txt', isDirectory: false, size: original.byteLength }],
+    readFile: async () => ({
+      contentType: 'text/plain; charset=utf-8',
+      data: original.buffer,
+    }),
+  });
+
+  assert.equal(bundle.files[0].encoding, 'utf8');
+  assert.equal(bundle.files[0].content, '\ufeffHi');
+  const decoded = decodeWorkspaceImportFile(bundle.files[0]);
+  assert.deepEqual([...new TextEncoder().encode(decoded)], [...original]);
+});
+
+test('round-trip: invalid UTF-8 bytes fall back to base64 without changing bytes', async () => {
+  const now = new Date(0).toISOString();
+  const workspace = {
+    id: 'ws-invalid-utf8',
+    name: 'Invalid UTF-8',
+    description: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const original = Uint8Array.from([0xff, 0xfe, 0x00, 0x61]);
+
+  const bundle = await createWorkspaceExportBundle({
+    workspace,
+    state: baseState(workspace),
+    messages: [],
+    files: [{ path: 'invalid.txt', isDirectory: false, size: original.byteLength }],
+    readFile: async () => ({
+      contentType: 'text/plain; charset=utf-8',
+      data: original.buffer,
+    }),
+  });
+
+  assert.equal(bundle.files[0].encoding, 'base64');
+  const decoded = decodeWorkspaceImportFile(bundle.files[0]);
+  assert.ok(decoded instanceof Uint8Array);
+  assert.deepEqual([...decoded], [...original]);
 });

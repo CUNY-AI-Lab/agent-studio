@@ -603,6 +603,37 @@ test('DELETE workspace removes its separate runtime R2 prefix', async () => {
   assert.equal(await r2.get(runtimeKey), null);
 });
 
+test('DELETE workspace keeps its metadata until runtime cleanup succeeds', async () => {
+  const { env, r2 } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Retryable Cleanup');
+  const metadataKey = `agent-studio/sessions/${sessionId}/workspaces/${workspace.id}/workspace.json`;
+  const runtimePrefix = `agent-studio/runtime/${sessionId}-${workspace.id}/`;
+  const runtimeKey = `${runtimePrefix}orphan.txt`;
+  await r2.put(runtimeKey, 'orphan candidate');
+
+  const realDelete = r2.delete.bind(r2);
+  let failRuntimeDelete = true;
+  r2.delete = async (keys) => {
+    const requestedKeys = Array.isArray(keys) ? keys : [keys];
+    if (failRuntimeDelete && requestedKeys.some((key) => key.startsWith(runtimePrefix))) {
+      throw new Error('injected runtime cleanup failure');
+    }
+    return realDelete(keys);
+  };
+
+  const firstAttempt = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(firstAttempt.status, 500);
+  assert.ok(await r2.get(metadataKey));
+  assert.ok(await r2.get(runtimeKey));
+
+  failRuntimeDelete = false;
+  const retry = await session.request(app, `/api/workspaces/${workspace.id}`, { method: 'DELETE' });
+  assert.equal(retry.status, 200);
+  assert.equal(await r2.get(metadataKey), null);
+  assert.equal(await r2.get(runtimeKey), null);
+});
+
 test('DELETE workspace removes its shared gallery item', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
@@ -1768,6 +1799,52 @@ test('export: returns a v1 bundle with a download disposition', async () => {
   assert.equal(bundle.workspace.id, workspace.id);
   assert.deepEqual(bundle.files.map((f) => f.path), ['a.md']);
   assert.equal(bundle.files[0].content, '# A');
+});
+
+test('export/import preserves valid BOM and invalid UTF-8 file bytes', async () => {
+  const { env } = makeEnv();
+  const { session } = await openSession(app, env);
+  const workspace = await createWorkspace(session, 'Byte Roundtrip');
+  const originalFiles = new Map([
+    ['bom.txt', Uint8Array.from([0xef, 0xbb, 0xbf, 0x48, 0x69])],
+    ['invalid.txt', Uint8Array.from([0xff, 0xfe, 0x00, 0x61])],
+  ]);
+
+  for (const [filePath, bytes] of originalFiles) {
+    const upload = await session.request(app, `/api/workspaces/${workspace.id}/files/${filePath}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+      body: bytes,
+    });
+    assert.equal(upload.status, 200);
+  }
+
+  const exported = await (
+    await session.request(app, `/api/workspaces/${workspace.id}/export`)
+  ).json();
+  assert.equal(exported.files.find((file) => file.path === 'bom.txt').encoding, 'utf8');
+  assert.equal(exported.files.find((file) => file.path === 'bom.txt').content, '\ufeffHi');
+  assert.equal(exported.files.find((file) => file.path === 'invalid.txt').encoding, 'base64');
+
+  const form = new FormData();
+  form.append('bundle', new File([JSON.stringify(exported)], 'byte-roundtrip.json', {
+    type: 'application/json',
+  }));
+  const imported = await session.request(app, '/api/workspaces/import', {
+    method: 'POST',
+    body: form,
+  });
+  assert.equal(imported.status, 201);
+  const importedWorkspace = await imported.json();
+
+  for (const [filePath, expected] of originalFiles) {
+    const response = await session.request(
+      app,
+      `/api/workspaces/${importedWorkspace.workspaceId}/files/${filePath}`,
+    );
+    assert.equal(response.status, 200);
+    assert.deepEqual([...new Uint8Array(await response.arrayBuffer())], [...expected]);
+  }
 });
 
 test('import: a valid bundle creates a workspace and its files (round-trip)', async () => {
