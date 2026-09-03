@@ -527,6 +527,41 @@ async function verifyFileExecutionBoundary(page: Page, baseUrl: string): Promise
   }
 }
 
+async function verifyLargeUpload(page: Page, baseUrl: string): Promise<void> {
+  const uploadPage = await page.context().newPage();
+  let workspaceId: string | undefined;
+  try {
+    await uploadPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await uploadPage.getByRole('button', { name: 'Start blank' }).click();
+    await uploadPage.waitForURL(/workspace=/);
+    workspaceId = workspaceIdFromUrl(uploadPage.url());
+    // Both files fit the 25 MB per-file and 50 MB total product limits; the
+    // combined bytes exceed the platform's 32 MiB serialized RPC limit.
+    const files = [
+      { name: 'large-a.txt', mimeType: 'text/plain', buffer: Buffer.alloc(17 * 1024 * 1024, 65) },
+      { name: 'large-b.txt', mimeType: 'text/plain', buffer: Buffer.alloc(17 * 1024 * 1024, 66) },
+    ];
+    const uploadResponse = uploadPage.waitForResponse((response) => (
+      response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/upload')
+    ));
+    await uploadPage.getByLabel('Upload files to workspace').setInputFiles(files);
+    if ((await uploadResponse).status() !== 201) fail('Valid large upload batch failed');
+    await uploadPage.reload({ waitUntil: 'networkidle' });
+    for (const file of files) {
+      await uploadPage.getByRole('button', { name: new RegExp(`^${file.name.replace('.', '\\.')}.*File actions$`) }).click();
+      const downloading = uploadPage.waitForEvent('download');
+      await uploadPage.getByRole('menuitem', { name: 'Download', exact: true }).click();
+      const downloaded = await (await downloading).path();
+      if (!downloaded || !(await readFile(downloaded)).equals(file.buffer)) fail('Large upload bytes changed after reload');
+    }
+  } finally {
+    if (workspaceId) await apiCall(uploadPage, baseUrl, `/api/workspaces/${workspaceId}`, {
+      method: 'DELETE', label: 'cleanup large-upload workspace', schema: AcknowledgementPayloadSchema,
+    });
+    await uploadPage.close();
+  }
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -740,6 +775,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
 
     await verifyFileAndSharingLifecycle(page, baseUrl);
     await verifyFileExecutionBoundary(page, baseUrl);
+    await verifyLargeUpload(page, baseUrl);
 
     page.once('dialog', (dialog) => {
       void dialog.accept();
