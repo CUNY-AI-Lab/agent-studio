@@ -4,9 +4,6 @@ export interface GalleryItem {
   id: string;
   title: string;
   description: string;
-  prompt?: string;
-  /** Legacy manifests only. Never returned by current API responses. */
-  authorId?: string;
   publishedAt: string;
   artifactCount: number;
 }

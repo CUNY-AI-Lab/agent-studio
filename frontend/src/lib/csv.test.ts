@@ -1,24 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { escapeCsvCell, parseCsvPreview, parseDelimitedLine, serializeTableAsCsv } from './csv';
+import { escapeCsvCell, parseCsvPreview, serializeTableAsCsv } from './csv';
 import type { WorkspacePanel } from '../types';
-
-describe('parseDelimitedLine', () => {
-  it('splits a simple comma line', () => {
-    expect(parseDelimitedLine('a,b,c')).toEqual(['a', 'b', 'c']);
-  });
-
-  it('respects quoted fields containing the delimiter', () => {
-    expect(parseDelimitedLine('a,"b,c",d')).toEqual(['a', 'b,c', 'd']);
-  });
-
-  it('unescapes doubled quotes inside a quoted field', () => {
-    expect(parseDelimitedLine('"he said ""hi""",x')).toEqual(['he said "hi"', 'x']);
-  });
-
-  it('supports a custom delimiter', () => {
-    expect(parseDelimitedLine('a\tb\tc', '\t')).toEqual(['a', 'b', 'c']);
-  });
-});
 
 describe('parseCsvPreview', () => {
   it('separates headers from rows', () => {
@@ -28,6 +10,19 @@ describe('parseCsvPreview', () => {
     expect(truncated).toBe(false);
   });
 
+  it('keeps LF and CRLF inside quoted cells instead of creating extra rows', () => {
+    expect(parseCsvPreview('name,notes\nAda,"line one\nline two"\nGrace,"said ""hi"""')).toEqual({
+      headers: ['name', 'notes'],
+      rows: [['Ada', 'line one\nline two'], ['Grace', 'said "hi"']],
+      truncated: false,
+    });
+    expect(parseCsvPreview('name,notes\r\nAda,"line one\r\nline two"\r\nGrace,done\r\n')).toEqual({
+      headers: ['name', 'notes'],
+      rows: [['Ada', 'line one\r\nline two'], ['Grace', 'done']],
+      truncated: false,
+    });
+  });
+
   it('marks truncation past the row limit', () => {
     const body = ['h', ...Array.from({ length: 5 }, (_, i) => `r${i}`)].join('\n');
     const { rows, truncated } = parseCsvPreview(body, 2);
@@ -35,10 +30,16 @@ describe('parseCsvPreview', () => {
     expect(truncated).toBe(true);
   });
 
-  it('treats blank input as a single empty header cell', () => {
-    // The blank first line is retained (index 0 of a single-line source),
-    // so it parses as one empty header column and no rows.
-    expect(parseCsvPreview('')).toEqual({ headers: [''], rows: [], truncated: false });
+  it('preserves records whose cells are all empty', () => {
+    expect(parseCsvPreview('A,B\n,\n"",')).toEqual({
+      headers: ['A', 'B'],
+      rows: [['', ''], ['', '']],
+      truncated: false,
+    });
+  });
+
+  it('returns no headers for blank input', () => {
+    expect(parseCsvPreview('')).toEqual({ headers: [], rows: [], truncated: false });
   });
 });
 
@@ -51,6 +52,7 @@ describe('escapeCsvCell', () => {
     expect(escapeCsvCell('a,b')).toBe('"a,b"');
     expect(escapeCsvCell('say "hi"')).toBe('"say ""hi"""');
     expect(escapeCsvCell('line1\nline2')).toBe('"line1\nline2"');
+    expect(escapeCsvCell('line1\r\nline2')).toBe('"line1\r\nline2"');
   });
 
   it('renders null and undefined as empty strings', () => {
@@ -69,10 +71,10 @@ describe('serializeTableAsCsv', () => {
         { key: 'city', label: 'City' },
       ],
       rows: [
-        { name: 'Ada', city: 'London' },
+        { name: 'Ada', city: 'line1\r\nline2' },
         { name: 'Bo', city: 'São, Paulo' },
       ],
     };
-    expect(serializeTableAsCsv(panel)).toBe('Name,City\nAda,London\nBo,"São, Paulo"');
+    expect(serializeTableAsCsv(panel)).toBe('Name,City\nAda,"line1\r\nline2"\nBo,"São, Paulo"');
   });
 });

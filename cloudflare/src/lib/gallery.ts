@@ -33,6 +33,16 @@ interface GalleryOwnerRecord {
   tag: string;
 }
 
+/**
+ * A persisted manifest may still contain fields from before the shared
+ * gallery boundary was redacted. Those fields are accepted only while reading
+ * R2 and are projected out before a manifest becomes a public GalleryItem.
+ */
+interface GalleryManifest extends GalleryItem {
+  prompt?: string;
+  authorId?: string | null;
+}
+
 interface GalleryListOptions {
   prefix: string;
   delimiter: string;
@@ -57,9 +67,33 @@ async function ownerRecordMatches(env: Env, record: GalleryOwnerRecord, sessionI
     && timingSafeEqual(tag, await galleryOwnerTag(sessionId, env.SESSION_SECRET));
 }
 
-function sharedGalleryItem(item: GalleryItem): GalleryItem {
-  const { authorId: _legacyOwner, ...sharedItem } = item;
-  return sharedItem;
+function sharedGalleryItem(item: GalleryManifest): GalleryItem {
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.description,
+    publishedAt: item.publishedAt,
+    artifactCount: item.artifactCount,
+  };
+}
+
+function sharedGalleryState(state: WorkspaceState, item: GalleryItem): WorkspaceState {
+  return {
+    sessionId: null,
+    workspace: state.workspace
+      ? {
+        id: '',
+        name: item.title,
+        description: item.description,
+        createdAt: item.publishedAt,
+        updatedAt: item.publishedAt,
+      }
+      : null,
+    panels: state.panels,
+    viewport: state.viewport,
+    groups: state.groups,
+    connections: state.connections,
+  };
 }
 
 async function listGalleryIds(env: Env): Promise<string[]> {
@@ -98,7 +132,7 @@ export async function listGalleryItemsPage(
     const id = prefix.slice(getGalleryPrefix().length).replace(/\/$/, '');
     if (!id) return null;
     const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
-    return object ? sharedGalleryItem(await object.json<GalleryItem>()) : null;
+    return object ? sharedGalleryItem(await object.json<GalleryManifest>()) : null;
   }));
   const result: GalleryItemsPage = {
     items: items.filter((item): item is GalleryItem => Boolean(item)),
@@ -134,7 +168,7 @@ export async function listGalleryItems(env: Env): Promise<GalleryItem[]> {
     ids.map(async (id) => {
       const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
       if (!object) return null;
-      return sharedGalleryItem(await object.json<GalleryItem>());
+      return sharedGalleryItem(await object.json<GalleryManifest>());
     })
   );
 
@@ -151,9 +185,10 @@ export async function getGalleryItem(env: Env, id: string): Promise<GalleryItemF
 
   if (!manifest || !state) return null;
 
+  const item = sharedGalleryItem(await manifest.json<GalleryManifest>());
   return {
-    ...sharedGalleryItem(await manifest.json<GalleryItem>()),
-    state: await state.json<WorkspaceState>(),
+    ...item,
+    state: sharedGalleryState(await state.json<WorkspaceState>(), item),
   };
 }
 
@@ -190,7 +225,7 @@ export async function publishWorkspace(args: {
     // The manifest is written last, so its presence marks a complete publish.
     // A retry with the same idempotency key returns that committed result
     // without touching files or risking rollback of the existing item.
-    return sharedGalleryItem(await existingManifest.json<GalleryItem>());
+    return sharedGalleryItem(await existingManifest.json<GalleryManifest>());
   }
 
   // A prior attempt can have written file objects and then failed before the
@@ -211,7 +246,6 @@ export async function publishWorkspace(args: {
     id,
     title: args.title,
     description: args.description,
-    prompt: args.workspace.description,
     publishedAt: new Date().toISOString(),
     artifactCount: shareablePanelCount + fileCount,
   };
@@ -245,13 +279,7 @@ export async function publishWorkspace(args: {
     if (failedUpload) {
       throw failedUpload.reason;
     }
-    const publishedState = {
-      ...args.state,
-      sessionId: null,
-      workspace: args.state.workspace
-        ? { ...args.state.workspace, id: '' }
-        : args.state.workspace,
-    };
+    const publishedState = sharedGalleryState(args.state, item);
     await args.env.WORKSPACE_FILES.put(
       galleryStateKey(id),
       JSON.stringify(publishedState, null, 2),
@@ -333,7 +361,7 @@ export async function reassignGalleryAuthor(
       env.WORKSPACE_FILES.get(galleryOwnerKey(id)),
     ]);
     if (!manifestObject) continue;
-    const item = await manifestObject.json<GalleryItem>();
+    const item = await manifestObject.json<GalleryManifest>();
     const owner = ownerObject ? await ownerObject.json<GalleryOwnerRecord>() : null;
     const authorId = z.string().min(1).safeParse(item.authorId).data;
     const legacyMatches = authorId !== undefined

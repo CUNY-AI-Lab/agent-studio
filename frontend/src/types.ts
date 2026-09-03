@@ -15,7 +15,6 @@ export interface GalleryItem {
   id: string;
   title: string;
   description: string;
-  prompt?: string;
   publishedAt: string;
   artifactCount: number;
 }

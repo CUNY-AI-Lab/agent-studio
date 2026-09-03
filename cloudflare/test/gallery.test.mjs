@@ -58,8 +58,91 @@ test('publish retries are idempotent and shared records contain no owner identif
   assert.equal(r2.keysWithPrefix('agent-studio/gallery/items/').filter((key) => key.endsWith('manifest.json')).length, 1);
   const manifest = await (await r2.get(`agent-studio/gallery/items/${first.id}/manifest.json`)).json();
   assert.equal('authorId' in manifest, false);
+  assert.equal('prompt' in manifest, false);
+  const publishedState = await (await r2.get(`agent-studio/gallery/items/${first.id}/state.json`)).json();
+  assert.deepEqual(publishedState.workspace, {
+    id: '',
+    name: first.title,
+    description: first.description,
+    createdAt: first.publishedAt,
+    updatedAt: first.publishedAt,
+  });
   assert.equal('authorId' in await getGalleryItem(targetEnv, first.id), false);
+  assert.equal('prompt' in await getGalleryItem(targetEnv, first.id), false);
   assert.ok(await r2.get(`agent-studio/gallery/items/${first.id}/owner.json`));
+});
+
+test('gallery reads project legacy manifests and workspace metadata into the public shape', async () => {
+  const r2 = new MockR2();
+  const targetEnv = env(r2);
+  const galleryId = 'legacy-redaction';
+  const publishedAt = '2026-08-01T00:00:00.000Z';
+  await r2.put(
+    `agent-studio/gallery/items/${galleryId}/manifest.json`,
+    JSON.stringify({
+      id: galleryId,
+      title: 'Public title',
+      description: 'Public description',
+      prompt: 'PRIVATE_PROMPT_SENTINEL',
+      authorId: 'PRIVATE_OWNER_SENTINEL',
+      privateMetadata: 'PRIVATE_MANIFEST_SENTINEL',
+      publishedAt,
+      artifactCount: 1,
+    }),
+  );
+  await r2.put(
+    `agent-studio/gallery/items/${galleryId}/state.json`,
+    JSON.stringify({
+      sessionId: 'PRIVATE_SESSION_SENTINEL',
+      workspace: {
+        id: 'PRIVATE_WORKSPACE_SENTINEL',
+        name: 'Private workspace name',
+        description: 'PRIVATE_WORKSPACE_SENTINEL',
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-02T00:00:00.000Z',
+        galleryId: 'PRIVATE_GALLERY_SENTINEL',
+        model: 'PRIVATE_MODEL_SENTINEL',
+      },
+      panels: [{ id: 'artifact', type: 'markdown', content: 'SYNTHETIC_ARTIFACT' }],
+      viewport: { x: 1, y: 2, zoom: 0.5 },
+      groups: [{ id: 'group', panelIds: ['artifact'] }],
+      connections: [],
+      privateState: 'PRIVATE_STATE_SENTINEL',
+    }),
+  );
+
+  const expected = {
+    id: galleryId,
+    title: 'Public title',
+    description: 'Public description',
+    publishedAt,
+    artifactCount: 1,
+  };
+  const item = await getGalleryItem(targetEnv, galleryId);
+  assert.deepEqual(item, {
+    ...expected,
+    state: {
+      sessionId: null,
+      workspace: {
+        id: '',
+        name: expected.title,
+        description: expected.description,
+        createdAt: publishedAt,
+        updatedAt: publishedAt,
+      },
+      panels: [{ id: 'artifact', type: 'markdown', content: 'SYNTHETIC_ARTIFACT' }],
+      viewport: { x: 1, y: 2, zoom: 0.5 },
+      groups: [{ id: 'group', panelIds: ['artifact'] }],
+      connections: [],
+    },
+  });
+  assert.deepEqual(await listGalleryItems(targetEnv), [expected]);
+
+  // Reads project old records without a migration or storage rewrite.
+  const persistedManifest = await (await r2.get(`agent-studio/gallery/items/${galleryId}/manifest.json`)).json();
+  const persistedState = await (await r2.get(`agent-studio/gallery/items/${galleryId}/state.json`)).json();
+  assert.equal(persistedManifest.prompt, 'PRIVATE_PROMPT_SENTINEL');
+  assert.equal(persistedState.workspace.description, 'PRIVATE_WORKSPACE_SENTINEL');
 });
 
 test('a committed publish retry does not read files or delete the existing item', async () => {
