@@ -417,9 +417,6 @@ function WorkspaceShell({
   chatStopRef.current = chat.stop;
 
   const openContextualTarget = useCallback((target: ContextualChatTarget) => {
-    if (contextualRetryRef.current?.target.key !== target.key) {
-      contextualRetryRef.current = null;
-    }
     const next = transitionContextualTurn({ type: 'open', target });
     if (next.target?.key === target.key) setContextualComposer('');
   }, [transitionContextualTurn]);
@@ -478,7 +475,6 @@ function WorkspaceShell({
       void chatStopRef.current();
       finishContextualTurn(pending, 'cancel');
     }
-    contextualRetryRef.current = null;
     transitionContextualTurn({ type: 'close' });
     clearContextualDraft();
   }, [clearContextualDraft, finishContextualTurn, transitionContextualTurn]);
@@ -2271,9 +2267,10 @@ function WorkspaceShell({
       return;
     }
 
-    // A hidden scoped turn is still owned by its contextual lifecycle. Wait
-    // for its terminal effect rather than treating Retry as a global turn.
-    if (retry && contextualState.phase === 'active') return;
+    // A scoped failure remains owned by its original target. Never fall back
+    // to the global regenerate path while another contextual target is open,
+    // because that would send the old prompt with the new target's scope.
+    if (retry) return;
 
     if (!lastUserPrompt) return;
     chat.clearError();
@@ -2658,7 +2655,11 @@ function WorkspaceShell({
     isToolContinuation: chat.isToolContinuation,
     contextualTurnActive,
     connectionError: agent.connectionError,
-    canRetry: Boolean(lastUserPrompt),
+    canRetry: Boolean(lastUserPrompt) && (
+      !contextualRetryRef.current
+      || !contextualChatTarget
+      || contextualRetryRef.current.target.key === contextualChatTarget.key
+    ),
   });
   const connectionErrorNotice = agent.connectionError
     ? 'The connection to the agent was lost. Reload the page to reconnect.'
