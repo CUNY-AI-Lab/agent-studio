@@ -576,6 +576,38 @@ test('structured UI tools reject an association to a missing tile', async () => 
   assert.deepEqual(fake.state.connections, []);
 });
 
+test('panel reads preserve linked data and terminate mutual detail links', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const first = { id: 'first', type: 'detail', linkedTo: 'second' };
+  const second = { id: 'second', type: 'detail', linkedTo: 'first' };
+  const note = { id: 'note', type: 'markdown', content: 'Research finding' };
+  const ordinaryDetail = { id: 'ordinary', type: 'detail', linkedTo: 'note' };
+  const fake = { state: { panels: [first, second, ordinaryDetail, note] } };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fake, { id: 'workspace', name: 'Research' }, 'session', [first, second],
+  );
+
+  const read = await tools.read_panel.execute({ panelId: 'first' });
+  assert.equal(read.id, 'first');
+  assert.equal(read.linkedPanel.id, 'second');
+  assert.equal(read.linkedPanel.linkedTo, 'first');
+  assert.equal(read.linkedPanel.linkedPanel, null);
+  const scoped = await tools.read_scoped_panels.execute({});
+  assert.deepEqual(JSON.parse(JSON.stringify(scoped[0])), {
+    id: 'first', type: 'detail', linkedTo: 'second',
+    linkedPanel: { id: 'second', type: 'detail', linkedTo: 'first', linkedPanel: null },
+  });
+  const reverse = scoped[1];
+  assert.equal(reverse.id, 'second');
+  assert.equal(reverse.linkedPanel.id, 'first');
+  assert.equal(reverse.linkedPanel.linkedPanel, null);
+
+  const ordinary = await tools.read_panel.execute({ panelId: 'ordinary' });
+  assert.equal(ordinary.linkedPanel.type, 'markdown');
+  assert.equal(ordinary.linkedPanel.content, 'Research finding');
+});
+
 test('addPanel persists a supplied sourcePanelId as an explicit association', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');

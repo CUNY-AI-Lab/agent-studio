@@ -168,7 +168,12 @@ type SerializedPanelContext =
     linkedPanel: SerializedPanelContext | null;
   });
 
-function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePanel[]): SerializedPanelContext {
+function serializePanelForContext(
+  panel: WorkspacePanel,
+  allPanels: WorkspacePanel[],
+  ancestors = new Set<string>(),
+): SerializedPanelContext {
+  ancestors.add(panel.id);
   const base = {
     id: panel.id,
     title: panel.title,
@@ -232,7 +237,11 @@ function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePan
         ...base,
         type: 'detail',
         linkedTo: panel.linkedTo,
-        linkedPanel: linkedPanel ? serializePanelForContext(linkedPanel, allPanels) : null,
+        // Keep the relationship ID, but do not recursively repeat a tile that
+        // is already represented in this detail chain.
+        linkedPanel: linkedPanel && !ancestors.has(linkedPanel.id)
+          ? serializePanelForContext(linkedPanel, allPanels, ancestors)
+          : null,
       };
     }
     case 'chat':
