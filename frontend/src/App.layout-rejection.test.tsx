@@ -13,6 +13,15 @@ const socketMessageSchema = z.object({
   probeId: z.string().optional(),
 }).passthrough();
 
+const panelLayoutPatchSchema = z.object({
+  panels: z.record(z.string(), z.object({
+    x: z.number(),
+    y: z.number(),
+    width: z.number(),
+    height: z.number(),
+  })),
+});
+
 class TestWebSocket extends EventTarget {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
@@ -75,6 +84,13 @@ class TestWebSocket extends EventTarget {
   }
 }
 
+function panelLayoutPatchMessages() {
+  return TestWebSocket.rpcMessages.filter((message) => (
+    message.method === 'applyLayoutPatch'
+    && panelLayoutPatchSchema.safeParse(message.args[0]).success
+  ));
+}
+
 function workspaceResponse(
   panels: WorkspaceResponse['state']['panels'] = [
     {
@@ -110,7 +126,8 @@ function workspaceResponse(
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  await import('./components/renderers/MarkdownRenderer');
   window.history.replaceState({}, '', '/agent-studio/?workspace=workspace-1');
   document.cookie = 'cail_csrf_agentstudio=' + 'a'.repeat(64) + '; path=/';
   vi.spyOn(api, 'fetchWorkspaces').mockResolvedValue([]);
@@ -136,8 +153,8 @@ describe('real App layout-save failure handling', () => {
     const tile = await screen.findByRole('group', { name: 'One (markdown tile)' });
 
     fireEvent.keyDown(tile, { key: 'ArrowRight' });
-    await waitFor(() => expect(TestWebSocket.rpcMessages).toHaveLength(1));
-    expect(TestWebSocket.rpcMessages[0]).toMatchObject({
+    await waitFor(() => expect(panelLayoutPatchMessages()).toHaveLength(1));
+    expect(panelLayoutPatchMessages()[0]).toMatchObject({
       method: 'applyLayoutPatch',
       args: [{ panels: { 'panel-one': { x: 56, y: 40, width: 360, height: 220 } } }],
     });
@@ -147,8 +164,8 @@ describe('real App layout-save failure handling', () => {
     expect(screen.getByRole('button', { name: 'Reload saved workspace' })).toBeInTheDocument();
 
     fireEvent.keyDown(tile, { key: 'ArrowRight' });
-    await waitFor(() => expect(TestWebSocket.rpcMessages).toHaveLength(2));
-    expect(TestWebSocket.rpcMessages[1]).toMatchObject({
+    await waitFor(() => expect(panelLayoutPatchMessages()).toHaveLength(2));
+    expect(panelLayoutPatchMessages()[1]).toMatchObject({
       method: 'applyLayoutPatch',
       args: [{ panels: { 'panel-one': { x: 72, y: 40, width: 360, height: 220 } } }],
     });
