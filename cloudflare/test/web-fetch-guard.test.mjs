@@ -138,6 +138,42 @@ test('guardedWebFetch follows redirects and re-validates each hop', async () => 
   assert.match(calls[1], /example\.org\/final/);
 });
 
+test('guardedWebFetch forwards the native abort signal through token and API fetch', async () => {
+  __resetTokenCacheForTests();
+  const controller = new AbortController();
+  const calls = [];
+  let resolveApiEntered;
+  const apiEntered = new Promise((resolve) => { resolveApiEntered = resolve; });
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, signal: init.signal });
+    if (url === 'https://oauth.oclc.org/token') {
+      return new Response(JSON.stringify({ access_token: 'TKN', expires_in: 1200 }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    resolveApiEntered();
+    return new Promise((_, reject) => {
+      init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true });
+    });
+  };
+
+  const request = guardedWebFetch(
+    'https://metadata.api.oclc.org/worldcat/search/brief-bibs?q=ti:x',
+    'json',
+    WORLDCAT_ENV,
+    fetchImpl,
+    controller.signal,
+  );
+  await apiEntered;
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].signal, controller.signal);
+  assert.equal(calls[1].signal, controller.signal);
+
+  controller.abort();
+  await assert.rejects(request, (error) => error === controller.signal.reason);
+});
+
 test('guardedWebFetch blocks redirects into private space', async () => {
   const fetchImpl = async () =>
     new Response(null, { status: 302, headers: { location: 'http://169.254.169.254/latest/' } });

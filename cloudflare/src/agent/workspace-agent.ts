@@ -10,6 +10,7 @@ import {
   aiTools,
   type CodeOutput,
 } from '@cloudflare/codemode/ai';
+import type { ToolProvider } from '@cloudflare/codemode';
 import { Workspace as RuntimeWorkspace } from '@cloudflare/shell';
 import { gitTools } from '@cloudflare/shell/git';
 import { STATE_METHODS, stateTools } from '@cloudflare/shell/workers';
@@ -136,22 +137,16 @@ const GIT_WRITE_METHODS = new Set([
   'remote',
 ]);
 
-type ProviderToolValue =
-  | string
-  | number
-  | boolean
-  | null
-  | undefined
-  | Uint8Array
-  | ProviderToolValue[]
-  | { readonly [key: string]: ProviderToolValue };
-
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
   'Prefer this for multi-step analysis, file transformation, aggregation, and tasks that would otherwise require many sequential tool calls.',
   'Inside the sandbox, direct network access is blocked. Use the provided codemode.* helper functions, the state.* filesystem API, and git.* repository helpers instead.',
   '{{types}}',
 ].join('\n');
+
+function throwIfAborted(abortSignal: AbortSignal | undefined): void {
+  abortSignal?.throwIfAborted();
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, max));
@@ -881,8 +876,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           }),
         ].join('\n')
         : null;
-      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels);
-      const codemode = this.createCodeModeTool(hostTools);
+      const abortSignal = options?.abortSignal;
+      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, abortSignal);
+      const codemode = this.createCodeModeTool(hostTools, abortSignal);
       const modelTools = this.buildModelTools(hostTools);
       const model = createCailModel({
         env: this.env,
@@ -1167,55 +1163,59 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   /**
-   * Serialize only provider writes. Code Mode itself remains fenced for the
-   * migration active-mutation counter, while each native write enters the
-   * storage tail so HTTP file/gallery operations cannot interleave with it.
+   * Code Mode has no executor AbortSignal. Check each native dispatch here;
+   * writes also wait for the workspace storage queue and recheck afterwards.
+   * The outer Code Mode call keeps only the migration mutation counter.
    */
-  private serializeProviderWrites<T extends { tools: object }>(
-    provider: T,
+  private serializeProviderWrites(
+    provider: ToolProvider,
     writeMethods: ReadonlySet<string>,
-  ): T {
-    type ProviderTool = {
-      execute?: (...args: unknown[]) => ProviderToolValue | Promise<ProviderToolValue>;
-    };
-    // SAFETY: stateTools() and gitTools() return mutable tool maps at runtime;
-    // this method only wraps names from their documented write-method sets.
-    const tools = provider.tools as Record<string, ProviderTool>;
-    for (const method of writeMethods) {
-      const tool = tools[method];
-      const execute = tool?.execute;
-      if (!execute) continue;
-      tool.execute = (...args: unknown[]) => this.withStorageOperation(
-        async () => execute(...args),
-      );
+    abortSignal?: AbortSignal,
+  ): ToolProvider {
+    for (const [name, toolDefinition] of Object.entries(provider.tools)) {
+      if (!('execute' in toolDefinition) || !toolDefinition.execute) continue;
+      const execute = toolDefinition.execute;
+      toolDefinition.execute = async (...args: never[]) => {
+        throwIfAborted(abortSignal);
+        const invoke = async () => {
+          throwIfAborted(abortSignal);
+          return execute(...args);
+        };
+        return writeMethods.has(name) ? this.withStorageOperation(invoke) : invoke();
+      };
     }
     return provider;
   }
 
-  private buildSerializedStateTools() {
+  private buildSerializedStateTools(abortSignal?: AbortSignal) {
     return this.serializeProviderWrites(
       stateTools(this.getRuntimeWorkspace()),
       STATE_WRITE_METHODS,
+      abortSignal,
     );
   }
 
-  private buildSerializedGitTools() {
+  private buildSerializedGitTools(abortSignal?: AbortSignal) {
     return this.serializeProviderWrites(
       guardGitToken(gitTools(this.getRuntimeWorkspace()), {
         token: this.env.GIT_AUTH_TOKEN,
         allowedHosts: parseGitAllowedHosts(this.env),
       }),
       GIT_WRITE_METHODS,
+      abortSignal,
     );
   }
 
-  private createCodeModeTool(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
+  private createCodeModeTool(
+    tools: ReturnType<WorkspaceAgent['buildHostTools']>,
+    abortSignal?: AbortSignal,
+  ) {
     const codeModeTools = this.buildCodeModeHostTools(tools);
     const codemode = createCodeTool({
       tools: [
         aiTools(codeModeTools),
-        this.buildSerializedStateTools(),
-        this.buildSerializedGitTools(),
+        this.buildSerializedStateTools(abortSignal),
+        this.buildSerializedGitTools(abortSignal),
       ],
       executor: this.createCodeExecutor(),
       description: CODEMODE_DESCRIPTION,
@@ -1229,21 +1229,28 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (!execute) {
       throw new Error('codemode tool is missing its executor');
     }
-    codemode.execute = (input, options) => this.withMutationFence(async () => {
-      const output = await execute(input, options);
-      // SAFETY: createCodeTool's concrete executor always returns CodeOutput;
-      // the AI SDK Tool type also permits streaming results for other tools.
-      return output as CodeOutput;
-    });
+    codemode.execute = async (input, options) => {
+      throwIfAborted(abortSignal);
+      return this.withMutationFence(async () => {
+        throwIfAborted(abortSignal);
+        const output = await execute(input, options);
+        // SAFETY: createCodeTool's concrete executor always returns CodeOutput;
+        // the AI SDK Tool type also permits streaming results for other tools.
+        return output as CodeOutput;
+      });
+    };
     return codemode;
   }
 
-  private buildCodeProviders(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
+  private buildCodeProviders(
+    tools: ReturnType<WorkspaceAgent['buildHostTools']>,
+    abortSignal?: AbortSignal,
+  ) {
     const codeModeTools = this.buildCodeModeHostTools(tools);
     return [
       resolveProvider(aiTools(codeModeTools)),
-      resolveProvider(this.buildSerializedStateTools()),
-      resolveProvider(this.buildSerializedGitTools()),
+      resolveProvider(this.buildSerializedStateTools(abortSignal)),
+      resolveProvider(this.buildSerializedGitTools(abortSignal)),
     ];
   }
 
@@ -1262,6 +1269,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     workspace: WorkspaceRecord,
     sessionId: string,
     scopedPanels: WorkspacePanel[] = [],
+    abortSignal?: AbortSignal,
   ) {
     const turnMessageId = [...(this.messages ?? [])]
       .reverse()
@@ -1372,7 +1380,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           url: z.string().url(),
           format: z.enum(['text', 'json']).default('text'),
         }),
-        execute: async ({ url, format }) => guardedWebFetch(url, format, this.env),
+        execute: async ({ url, format }) => guardedWebFetch(url, format, this.env, fetch, abortSignal),
       }),
       read_skill: tool({
         description: [
@@ -1727,8 +1735,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const toolDefinition = mutableTools[name];
       const original = toolDefinition?.execute;
       if (!original) continue;
-      toolDefinition.execute = (...args: never[]) =>
-        this.withStorageOperation(() => original(...args));
+      toolDefinition.execute = async (...args: never[]) => {
+        throwIfAborted(abortSignal);
+        return this.withStorageOperation(async () => {
+          // Stop may arrive while this write is waiting behind an upload.
+          throwIfAborted(abortSignal);
+          return original(...args);
+        });
+      };
     }
 
     if (scopedPanels.length > 0) {
