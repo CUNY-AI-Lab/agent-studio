@@ -7,7 +7,10 @@
  * home page, seeds deterministic card panels through the local API (there is
  * no model call in this path), and then performs the user-visible canvas
  * actions: select, associate, disconnect, clear selection, pan, zoom, resize,
- * download, reload, and delete.
+ * download, reload, and delete. It also uploads a real file, reads its preview
+ * and downloaded bytes, imports a downloaded workspace export, and verifies
+ * gallery publication and removal through the built application. Active HTML
+ * must execute only inside an opaque preview, including mislabeled files.
  *
  * This is a browser/process integration test. It does not prove model
  * streaming, provider routing, or model-generated artifact quality; those
@@ -16,6 +19,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
   chromium,
@@ -377,6 +381,137 @@ async function settledReactFlowViewport(page: Page): Promise<WorkspaceViewport> 
   return second;
 }
 
+async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promise<void> {
+  const note = '# Research note\n\nA durable artifact with café and 数字.\n';
+  await page.getByLabel('Upload files to workspace').setInputFiles({
+    name: 'research.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(note),
+  });
+  const fileActions = page.getByRole('button', { name: /^research\.md, .*File actions$/ });
+  await fileActions.click();
+  await page.getByRole('menuitem', { name: 'Show on Canvas', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+
+  await fileActions.click();
+  const fileDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('menuitem', { name: 'Download', exact: true }).click();
+  const fileDownload = await fileDownloadPromise;
+  const filePath = await fileDownload.path();
+  if (!filePath) fail('Workspace file download did not finish');
+  expect(await readFile(filePath, 'utf8')).toBe(note);
+
+  const exportPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export workspace' }).click();
+  const exported = await exportPromise;
+  const exportPath = await exported.path();
+  if (!exportPath) fail('Workspace export did not finish');
+  const bundle = await readFile(exportPath);
+
+  await page.getByRole('button', { name: /^Publish(?: to gallery)?$/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Publish to Gallery' });
+  await dialog.getByRole('textbox', { name: 'Title', exact: true }).fill('Shared research');
+  await dialog.getByRole('textbox', { name: 'Description', exact: true }).fill('Local browser acceptance');
+  const publicationPromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/publish')
+  ));
+  await dialog.getByRole('button', { name: 'Publish', exact: true }).click();
+  const publication = await publicationPromise;
+  if (publication.status() !== 201) fail('Workspace publication failed');
+  const published = z.object({ item: z.object({ id: z.string() }) }).parse(await publication.json());
+  await expect(page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ })).toBeVisible();
+
+  const otherPage = await page.context().newPage();
+  let importedWorkspaceId: string | undefined;
+  try {
+    const galleryUrl = new URL(baseUrl);
+    galleryUrl.searchParams.set('gallery', published.item.id);
+    await otherPage.goto(galleryUrl.toString(), { waitUntil: 'networkidle' });
+    await expect(otherPage.getByRole('heading', { name: 'Shared research', exact: true })).toBeVisible();
+    await expect(otherPage.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+
+    page.once('dialog', (confirmation) => void confirmation.accept());
+    await page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ }).click();
+    await expect(page.getByRole('button', { name: /^Publish(?: to gallery)?$/ })).toBeVisible();
+    await otherPage.reload({ waitUntil: 'networkidle' });
+    await expect(otherPage.getByText('Gallery item not found', { exact: false })).toBeVisible();
+
+    await otherPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await otherPage.getByLabel('Import workspace bundle').setInputFiles({
+      name: exported.suggestedFilename(),
+      mimeType: 'application/json',
+      buffer: bundle,
+    });
+    await otherPage.waitForURL(/workspace=/);
+    importedWorkspaceId = workspaceIdFromUrl(otherPage.url());
+    if (importedWorkspaceId === workspaceIdFromUrl(page.url())) fail('Import reused the original workspace');
+    await otherPage.reload({ waitUntil: 'networkidle' });
+    await expect(otherPage.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+    await expect(otherPage.getByRole('button', {
+      name: associationName('Source cards', 'Related cards'),
+    })).toHaveCount(1);
+    otherPage.once('dialog', (confirmation) => void confirmation.accept());
+    await otherPage.getByRole('button', { name: 'Delete workspace' }).click();
+    await expect(otherPage.getByRole('button', { name: 'Start blank' })).toBeVisible();
+    importedWorkspaceId = undefined;
+  } finally {
+    if (importedWorkspaceId) {
+      await apiCall(otherPage, baseUrl, `/api/workspaces/${importedWorkspaceId}`, {
+        method: 'DELETE', label: 'cleanup imported workspace', schema: AcknowledgementPayloadSchema,
+      });
+    }
+    await otherPage.close();
+  }
+  await page.reload({ waitUntil: 'networkidle' });
+  await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+}
+
+async function verifyFileExecutionBoundary(page: Page, baseUrl: string): Promise<void> {
+  // Imported/generated file MIME is untrusted, including a file named .pdf.
+  const html = '<h1>Working preview</h1><script>let access;try{parent.document.documentElement;access="parent-access"}catch{access="isolated"}document.body.dataset.boundary=access;</script>';
+  const now = new Date().toISOString();
+  const workspace = { id: 'fixture', name: 'File isolation', description: '', createdAt: now, updatedAt: now };
+  const paths = ['preview.html', 'reported.pdf', 'unknown.bin'];
+  const bundle = {
+    version: 1, exportedAt: now, workspace,
+    state: {
+      sessionId: null, workspace,
+      panels: paths.map((filePath, index) => ({
+        id: `file-boundary-${index}`, type: index === 1 ? 'pdf' : 'file', filePath, title: filePath,
+        layout: { x: index * 450, y: 0, width: 400, height: 300 },
+      })),
+      viewport: { x: 0, y: 0, zoom: 0.6 }, groups: [], connections: [],
+    },
+    messages: [], files: paths.map((path) => ({ path, contentType: 'text/html', encoding: 'utf8', content: html })),
+  };
+  const filePage = await page.context().newPage();
+  let workspaceId: string | undefined;
+  try {
+    await filePage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await filePage.getByLabel('Import workspace bundle').setInputFiles({
+      name: 'boundary.agent-studio.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+    await filePage.waitForURL(/workspace=/);
+    workspaceId = workspaceIdFromUrl(filePage.url());
+    const preview = filePage.frameLocator('iframe[title="preview.html"]');
+    await expect(preview.getByRole('heading', { name: 'Working preview' })).toBeVisible();
+    await expect(preview.locator('body')).toHaveAttribute('data-boundary', 'isolated');
+    for (const filename of ['reported.pdf', 'unknown.bin']) {
+      const downloadPromise = filePage.waitForEvent('download');
+      await filePage.getByRole('link', { name: `Download ${filename}`, exact: true }).click();
+      const download = await downloadPromise;
+      const path = await download.path();
+      if (!path) fail('Unpreviewable file download did not finish');
+      expect(await readFile(path, 'utf8')).toBe(html);
+    }
+  } finally {
+    if (workspaceId) await apiCall(filePage, baseUrl, `/api/workspaces/${workspaceId}`, {
+      method: 'DELETE', label: 'cleanup file-boundary workspace', schema: AcknowledgementPayloadSchema,
+    });
+    await filePage.close();
+  }
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -539,6 +674,13 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     if (download.suggestedFilename() !== 'source-cards.json') {
       fail('Unexpected card download name');
     }
+    const cardDownloadPath = await download.path();
+    if (!cardDownloadPath) fail('Card download did not finish');
+    expect(JSON.parse(await readFile(cardDownloadPath, 'utf8'))).toEqual([{
+      id: 'source-finding', title: 'Source finding', subtitle: 'Deterministic browser fixture',
+      description: 'This card is seeded through the local Worker API.', badge: 'Verified',
+      metadata: { Source: 'local acceptance', Year: '2026' },
+    }]);
 
     await page.reload({ waitUntil: 'networkidle' });
     await expect(page.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Agent Studio browser acceptance');
@@ -554,13 +696,16 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     const sourcePanelState = persistedState.panels.find((panel) => panel.id === 'browser-source-cards');
     if ((sourcePanelState?.layout?.width ?? 0) <= 360) fail('Card resize did not survive reload');
 
+    await verifyFileAndSharingLifecycle(page, baseUrl);
+    await verifyFileExecutionBoundary(page, baseUrl);
+
     page.once('dialog', (dialog) => {
       void dialog.accept();
     });
     await page.getByRole('button', { name: 'Delete workspace' }).click();
     await expect(page.getByRole('button', { name: 'Start blank' })).toBeVisible();
     cleanupViaUi = true;
-    console.log('[browser] visible workspace creation, ready chat without internal activity, cards, title save, association, disconnect, clear selection, pan, zoom, keyboard resize, download, reload, and UI cleanup passed');
+    console.log('[browser] canvas persistence, file bytes, export/import, gallery lifecycle, preview isolation, reload, and UI cleanup passed');
   } finally {
     if (workspaceId && !cleanupViaUi) {
       try {

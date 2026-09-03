@@ -27,7 +27,9 @@ export function FilePreview({
     return <img key={url} className="panel-image" src={url} alt={panel.title || panel.filePath} />;
   }
 
-  if (isPdf) {
+  // Blob URLs do not retain the response's CSP. Only the PDF MIME may enter
+  // the native, unsandboxed PDF viewer; imported files can mislabel a .pdf.
+  if (isPdf && (fileSource.kind === 'gallery' || blob?.type.split(';', 1)[0] === 'application/pdf')) {
     return <iframe key={url} className="panel-frame" src={url} title={panel.title || panel.filePath} />;
   }
 
@@ -48,15 +50,10 @@ export function FilePreview({
     return <TextFilePreview url={url} blob={blob} filePath={panel.filePath} />;
   }
 
-  // Raw same-origin open is safe: the file-serving route sends
-  // `Content-Security-Policy: default-src 'none'; sandbox` + nosniff on every
-  // file, and `Content-Disposition: attachment` for active types
-  // (html/svg/xml). An active-type open downloads rather than executing on our
-  // origin; safe inline types still open/render normally.
   return (
     <div className="panel-file">
-      <a href={url} target="_blank" rel="noreferrer">
-        Open {panel.filePath}
+      <a href={url} download={panel.filePath.split('/').pop() || panel.filePath}>
+        Download {panel.filePath}
       </a>
     </div>
   );

@@ -116,13 +116,3 @@ export async function downloadFileSource(
   if (!response.ok) throw new Error(`File request failed with ${response.status}`);
   downloadBlob(await response.blob(), filename);
 }
-
-export async function openFileSource(source: FileSource, filePath: string): Promise<void> {
-  const response = source.kind === 'workspace'
-    ? await fetchWorkspaceFile(source.id, filePath)
-    : await fetch(getGalleryFileUrl(source.id, filePath));
-  if (!response.ok) throw new Error(`File request failed with ${response.status}`);
-  const objectUrl = URL.createObjectURL(await response.blob());
-  window.open(objectUrl, '_blank', 'noopener,noreferrer');
-  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
-}

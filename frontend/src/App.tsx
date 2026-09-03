@@ -2167,7 +2167,6 @@ function WorkspaceShell({
   const renderPanelMenuContent = useCallback((panel: WorkspacePanel) => (
     <PanelMenu
       panel={panel}
-      workspaceId={workspace.workspace.id}
       maximizedPanelId={maximizedPanelId}
       onAskAboutTile={openContextualChatForPanel}
       onRevealFile={revealFileInWorkspace}
@@ -2189,7 +2188,6 @@ function WorkspaceShell({
     openContextualChatForPanel,
     revealFileInWorkspace,
     removePanels,
-    workspace.workspace.id,
   ]);
 
   const handleWorkspaceSave = useCallback(async () => {

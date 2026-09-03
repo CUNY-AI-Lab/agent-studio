@@ -31,6 +31,9 @@
 //
 // `nosniff` on the file routes prevents MIME confusion. Both helpers live here
 // so a third route can't drift from the invariant.
+// Fetch-to-Blob copies do not retain these response headers. The frontend must
+// sandbox executable previews and download other bytes instead of opening a
+// top-level Blob document on the application's origin.
 
 // Active document types: bytes a browser could interpret as an executable /
 // scriptable same-origin document if navigated to top-level. Matched

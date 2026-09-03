@@ -46,7 +46,7 @@ export function FilesShelf({
   getFileCanvasActionLabel: (filePath: string) => string;
 }) {
   return (
-    <section ref={sectionRef} aria-label="Workspace files" className="flex-shrink-0 border-b border-border/50 bg-card/60 backdrop-blur-sm overflow-visible relative z-10">
+    <section ref={sectionRef} aria-label="Workspace files" className="flex-shrink-0 border-b border-border/50 bg-card/60 backdrop-blur-sm overflow-visible relative z-20">
       <div className="flex items-center justify-between gap-3 px-4 py-2">
         <button
           onClick={onToggleCollapsed}
