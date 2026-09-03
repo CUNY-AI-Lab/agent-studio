@@ -1327,13 +1327,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         inputSchema: z.object({
           filename: z.string().min(1),
           format: z.enum(['csv', 'json', 'txt']),
-          data: z.json(),
+          data: z.json().describe('For csv or txt, supply the complete formatted text as a string. For json, supply the structured JSON value.'),
         }),
         execute: async ({ filename, format, data }) => {
+          const contents = format === 'json'
+            ? data
+            : z.string({ error: 'CSV and text downloads require a formatted text string.' }).parse(data);
           await addWorkspaceDownload(this.env, sessionId, workspace.id, {
             filename,
             format,
-            data,
+            data: contents,
           });
           return { ok: true, filename, format };
         },

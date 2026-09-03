@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 import { getWorkspace, putWorkspace } from '../src/lib/workspaces.ts';
+import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
 import { normalizePanelRelations } from '../src/lib/panel-connections.ts';
 import { importServer, makeEnv, openSession, registerCloudflareStub } from './helpers/env.mjs';
 
@@ -606,6 +607,27 @@ test('panel reads preserve linked data and terminate mutual detail links', async
   const ordinary = await tools.read_panel.execute({ panelId: 'ordinary' });
   assert.equal(ordinary.linkedPanel.type, 'markdown');
   assert.equal(ordinary.linkedPanel.content, 'Research finding');
+});
+
+test('download tool keeps CSV text intact and rejects records that would become object text', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { env } = makeEnv();
+  const fake = { env, withMutationFence: async (operation) => operation() };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fake, { id: 'workspace', name: 'Research' }, 'session',
+  );
+  await assert.rejects(
+    tools.ui_download.execute({ filename: 'results.csv', format: 'csv', data: [{ title: 'Finding' }] }),
+    /string/,
+  );
+  assert.deepEqual(await getWorkspaceDownloads(env, 'session', 'workspace'), []);
+  const csv = 'title,notes\r\nFinding,"A quote: ""yes"", and a comma"\r\n';
+  await tools.ui_download.execute({ filename: 'results.csv', format: 'csv', data: csv });
+  await tools.ui_download.execute({ filename: 'results.json', format: 'json', data: [{ title: 'Finding' }] });
+  const downloads = await getWorkspaceDownloads(env, 'session', 'workspace');
+  assert.equal(downloads[0].data, csv);
+  assert.deepEqual(downloads[1].data, [{ title: 'Finding' }]);
 });
 
 test('addPanel persists a supplied sourcePanelId as an explicit association', async () => {
