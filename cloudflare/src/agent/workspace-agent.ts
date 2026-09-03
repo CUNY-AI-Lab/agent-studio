@@ -818,8 +818,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.assertNotFrozen();
     const workspace = this.requireWorkspace();
     const sessionId = this.requireSessionId();
+    const abortSignal = options?.abortSignal;
+    throwIfAborted(abortSignal);
 
     const credentialCheck = await this.verifyCurrentGatewayCredential(sessionId);
+    throwIfAborted(abortSignal);
     const identityJwt = this.cailIdentityJwt;
     if (credentialCheck.status !== 'valid' || !identityJwt) {
       const errorText = serializeCailAuthError(
@@ -832,7 +835,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
     }
 
-    if (!(await checkHeavyRpcLimit(this.env, sessionId))) {
+    const heavyLimitAllowed = await checkHeavyRpcLimit(this.env, sessionId);
+    throwIfAborted(abortSignal);
+    if (!heavyLimitAllowed) {
       const errorText = JSON.stringify(canonicalError(
         'rate_limited',
         'Too many agent turns — try again shortly.',
@@ -851,7 +856,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         const { models } = await fetchCailModels({
           env: this.env,
           identityJwt,
+          abortSignal,
         });
+        throwIfAborted(abortSignal);
         requireFunctionCallingModel(models, modelName);
         this.functionCallingModelId = modelName;
       }
@@ -876,7 +883,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           }),
         ].join('\n')
         : null;
-      const abortSignal = options?.abortSignal;
       const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, abortSignal);
       const codemode = this.createCodeModeTool(hostTools, abortSignal);
       const modelTools = this.buildModelTools(hostTools);
@@ -887,15 +893,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         model: modelName,
       });
 
+      const modelMessages = await convertToModelMessages(this.messages);
+      throwIfAborted(abortSignal);
       const result = streamText({
         model,
         // The gateway does not yet deduplicate model execution. A retry after
         // an uncertain response could run and bill the same turn twice.
         maxRetries: 0,
-        abortSignal: options?.abortSignal,
+        abortSignal,
         system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),
         messages: pruneMessages({
-          messages: await convertToModelMessages(this.messages),
+          messages: modelMessages,
           toolCalls: 'before-last-2-messages',
         }),
         tools: {
@@ -914,6 +922,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         },
       });
     } catch (error) {
+      if (abortSignal?.aborted) throw error;
       const errorText = error instanceof ModelCatalogCapabilityError
         ? JSON.stringify(canonicalError(
           'model_capability_required',

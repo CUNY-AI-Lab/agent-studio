@@ -256,6 +256,34 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(init?.credentials).toBe('include');
   });
 
+  it('aborts a delayed model credential refresh on the caller signal', async () => {
+    const { refreshModelCredential } = await loadApi();
+    stubCookie(`${CSRF_COOKIE}=${'q'.repeat(64)}`);
+    const controller = new AbortController();
+    let startedResolve!: () => void;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    const spy = mockFetch((_input, init) => new Promise((_resolve, reject) => {
+      startedResolve();
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+    }));
+
+    const pending = refreshModelCredential('workspace-1', controller.signal);
+    await started;
+    controller.abort();
+
+    let timeout;
+    const outcome = await Promise.race([
+      pending.then(() => 'resolved', (error) => error),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve('timed-out'), 100);
+      }),
+    ]);
+    clearTimeout(timeout);
+    expect(outcome).not.toBe('timed-out');
+    expect(outcome).toBe(controller.signal.reason);
+    expect(spy.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+
   it('serializes concurrent workspace and gallery reads behind one session bootstrap', async () => {
     const { fetchGalleryItems, fetchWorkspaces } = await loadApi();
     const token = 'a'.repeat(64);
@@ -301,6 +329,78 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     const reads = observed.filter(({ path }) => path.startsWith('/api/workspaces') || path.startsWith('/api/gallery'));
     expect(reads).toHaveLength(2);
     expect(reads.every(({ sessionCookie: value }) => value === 'agent-studio-session=session-a')).toBe(true);
+  });
+
+  it('aborts a solely-owned delayed session bootstrap on the caller signal', async () => {
+    const { ensureCsrfToken } = await loadApi();
+    stubCookie();
+    const controller = new AbortController();
+    let startedResolve!: () => void;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    const spy = mockFetch((_input, init) => new Promise((_resolve, reject) => {
+      startedResolve();
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+    }));
+
+    const pending = ensureCsrfToken(controller.signal);
+    await started;
+    controller.abort();
+
+    let timeout;
+    const outcome = await Promise.race([
+      pending.then(() => 'resolved', (error) => error),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve('timed-out'), 100);
+      }),
+    ]);
+    clearTimeout(timeout);
+    expect(outcome).not.toBe('timed-out');
+    expect(outcome).toBe(controller.signal.reason);
+    expect(spy.mock.calls[0][1]?.signal?.aborted).toBe(true);
+  });
+
+  it('does not abort a shared session bootstrap still needed by a non-chat caller', async () => {
+    const { ensureCsrfToken } = await loadApi();
+    const token = 's'.repeat(64);
+    const cookie = stubCookie();
+    let startedResolve!: () => void;
+    const started = new Promise<void>((resolve) => { startedResolve = resolve; });
+    let releaseBootstrap!: (response: Response) => void;
+    const bootstrap = new Promise<Response>((resolve) => { releaseBootstrap = resolve; });
+    const spy = mockFetch(async (_input, init) => {
+      startedResolve();
+      const response = await new Promise<Response>((resolve, reject) => {
+        const onAbort = () => reject(init?.signal?.reason);
+        init?.signal?.addEventListener('abort', onAbort, { once: true });
+        void bootstrap.then((value) => {
+          init?.signal?.removeEventListener('abort', onAbort);
+          resolve(value);
+        });
+      });
+      cookie.set(`${CSRF_COOKIE}=${token}`);
+      return response;
+    });
+
+    const background = ensureCsrfToken();
+    await started;
+    const controller = new AbortController();
+    const stopped = ensureCsrfToken(controller.signal);
+    controller.abort();
+
+    let timeout;
+    const outcome = await Promise.race([
+      stopped.then(() => 'resolved', (error) => error),
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve('timed-out'), 100);
+      }),
+    ]);
+    clearTimeout(timeout);
+    expect(outcome).toBe(controller.signal.reason);
+    expect(spy.mock.calls[0][1]?.signal?.aborted).toBe(false);
+
+    releaseBootstrap(sessionResponse());
+    await expect(background).resolves.toBe(token);
+    expect(spy).toHaveBeenCalledOnce();
   });
 
   it('mutatingFetch preserves caller-supplied headers alongside the token', async () => {

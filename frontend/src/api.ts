@@ -77,7 +77,14 @@ export const CSRF_HEADER = 'X-CSRF-Token';
 /** Cookie the worker delivers the token in (must match cloudflare/src/lib/csrf.ts). */
 export const CSRF_COOKIE_NAME = 'cail_csrf_agentstudio';
 
-let csrfTokenPromise: Promise<string> | null = null;
+type CsrfTokenFlight = {
+  controller: AbortController;
+  promise: Promise<string>;
+  waiters: number;
+  settled: boolean;
+};
+
+let csrfTokenFlight: CsrfTokenFlight | null = null;
 
 /** Read a cookie value from document.cookie, or null if absent. */
 function readCookie(name: string): string | null {
@@ -91,26 +98,83 @@ function readCookie(name: string): string | null {
   return null;
 }
 
-async function requestCsrfToken(): Promise<string> {
+async function requestCsrfToken(signal?: AbortSignal): Promise<string> {
   // Hit the bootstrap GET so the worker sets the cookie, then read it. The JSON
   // body no longer carries the token (the amendment forbids it); the path-scoped
   // cookie is the only delivery channel.
-  const response = await fetch(appPath('/api/session'), { credentials: 'include' });
+  signal?.throwIfAborted();
+  const response = await fetch(appPath('/api/session'), {
+    credentials: 'include',
+    signal,
+  });
+  signal?.throwIfAborted();
   if (!response.ok) {
     // Consume the body once so the canonical CAIL authentication envelope can
     // trigger the same safe redirect as every other JSON API response. Never
     // include the upstream body in the thrown bootstrap error.
     const { payload } = await readResponseError(response);
+    signal?.throwIfAborted();
     if (handleAuthRequired(response.status, payload)) {
       throw new ApiError('Sign in to continue.');
     }
     throw new ApiError("Agent Studio couldn't start. Reload the page and try again.");
   }
   const token = readCookie(CSRF_COOKIE_NAME);
+  signal?.throwIfAborted();
   if (!token) {
     throw new ApiError("Agent Studio couldn't start. Reload the page and try again.");
   }
   return token;
+}
+
+/**
+ * Wait for one shared bootstrap without letting one caller's cancellation
+ * reject other callers. The underlying request is aborted only when this was
+ * its last waiter, which preserves the session single-flight contract for
+ * concurrent non-chat reads.
+ */
+function waitForCsrfToken(
+  flight: CsrfTokenFlight,
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted();
+  flight.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      flight.waiters -= 1;
+      if (
+        flight.waiters === 0
+        && !flight.settled
+        && csrfTokenFlight === flight
+      ) {
+        csrfTokenFlight = null;
+        flight.controller.abort();
+      }
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      release();
+      reject(signal?.reason);
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    void flight.promise.then(
+      (token) => {
+        if (signal?.aborted) {
+          onAbort();
+          return;
+        }
+        release();
+        resolve(token);
+      },
+      (error) => {
+        release();
+        reject(error);
+      },
+    );
+  });
 }
 
 /**
@@ -120,16 +184,33 @@ async function requestCsrfToken(): Promise<string> {
  * fetch/read is not cached, so a transient error can be retried on the next
  * mutation. Callers that mutate must await this and send the token.
  */
-export function ensureCsrfToken(): Promise<string> {
+export function ensureCsrfToken(signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
   const existing = readCookie(CSRF_COOKIE_NAME);
   if (existing) return Promise.resolve(existing);
-  if (!csrfTokenPromise) {
-    csrfTokenPromise = requestCsrfToken().catch((error) => {
-      csrfTokenPromise = null;
-      throw error;
-    });
+  if (!csrfTokenFlight) {
+    const controller = new AbortController();
+    const flight: CsrfTokenFlight = {
+      controller,
+      waiters: 0,
+      settled: false,
+      promise: requestCsrfToken(controller.signal).then(
+        (token) => {
+          flight.settled = true;
+          return token;
+        },
+        (error) => {
+          flight.settled = true;
+          if (csrfTokenFlight === flight) {
+            csrfTokenFlight = null;
+          }
+          throw error;
+        },
+      ),
+    };
+    csrfTokenFlight = flight;
   }
-  return csrfTokenPromise;
+  return waitForCsrfToken(csrfTokenFlight, signal);
 }
 
 /**
@@ -142,7 +223,7 @@ export function ensureCsrfToken(): Promise<string> {
  * anonymous session cookie.
  */
 async function sessionFetch(input: string, init: RequestInit = {}): Promise<Response> {
-  await ensureCsrfToken();
+  await ensureCsrfToken(init.signal ?? undefined);
   return fetch(appPath(input), { ...init, credentials: 'include' });
 }
 
@@ -153,22 +234,25 @@ export function csrfTokenFromCookie(): string | null {
 
 async function protectedFetch(input: string, init: RequestInit): Promise<Response> {
   const baseHeaders = new Headers(init.headers);
+  const signal = init.signal ?? undefined;
   const send = (token: string) => {
     const headers = new Headers(baseHeaders);
     headers.set(CSRF_HEADER, token);
     return fetch(appPath(input), { ...init, credentials: 'include', headers });
   };
 
-  let response = await send(await ensureCsrfToken());
+  let response = await send(await ensureCsrfToken(signal));
+  signal?.throwIfAborted();
   if (response.status !== 403) return response;
 
   const payload = await response.clone().json().catch(() => null);
+  signal?.throwIfAborted();
   const code = canonicalApiErrorFromPayload(payload)?.code;
   if (code !== 'csrf_token_invalid' && code !== 'csrf_token_missing') {
     return response;
   }
 
-  response = await send(await requestCsrfToken());
+  response = await send(await requestCsrfToken(signal));
   return response;
 }
 
@@ -227,10 +311,15 @@ async function parseJson<T>(response: Response): Promise<T> {
 }
 
 /** Refresh the short-lived gateway credential stored by a workspace agent. */
-export async function refreshModelCredential(workspaceId: string): Promise<void> {
+export async function refreshModelCredential(
+  workspaceId: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const response = await mutatingFetch(`/api/workspaces/${workspaceId}/model-credential`, {
     method: 'POST',
+    signal,
   });
+  signal?.throwIfAborted();
   if (response.ok) {
     if (response.status !== 204) {
       throw new ApiError("That didn't work. Try again.");

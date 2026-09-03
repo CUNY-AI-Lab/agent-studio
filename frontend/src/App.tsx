@@ -244,6 +244,13 @@ function WorkspaceShell({
   const initialPromptSentRef = useRef(false);
   const publishOperationIdRef = useRef<string | null>(null);
   const chatStopRef = useRef<() => void>(() => undefined);
+  const chatPreflightControllerRef = useRef<AbortController | null>(null);
+  const abortChatPreflight = useCallback(() => {
+    const controller = chatPreflightControllerRef.current;
+    if (!controller) return;
+    chatPreflightControllerRef.current = null;
+    controller.abort();
+  }, []);
   const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
   const workspaceFilesRequestRef = useRef(0);
   const contextualRetryRef = useRef<ContextualRetry | null>(null);
@@ -326,8 +333,17 @@ function WorkspaceShell({
       ? { scopePanelIds: Array.from(selectedPanelIds) }
       : {},
     prepareSendMessagesRequest: async () => {
-      await refreshModelCredential(workspace.workspace.id);
-      return {};
+      abortChatPreflight();
+      const controller = new AbortController();
+      chatPreflightControllerRef.current = controller;
+      try {
+        await refreshModelCredential(workspace.workspace.id, controller.signal);
+        return {};
+      } finally {
+        if (chatPreflightControllerRef.current === controller) {
+          chatPreflightControllerRef.current = null;
+        }
+      }
     },
     onError: (chatError) => {
       // An Agent-owned authentication_required envelope can surface here as a
@@ -413,7 +429,10 @@ function WorkspaceShell({
     reconcileWorkspaceFromServer(nextWorkspace);
   });
 
-  chatStopRef.current = chat.stop;
+  chatStopRef.current = () => {
+    abortChatPreflight();
+    chat.stop();
+  };
 
   const openContextualTarget = useCallback((target: ContextualChatTarget) => {
     const next = transitionContextualTurn({ type: 'open', target });
