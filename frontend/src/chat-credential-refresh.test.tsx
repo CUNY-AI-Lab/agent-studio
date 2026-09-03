@@ -10,7 +10,6 @@ const chatRequestSchema = z.object({
   id: z.string().optional(),
   type: z.string().optional(),
 });
-
 const csrfToken = 't'.repeat(64);
 const documentCookieDescriptor = Object.getOwnPropertyDescriptor(document, 'cookie');
 
@@ -123,5 +122,4 @@ describe('useAgentChat credential refresh preparation', () => {
     );
     expect(agent.send).not.toHaveBeenCalled();
   });
-
 });
