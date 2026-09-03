@@ -6,17 +6,25 @@ const CSV_FORMAT = dsvFormat(',');
 export type CsvPreview = { headers: string[]; rows: string[][]; truncated: boolean };
 
 export function parseCsvPreview(content: string, limit = 50): CsvPreview {
-  const lines = CSV_FORMAT.parseRows(content);
+  let headers: string[] = [];
+  const rows: string[][] = [];
+  let dataRowCount = 0;
+  const rowLimit = Math.max(0, limit);
 
-  if (lines.length === 0) {
-    return { headers: [], rows: [], truncated: false };
-  }
+  CSV_FORMAT.parseRows(content, (row, rowIndex) => {
+    if (rowIndex === 0) {
+      headers = row;
+    } else {
+      dataRowCount += 1;
+      if (rows.length < rowLimit) rows.push(row);
+    }
+    return null;
+  });
 
-  const [headers, ...dataRows] = lines;
   return {
     headers,
-    rows: dataRows.slice(0, limit),
-    truncated: dataRows.length > limit,
+    rows,
+    truncated: dataRowCount > rowLimit,
   };
 }
 

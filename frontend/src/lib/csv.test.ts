@@ -38,6 +38,17 @@ describe('parseCsvPreview', () => {
     });
   });
 
+  it('retains only the requested preview rows while detecting later records', () => {
+    const body = ['name,notes', ...Array.from({ length: 100 }, (_, index) => `row-${index},value-${index}`)].join('\n');
+    const preview = parseCsvPreview(body, 2);
+    expect(preview.headers).toEqual(['name', 'notes']);
+    expect(preview.rows).toEqual([
+      ['row-0', 'value-0'],
+      ['row-1', 'value-1'],
+    ]);
+    expect(preview.truncated).toBe(true);
+  });
+
   it('returns no headers for blank input', () => {
     expect(parseCsvPreview('')).toEqual({ headers: [], rows: [], truncated: false });
   });
