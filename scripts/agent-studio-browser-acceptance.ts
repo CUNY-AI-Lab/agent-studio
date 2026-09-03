@@ -41,6 +41,8 @@ type WorkspaceViewport = {
 };
 
 type WorkspacePanelLayout = {
+  x: number;
+  y: number;
   width: number;
   height: number;
 };
@@ -81,7 +83,7 @@ const WorkspacePayloadSchema = z.object({
     viewport: z.object({ x: z.number(), y: z.number(), zoom: z.number() }),
     panels: z.array(z.object({
       id: z.string(),
-      layout: z.object({ width: z.number(), height: z.number() }).passthrough().optional(),
+      layout: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).passthrough().optional(),
     }).passthrough()),
   }).passthrough(),
 }).passthrough();
@@ -562,6 +564,62 @@ async function verifyLargeUpload(page: Page, baseUrl: string): Promise<void> {
   }
 }
 
+async function verifyConcurrentLayoutEdits(page: Page, baseUrl: string, workspaceId: string): Promise<void> {
+  const first = await page.context().newPage();
+  const second = await page.context().newPage();
+  let holdNextLayout = false;
+  let releaseLayout: (() => void) | undefined;
+  const layoutCall = z.object({ method: z.literal('applyLayoutPatch') }).passthrough();
+  // Delay one real client RPC; both clients still use the actual Worker/DO.
+  await first.routeWebSocket('**/agents/**', (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      if (holdNextLayout && layoutCall.safeParse(JSON.parse(message.toString())).success) {
+        holdNextLayout = false;
+        releaseLayout = () => server.send(message);
+      } else {
+        server.send(message);
+      }
+    });
+  });
+  try {
+    await first.goto(page.url(), { waitUntil: 'networkidle' });
+    await second.goto(page.url(), { waitUntil: 'networkidle' });
+    const before = await apiCall(page, baseUrl, `/api/workspaces/${workspaceId}`, {
+      label: 'read layouts before concurrent edits', schema: WorkspacePayloadSchema,
+    });
+    const sourceBefore = before.state.panels.find((panel) => panel.id === 'browser-source-cards')?.layout;
+    const targetBefore = before.state.panels.find((panel) => panel.id === 'browser-target-cards')?.layout;
+    if (!sourceBefore || !targetBefore) fail('Concurrent-edit fixture has no layouts');
+    holdNextLayout = true;
+    await panelLocator(first, 'Source cards', 'cards').focus();
+    await first.keyboard.press('ArrowLeft');
+    await expect.poll(() => Boolean(releaseLayout)).toBe(true);
+
+    await panelLocator(second, 'Related cards', 'cards').focus();
+    await second.keyboard.press('ArrowRight');
+    await waitForStateChange(page, baseUrl, workspaceId,
+      (state) => state.panels.some((panel) => panel.id === 'browser-target-cards' && panel.layout?.x === targetBefore.x + 16),
+      'the second client edit to persist');
+    releaseLayout?.();
+    releaseLayout = undefined;
+    const after = await waitForStateChange(page, baseUrl, workspaceId,
+      (state) => state.panels.some((panel) => panel.id === 'browser-source-cards' && panel.layout?.x === sourceBefore.x - 16),
+      'the delayed first client edit to persist');
+    expect(after.panels.find((panel) => panel.id === 'browser-target-cards')?.layout?.x).toBe(targetBefore.x + 16);
+    await first.reload({ waitUntil: 'networkidle' });
+    const reloaded = await apiCall(first, baseUrl, `/api/workspaces/${workspaceId}`, {
+      label: 'read both edits after reload', schema: WorkspacePayloadSchema,
+    });
+    expect(reloaded.state.panels.find((panel) => panel.id === 'browser-source-cards')?.layout?.x).toBe(sourceBefore.x - 16);
+    expect(reloaded.state.panels.find((panel) => panel.id === 'browser-target-cards')?.layout?.x).toBe(targetBefore.x + 16);
+  } finally {
+    releaseLayout?.();
+    await first.close();
+    await second.close();
+  }
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -593,6 +651,8 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await nameInput.fill('Agent Studio browser acceptance');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(nameInput).toHaveValue('Agent Studio browser acceptance');
+
+    await verifyConcurrentLayoutEdits(page, baseUrl, workspaceId);
 
     await selectPanel(page, 'Source cards', 'cards');
     await selectPanel(page, 'Related cards', 'cards', 'ControlOrMeta');
