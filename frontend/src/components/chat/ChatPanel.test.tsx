@@ -17,6 +17,7 @@ const baseProps = {
     isRecovering: false,
     isToolContinuation: false,
     contextualTurnActive: false,
+    connectionError: null,
     canRetry: false,
   }),
   messages: [],
@@ -48,6 +49,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: false,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
       />
@@ -63,6 +65,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: true,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
       />
@@ -136,12 +139,37 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: false,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
       />
     );
     expect(screen.getByText('The last response failed before it finished.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
+  });
+
+  it('shows a terminal connection failure without exposing the socket error', () => {
+    render(
+      <ChatPanel
+        {...baseProps}
+        activity={getChatActivity({
+          status: 'ready',
+          isStreaming: false,
+          isServerStreaming: false,
+          isRecovering: false,
+          isToolContinuation: false,
+          contextualTurnActive: false,
+          connectionError: new Error('private socket detail'),
+          canRetry: true,
+        })}
+        errorNotice="The connection to the agent was lost. Refresh the workspace to reconnect."
+      />
+    );
+    expect(screen.getByText('Connection lost')).toBeInTheDocument();
+    expect(screen.getByText('The connection to the agent was lost. Refresh the workspace to reconnect.')).toBeInTheDocument();
+    expect(screen.getByText('Refresh the workspace to reconnect.')).toBeInTheDocument();
+    expect(screen.queryByText('private socket detail')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message the agent' })).toBeDisabled();
   });
 
   it('confirms before clearing a conversation with messages', async () => {
@@ -166,6 +194,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: false,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
         errorNotice="You have reached your usage quota. Try again later."
@@ -203,6 +232,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: true,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
         composer="another request"

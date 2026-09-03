@@ -39,3 +39,38 @@ export function triggerQueuedDownload(download: DownloadRequest) {
     : 'text/plain;charset=utf-8';
   downloadBlob(new Blob([content], { type: contentType }), filename);
 }
+
+/**
+ * Serialize browser consumption of the server-side download queue.
+ *
+ * A workspace can ask the shell to drain from more than one lifecycle edge
+ * (initial readiness and a same-workspace refresh). Keep one in-flight read,
+ * consume, and clear operation so two edges cannot trigger the same download
+ * before the server-side clear completes. The server endpoint still owns
+ * cross-client ordering and acknowledgement semantics.
+ */
+export function createDownloadQueueDrainer(
+  read: () => Promise<DownloadRequest[]>,
+  clear: () => Promise<void>,
+  consume: (downloads: DownloadRequest[]) => void,
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+
+  return async () => {
+    if (inFlight) return inFlight;
+
+    const operation = (async () => {
+      const downloads = await read();
+      if (downloads.length === 0) return;
+      consume(downloads);
+      await clear();
+    })();
+    inFlight = operation;
+
+    try {
+      await operation;
+    } finally {
+      if (inFlight === operation) inFlight = null;
+    }
+  };
+}

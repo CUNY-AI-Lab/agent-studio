@@ -74,7 +74,11 @@ import {
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { makeClientId } from './lib/format';
-import { downloadBlob, triggerQueuedDownload } from './lib/download';
+import {
+  createDownloadQueueDrainer,
+  downloadBlob,
+  triggerQueuedDownload,
+} from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
 import {
   contextualFailureMessage,
@@ -131,6 +135,12 @@ type AppNavigationTarget = {
   workspaceId: string | null;
   galleryId: string | null;
 };
+
+interface ContextualRetry {
+  target: ContextualChatTarget;
+  turn: ContextualTurnRecord;
+  prompt: string;
+}
 
 function WorkspaceShell({
   workspace,
@@ -232,11 +242,15 @@ function WorkspaceShell({
   const pendingAutoFocusRef = useRef<Set<string>>(new Set());
   const previousArtifactIdsRef = useRef<Set<string>>(new Set());
   const contextualAutoPanKeyRef = useRef<string | null>(null);
-  const initialPromptSentRef = useRef(false);
+  const initialPromptAttemptedRef = useRef(false);
+  const initialPromptSendingRef = useRef(false);
+  const initialPromptAcceptedRef = useRef(false);
+  const previousWorkspaceMessagesRef = useRef(JSON.stringify(workspace.messages));
   const publishOperationIdRef = useRef<string | null>(null);
   const chatStopRef = useRef<() => void>(() => undefined);
   const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
   const workspaceFilesRequestRef = useRef(0);
+  const contextualRetryRef = useRef<ContextualRetry | null>(null);
 
   const transitionContextualTurn = useCallback((action: ContextualLifecycleAction) => {
     const current = contextualLifecycleRef.current;
@@ -315,6 +329,9 @@ function WorkspaceShell({
     body: () => selectedPanelIds.size > 0
       ? { scopePanelIds: Array.from(selectedPanelIds) }
       : {},
+    // WorkspaceAgent is the source of truth for the transcript. Local
+    // hydration below must not echo a REST snapshot back over the socket.
+    syncMessagesToServer: false,
     prepareSendMessagesRequest: async () => {
       await refreshModelCredential(workspace.workspace.id);
       return {};
@@ -339,6 +356,13 @@ function WorkspaceShell({
         setChatErrorNotice(quotaMessage);
         return;
       }
+    },
+    onFinish: ({ isAbort, isDisconnect, isError }) => {
+      if (!initialPromptSendingRef.current) return;
+      initialPromptSendingRef.current = false;
+      if (isAbort || isDisconnect || isError || !initialPrompt || initialPromptAcceptedRef.current) return;
+      initialPromptAcceptedRef.current = true;
+      onInitialPromptConsumed?.();
     },
   });
 
@@ -406,6 +430,9 @@ function WorkspaceShell({
   chatStopRef.current = chat.stop;
 
   const openContextualTarget = useCallback((target: ContextualChatTarget) => {
+    if (contextualRetryRef.current?.target.key !== target.key) {
+      contextualRetryRef.current = null;
+    }
     const next = transitionContextualTurn({ type: 'open', target });
     if (next.target?.key === target.key) setContextualComposer('');
   }, [transitionContextualTurn]);
@@ -416,6 +443,10 @@ function WorkspaceShell({
   ) => {
     chat.clearError();
     setChatErrorNotice(null);
+    // A new global send supersedes any completed scoped failure. The scoped
+    // submit path records its retry metadata again immediately after calling
+    // this helper.
+    contextualRetryRef.current = null;
     return chat.sendMessage({ text }, options);
   }, [chat]);
 
@@ -440,6 +471,9 @@ function WorkspaceShell({
         ],
       };
     });
+    if (reason !== 'error' && contextualRetryRef.current?.turn.turnId === pending.turnId) {
+      contextualRetryRef.current = null;
+    }
     transitionContextualTurn({ type: 'finish', turnId: pending.turnId });
   }, [transitionContextualTurn]);
 
@@ -457,6 +491,7 @@ function WorkspaceShell({
       void chatStopRef.current();
       finishContextualTurn(pending, 'cancel');
     }
+    contextualRetryRef.current = null;
     transitionContextualTurn({ type: 'close' });
     clearContextualDraft();
   }, [clearContextualDraft, finishContextualTurn, transitionContextualTurn]);
@@ -508,7 +543,10 @@ function WorkspaceShell({
         workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
       );
       contextualAutoPanKeyRef.current = null;
-      initialPromptSentRef.current = false;
+      initialPromptAttemptedRef.current = false;
+      initialPromptSendingRef.current = false;
+      initialPromptAcceptedRef.current = false;
+      contextualRetryRef.current = null;
     } else {
       setWorkspaceName((current) => reconcileWorkspaceDraft(
         { name: current, description: '', model: undefined },
@@ -528,13 +566,37 @@ function WorkspaceShell({
       setPublishTitle((current) => current === previousServer.name ? workspace.workspace.name : current);
       setPublishDescription((current) => current === previousServer.description ? workspace.workspace.description : current);
     }
-    if (workspace.downloads && workspace.downloads.length > 0) {
-      workspace.downloads.forEach((download) => {
-        triggerQueuedDownload(download);
-      });
-      void clearWorkspaceDownloads(workspace.workspace.id);
-    }
   }, [closeContextualChat, workspace]);
+
+  useEffect(() => {
+    const workspaceMessagesSnapshot = JSON.stringify(workspace.messages);
+    if (previousWorkspaceMessagesRef.current === workspaceMessagesSnapshot) return;
+    previousWorkspaceMessagesRef.current = workspaceMessagesSnapshot;
+
+    // A same-ID workspace refresh can carry messages created in another tab.
+    // Hydrate only while this client is fully idle; a live or failed local
+    // turn owns its projection until it settles and must not be overwritten by
+    // an older REST snapshot.
+    const chatStillWorking = chat.status === 'submitted'
+      || chat.status === 'streaming'
+      || chat.isStreaming
+      || chat.isServerStreaming
+      || chat.isRecovering
+      || chat.isToolContinuation;
+    if (chat.status !== 'ready' || chatStillWorking) return;
+    if (JSON.stringify(chat.messages) !== workspaceMessagesSnapshot) {
+      chat.setMessages(workspace.messages);
+    }
+  }, [
+    chat.isRecovering,
+    chat.isServerStreaming,
+    chat.isStreaming,
+    chat.isToolContinuation,
+    chat.messages,
+    chat.setMessages,
+    chat.status,
+    workspace.messages,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1034,6 +1096,12 @@ function WorkspaceShell({
     }
   }, [announce, chat.status]);
 
+  useEffect(() => {
+    if (agent.connectionError) {
+      announce('The connection to the agent was lost. Refresh the workspace to reconnect.');
+    }
+  }, [agent.connectionError, announce]);
+
   // Surface workspace-level errors (uploads, saves, rate limits) to screen
   // readers, not just the visual error banner.
   useEffect(() => {
@@ -1059,12 +1127,14 @@ function WorkspaceShell({
     });
   }, []);
 
-  const drainWorkspaceDownloads = useCallback(async () => {
-    const downloads = await fetchWorkspaceDownloads(workspace.workspace.id);
-    if (downloads.length === 0) return;
-    consumeDownloads(downloads);
-    await clearWorkspaceDownloads(workspace.workspace.id);
-  }, [consumeDownloads, workspace.workspace.id]);
+  const drainWorkspaceDownloads = useMemo(
+    () => createDownloadQueueDrainer(
+      () => fetchWorkspaceDownloads(workspace.workspace.id),
+      () => clearWorkspaceDownloads(workspace.workspace.id),
+      consumeDownloads,
+    ),
+    [consumeDownloads, workspace.workspace.id],
+  );
 
   const focusTile = useCallback((panelId: string) => {
     setMinimizedPanelIds((current) => {
@@ -1205,21 +1275,54 @@ function WorkspaceShell({
     })().catch(() => {
       // Ignore background refresh failures in the shell.
     });
-  }, [chat.status, drainWorkspaceDownloads, refreshWorkspaceFiles]);
+  }, [chat.status, drainWorkspaceDownloads, refreshWorkspaceFiles, workspace]);
 
   useEffect(() => {
-    if (!initialPrompt || initialPromptSentRef.current) return;
-    if (chat.status !== 'ready') return;
-    if (chat.messages.some((message) => message.role === 'user' || message.role === 'assistant')) {
-      initialPromptSentRef.current = true;
+    if (!initialPrompt || initialPromptAcceptedRef.current) return;
+
+    const chatStillWorking = chat.status === 'submitted'
+      || chat.status === 'streaming'
+      || chat.isStreaming
+      || chat.isServerStreaming
+      || chat.isRecovering
+      || chat.isToolContinuation;
+    if (initialPromptSendingRef.current) {
+      // useAgentChat invokes onFinish after the transport/preflight settles.
+      // A submitted status alone is not an enqueue acknowledgement: the SDK
+      // sets it before prepareSendMessagesRequest runs.
+      return;
+    }
+
+    if (agent.connectionError || chat.status !== 'ready' || chatStillWorking) return;
+    if (!initialPromptAttemptedRef.current && chat.messages.some((message) => message.role === 'user' || message.role === 'assistant')) {
+      initialPromptAcceptedRef.current = true;
       onInitialPromptConsumed?.();
       return;
     }
 
-    initialPromptSentRef.current = true;
-    void sendChatMessage(initialPrompt);
-    onInitialPromptConsumed?.();
-  }, [chat, initialPrompt, onInitialPromptConsumed, sendChatMessage]);
+    if (initialPromptAttemptedRef.current) return;
+
+    initialPromptAttemptedRef.current = true;
+    initialPromptSendingRef.current = true;
+    try {
+      void sendChatMessage(initialPrompt).catch(() => {
+        initialPromptSendingRef.current = false;
+      });
+    } catch {
+      initialPromptSendingRef.current = false;
+    }
+  }, [
+    agent.connectionError,
+    chat.isRecovering,
+    chat.isServerStreaming,
+    chat.isStreaming,
+    chat.isToolContinuation,
+    chat.messages,
+    chat.status,
+    initialPrompt,
+    onInitialPromptConsumed,
+    sendChatMessage,
+  ]);
 
   const revealFileInWorkspace = useCallback((filePath: string) => {
     setActiveFilePillPopover(null);
@@ -2111,6 +2214,7 @@ function WorkspaceShell({
     const next = contextualComposer.trim();
     const target = contextualLifecycle.target;
     if (!target || !next || contextualLifecycle.phase !== 'idle') return;
+    if (agent.connectionError) return;
     if (
       chat.status === 'submitted' ||
       chat.status === 'streaming' ||
@@ -2131,7 +2235,6 @@ function WorkspaceShell({
       previousMessageIds: new Set(chat.messages.map((message) => message.id)),
       userMessageId: null,
     };
-
     setContextualThreads((current) => ({
       ...current,
       [target.key]: [
@@ -2147,27 +2250,101 @@ function WorkspaceShell({
     const request = sendChatMessage(next, {
       body: { scopePanelIds: target.panelIds },
     });
+    contextualRetryRef.current = { target, turn: pending, prompt: next };
     void request.catch(() => finishContextualTurn(pending, 'error'));
     setContextualComposer('');
-  }, [chat, contextualComposer, contextualLifecycle, finishContextualTurn, sendChatMessage, transitionContextualTurn]);
+  }, [agent.connectionError, chat, contextualComposer, contextualLifecycle, finishContextualTurn, sendChatMessage, transitionContextualTurn]);
 
   const handleChatClear = useCallback(() => {
+    // Stop a scoped stream before clearing its transcript so a late server
+    // continuation cannot repopulate the conversation after the clear.
+    closeContextualChat();
     chat.clearHistory();
     chat.clearError();
     setChatErrorNotice(null);
-  }, [chat]);
+    setComposer('');
+    initialPromptSendingRef.current = false;
+    if (initialPrompt && !initialPromptAcceptedRef.current) {
+      initialPromptAcceptedRef.current = true;
+      onInitialPromptConsumed?.();
+    }
+    contextualRetryRef.current = null;
+    setContextualThreads({});
+  }, [chat, closeContextualChat, initialPrompt, onInitialPromptConsumed]);
 
   const handleChatRetry = useCallback(() => {
+    if (agent.connectionError) return;
     setChatErrorNotice(null);
-    if (chat.regenerate) {
+    const retry = contextualRetryRef.current;
+    const contextualState = contextualLifecycleRef.current;
+    const target = contextualState.target;
+    const chatStillWorking = chat.status === 'submitted'
+      || chat.status === 'streaming'
+      || chat.isStreaming
+      || chat.isServerStreaming
+      || chat.isRecovering
+      || chat.isToolContinuation;
+    const canRetryScopedTurn = Boolean(
+      retry
+      && contextualState.phase === 'idle'
+      && (!target || target.key === retry.target.key)
+      && chat.status === 'error'
+      && !chatStillWorking,
+    );
+    if (canRetryScopedTurn && retry) {
+      if (!target) transitionContextualTurn({ type: 'open', target: retry.target });
+      const userMessageId = retry.turn.userMessageId
+        || [...chat.messages]
+          .reverse()
+          .find((message) => message.role === 'user' && extractMessageText(message).trim() === retry.prompt.trim())?.id
+        || null;
+      const pending: ContextualTurnRecord = {
+        turnId: makeClientId('context-turn'),
+        scopeKey: retry.target.key,
+        previousAssistantId: [...chat.messages]
+          .reverse()
+          .find((message) => message.role === 'assistant')?.id || null,
+        previousMessageIds: new Set(chat.messages.map((message) => message.id)),
+        userMessageId,
+      };
+      setContextualThreads((current) => {
+        const thread = current[retry.target.key] || [];
+        const withoutFailure = thread[thread.length - 1]?.role === 'assistant'
+          && thread[thread.length - 1]?.content === contextualFailureMessage('error')
+          ? thread.slice(0, -1)
+          : thread;
+        if (userMessageId) return { ...current, [retry.target.key]: withoutFailure };
+        return {
+          ...current,
+          [retry.target.key]: [
+            ...withoutFailure,
+            { id: makeClientId('context-user'), role: 'user', content: retry.prompt },
+          ],
+        };
+      });
+      transitionContextualTurn({ type: 'submit', turn: pending });
       chat.clearError();
-      void chat.regenerate();
+      const request = userMessageId
+        ? chat.regenerate({ body: { scopePanelIds: retry.target.panelIds } })
+        : sendChatMessage(retry.prompt, { body: { scopePanelIds: retry.target.panelIds } });
+      contextualRetryRef.current = { ...retry, turn: pending };
+      void request.catch(() => finishContextualTurn(pending, 'error'));
       return;
     }
 
+    // A hidden scoped turn is still owned by its contextual lifecycle. Wait
+    // for its terminal effect rather than treating Retry as a global turn.
+    if (retry && contextualState.phase === 'active') return;
+
     if (!lastUserPrompt) return;
-    void sendChatMessage(lastUserPrompt);
-  }, [chat, lastUserPrompt, sendChatMessage]);
+    if (initialPrompt && !initialPromptAcceptedRef.current && lastUserPrompt.trim() === initialPrompt.trim()) {
+      initialPromptSendingRef.current = true;
+    }
+    chat.clearError();
+    void chat.regenerate().catch(() => {
+      initialPromptSendingRef.current = false;
+    });
+  }, [agent.connectionError, chat, finishContextualTurn, lastUserPrompt, sendChatMessage, transitionContextualTurn]);
 
   const downloadPanelAsPng = useCallback(async (panelId: string, title: string) => {
     const element = panelRefs.current[panelId];
@@ -2426,6 +2603,9 @@ function WorkspaceShell({
 
     if (chat.status === 'ready') {
       if (assistantMessage && extractMessageText(assistantMessage).trim()) {
+        if (contextualRetryRef.current?.turn.turnId === pending.turnId) {
+          contextualRetryRef.current = null;
+        }
         transitionContextualTurn({ type: 'finish', turnId: pending.turnId });
       } else {
         finishContextualTurn(pending, 'empty');
@@ -2539,8 +2719,12 @@ function WorkspaceShell({
     isRecovering: chat.isRecovering,
     isToolContinuation: chat.isToolContinuation,
     contextualTurnActive,
+    connectionError: agent.connectionError,
     canRetry: Boolean(lastUserPrompt),
   });
+  const connectionErrorNotice = agent.connectionError
+    ? 'The connection to the agent was lost. Refresh the workspace to reconnect.'
+    : null;
 
   const canvasViewportSize = canvasViewportRef.current
     ? {
@@ -2562,7 +2746,7 @@ function WorkspaceShell({
       onStop={handleChatStop}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
-      errorNotice={chatErrorNotice}
+      errorNotice={connectionErrorNotice ?? chatErrorNotice}
       selectedScopeLabel={selectedScopeLabel}
       onClearScope={clearSelection}
     />

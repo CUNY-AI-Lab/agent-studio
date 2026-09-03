@@ -107,7 +107,9 @@ export function ChatPanel({
                 {errorNotice ?? 'The last response failed before it finished.'}
               </p>
               <p className="text-xs text-muted-foreground">
-                Retry the last turn or clear the thread and continue.
+                {activity.label === 'Connection lost'
+                  ? 'Refresh the workspace to reconnect.'
+                  : 'Retry the last turn or clear the thread and continue.'}
               </p>
             </div>
             <div className="flex items-center gap-2">
