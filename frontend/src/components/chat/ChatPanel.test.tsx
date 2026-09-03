@@ -17,6 +17,7 @@ const baseProps = {
     isRecovering: false,
     isToolContinuation: false,
     contextualTurnActive: false,
+    connectionError: null,
     canRetry: false,
   }),
   messages: [],
@@ -26,6 +27,7 @@ const baseProps = {
   onStop: () => {},
   onClear: () => {},
   onRetry: () => {},
+  onReload: () => {},
   selectedScopeLabel: null,
   onClearScope: () => {},
 };
@@ -48,6 +50,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: false,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
       />
@@ -63,6 +66,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: true,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
       />
@@ -100,8 +104,8 @@ describe('ChatPanel', () => {
       role: 'assistant',
       parts: [
         { type: 'tool-write_file', toolCallId: 't1', state: 'output-error', input: {}, errorText: 'hidden detail' },
-        { type: 'tool-read_file', toolCallId: 't2', state: 'output-denied', input: {}, errorText: 'hidden detail' },
-        { type: 'tool-ask_user', toolCallId: 't3', state: 'approval-requested', input: {} },
+        { type: 'tool-read_file', toolCallId: 't2', state: 'output-denied', input: {}, approval: { id: 'approval-2', approved: false } },
+        { type: 'tool-ask_user', toolCallId: 't3', state: 'approval-requested', input: {}, approval: { id: 'approval-3' } },
       ],
     };
     render(<ChatPanel {...baseProps} messages={[message]} />);
@@ -136,12 +140,42 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: false,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
       />
     );
     expect(screen.getByText('The last response failed before it finished.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
+  });
+
+  it('shows a terminal connection failure and offers a full-page reload without exposing the socket error', async () => {
+    const user = userEvent.setup();
+    const onReload = vi.fn();
+    render(
+      <ChatPanel
+        {...baseProps}
+        activity={getChatActivity({
+          status: 'ready',
+          isStreaming: false,
+          isServerStreaming: false,
+          isRecovering: false,
+          isToolContinuation: false,
+          contextualTurnActive: false,
+          connectionError: new Error('private socket detail'),
+          canRetry: true,
+        })}
+        onReload={onReload}
+        errorNotice="The connection to the agent was lost. Reload the page to reconnect."
+      />
+    );
+    expect(screen.getByText('Connection lost')).toBeInTheDocument();
+    expect(screen.getByText('The connection to the agent was lost. Reload the page to reconnect.')).toBeInTheDocument();
+    expect(screen.getByText('Reload the page to reconnect.')).toBeInTheDocument();
+    expect(screen.queryByText('private socket detail')).not.toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message the agent' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Reload page' }));
+    expect(onReload).toHaveBeenCalledOnce();
   });
 
   it('confirms before clearing a conversation with messages', async () => {
@@ -166,6 +200,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: false,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
         errorNotice="You have reached your usage quota. Try again later."
@@ -203,6 +238,7 @@ describe('ChatPanel', () => {
           isRecovering: false,
           isToolContinuation: true,
           contextualTurnActive: false,
+          connectionError: null,
           canRetry: false,
         })}
         composer="another request"

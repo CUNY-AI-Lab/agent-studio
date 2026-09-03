@@ -1,8 +1,19 @@
-import type { PanelConnection, WorkspacePanel } from '../domain/workspace';
+import type { PanelConnection, PanelGroup, WorkspacePanel } from '../domain/workspace';
 
 export interface NormalizedPanelRelations {
   panels: WorkspacePanel[];
   connections: PanelConnection[];
+}
+
+export function normalizePanelGroups(groups: PanelGroup[], panels: WorkspacePanel[]): PanelGroup[] {
+  const panelIds = new Set(panels.map((panel) => panel.id));
+  const groupsById = new Map(groups.map((group) => [group.id, group]));
+  return [...groupsById.values()]
+    .map((group) => ({
+      ...group,
+      panelIds: [...new Set(group.panelIds)].filter((id) => panelIds.has(id)),
+    }))
+    .filter((group) => group.panelIds.length >= 2);
 }
 
 export function connectionEndpointKey(sourceId: string, targetId: string): string {

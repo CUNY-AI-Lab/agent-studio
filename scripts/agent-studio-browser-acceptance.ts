@@ -7,7 +7,10 @@
  * home page, seeds deterministic card panels through the local API (there is
  * no model call in this path), and then performs the user-visible canvas
  * actions: select, associate, disconnect, clear selection, pan, zoom, resize,
- * download, reload, and delete.
+ * download, reload, and delete. It also uploads a real file, reads its preview
+ * and downloaded bytes, imports a downloaded workspace export, and verifies
+ * gallery publication and removal through the built application. Active HTML
+ * must execute only inside an opaque preview, including mislabeled files.
  *
  * This is a browser/process integration test. It does not prove model
  * streaming, provider routing, or model-generated artifact quality; those
@@ -16,6 +19,7 @@
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import {
   chromium,
@@ -37,6 +41,8 @@ type WorkspaceViewport = {
 };
 
 type WorkspacePanelLayout = {
+  x: number;
+  y: number;
   width: number;
   height: number;
 };
@@ -66,6 +72,7 @@ type AcceptanceOptions = {
 type ApiCallOptions<T> = {
   method?: string;
   body?: unknown;
+  expectedStatus?: number;
   label: string;
   schema: z.ZodType<T>;
 };
@@ -77,7 +84,7 @@ const WorkspacePayloadSchema = z.object({
     viewport: z.object({ x: z.number(), y: z.number(), zoom: z.number() }),
     panels: z.array(z.object({
       id: z.string(),
-      layout: z.object({ width: z.number(), height: z.number() }).passthrough().optional(),
+      layout: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).passthrough().optional(),
     }).passthrough()),
   }).passthrough(),
 }).passthrough();
@@ -113,7 +120,7 @@ async function apiCall<T>(
   page: Page,
   baseUrl: string,
   suffix: string,
-  { method = 'GET', body, label, schema }: ApiCallOptions<T>,
+  { method = 'GET', body, expectedStatus, label, schema }: ApiCallOptions<T>,
 ): Promise<T> {
   const path = applicationPath(baseUrl, suffix);
   const result = await page.evaluate(
@@ -139,7 +146,9 @@ async function apiCall<T>(
     },
     { path, method, body },
   );
-  if (result.status < 200 || result.status >= 300) {
+  if (expectedStatus === undefined
+    ? result.status < 200 || result.status >= 300
+    : result.status !== expectedStatus) {
     fail(`${method} ${label} failed with HTTP ${result.status}`);
   }
   return schema.parse(result.payload);
@@ -337,7 +346,7 @@ async function emptyCanvasPoint(page: Page, canvas: Locator): Promise<CanvasPoin
       const y = bounds.y + bounds.height * yFraction;
       const target = document.elementFromPoint(x, y);
       const application = target?.closest('[role="application"]');
-      const blocked = target?.closest('button, a, input, textarea, select, [contenteditable="true"], [role="group"], [role="heading"]');
+      const blocked = target?.closest('button, a, input, textarea, select, [contenteditable="true"], [role="group"], [role="heading"], .react-flow__node, .react-flow__edge');
       if (application && !blocked) {
         return { x: x - bounds.x, y: y - bounds.y };
       }
@@ -377,6 +386,308 @@ async function settledReactFlowViewport(page: Page): Promise<WorkspaceViewport> 
   return second;
 }
 
+async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promise<void> {
+  const note = '# Research note\n\nA durable artifact with café and 数字.\n';
+  const binaryText = Buffer.from([0xff, 0xfe, 0x00, 0x61]);
+  const bomText = Buffer.from([0xef, 0xbb, 0xbf, 0x48, 0x69]);
+  await page.getByLabel('Upload files to workspace').setInputFiles([{
+    name: 'research.md',
+    mimeType: 'text/markdown',
+    buffer: Buffer.from(note),
+  }, {
+    name: 'encoded.txt', mimeType: 'application/octet-stream', buffer: binaryText,
+  }, {
+    name: 'bom.txt', mimeType: 'text/plain', buffer: bomText,
+  }]);
+  const fileActions = page.getByRole('button', { name: /^research\.md, .*File actions$/ });
+  await fileActions.click();
+  await page.getByRole('menuitem', { name: 'Show on Canvas', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+
+  await fileActions.click();
+  const fileDownloadPromise = page.waitForEvent('download');
+  await page.getByRole('menuitem', { name: 'Download', exact: true }).click();
+  const fileDownload = await fileDownloadPromise;
+  const filePath = await fileDownload.path();
+  if (!filePath) fail('Workspace file download did not finish');
+  expect(await readFile(filePath, 'utf8')).toBe(note);
+
+  const exportPromise = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Export workspace' }).click();
+  const exported = await exportPromise;
+  const exportPath = await exported.path();
+  if (!exportPath) fail('Workspace export did not finish');
+  const bundle = await readFile(exportPath);
+
+  await page.getByRole('button', { name: /^Publish(?: to gallery)?$/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Publish to Gallery' });
+  await dialog.getByRole('textbox', { name: 'Title', exact: true }).fill('Shared research');
+  await dialog.getByRole('textbox', { name: 'Description', exact: true }).fill('Local browser acceptance');
+  const publicationPromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/publish')
+  ));
+  await dialog.getByRole('button', { name: 'Publish', exact: true }).click();
+  const publication = await publicationPromise;
+  if (publication.status() !== 201) fail('Workspace publication failed');
+  const published = z.object({ item: z.object({ id: z.string() }) }).parse(await publication.json());
+  await expect(page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ })).toBeVisible();
+
+  const otherPage = await page.context().newPage();
+  let importedWorkspaceId: string | undefined;
+  try {
+    const galleryUrl = new URL(baseUrl);
+    galleryUrl.searchParams.set('gallery', published.item.id);
+    await otherPage.goto(galleryUrl.toString(), { waitUntil: 'networkidle' });
+    await expect(otherPage.getByRole('heading', { name: 'Shared research', exact: true })).toBeVisible();
+    await expect(otherPage.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+
+    page.once('dialog', (confirmation) => void confirmation.accept());
+    await page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ }).click();
+    await expect(page.getByRole('button', { name: /^Publish(?: to gallery)?$/ })).toBeVisible();
+    await apiCall(page, baseUrl, `/api/workspaces/${workspaceIdFromUrl(page.url())}/publish`, {
+      method: 'DELETE', expectedStatus: 404, label: 'unpublish an already-unpublished workspace',
+      schema: z.object({ error: z.object({ code: z.literal('not_found') }).passthrough() }).passthrough(),
+    });
+    await otherPage.reload({ waitUntil: 'networkidle' });
+    await expect(otherPage.getByText('Gallery item not found', { exact: false })).toBeVisible();
+
+    await otherPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await otherPage.getByLabel('Import workspace bundle').setInputFiles({
+      name: exported.suggestedFilename(),
+      mimeType: 'application/json',
+      buffer: bundle,
+    });
+    await otherPage.waitForURL(/workspace=/);
+    importedWorkspaceId = workspaceIdFromUrl(otherPage.url());
+    if (importedWorkspaceId === workspaceIdFromUrl(page.url())) fail('Import reused the original workspace');
+    await otherPage.reload({ waitUntil: 'networkidle' });
+    await expect(otherPage.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+    await expect(otherPage.getByRole('button', {
+      name: associationName('Source cards', 'Related cards'),
+    })).toHaveCount(1);
+    for (const [name, bytes] of [['encoded.txt', binaryText], ['bom.txt', bomText]] as const) {
+      await otherPage.getByRole('button', { name: new RegExp(`^${escapeRegExp(name)}, .*File actions$`) }).click();
+      const downloadPromise = otherPage.waitForEvent('download');
+      await otherPage.getByRole('menuitem', { name: 'Download', exact: true }).click();
+      const download = await downloadPromise;
+      const path = await download.path();
+      if (!path) fail('Imported file download did not finish');
+      expect(await readFile(path)).toEqual(bytes);
+    }
+    otherPage.once('dialog', (confirmation) => void confirmation.accept());
+    await otherPage.getByRole('button', { name: 'Delete workspace' }).click();
+    await expect(otherPage.getByRole('button', { name: 'Start blank' })).toBeVisible();
+    importedWorkspaceId = undefined;
+  } finally {
+    if (importedWorkspaceId) {
+      await apiCall(otherPage, baseUrl, `/api/workspaces/${importedWorkspaceId}`, {
+        method: 'DELETE', label: 'cleanup imported workspace', schema: AcknowledgementPayloadSchema,
+      });
+    }
+    await otherPage.close();
+  }
+  await page.reload({ waitUntil: 'networkidle' });
+  await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
+}
+
+async function verifyFileExecutionBoundary(page: Page, baseUrl: string): Promise<void> {
+  // Imported/generated file MIME is untrusted, including a file named .pdf.
+  const html = '<h1>Working preview</h1><script>let access;try{parent.document.documentElement;access="parent-access"}catch{access="isolated"}document.body.dataset.boundary=access;</script>';
+  const now = new Date().toISOString();
+  const workspace = { id: 'fixture', name: 'File isolation', description: '', createdAt: now, updatedAt: now };
+  const paths = ['preview.html', 'reported.pdf', 'unknown.bin'];
+  const bundle = {
+    version: 1, exportedAt: now, workspace,
+    state: {
+      sessionId: null, workspace,
+      panels: paths.map((filePath, index) => ({
+        id: `file-boundary-${index}`, type: index === 1 ? 'pdf' : 'file', filePath, title: filePath,
+        layout: { x: index * 450, y: 0, width: 400, height: 300 },
+      })),
+      viewport: { x: 0, y: 0, zoom: 0.6 }, groups: [], connections: [],
+    },
+    messages: [], files: paths.map((path) => ({ path, contentType: 'text/html', encoding: 'utf8', content: html })),
+  };
+  const filePage = await page.context().newPage();
+  let workspaceId: string | undefined;
+  try {
+    await filePage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await filePage.getByLabel('Import workspace bundle').setInputFiles({
+      name: 'boundary.agent-studio.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+    await filePage.waitForURL(/workspace=/);
+    workspaceId = workspaceIdFromUrl(filePage.url());
+    const preview = filePage.frameLocator('iframe[title="preview.html"]');
+    await expect(preview.getByRole('heading', { name: 'Working preview' })).toBeVisible();
+    await expect(preview.locator('body')).toHaveAttribute('data-boundary', 'isolated');
+    for (const filename of ['reported.pdf', 'unknown.bin']) {
+      const downloadPromise = filePage.waitForEvent('download');
+      await filePage.getByRole('link', { name: `Download ${filename}`, exact: true }).click();
+      const download = await downloadPromise;
+      const path = await download.path();
+      if (!path) fail('Unpreviewable file download did not finish');
+      expect(await readFile(path, 'utf8')).toBe(html);
+    }
+  } finally {
+    if (workspaceId) await apiCall(filePage, baseUrl, `/api/workspaces/${workspaceId}`, {
+      method: 'DELETE', label: 'cleanup file-boundary workspace', schema: AcknowledgementPayloadSchema,
+    });
+    await filePage.close();
+  }
+}
+
+async function verifyLargeUpload(page: Page, baseUrl: string): Promise<void> {
+  const uploadPage = await page.context().newPage();
+  let workspaceId: string | undefined;
+  try {
+    await uploadPage.goto(baseUrl, { waitUntil: 'networkidle' });
+    await uploadPage.getByRole('button', { name: 'Start blank' }).click();
+    await uploadPage.waitForURL(/workspace=/);
+    workspaceId = workspaceIdFromUrl(uploadPage.url());
+    // Both files fit the 25 MB per-file and 50 MB total product limits; the
+    // combined bytes exceed the platform's 32 MiB serialized RPC limit.
+    const files = [
+      { name: 'large-a.txt', mimeType: 'text/plain', buffer: Buffer.alloc(17 * 1024 * 1024, 65) },
+      { name: 'large-b.txt', mimeType: 'text/plain', buffer: Buffer.alloc(17 * 1024 * 1024, 66) },
+    ];
+    const uploadResponse = uploadPage.waitForResponse((response) => (
+      response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/upload')
+    ));
+    await uploadPage.getByLabel('Upload files to workspace').setInputFiles(files);
+    if ((await uploadResponse).status() !== 201) fail('Valid large upload batch failed');
+    await uploadPage.reload({ waitUntil: 'networkidle' });
+    for (const file of files) {
+      await uploadPage.getByRole('button', { name: new RegExp(`^${file.name.replace('.', '\\.')}.*File actions$`) }).click();
+      const downloading = uploadPage.waitForEvent('download');
+      await uploadPage.getByRole('menuitem', { name: 'Download', exact: true }).click();
+      const downloaded = await (await downloading).path();
+      if (!downloaded || !(await readFile(downloaded)).equals(file.buffer)) fail('Large upload bytes changed after reload');
+    }
+  } finally {
+    if (workspaceId) await apiCall(uploadPage, baseUrl, `/api/workspaces/${workspaceId}`, {
+      method: 'DELETE', label: 'cleanup large-upload workspace', schema: AcknowledgementPayloadSchema,
+    });
+    await uploadPage.close();
+  }
+}
+
+async function verifyConcurrentLayoutEdits(page: Page, baseUrl: string, workspaceId: string): Promise<void> {
+  const first = await page.context().newPage();
+  const second = await page.context().newPage();
+  let holdNextLayout = false;
+  let releaseLayout: (() => void) | undefined;
+  const layoutCall = z.object({ method: z.literal('applyLayoutPatch') }).passthrough();
+  // Delay one real client RPC; both clients still use the actual Worker/DO.
+  await first.routeWebSocket('**/agents/**', (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      if (holdNextLayout && layoutCall.safeParse(JSON.parse(message.toString())).success) {
+        holdNextLayout = false;
+        releaseLayout = () => server.send(message);
+      } else {
+        server.send(message);
+      }
+    });
+  });
+  try {
+    await first.goto(page.url(), { waitUntil: 'networkidle' });
+    await second.goto(page.url(), { waitUntil: 'networkidle' });
+    const before = await apiCall(page, baseUrl, `/api/workspaces/${workspaceId}`, {
+      label: 'read layouts before concurrent edits', schema: WorkspacePayloadSchema,
+    });
+    const sourceBefore = before.state.panels.find((panel) => panel.id === 'browser-source-cards')?.layout;
+    const targetBefore = before.state.panels.find((panel) => panel.id === 'browser-target-cards')?.layout;
+    if (!sourceBefore || !targetBefore) fail('Concurrent-edit fixture has no layouts');
+    holdNextLayout = true;
+    await panelLocator(first, 'Source cards', 'cards').focus();
+    await first.keyboard.press('ArrowLeft');
+    await expect.poll(() => Boolean(releaseLayout)).toBe(true);
+
+    await panelLocator(second, 'Related cards', 'cards').focus();
+    await second.keyboard.press('ArrowRight');
+    await waitForStateChange(page, baseUrl, workspaceId,
+      (state) => state.panels.some((panel) => panel.id === 'browser-target-cards' && panel.layout?.x === targetBefore.x + 16),
+      'the second client edit to persist');
+    releaseLayout?.();
+    releaseLayout = undefined;
+    const after = await waitForStateChange(page, baseUrl, workspaceId,
+      (state) => state.panels.some((panel) => panel.id === 'browser-source-cards' && panel.layout?.x === sourceBefore.x - 16),
+      'the delayed first client edit to persist');
+    expect(after.panels.find((panel) => panel.id === 'browser-target-cards')?.layout?.x).toBe(targetBefore.x + 16);
+    await first.reload({ waitUntil: 'networkidle' });
+    const reloaded = await apiCall(first, baseUrl, `/api/workspaces/${workspaceId}`, {
+      label: 'read both edits after reload', schema: WorkspacePayloadSchema,
+    });
+    expect(reloaded.state.panels.find((panel) => panel.id === 'browser-source-cards')?.layout?.x).toBe(sourceBefore.x - 16);
+    expect(reloaded.state.panels.find((panel) => panel.id === 'browser-target-cards')?.layout?.x).toBe(targetBefore.x + 16);
+  } finally {
+    releaseLayout?.();
+    await first.close();
+    await second.close();
+  }
+}
+
+async function verifyContextualRetry(page: Page): Promise<void> {
+  const chatPage = await page.context().newPage();
+  await chatPage.setViewportSize({ width: 1440, height: 1000 });
+  const requestSchema = z.object({
+    type: z.literal('cf_agent_use_chat_request'),
+    id: z.string(),
+    init: z.object({ body: z.string() }),
+  });
+  const bodySchema = z.object({
+    scopePanelIds: z.array(z.string()),
+    messages: z.array(z.object({ id: z.string(), role: z.string() }).passthrough()),
+  }).passthrough();
+  const requests: Array<z.infer<typeof bodySchema>> = [];
+  // Deliberately fail only the model boundary. App, React hooks, socket and
+  // workspace state are real; no chat request reaches a paid provider.
+  await chatPage.route('**/model-credential', (route) => route.fulfill({ status: 204 }));
+  await chatPage.routeWebSocket('**/agents/**', (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const request = requestSchema.safeParse(JSON.parse(message.toString()));
+      if (!request.success) {
+        server.send(message);
+        return;
+      }
+      requests.push(bodySchema.parse(JSON.parse(request.data.init.body)));
+      socket.send(JSON.stringify({
+        type: 'cf_agent_use_chat_response', id: request.data.id,
+        error: true, done: true, body: 'Deliberate browser test failure',
+      }));
+    });
+  });
+  try {
+    await chatPage.goto(page.url(), { waitUntil: 'networkidle' });
+    await selectPanel(chatPage, 'Source cards', 'cards');
+    await chatPage.getByRole('button', { name: 'Chat about Source cards', exact: true }).click();
+    const question = chatPage.getByRole('textbox', { name: 'Ask about Source cards', exact: true });
+    await question.fill('Explain the source finding.');
+    await question.press('Enter');
+    const retry = chatPage.getByRole('button', { name: 'Retry', exact: true });
+    await expect(retry).toBeEnabled();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].scopePanelIds).toEqual(['browser-source-cards']);
+
+    await selectPanel(chatPage, 'Related cards', 'cards');
+    await chatPage.getByRole('button', { name: 'Chat about Related cards', exact: true }).click();
+    await expect(retry).toBeDisabled();
+    expect(requests).toHaveLength(1);
+
+    await selectPanel(chatPage, 'Source cards', 'cards');
+    await chatPage.getByRole('button', { name: 'Chat about Source cards', exact: true }).click();
+    await expect(retry).toBeEnabled();
+    await retry.click();
+    await expect.poll(() => requests.length).toBe(2);
+    expect(requests[1].scopePanelIds).toEqual(['browser-source-cards']);
+    expect(requests[1].messages.filter((message) => message.role === 'user'))
+      .toEqual(requests[0].messages.filter((message) => message.role === 'user'));
+  } finally {
+    await chatPage.close();
+  }
+}
+
 async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({ acceptDownloads: true });
@@ -408,6 +719,10 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await nameInput.fill('Agent Studio browser acceptance');
     await page.getByRole('button', { name: 'Save' }).click();
     await expect(nameInput).toHaveValue('Agent Studio browser acceptance');
+
+    await verifyConcurrentLayoutEdits(page, baseUrl, workspaceId);
+    await verifyContextualRetry(page);
+    await page.bringToFront();
 
     await selectPanel(page, 'Source cards', 'cards');
     await selectPanel(page, 'Related cards', 'cards', 'ControlOrMeta');
@@ -539,6 +854,13 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     if (download.suggestedFilename() !== 'source-cards.json') {
       fail('Unexpected card download name');
     }
+    const cardDownloadPath = await download.path();
+    if (!cardDownloadPath) fail('Card download did not finish');
+    expect(JSON.parse(await readFile(cardDownloadPath, 'utf8'))).toEqual([{
+      id: 'source-finding', title: 'Source finding', subtitle: 'Deterministic browser fixture',
+      description: 'This card is seeded through the local Worker API.', badge: 'Verified',
+      metadata: { Source: 'local acceptance', Year: '2026' },
+    }]);
 
     await page.reload({ waitUntil: 'networkidle' });
     await expect(page.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Agent Studio browser acceptance');
@@ -554,13 +876,44 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     const sourcePanelState = persistedState.panels.find((panel) => panel.id === 'browser-source-cards');
     if ((sourcePanelState?.layout?.width ?? 0) <= 360) fail('Card resize did not survive reload');
 
+    // Delay the real refresh request. Back must remain usable, and its late
+    // response must not pull the user back into a workspace they just left.
+    const workspaceUrl = appPath(baseUrl, `api/workspaces/${workspaceId}`);
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolveRefresh) => { releaseRefresh = resolveRefresh; });
+    await page.route(workspaceUrl, async (route) => {
+      await refreshGate;
+      await route.continue();
+    });
+    try {
+      const refreshRequest = page.waitForRequest(workspaceUrl);
+      await page.getByRole('button', { name: 'Refresh workspace' }).click();
+      await refreshRequest;
+      await page.getByRole('button', { name: 'Back to home' }).click();
+      const lateResponse = page.waitForResponse(workspaceUrl);
+      releaseRefresh();
+      await lateResponse;
+      await page.waitForLoadState('networkidle');
+      await expect(page.getByRole('textbox', { name: 'What would you like to work on?' })).toBeVisible();
+    } finally {
+      releaseRefresh();
+      await page.unroute(workspaceUrl);
+    }
+    await page.getByRole('button', { name: /^Agent Studio browser acceptance/ }).click();
+    await page.waitForURL(/workspace=/);
+    await expect(page.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Agent Studio browser acceptance');
+
+    await verifyFileAndSharingLifecycle(page, baseUrl);
+    await verifyFileExecutionBoundary(page, baseUrl);
+    await verifyLargeUpload(page, baseUrl);
+
     page.once('dialog', (dialog) => {
       void dialog.accept();
     });
     await page.getByRole('button', { name: 'Delete workspace' }).click();
     await expect(page.getByRole('button', { name: 'Start blank' })).toBeVisible();
     cleanupViaUi = true;
-    console.log('[browser] visible workspace creation, ready chat without internal activity, cards, title save, association, disconnect, clear selection, pan, zoom, keyboard resize, download, reload, and UI cleanup passed');
+    console.log('[browser] canvas persistence, file bytes, export/import, gallery lifecycle, preview isolation, reload, and UI cleanup passed');
   } finally {
     if (workspaceId && !cleanupViaUi) {
       try {

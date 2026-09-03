@@ -1,6 +1,5 @@
 import { downloadBlob } from '../../lib/download';
 import { canExportPanelSnapshot, getPanelTitle, type ToolbarDownloadFormat } from '../../lib/panelFiles';
-import { openFileSource } from '../../lib/fileUrls';
 import type { WorkspacePanel } from '../../types';
 
 /**
@@ -10,7 +9,6 @@ import type { WorkspacePanel } from '../../types';
  */
 export function PanelMenu({
   panel,
-  workspaceId,
   maximizedPanelId,
   onAskAboutTile,
   onRevealFile,
@@ -22,7 +20,6 @@ export function PanelMenu({
   onRemovePanel,
 }: {
   panel: WorkspacePanel;
-  workspaceId: string;
   maximizedPanelId: string | null;
   onAskAboutTile: (panelId: string) => void;
   onRevealFile: (filePath: string) => void;
@@ -69,21 +66,6 @@ export function PanelMenu({
             className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
           >
             Download
-          </button>
-          <button
-        role="menuitem"
-            onClick={() => {
-              // Raw same-origin open is safe: the file-serving route now sends
-              // `Content-Security-Policy: default-src 'none'; sandbox` + nosniff on
-              // every file, and `Content-Disposition: attachment` for active types
-              // (html/svg/xml). So an active-type open downloads instead of
-              // executing on our origin; safe types (png/pdf/...) still render inline.
-              void openFileSource({ kind: 'workspace', id: workspaceId }, filePath);
-              onCloseMenu();
-            }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
-          >
-            Open in a new tab
           </button>
         </>
           );

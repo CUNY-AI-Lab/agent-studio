@@ -3,6 +3,7 @@ import {
   PANEL_GAP,
   buildPanelLayouts,
   collectLayouts,
+  computePanelLayoutsDelta,
   findOpenPanelPosition,
   getGroupBounds,
   getLayoutsBounds,
@@ -117,6 +118,35 @@ describe('collectLayouts', () => {
   });
 });
 
+describe('computePanelLayoutsDelta', () => {
+  it('returns only ids whose geometry changed', () => {
+    const previous: LayoutMap = {
+      unchanged: { x: 0, y: 0, width: 100, height: 80 },
+      moved: { x: 120, y: 0, width: 100, height: 80 },
+      resized: { x: 240, y: 0, width: 100, height: 80 },
+    };
+    const next: LayoutMap = {
+      unchanged: { ...previous.unchanged },
+      moved: { ...previous.moved, x: 140 },
+      resized: { ...previous.resized, height: 120 },
+      added: { x: 360, y: 0, width: 100, height: 80 },
+    };
+
+    expect(computePanelLayoutsDelta(previous, next)).toEqual({
+      moved: next.moved,
+      resized: next.resized,
+      added: next.added,
+    });
+  });
+
+  it('does not mutate the next layouts while cloning changed entries', () => {
+    const next: LayoutMap = { moved: { x: 12, y: 8, width: 100, height: 80 } };
+    const delta = computePanelLayoutsDelta({}, next);
+    expect(delta.moved).not.toBe(next.moved);
+    expect(delta.moved).toEqual(next.moved);
+  });
+});
+
 describe('resolveVisibleLayoutCollisions', () => {
   it('returns the untouched visible subset when nothing overlaps', () => {
     const layouts: LayoutMap = {
@@ -126,6 +156,43 @@ describe('resolveVisibleLayoutCollisions', () => {
     const result = resolveVisibleLayoutCollisions(layouts, ['a', 'b'], new Set());
     expect(hasOverlappingPanels(result)).toBe(false);
     expect(result.a).toEqual(layouts.a);
+  });
+
+  it('does not repair an overlap unrelated to the active panel', () => {
+    const layouts: LayoutMap = {
+      active: { x: 500, y: 0, width: 100, height: 100 },
+      existingLeft: { x: 0, y: 0, width: 100, height: 100 },
+      existingRight: { x: 50, y: 0, width: 100, height: 100 },
+    };
+
+    const result = resolveVisibleLayoutCollisions(
+      layouts,
+      ['active', 'existingLeft', 'existingRight'],
+      new Set(['active']),
+      new Set(['active']),
+    );
+
+    expect(result).toEqual(layouts);
+  });
+
+  it('propagates collision repair through panels pushed by the active panel', () => {
+    const layouts: LayoutMap = {
+      active: { x: 100, y: 0, width: 100, height: 100 },
+      pushed: { x: 150, y: 0, width: 100, height: 100 },
+      downstream: { x: 260, y: 0, width: 100, height: 100 },
+    };
+
+    const result = resolveVisibleLayoutCollisions(
+      layouts,
+      ['active', 'pushed', 'downstream'],
+      new Set(['active']),
+      new Set(['active']),
+    );
+
+    expect(result.active).toEqual(layouts.active);
+    expect(result.pushed).toMatchObject({ x: 220, y: 0 });
+    expect(result.downstream).toMatchObject({ x: 340, y: 0 });
+    expect(hasOverlappingPanels(result)).toBe(false);
   });
 });
 

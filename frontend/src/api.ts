@@ -1,7 +1,7 @@
 import type {
-  DownloadRequest,
   GalleryItem,
   GalleryItemFull,
+  QueuedDownload,
   WorkspaceFileInfo,
   WorkspaceRecord,
   WorkspaceResponse,
@@ -191,7 +191,8 @@ export async function readingFetch(input: string, init: RequestInit = {}): Promi
  * payload (for auth-required detection) and the nested error message. Falls
  * back to a status string when the body isn't JSON or carries no canonical
  * message. Shared by
- * parseJson and fetchWorkspaceExport so their error extraction can't drift.
+ * parseJson, assertResponseOk, and fetchWorkspaceExport so their error
+ * extraction can't drift.
  * Reads the body exactly once.
  */
 async function readResponseError(
@@ -207,15 +208,18 @@ async function readResponseError(
   };
 }
 
-async function parseJson<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    const { payload, message } = await readResponseError(response);
-    if (handleAuthRequired(response.status, payload)) {
-      // Redirecting to the standalone Doorway; reject with a benign message so callers stop.
-      throw new ApiError('Sign in to continue.');
-    }
-    throw new ApiError(message);
+/** Reject a non-success response using the canonical API/auth error path. */
+export async function assertResponseOk(response: Response): Promise<void> {
+  if (response.ok) return;
+  const { payload, message } = await readResponseError(response);
+  if (handleAuthRequired(response.status, payload)) {
+    throw new ApiError('Sign in to continue.');
   }
+  throw new ApiError(message);
+}
+
+async function parseJson<T>(response: Response): Promise<T> {
+  await assertResponseOk(response);
   const payload = await response.json();
   // SAFETY: each caller selects the response type for a fixed Worker route;
   // this helper never crosses an external origin or accepts caller-provided JSON.
@@ -486,8 +490,8 @@ export async function publishWorkspace(
   return parseJson<{ item: GalleryItem; workspace: WorkspaceRecord }>(response);
 }
 
-export async function unpublishGalleryItem(galleryId: string): Promise<void> {
-  const response = await mutatingFetch(`/api/gallery/${galleryId}`, {
+export async function unpublishWorkspace(workspaceId: string): Promise<void> {
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/publish`, {
     method: 'DELETE',
   });
   await parseJson<{ success: boolean }>(response);
@@ -524,15 +528,17 @@ export async function fetchWorkspaceFiles(workspaceId: string): Promise<Workspac
   return payload.files;
 }
 
-export async function fetchWorkspaceDownloads(workspaceId: string): Promise<DownloadRequest[]> {
+export async function fetchWorkspaceDownloads(workspaceId: string): Promise<QueuedDownload[]> {
   const response = await readingFetch(`/api/workspaces/${workspaceId}/downloads`);
-  const payload = await parseJson<{ downloads: DownloadRequest[] }>(response);
+  const payload = await parseJson<{ downloads: QueuedDownload[] }>(response);
   return payload.downloads;
 }
 
-export async function clearWorkspaceDownloads(workspaceId: string): Promise<void> {
+export async function clearWorkspaceDownloads(workspaceId: string, ids: readonly string[]): Promise<void> {
   const response = await mutatingFetch(`/api/workspaces/${workspaceId}/downloads`, {
     method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
   });
   await parseJson<{ success: boolean }>(response);
 }
@@ -549,12 +555,16 @@ export function getGalleryPanelPreviewUrl(galleryId: string, panelId: string): s
   return appPath(`/api/gallery/${galleryId}/panels/${encodeURIComponent(panelId)}/preview`);
 }
 
-export function fetchWorkspaceFile(workspaceId: string, filePath: string): Promise<Response> {
-  return readingFetch(`/api/workspaces/${workspaceId}/files/${encodePath(filePath)}`);
+export async function fetchWorkspaceFile(workspaceId: string, filePath: string): Promise<Response> {
+  const response = await readingFetch(`/api/workspaces/${workspaceId}/files/${encodePath(filePath)}`);
+  await assertResponseOk(response);
+  return response;
 }
 
-export function fetchWorkspacePanelPreview(workspaceId: string, panelId: string): Promise<Response> {
-  return readingFetch(`/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`);
+export async function fetchWorkspacePanelPreview(workspaceId: string, panelId: string): Promise<Response> {
+  const response = await readingFetch(`/api/workspaces/${workspaceId}/panels/${encodeURIComponent(panelId)}/preview`);
+  await assertResponseOk(response);
+  return response;
 }
 
 export async function uploadWorkspaceFiles(workspaceId: string, files: FileList | File[]): Promise<void> {

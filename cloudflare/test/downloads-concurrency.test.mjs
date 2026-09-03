@@ -39,7 +39,39 @@ test('clear removes the current per-object queue', async () => {
   await addWorkspaceDownload(current, SESSION, WORKSPACE, {
     filename: 'one.txt', format: 'txt', data: 'one',
   });
-  await clearWorkspaceDownloads(current, SESSION, WORKSPACE);
+  const [queued] = await getWorkspaceDownloads(current, SESSION, WORKSPACE);
+  await clearWorkspaceDownloads(current, SESSION, WORKSPACE, [queued.id]);
+  assert.deepEqual(await getWorkspaceDownloads(current, SESSION, WORKSPACE), []);
+});
+
+test('acknowledging one queued item leaves a later append', async () => {
+  const current = env();
+  await addWorkspaceDownload(current, SESSION, WORKSPACE, {
+    filename: 'first.txt', format: 'txt', data: 'first',
+  });
+  const [first] = await getWorkspaceDownloads(current, SESSION, WORKSPACE);
+  await addWorkspaceDownload(current, SESSION, WORKSPACE, {
+    filename: 'second.txt', format: 'txt', data: 'second',
+  });
+
+  await clearWorkspaceDownloads(current, SESSION, WORKSPACE, [first.id]);
+
+  const remaining = await getWorkspaceDownloads(current, SESSION, WORKSPACE);
+  assert.deepEqual(remaining.map(({ id: _id, ...download }) => download), [
+    { filename: 'second.txt', format: 'txt', data: 'second' },
+  ]);
+});
+
+test('duplicate acknowledgements are harmless', async () => {
+  const current = env();
+  await addWorkspaceDownload(current, SESSION, WORKSPACE, {
+    filename: 'one.txt', format: 'txt', data: 'one',
+  });
+  const [queued] = await getWorkspaceDownloads(current, SESSION, WORKSPACE);
+
+  await clearWorkspaceDownloads(current, SESSION, WORKSPACE, [queued.id, queued.id]);
+  await clearWorkspaceDownloads(current, SESSION, WORKSPACE, [queued.id]);
+
   assert.deepEqual(await getWorkspaceDownloads(current, SESSION, WORKSPACE), []);
 });
 
@@ -74,5 +106,9 @@ test('import replacement uses deterministic keys so retries cannot duplicate ite
   );
   await putWorkspaceDownloads(current, SESSION, WORKSPACE, downloads.slice(0, 1));
   assert.equal(firstKeys.length, 2);
-  assert.deepEqual(await getWorkspaceDownloads(current, SESSION, WORKSPACE), downloads.slice(0, 1));
+  const restored = await getWorkspaceDownloads(current, SESSION, WORKSPACE);
+  assert.deepEqual(
+    restored.map(({ id: _id, ...download }) => download),
+    downloads.slice(0, 1),
+  );
 });

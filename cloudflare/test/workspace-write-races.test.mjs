@@ -3,7 +3,7 @@
 // V2: three writers stored a workspace record captured EARLIER (turn start /
 // request start) with a blind putWorkspace, silently reverting a concurrent
 // PATCH (e.g. a model override) that the putWorkspaceIfMatch CAS loop (A12)
-// exists to protect: the publish galleryId stamp, the gallery-delete record
+// exists to protect: the publish galleryId stamp, the workspace-unpublish record
 // rewrite, and the ui_workspace chat tool.
 //
 // V3: applyLayoutPatch replaced the whole `connections`/`groups` arrays from a
@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 import { getWorkspace, putWorkspace } from '../src/lib/workspaces.ts';
+import { getWorkspaceDownloads } from '../src/lib/downloads.ts';
 import { normalizePanelRelations } from '../src/lib/panel-connections.ts';
 import { importServer, makeEnv, openSession, registerCloudflareStub } from './helpers/env.mjs';
 
@@ -80,10 +81,10 @@ test('publish stamps galleryId without reverting a PATCH that landed mid-publish
 });
 
 // ---------------------------------------------------------------------------
-// V2 — gallery delete record rewrite
+// V2 — workspace-unpublish record rewrite
 // ---------------------------------------------------------------------------
 
-test('gallery delete clears galleryId without reverting a concurrent workspace update', async () => {
+test('workspace unpublish clears galleryId without reverting a concurrent workspace update', async () => {
   const { env, r2 } = makeEnv();
   const { session, sessionId } = await openSession(app, env);
   const workspace = await createWorkspace(session, 'To unpublish');
@@ -94,11 +95,10 @@ test('gallery delete clears galleryId without reverting a concurrent workspace u
     body: JSON.stringify({ title: 'Published', description: 'desc' }),
   });
   assert.equal(published.status, 201);
-  const { item } = await published.json();
+  await published.json();
 
-  // Simulate a concurrent update landing between the delete route's
-  // listWorkspaces read and its record rewrite: apply it right after the
-  // route's first read of this workspace record, which returns the stale copy.
+  // Simulate a concurrent update landing between the workspace-unpublish
+  // route's initial record read and its CAS rewrite.
   const key = workspaceKey(sessionId, workspace.id);
   const originalGet = r2.get.bind(r2);
   let fired = false;
@@ -112,7 +112,7 @@ test('gallery delete clears galleryId without reverting a concurrent workspace u
     return result;
   };
 
-  const deleted = await session.request(app, `/api/gallery/${item.id}`, { method: 'DELETE' });
+  const deleted = await session.request(app, `/api/workspaces/${workspace.id}/publish`, { method: 'DELETE' });
   assert.equal(deleted.status, 200);
   assert.equal(fired, true, 'test wiring: the concurrent update must have fired mid-delete');
 
@@ -152,6 +152,7 @@ test('ui_workspace tool does not revert a PATCH that landed after turn start', a
     env,
     synced: null,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace(nextWorkspace, syncSessionId) {
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
@@ -202,6 +203,7 @@ test('ui_workspace gives concurrent manual title edits precedence per field', as
     env,
     synced: null,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace(nextWorkspace, syncSessionId) {
       this.synced = { workspace: nextWorkspace, sessionId: syncSessionId };
@@ -242,6 +244,7 @@ test('ui_workspace cannot rename an existing workspace after title ownership is 
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -274,6 +277,7 @@ test('ui_workspace keeps description-only updates available after title ownershi
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -307,6 +311,7 @@ test('ui_workspace treats a repeated generated title as a no-op within one model
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -350,6 +355,7 @@ test('ui_workspace rejects a different second generated title within one model t
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -391,6 +397,7 @@ test('placeholder ui_workspace requires a specific non-placeholder name', async 
   const fakeAgent = {
     env,
     assertNotFrozen() {},
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async syncWorkspace() {},
   };
@@ -427,6 +434,7 @@ test('ui_show_file requires an authored display title instead of deriving one fr
   const fakeAgent = {
     env: makeEnv().env,
     messages: [],
+    async withStorageOperation(operation) { return operation(); },
     async withMutationFence(operation) { return operation(); },
     async readRuntimeFileContent() { return { data: new ArrayBuffer(0) }; },
     upsertPanelWithAssociation() {},
@@ -459,6 +467,9 @@ test('structured UI tools persist explicit tile associations', async () => {
     },
     setState(next) {
       this.state = next;
+    },
+    async withStorageOperation(operation) {
+      return operation();
     },
     async withMutationFence(operation) {
       return operation();
@@ -517,6 +528,9 @@ test('implicit UI panel ids remain stable when the same turn is retried', async 
     setState(next) {
       this.state = next;
     },
+    async withStorageOperation(operation) {
+      return operation();
+    },
     async withMutationFence(operation) {
       return operation();
     },
@@ -551,6 +565,9 @@ test('structured UI tools reject an association to a missing tile', async () => 
     setState(next) {
       this.state = next;
     },
+    async withStorageOperation(operation) {
+      return operation();
+    },
     async withMutationFence(operation) {
       return operation();
     },
@@ -574,6 +591,64 @@ test('structured UI tools reject an association to a missing tile', async () => 
   );
   assert.deepEqual(fake.state.panels.map((candidate) => candidate.id), ['source']);
   assert.deepEqual(fake.state.connections, []);
+});
+
+test('panel reads preserve linked data and terminate mutual detail links', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const first = { id: 'first', type: 'detail', linkedTo: 'second' };
+  const second = { id: 'second', type: 'detail', linkedTo: 'first' };
+  const note = { id: 'note', type: 'markdown', content: 'Research finding' };
+  const ordinaryDetail = { id: 'ordinary', type: 'detail', linkedTo: 'note' };
+  const fake = { state: { panels: [first, second, ordinaryDetail, note] } };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fake, { id: 'workspace', name: 'Research' }, 'session', [first, second],
+  );
+
+  const read = await tools.read_panel.execute({ panelId: 'first' });
+  assert.equal(read.id, 'first');
+  assert.equal(read.linkedPanel.id, 'second');
+  assert.equal(read.linkedPanel.linkedTo, 'first');
+  assert.equal(read.linkedPanel.linkedPanel, null);
+  const scoped = await tools.read_scoped_panels.execute({});
+  assert.deepEqual(JSON.parse(JSON.stringify(scoped[0])), {
+    id: 'first', type: 'detail', linkedTo: 'second',
+    linkedPanel: { id: 'second', type: 'detail', linkedTo: 'first', linkedPanel: null },
+  });
+  const reverse = scoped[1];
+  assert.equal(reverse.id, 'second');
+  assert.equal(reverse.linkedPanel.id, 'first');
+  assert.equal(reverse.linkedPanel.linkedPanel, null);
+
+  const ordinary = await tools.read_panel.execute({ panelId: 'ordinary' });
+  assert.equal(ordinary.linkedPanel.type, 'markdown');
+  assert.equal(ordinary.linkedPanel.content, 'Research finding');
+});
+
+test('download tool keeps CSV text intact and rejects records that would become object text', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { env } = makeEnv();
+  const fake = {
+    env,
+    storageOperationTail: Promise.resolve(),
+    withStorageOperation: WorkspaceAgent.prototype.withStorageOperation,
+    withMutationFence: async (operation) => operation(),
+  };
+  const tools = WorkspaceAgent.prototype.buildHostTools.call(
+    fake, { id: 'workspace', name: 'Research' }, 'session',
+  );
+  await assert.rejects(
+    tools.ui_download.execute({ filename: 'results.csv', format: 'csv', data: [{ title: 'Finding' }] }),
+    /string/,
+  );
+  assert.deepEqual(await getWorkspaceDownloads(env, 'session', 'workspace'), []);
+  const csv = 'title,notes\r\nFinding,"A quote: ""yes"", and a comma"\r\n';
+  await tools.ui_download.execute({ filename: 'results.csv', format: 'csv', data: csv });
+  await tools.ui_download.execute({ filename: 'results.json', format: 'json', data: [{ title: 'Finding' }] });
+  const downloads = await getWorkspaceDownloads(env, 'session', 'workspace');
+  assert.equal(downloads[0].data, csv);
+  assert.deepEqual(downloads[1].data, [{ title: 'Finding' }]);
 });
 
 test('addPanel persists a supplied sourcePanelId as an explicit association', async () => {
@@ -1001,6 +1076,37 @@ async function makeLayoutAgent(state) {
     removePanel: (panelId) => WorkspaceAgent.prototype.removePanel.call(fake, panelId),
   };
 }
+
+test('import, boot, and edits keep only distinct existing group members', async () => {
+  const workspace = { id: 'workspace', name: 'Groups', description: '', createdAt: '', updatedAt: '' };
+  const state = {
+    sessionId: null, workspace,
+    panels: [panel('a'), panel('b'), panel('c')],
+    viewport: { x: 0, y: 0, zoom: 1 }, connections: [],
+    groups: [
+      { id: 'valid', name: 'Keep this name', panelIds: ['a', 'b', 'b', 'missing'] },
+      { id: 'singleton', panelIds: ['c', 'c', 'missing'] },
+      { id: 'valid', name: 'Latest name', panelIds: ['b', 'a', 'a'] },
+    ],
+  };
+  const { fake, applyLayoutPatch, removePanel } = await makeLayoutAgent(state);
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  await WorkspaceAgent.prototype.replaceWorkspaceState.call(fake, state, workspace, 'session');
+  const expected = [{ id: 'valid', name: 'Latest name', panelIds: ['b', 'a'] }];
+  assert.deepEqual(fake.state.groups, expected);
+
+  fake.state = state;
+  fake.cailIdentityJwt = 'already-verified-for-test';
+  fake.ctx = { storage: { get: async () => undefined } };
+  await WorkspaceAgent.prototype.onStart.call(fake);
+  assert.deepEqual(fake.state.groups, expected);
+  await applyLayoutPatch({ groups: [{ id: 'valid', panelIds: ['a', 'a', 'b', 'c'] }] });
+  assert.deepEqual(fake.state.groups, [{ id: 'valid', panelIds: ['a', 'b', 'c'] }]);
+  await removePanel('b');
+  assert.deepEqual(fake.state.groups, [{ id: 'valid', panelIds: ['a', 'c'] }]);
+  await removePanel('a');
+  assert.deepEqual(fake.state.groups, []);
+});
 
 test('layout patch preserves negative flow coordinates through the DO state echo and reload', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');

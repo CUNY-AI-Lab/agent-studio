@@ -153,6 +153,39 @@ test('unconfigured identity is anonymous; an unloadable config is a CONFIG error
   );
 });
 
+test('identity requirement flag rejects malformed values before anonymous admission', async () => {
+  const request = new Request('https://agent-studio.example/api/session');
+  for (const CAIL_REQUIRE_IDENTITY of [
+    '',
+    'TRUE',
+    ' true',
+    'true ',
+    'FALSE',
+    ' false',
+    'false ',
+    'yes',
+    '1',
+    123,
+    {},
+    true,
+    null,
+  ]) {
+    assert.deepEqual(
+      await getCailIdentityFromRequest(request, { CAIL_REQUIRE_IDENTITY }, NOW),
+      { configError: 'required_flag_invalid' },
+      String(CAIL_REQUIRE_IDENTITY),
+    );
+  }
+  assert.equal(
+    await getCailIdentityFromRequest(request, { CAIL_REQUIRE_IDENTITY: 'false' }, NOW),
+    null,
+  );
+  assert.deepEqual(
+    await getCailIdentityFromRequest(request, { CAIL_REQUIRE_IDENTITY: 'true' }, NOW),
+    { configError: 'jwks_missing' },
+  );
+});
+
 test('malformed identity binding values fail as configuration errors', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'active-key' });
   const token = await mintValid(issuer);
@@ -369,6 +402,15 @@ test('gateway credential verifier fails closed for wrong audience, expiry, malfo
       NOW,
     ),
     { configError: 'jwks_malformed' },
+  );
+  assert.deepEqual(
+    await verifyGatewayCredentialForSession(
+      await mintGateway(issuer),
+      expected,
+      { ...env, CAIL_REQUIRE_IDENTITY: 'true ' },
+      NOW,
+    ),
+    { configError: 'required_flag_invalid' },
   );
 });
 

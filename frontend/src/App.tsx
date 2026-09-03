@@ -41,7 +41,7 @@ import {
   ModelsUnavailableError,
   importWorkspaceBundle,
   publishWorkspace,
-  unpublishGalleryItem,
+  unpublishWorkspace,
   updateWorkspace,
   uploadWorkspaceFiles,
   handleAuthRequired,
@@ -51,6 +51,7 @@ import type { ModelCatalog } from './api';
 import {
   PANEL_GAP,
   buildPanelLayouts,
+  computePanelLayoutsDelta,
   findOpenPanelPosition,
   getGroupBounds,
   getLayoutsBounds,
@@ -73,7 +74,11 @@ import {
 import { CANVAS_STEP, CANVAS_LARGE_STEP } from './lib/keyboardMap';
 import { KeyboardShortcutsDialog } from './components/workspace/KeyboardShortcutsDialog';
 import { makeClientId } from './lib/format';
-import { downloadBlob, triggerQueuedDownload } from './lib/download';
+import {
+  createDownloadQueueDrainer,
+  downloadBlob,
+  triggerQueuedDownload,
+} from './lib/download';
 import { quotaMessageFromChatError } from './lib/quotaError';
 import {
   contextualFailureMessage,
@@ -126,6 +131,17 @@ import {
   type ViewportPersistenceQueue,
 } from './lib/viewportPersistence';
 
+type AppNavigationTarget = {
+  workspaceId: string | null;
+  galleryId: string | null;
+};
+
+interface ContextualRetry {
+  target: ContextualChatTarget;
+  turn: ContextualTurnRecord;
+  prompt: string;
+}
+
 function WorkspaceShell({
   workspace,
   onWorkspaceRefresh,
@@ -149,6 +165,7 @@ function WorkspaceShell({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [automaticLayoutSaveError, setAutomaticLayoutSaveError] = useState<string | null>(null);
+  const [manualSaveError, setManualSaveError] = useState<string | null>(null);
   const [viewportSaveError, setViewportSaveError] = useState<string | null>(null);
   const [chatErrorNotice, setChatErrorNotice] = useState<string | null>(null);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
@@ -208,13 +225,15 @@ function WorkspaceShell({
     };
   }
   const [viewportPersistenceRevision, setViewportPersistenceRevision] = useState(0);
-  const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const autoFocusTimeoutRef = useRef<number | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
+  const panelGestureBaselineRef = useRef<Record<string, CanvasPanelLayout> | null>(null);
+  const groupGestureBaselineRef = useRef<Record<string, CanvasPanelLayout> | null>(null);
   const panelSourceRef = useRef<Record<string, string>>({});
   const automaticLayoutPersistenceRef = useRef<ReturnType<typeof useAutomaticLayoutPersistence> | null>(null);
-  const clearFileHighlightTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const toastTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const hoverClearTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const clearFileHighlightTimeoutRef = useRef<number | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+  const hoverClearTimeoutRef = useRef<number | null>(null);
   const hoveredPanelIdRef = useRef<string | null>(null);
   const hoveredToolbarPanelIdRef = useRef<string | null>(null);
   const previousDockedChatRef = useRef<boolean | null>(null);
@@ -227,6 +246,8 @@ function WorkspaceShell({
   const publishOperationIdRef = useRef<string | null>(null);
   const chatStopRef = useRef<() => void>(() => undefined);
   const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
+  const workspaceFilesRequestRef = useRef(0);
+  const contextualRetryRef = useRef<ContextualRetry | null>(null);
 
   const transitionContextualTurn = useCallback((action: ContextualLifecycleAction) => {
     const current = contextualLifecycleRef.current;
@@ -284,9 +305,10 @@ function WorkspaceShell({
         : viewportPersistence.queue.reapply(state);
       viewportRef.current = nextState.viewport;
       const automaticLayoutPersistence = automaticLayoutPersistenceRef.current;
-      setWorkspaceState(automaticLayoutPersistence
+      const effectiveState = automaticLayoutPersistence
         ? automaticLayoutPersistence.acknowledgeServerState(nextState)
-        : nextState);
+        : nextState;
+      setWorkspaceState(effectiveState);
       pendingWorkspaceMetadataRef.current = nextState.workspace;
     },
   });
@@ -405,6 +427,10 @@ function WorkspaceShell({
   ) => {
     chat.clearError();
     setChatErrorNotice(null);
+    // A new global send supersedes any completed scoped failure. The scoped
+    // submit path records its retry metadata again immediately after calling
+    // this helper.
+    contextualRetryRef.current = null;
     return chat.sendMessage({ text }, options);
   }, [chat]);
 
@@ -429,6 +455,9 @@ function WorkspaceShell({
         ],
       };
     });
+    if (reason !== 'error' && contextualRetryRef.current?.turn.turnId === pending.turnId) {
+      contextualRetryRef.current = null;
+    }
     transitionContextualTurn({ type: 'finish', turnId: pending.turnId });
   }, [transitionContextualTurn]);
 
@@ -459,10 +488,16 @@ function WorkspaceShell({
     viewportInteractionRef.current = false;
     viewportRef.current = nextWorkspaceState.viewport;
     setWorkspaceState(nextWorkspaceState);
-    setWorkspaceFiles(workspace.files);
-    workspaceFilesRef.current = workspace.files;
     if (workspaceChanged) {
+      // File refreshes are owned by this shell. A same-ID parent refresh can
+      // carry an older workspace snapshot (for example, a header save that
+      // started before a file upload); feeding its files back here would hide
+      // the newer list already fetched by the shell.
+      workspaceFilesRequestRef.current += 1;
+      setWorkspaceFiles(workspace.files);
+      workspaceFilesRef.current = workspace.files;
       setAutomaticLayoutSaveError(null);
+      setManualSaveError(null);
       setViewportSaveError(null);
       setWorkspaceName(workspace.workspace.name);
       setWorkspaceDescription(workspace.workspace.description);
@@ -485,11 +520,14 @@ function WorkspaceShell({
       closeContextualChat();
       setContextualThreads({});
       panelSourceRef.current = {};
+      panelGestureBaselineRef.current = null;
+      groupGestureBaselineRef.current = null;
       previousArtifactIdsRef.current = new Set(
         workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
       );
       contextualAutoPanKeyRef.current = null;
       initialPromptSentRef.current = false;
+      contextualRetryRef.current = null;
     } else {
       setWorkspaceName((current) => reconcileWorkspaceDraft(
         { name: current, description: '', model: undefined },
@@ -508,12 +546,6 @@ function WorkspaceShell({
       ).model);
       setPublishTitle((current) => current === previousServer.name ? workspace.workspace.name : current);
       setPublishDescription((current) => current === previousServer.description ? workspace.workspace.description : current);
-    }
-    if (workspace.downloads && workspace.downloads.length > 0) {
-      workspace.downloads.forEach((download) => {
-        triggerQueuedDownload(download);
-      });
-      void clearWorkspaceDownloads(workspace.workspace.id);
     }
   }, [closeContextualChat, workspace]);
 
@@ -755,25 +787,25 @@ function WorkspaceShell({
 
   useEffect(() => () => {
     if (hoverClearTimeoutRef.current) {
-      clearTimeout(hoverClearTimeoutRef.current);
+      window.clearTimeout(hoverClearTimeoutRef.current);
     }
   }, []);
 
   useEffect(() => () => {
     if (clearFileHighlightTimeoutRef.current) {
-      clearTimeout(clearFileHighlightTimeoutRef.current);
+      window.clearTimeout(clearFileHighlightTimeoutRef.current);
     }
   }, []);
 
   useEffect(() => () => {
     if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current);
+      window.clearTimeout(toastTimeoutRef.current);
     }
   }, []);
 
   useEffect(() => () => {
     if (autoFocusTimeoutRef.current) {
-      clearTimeout(autoFocusTimeoutRef.current);
+      window.clearTimeout(autoFocusTimeoutRef.current);
     }
   }, []);
 
@@ -989,7 +1021,7 @@ function WorkspaceShell({
 
   const showToast = useCallback((message: string, type: 'success' | 'info' = 'success') => {
     if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current);
+      window.clearTimeout(toastTimeoutRef.current);
     }
 
     setToast({ message, type });
@@ -1015,6 +1047,12 @@ function WorkspaceShell({
     }
   }, [announce, chat.status]);
 
+  useEffect(() => {
+    if (agent.connectionError) {
+      announce('The connection to the agent was lost. Reload the page to reconnect.');
+    }
+  }, [agent.connectionError, announce]);
+
   // Surface workspace-level errors (uploads, saves, rate limits) to screen
   // readers, not just the visual error banner.
   useEffect(() => {
@@ -1024,6 +1062,10 @@ function WorkspaceShell({
   useEffect(() => {
     if (automaticLayoutSaveError) announce(automaticLayoutSaveError);
   }, [announce, automaticLayoutSaveError]);
+
+  useEffect(() => {
+    if (manualSaveError) announce(manualSaveError);
+  }, [announce, manualSaveError]);
 
   useEffect(() => {
     if (viewportSaveError) announce(viewportSaveError);
@@ -1036,12 +1078,23 @@ function WorkspaceShell({
     });
   }, []);
 
-  const drainWorkspaceDownloads = useCallback(async () => {
-    const downloads = await fetchWorkspaceDownloads(workspace.workspace.id);
-    if (downloads.length === 0) return;
-    consumeDownloads(downloads);
-    await clearWorkspaceDownloads(workspace.workspace.id);
-  }, [consumeDownloads, workspace.workspace.id]);
+  const drainWorkspaceDownloads = useMemo(
+    () => createDownloadQueueDrainer(
+      () => fetchWorkspaceDownloads(workspace.workspace.id),
+      (ids) => clearWorkspaceDownloads(workspace.workspace.id, ids),
+      consumeDownloads,
+    ),
+    [consumeDownloads, workspace.workspace.id],
+  );
+
+  // The initial workspace response can contain queued downloads even when the
+  // agent socket is terminal or has not reached ready. Keep that delivery edge
+  // independent of chat status; the ready edge below shares this drainer.
+  useEffect(() => {
+    void drainWorkspaceDownloads().catch(() => {
+      // Ignore background download drain failures; the queue remains pending.
+    });
+  }, [drainWorkspaceDownloads, workspace.downloads]);
 
   const focusTile = useCallback((panelId: string) => {
     setMinimizedPanelIds((current) => {
@@ -1056,18 +1109,21 @@ function WorkspaceShell({
     const panelIndex = artifactPanels.findIndex((panel) => panel.id === panelId);
     if (panelIndex < 0 || !canvasViewportRef.current) return;
     const panel = artifactPanels[panelIndex];
-    const layout = inferPanelLayout(panel, panelIndex);
+    const layout = panelLayoutsRef.current[panelId]
+      ?? panelLayouts[panelId]
+      ?? inferPanelLayout(panel, panelIndex);
     const viewportWidth = canvasViewportRef.current.clientWidth;
     const viewportHeight = canvasViewportRef.current.clientHeight;
     const panelCenterX = layout.x + layout.width / 2;
     const panelCenterY = layout.y + layout.height / 2;
 
-    updateViewport((current) => ({
+    const nextViewport = updateViewport((current) => ({
       ...current,
       x: viewportWidth / 2 - panelCenterX * current.zoom,
       y: viewportHeight / 2 - panelCenterY * current.zoom,
     }));
-  }, [artifactPanels, updateViewport]);
+    persistViewport(nextViewport);
+  }, [artifactPanels, panelLayouts, persistViewport, updateViewport]);
 
   const highlightWorkspaceFiles = useCallback((paths: string[], options?: { scroll?: boolean }) => {
     const uniquePaths = Array.from(new Set(paths)).filter(Boolean);
@@ -1077,7 +1133,7 @@ function WorkspaceShell({
     setHighlightedFilePaths(new Set(uniquePaths));
 
     if (clearFileHighlightTimeoutRef.current) {
-      clearTimeout(clearFileHighlightTimeoutRef.current);
+      window.clearTimeout(clearFileHighlightTimeoutRef.current);
     }
     clearFileHighlightTimeoutRef.current = window.setTimeout(() => {
       setHighlightedFilePaths(new Set());
@@ -1096,7 +1152,12 @@ function WorkspaceShell({
   }, []);
 
   const refreshWorkspaceFiles = useCallback(async (options?: { announceChanges?: boolean; scrollToChanged?: boolean }) => {
+    const requestGeneration = workspaceFilesRequestRef.current + 1;
+    workspaceFilesRequestRef.current = requestGeneration;
     const files = await fetchWorkspaceFiles(workspace.workspace.id);
+    if (requestGeneration !== workspaceFilesRequestRef.current) {
+      return workspaceFilesRef.current;
+    }
     const previousFiles = workspaceFilesRef.current.filter((file) => !file.isDirectory);
     const previousByPath = new Map(previousFiles.map((file) => [file.path, file]));
     const nextFileEntries = files.filter((file) => !file.isDirectory);
@@ -1233,7 +1294,7 @@ function WorkspaceShell({
   }, [onWorkspaceRefresh, workspace.workspace.id]);
 
   const handleUpload = useCallback(async (files: File[]) => {
-    if (files.length === 0) return;
+    if (files.length === 0 || uploading) return;
     setUploading(true);
     setError(null);
     try {
@@ -1245,7 +1306,7 @@ function WorkspaceShell({
     } finally {
       setUploading(false);
     }
-  }, [refreshWorkspaceFiles, showToast, workspace.workspace.id]);
+  }, [refreshWorkspaceFiles, showToast, uploading, workspace.workspace.id]);
 
   const openFileOnCanvas = useCallback(async (file: WorkspaceFileInfo) => {
     highlightWorkspaceFiles([file.path], { scroll: false });
@@ -1313,22 +1374,22 @@ function WorkspaceShell({
     }
   }, [agent, workspace.workspace.id]);
 
-  const saveGroups = useCallback(async (groups: WorkspaceState['groups']) => {
-    // Every caller computes `groups` from the same workspaceState.groups
-    // snapshot this callback closes over, so diffing against it yields exactly
-    // what THIS edit changed. The server merges groups per id, so sending only
-    // the delta (plus explicit removals) keeps a concurrent edit to a
-    // different group in another tab alive (V3).
+  const saveGroups = useCallback(async (groups: WorkspaceState['groups']): Promise<boolean> => {
+    // The server merges groups per id, so sending only the delta (plus explicit
+    // removals) keeps a concurrent edit to a different group alive (V3).
     const { upserts, removeIds } = computeGroupsDelta(workspaceState.groups, groups);
-    setWorkspaceState((current) => ({
-      ...current,
-      groups,
-    }));
-    if (upserts.length === 0 && removeIds.length === 0) return;
+    setWorkspaceState((current) => ({ ...current, groups }));
+    if (upserts.length === 0 && removeIds.length === 0) return true;
     const patch: Parameters<WorkspaceAgentClient['applyLayoutPatch']>[0] = {};
     if (upserts.length > 0) patch.groups = upserts;
     if (removeIds.length > 0) patch.removeGroups = removeIds;
-    await agent.call('applyLayoutPatch', [patch]);
+    try {
+      await agent.call('applyLayoutPatch', [patch]);
+    } catch {
+      setManualSaveError('Some layout changes were not saved. Reload to restore the saved workspace; unsaved changes will be lost.');
+      return false;
+    }
+    return true;
   }, [agent, workspaceState.groups]);
 
   const toggleSelectedConnection = useCallback(async () => {
@@ -1416,18 +1477,25 @@ function WorkspaceShell({
     }
   }, [agent, showToast, workspaceState.connections]);
 
-  const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
-    const manualLayouts: AutomaticPanelLayouts = {};
+  const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>): Promise<boolean> => {
+    const persistedLayouts: AutomaticPanelLayouts = {};
     for (const [panelId, layout] of Object.entries(layouts)) {
       const baseLayout = panelLayoutsRef.current[panelId];
       if (!baseLayout) continue;
-      manualLayouts[panelId] = { ...baseLayout, ...layout };
+      const nextLayout = { ...baseLayout, ...layout };
+      persistedLayouts[panelId] = nextLayout;
     }
-    automaticLayoutPersistenceRef.current?.recordManualLayouts(manualLayouts);
+    if (Object.keys(persistedLayouts).length === 0) return true;
+
+    panelLayoutsRef.current = {
+      ...panelLayoutsRef.current,
+      ...persistedLayouts,
+    };
+    automaticLayoutPersistenceRef.current?.recordManualLayouts(persistedLayouts);
     setWorkspaceState((current) => {
       let changed = false;
       const panels = current.panels.map((panel) => {
-        const nextLayout = layouts[panel.id];
+        const nextLayout = persistedLayouts[panel.id];
         if (!nextLayout) return panel;
         const mergedLayout = {
           ...panel.layout,
@@ -1449,7 +1517,13 @@ function WorkspaceShell({
       });
       return changed ? { ...current, panels } : current;
     });
-    await agent.call('applyLayoutPatch', [{ panels: layouts }]);
+    try {
+      await agent.call('applyLayoutPatch', [{ panels: persistedLayouts }]);
+    } catch {
+      setManualSaveError('Some layout changes were not saved. Reload to restore the saved workspace; unsaved changes will be lost.');
+      return false;
+    }
+    return true;
   }, [agent]);
 
   const queueAutomaticPanelLayouts = useCallback((layouts: AutomaticPanelLayouts) => {
@@ -1554,7 +1628,7 @@ function WorkspaceShell({
     if (!canvasViewportRef.current) return;
 
     if (autoFocusTimeoutRef.current) {
-      clearTimeout(autoFocusTimeoutRef.current);
+      window.clearTimeout(autoFocusTimeoutRef.current);
     }
 
     autoFocusTimeoutRef.current = window.setTimeout(() => {
@@ -1585,8 +1659,7 @@ function WorkspaceShell({
     );
     setEditingGroupId(null);
     setGroupNameInput('');
-    await saveGroups(nextGroups);
-    if (trimmedName) {
+    if (await saveGroups(nextGroups) && trimmedName) {
       showToast(`Group renamed to "${trimmedName}"`);
     }
   }, [saveGroups, showToast, workspaceState.groups]);
@@ -1594,48 +1667,74 @@ function WorkspaceShell({
   const handlePanelLayoutChange = useCallback((panelId: string, layout: Partial<CanvasPanelLayout>) => {
     // A direct user edit supersedes an automatic placement that has not yet
     // reached the server. The drag/resize save below remains authoritative.
-    const baseLayout = panelLayoutsRef.current[panelId];
-    if (baseLayout) {
-      automaticLayoutPersistenceRef.current?.recordManualLayouts({
-        [panelId]: { ...baseLayout, ...layout },
-      });
-    } else {
+    const panel = artifactPanels.find((entry) => entry.id === panelId);
+    const panelIndex = artifactPanels.findIndex((entry) => entry.id === panelId);
+    const baseLayout = panelLayoutsRef.current[panelId]
+      ?? (panel && panelIndex >= 0 ? inferPanelLayout(panel, panelIndex) : null);
+    if (!baseLayout) {
       automaticLayoutPersistenceRef.current?.discard([panelId]);
+      return;
     }
+    if (!panelGestureBaselineRef.current) {
+      panelGestureBaselineRef.current = { [panelId]: { ...baseLayout } };
+    }
+    const nextLayout = { ...baseLayout, ...layout };
+    panelLayoutsRef.current = {
+      ...panelLayoutsRef.current,
+      [panelId]: nextLayout,
+    };
+    automaticLayoutPersistenceRef.current?.recordManualLayouts({
+      [panelId]: nextLayout,
+    });
     if (!automaticLayoutPersistenceRef.current?.hasFailure()) setAutomaticLayoutSaveError(null);
     setWorkspaceState((current) => {
-      const nextPanels = current.panels.map((panel, index) => {
-        if (panel.id !== panelId) return panel;
-        const baseLayout = panelLayoutsRef.current[panelId] ?? inferPanelLayout(panel, index);
-        const nextLayout = { ...baseLayout, ...layout };
-        panelLayoutsRef.current = {
-          ...panelLayoutsRef.current,
-          [panelId]: nextLayout,
-        };
-        return {
-          ...panel,
-          layout: nextLayout,
-        };
-      });
+      const nextPanels = current.panels.map((currentPanel) => currentPanel.id === panelId
+        ? { ...currentPanel, layout: nextLayout }
+        : currentPanel);
       return {
         ...current,
         panels: nextPanels,
       };
     });
-  }, []);
+  }, [artifactPanels]);
 
   const handlePanelDragStart = useCallback((panelId: string) => {
+    const currentLayout = panelLayoutsRef.current[panelId] ?? panelLayouts[panelId];
+    panelGestureBaselineRef.current = currentLayout ? { [panelId]: { ...currentLayout } } : {};
     setFocusedPanelId(panelId);
-  }, []);
+  }, [panelLayouts]);
 
   const handlePanelDragEnd = useCallback(async (panelId: string) => {
+    const beforeCollision = Object.fromEntries(
+      Object.entries(panelLayoutsRef.current).map(([id, layout]) => [id, { ...layout }]),
+    );
     const fixedPanelIds = new Set([panelId].filter((visiblePanelId) => visiblePanelIds.has(visiblePanelId)));
-    const resolved = resolveVisibleLayoutCollisions(panelLayoutsRef.current, visiblePanelIds, fixedPanelIds);
-    if (!resolved[panelId]) return;
+    const resolved = resolveVisibleLayoutCollisions(
+      panelLayoutsRef.current,
+      visiblePanelIds,
+      fixedPanelIds,
+      new Set([panelId]),
+    );
+    const baseline = panelGestureBaselineRef.current;
+    panelGestureBaselineRef.current = null;
+    if (!baseline || !resolved[panelId]) return;
 
     panelLayoutsRef.current = {
       ...panelLayoutsRef.current,
       ...resolved,
+    };
+    const resolvedExistingLayouts = Object.fromEntries(
+      Object.keys(beforeCollision)
+        .map((id) => [id, resolved[id]] as const)
+        .filter((entry): entry is readonly [string, CanvasPanelLayout] => Boolean(entry[1])),
+    );
+    const collisionLayouts = computePanelLayoutsDelta(beforeCollision, resolvedExistingLayouts);
+    const gestureLayouts = computePanelLayoutsDelta(baseline, {
+      [panelId]: resolved[panelId],
+    });
+    const changedLayouts = {
+      ...collisionLayouts,
+      ...gestureLayouts,
     };
 
     let nextGroups = workspaceState.groups;
@@ -1680,7 +1779,10 @@ function WorkspaceShell({
       }
     }
 
-    await savePanelLayouts(resolved);
+    if (Object.keys(changedLayouts).length > 0) {
+      const layoutsSaved = await savePanelLayouts(changedLayouts);
+      if (!layoutsSaved) return;
+    }
     if (nextGroups !== workspaceState.groups) {
       await saveGroups(nextGroups);
     }
@@ -1690,9 +1792,18 @@ function WorkspaceShell({
     const group = workspaceState.groups.find((entry) => entry.id === groupId);
     if (!group) return;
 
-    const groupPanelIds = new Set(group.panelIds);
+    const groupPanelIds = new Set(group.panelIds.filter((panelId) => visiblePanelIds.has(panelId)));
+    if (!groupGestureBaselineRef.current) {
+      const currentLayouts = { ...panelLayouts, ...panelLayoutsRef.current };
+      const baselineLayouts: Record<string, CanvasPanelLayout> = {};
+      groupPanelIds.forEach((panelId) => {
+        const layout = currentLayouts[panelId];
+        if (layout) baselineLayouts[panelId] = { ...layout };
+      });
+      groupGestureBaselineRef.current = baselineLayouts;
+    }
     const nextLayouts: AutomaticPanelLayouts = {};
-    workspaceState.panels.forEach((panel, index) => {
+    visiblePanels.forEach((panel, index) => {
       if (!groupPanelIds.has(panel.id)) return;
       const baseLayout = panelLayoutsRef.current[panel.id] ?? inferPanelLayout(panel, index);
       nextLayouts[panel.id] = {
@@ -1702,6 +1813,10 @@ function WorkspaceShell({
       };
     });
     automaticLayoutPersistenceRef.current?.recordManualLayouts(nextLayouts);
+    panelLayoutsRef.current = {
+      ...panelLayoutsRef.current,
+      ...nextLayouts,
+    };
 
     setWorkspaceState((current) => {
       const nextPanels = current.panels.map((panel) => {
@@ -1712,31 +1827,52 @@ function WorkspaceShell({
           layout: nextLayout,
         };
       });
-      panelLayoutsRef.current = {
-        ...panelLayoutsRef.current,
-        ...nextLayouts,
-      };
       return {
         ...current,
         panels: nextPanels,
       };
     });
-  }, [workspaceState.groups, workspaceState.panels]);
+  }, [panelLayouts, visiblePanelIds, visiblePanels, workspaceState.groups]);
 
   const handleGroupDragEnd = useCallback(async (groupId: string) => {
     const group = workspaceState.groups.find((entry) => entry.id === groupId);
-    if (!group) return;
+    const baseline = groupGestureBaselineRef.current;
+    groupGestureBaselineRef.current = null;
+    if (!group || !baseline) return;
 
+    const beforeCollision = Object.fromEntries(
+      Object.entries(panelLayoutsRef.current).map(([id, layout]) => [id, { ...layout }]),
+    );
     const fixedPanelIds = new Set(group.panelIds.filter((panelId) => visiblePanelIds.has(panelId)));
-    const resolved = resolveVisibleLayoutCollisions(panelLayoutsRef.current, visiblePanelIds, fixedPanelIds);
+    const resolved = resolveVisibleLayoutCollisions(
+      panelLayoutsRef.current,
+      visiblePanelIds,
+      fixedPanelIds,
+      new Set(Object.keys(baseline)),
+    );
 
     panelLayoutsRef.current = {
       ...panelLayoutsRef.current,
       ...resolved,
     };
+    const resolvedExistingLayouts = Object.fromEntries(
+      Object.keys(beforeCollision)
+        .map((id) => [id, resolved[id]] as const)
+        .filter((entry): entry is readonly [string, CanvasPanelLayout] => Boolean(entry[1])),
+    );
+    const collisionLayouts = computePanelLayoutsDelta(beforeCollision, resolvedExistingLayouts);
+    const gestureLayouts = Object.fromEntries(
+      Object.keys(baseline)
+        .map((panelId) => [panelId, resolved[panelId]] as const)
+        .filter((entry): entry is readonly [string, CanvasPanelLayout] => Boolean(entry[1])),
+    );
+    const changedLayouts = {
+      ...collisionLayouts,
+      ...computePanelLayoutsDelta(baseline, gestureLayouts),
+    };
 
-    if (Object.keys(resolved).length > 0) {
-      await savePanelLayouts(resolved);
+    if (Object.keys(changedLayouts).length > 0) {
+      await savePanelLayouts(changedLayouts);
     }
   }, [savePanelLayouts, visiblePanelIds, workspaceState.groups]);
 
@@ -1841,8 +1977,8 @@ function WorkspaceShell({
         }
       }
 
-      if (finalLayouts) {
-        await savePanelLayouts(finalLayouts);
+      if (finalLayouts && !(await savePanelLayouts(finalLayouts))) {
+        return;
       }
     }
 
@@ -1860,15 +1996,17 @@ function WorkspaceShell({
         color: ['#a47430', '#4c78a8', '#2d8f6f', '#9b5dc4'][workspaceState.groups.length % 4],
       },
     ];
-    await saveGroups(nextGroups);
-    showToast(`Grouped ${groupIds.length} tiles`);
+    if (await saveGroups(nextGroups)) {
+      showToast(`Grouped ${groupIds.length} tiles`);
+    }
   }, [saveGroups, selectedPanelIds, showToast, workspaceState.groups]);
 
   const ungroupSelection = useCallback(async () => {
     if (!selectedGroup) return;
     const groupName = selectedGroup.name || `${selectedGroup.panelIds.length} tiles`;
-    await saveGroups(workspaceState.groups.filter((group) => group.id !== selectedGroup.id));
-    showToast(`Ungrouped "${groupName}"`);
+    if (await saveGroups(workspaceState.groups.filter((group) => group.id !== selectedGroup.id))) {
+      showToast(`Ungrouped "${groupName}"`);
+    }
   }, [saveGroups, selectedGroup, showToast, workspaceState.groups]);
 
   const removePanelFromGroup = useCallback(async (panelId: string) => {
@@ -1883,7 +2021,7 @@ function WorkspaceShell({
         : [];
     });
 
-    await saveGroups(nextGroups);
+    if (!(await saveGroups(nextGroups))) return;
     setSelectedPanelIds((current) => new Set(Array.from(current).filter((selectedId) => selectedId !== panelId)));
     showToast('Removed from group');
   }, [saveGroups, showToast, workspaceState.groups]);
@@ -2013,6 +2151,7 @@ function WorkspaceShell({
     const next = contextualComposer.trim();
     const target = contextualLifecycle.target;
     if (!target || !next || contextualLifecycle.phase !== 'idle') return;
+    if (agent.connectionError) return;
     if (
       chat.status === 'submitted' ||
       chat.status === 'streaming' ||
@@ -2033,7 +2172,6 @@ function WorkspaceShell({
       previousMessageIds: new Set(chat.messages.map((message) => message.id)),
       userMessageId: null,
     };
-
     setContextualThreads((current) => ({
       ...current,
       [target.key]: [
@@ -2049,27 +2187,95 @@ function WorkspaceShell({
     const request = sendChatMessage(next, {
       body: { scopePanelIds: target.panelIds },
     });
+    contextualRetryRef.current = { target, turn: pending, prompt: next };
     void request.catch(() => finishContextualTurn(pending, 'error'));
     setContextualComposer('');
-  }, [chat, contextualComposer, contextualLifecycle, finishContextualTurn, sendChatMessage, transitionContextualTurn]);
+  }, [agent.connectionError, chat, contextualComposer, contextualLifecycle, finishContextualTurn, sendChatMessage, transitionContextualTurn]);
 
   const handleChatClear = useCallback(() => {
+    // Stop a scoped stream before clearing its transcript so a late server
+    // continuation cannot repopulate the conversation after the clear.
+    closeContextualChat();
     chat.clearHistory();
     chat.clearError();
     setChatErrorNotice(null);
-  }, [chat]);
+    setComposer('');
+    contextualRetryRef.current = null;
+    setContextualThreads({});
+  }, [chat, closeContextualChat]);
 
   const handleChatRetry = useCallback(() => {
+    if (agent.connectionError) return;
     setChatErrorNotice(null);
-    if (chat.regenerate) {
+    const retry = contextualRetryRef.current;
+    const contextualState = contextualLifecycleRef.current;
+    const target = contextualState.target;
+    const chatStillWorking = chat.status === 'submitted'
+      || chat.status === 'streaming'
+      || chat.isStreaming
+      || chat.isServerStreaming
+      || chat.isRecovering
+      || chat.isToolContinuation;
+    const canRetryScopedTurn = Boolean(
+      retry
+      && contextualState.phase === 'idle'
+      && (!target || target.key === retry.target.key)
+      && chat.status === 'error'
+      && !chatStillWorking,
+    );
+    if (canRetryScopedTurn && retry) {
+      if (!target) transitionContextualTurn({ type: 'open', target: retry.target });
+      const userMessageId = retry.turn.userMessageId
+        || [...chat.messages]
+          .reverse()
+          .find((message) => message.role === 'user' && extractMessageText(message).trim() === retry.prompt.trim())?.id
+        || null;
+      const pending: ContextualTurnRecord = {
+        turnId: makeClientId('context-turn'),
+        scopeKey: retry.target.key,
+        previousAssistantId: [...chat.messages]
+          .reverse()
+          .find((message) => message.role === 'assistant')?.id || null,
+        previousMessageIds: new Set(chat.messages.map((message) => message.id)),
+        userMessageId,
+      };
+      setContextualThreads((current) => {
+        const thread = current[retry.target.key] || [];
+        const withoutFailure = thread[thread.length - 1]?.role === 'assistant'
+          && thread[thread.length - 1]?.content === contextualFailureMessage('error')
+          ? thread.slice(0, -1)
+          : thread;
+        if (userMessageId) return { ...current, [retry.target.key]: withoutFailure };
+        return {
+          ...current,
+          [retry.target.key]: [
+            ...withoutFailure,
+            { id: makeClientId('context-user'), role: 'user', content: retry.prompt },
+          ],
+        };
+      });
+      transitionContextualTurn({ type: 'submit', turn: pending });
       chat.clearError();
-      void chat.regenerate();
+      const request = userMessageId
+        ? chat.regenerate({
+          messageId: userMessageId,
+          body: { scopePanelIds: retry.target.panelIds },
+        })
+        : sendChatMessage(retry.prompt, { body: { scopePanelIds: retry.target.panelIds } });
+      contextualRetryRef.current = { ...retry, turn: pending };
+      void request.catch(() => finishContextualTurn(pending, 'error'));
       return;
     }
 
+    // A scoped failure remains owned by its original target. Never fall back
+    // to the global regenerate path while another contextual target is open,
+    // because that would send the old prompt with the new target's scope.
+    if (retry) return;
+
     if (!lastUserPrompt) return;
-    void sendChatMessage(lastUserPrompt);
-  }, [chat, lastUserPrompt, sendChatMessage]);
+    chat.clearError();
+    void chat.regenerate();
+  }, [agent.connectionError, chat, finishContextualTurn, lastUserPrompt, sendChatMessage, transitionContextualTurn]);
 
   const downloadPanelAsPng = useCallback(async (panelId: string, title: string) => {
     const element = panelRefs.current[panelId];
@@ -2167,7 +2373,6 @@ function WorkspaceShell({
   const renderPanelMenuContent = useCallback((panel: WorkspacePanel) => (
     <PanelMenu
       panel={panel}
-      workspaceId={workspace.workspace.id}
       maximizedPanelId={maximizedPanelId}
       onAskAboutTile={openContextualChatForPanel}
       onRevealFile={revealFileInWorkspace}
@@ -2189,7 +2394,6 @@ function WorkspaceShell({
     openContextualChatForPanel,
     revealFileInWorkspace,
     removePanels,
-    workspace.workspace.id,
   ]);
 
   const handleWorkspaceSave = useCallback(async () => {
@@ -2259,7 +2463,7 @@ function WorkspaceShell({
     setPublishing(true);
     setError(null);
     try {
-      await unpublishGalleryItem(workspace.workspace.galleryId);
+      await unpublishWorkspace(workspace.workspace.id);
       await refreshWorkspace();
       showToast('Removed from gallery', 'info');
     } catch (nextError) {
@@ -2267,7 +2471,7 @@ function WorkspaceShell({
     } finally {
       setPublishing(false);
     }
-  }, [refreshWorkspace, showToast, workspace.workspace.galleryId]);
+  }, [refreshWorkspace, showToast, workspace.workspace.id, workspace.workspace.galleryId]);
 
   const handleExportDownload = useCallback(async () => {
     setError(null);
@@ -2330,6 +2534,9 @@ function WorkspaceShell({
 
     if (chat.status === 'ready') {
       if (assistantMessage && extractMessageText(assistantMessage).trim()) {
+        if (contextualRetryRef.current?.turn.turnId === pending.turnId) {
+          contextualRetryRef.current = null;
+        }
         transitionContextualTurn({ type: 'finish', turnId: pending.turnId });
       } else {
         finishContextualTurn(pending, 'empty');
@@ -2436,6 +2643,10 @@ function WorkspaceShell({
     if (pending) finishContextualTurn(pending, 'cancel');
   }, [finishContextualTurn]);
 
+  const handleConnectionReload = useCallback(() => {
+    globalThis.location.reload();
+  }, []);
+
   const chatActivity = getChatActivity({
     status: chat.status,
     isStreaming: chat.isStreaming,
@@ -2443,8 +2654,16 @@ function WorkspaceShell({
     isRecovering: chat.isRecovering,
     isToolContinuation: chat.isToolContinuation,
     contextualTurnActive,
-    canRetry: Boolean(lastUserPrompt),
+    connectionError: agent.connectionError,
+    canRetry: Boolean(lastUserPrompt) && (
+      !contextualRetryRef.current
+      || !contextualChatTarget
+      || contextualRetryRef.current.target.key === contextualChatTarget.key
+    ),
   });
+  const connectionErrorNotice = agent.connectionError
+    ? 'The connection to the agent was lost. Reload the page to reconnect.'
+    : null;
 
   const canvasViewportSize = canvasViewportRef.current
     ? {
@@ -2466,7 +2685,8 @@ function WorkspaceShell({
       onStop={handleChatStop}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
-      errorNotice={chatErrorNotice}
+      onReload={handleConnectionReload}
+      errorNotice={connectionErrorNotice ?? chatErrorNotice}
       selectedScopeLabel={selectedScopeLabel}
       onClearScope={clearSelection}
     />
@@ -2543,10 +2763,19 @@ function WorkspaceShell({
           onOpenShortcuts={() => setShortcutsOpen(true)}
         />
 
-        {error || automaticLayoutSaveError || viewportSaveError ? (
+        {error || automaticLayoutSaveError || manualSaveError || viewportSaveError ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
             <div className="flex items-center justify-between gap-3">
-              <span>{automaticLayoutSaveError || viewportSaveError || error}</span>
+              <span>{manualSaveError || automaticLayoutSaveError || viewportSaveError || error}</span>
+              {manualSaveError ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  onClick={() => window.location.reload()}
+                >
+                  Reload saved workspace
+                </button>
+              ) : null}
               {automaticLayoutSaveError ? (
                 <button
                   type="button"
@@ -2718,7 +2947,7 @@ function WorkspaceShell({
             onNodeHover={(panelId) => {
               if (selectedPanelIds.size > 0) return;
               if (hoverClearTimeoutRef.current) {
-                clearTimeout(hoverClearTimeoutRef.current);
+                window.clearTimeout(hoverClearTimeoutRef.current);
                 hoverClearTimeoutRef.current = null;
               }
               if (panelId) {
@@ -2727,7 +2956,7 @@ function WorkspaceShell({
                 return;
               }
               const lastPanelId = hoveredPanelIdRef.current;
-              hoverClearTimeoutRef.current = setTimeout(() => {
+              hoverClearTimeoutRef.current = window.setTimeout(() => {
                 if (hoveredToolbarPanelIdRef.current === lastPanelId) return;
                 hoveredPanelIdRef.current = null;
                 setHoveredPanelId(null);
@@ -2933,15 +3162,35 @@ export default function App() {
   const [importing, setImporting] = useState(false);
   const [pendingInitialPrompt, setPendingInitialPrompt] = useState<{ workspaceId: string; prompt: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const navigationOwnerRef = useRef<AppNavigationTarget>({
+    workspaceId: initialWorkspaceId,
+    galleryId: initialWorkspaceId ? null : initialGalleryId,
+  });
+  const homeLoadOwnerRef = useRef({
+    workspaces: 0,
+    gallery: 0,
+  });
+
+  const claimNavigation = useCallback((target: AppNavigationTarget) => {
+    navigationOwnerRef.current = { ...target };
+  }, []);
 
   const loadWorkspaces = useCallback(async () => {
+    const requestGeneration = homeLoadOwnerRef.current.workspaces + 1;
+    homeLoadOwnerRef.current.workspaces = requestGeneration;
     const items = await fetchWorkspaces();
-    setWorkspaces(items);
+    if (requestGeneration === homeLoadOwnerRef.current.workspaces) {
+      setWorkspaces(items);
+    }
   }, []);
 
   const loadGallery = useCallback(async () => {
+    const requestGeneration = homeLoadOwnerRef.current.gallery + 1;
+    homeLoadOwnerRef.current.gallery = requestGeneration;
     const items = await fetchGalleryItems();
-    setGalleryItems(items);
+    if (requestGeneration === homeLoadOwnerRef.current.gallery) {
+      setGalleryItems(items);
+    }
   }, []);
 
   const loadHome = useCallback(async () => {
@@ -2954,16 +3203,27 @@ export default function App() {
   }, [loadGallery, loadWorkspaces]);
 
   const loadWorkspace = useCallback(async (workspaceId: string) => {
+    const owner = navigationOwnerRef.current;
+    if (
+      owner.workspaceId !== workspaceId
+      || owner.galleryId !== null
+    ) {
+      return;
+    }
+    const requestOwner = { ...owner };
+    navigationOwnerRef.current = requestOwner;
+    const isCurrentRequest = () => navigationOwnerRef.current === requestOwner;
     setLoading(true);
     setError(null);
     try {
       const response = await fetchWorkspace(workspaceId);
+      if (!isCurrentRequest()) return;
       setSelectedWorkspace(response);
-      setSelectedWorkspaceId(workspaceId);
     } catch (nextError) {
+      if (!isCurrentRequest()) return;
       setError(nextError instanceof ApiError ? nextError.message : 'The workspace didn’t load. Reload the page to try again.');
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) setLoading(false);
     }
   }, []);
 
@@ -2996,6 +3256,31 @@ export default function App() {
     void loadWorkspace(selectedWorkspaceId);
   }, [loadWorkspace, selectedGalleryId, selectedWorkspaceId]);
 
+  const loadGalleryItem = useCallback(async (galleryId: string) => {
+    const owner = navigationOwnerRef.current;
+    if (
+      owner.galleryId !== galleryId
+      || owner.workspaceId !== null
+    ) {
+      return;
+    }
+    const requestOwner = { ...owner };
+    navigationOwnerRef.current = requestOwner;
+    const isCurrentRequest = () => navigationOwnerRef.current === requestOwner;
+    setLoading(true);
+
+    try {
+      const item = await fetchGalleryItem(galleryId);
+      if (!isCurrentRequest()) return;
+      setSelectedGallery(item);
+    } catch (nextError) {
+      if (!isCurrentRequest()) return;
+      setError(nextError instanceof Error ? nextError.message : 'Failed to load gallery item');
+    } finally {
+      if (isCurrentRequest()) setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!selectedGalleryId || selectedWorkspaceId) {
       if (!selectedWorkspaceId) {
@@ -3008,18 +3293,8 @@ export default function App() {
     url.searchParams.set('gallery', selectedGalleryId);
     url.searchParams.delete('workspace');
     window.history.replaceState({}, '', url);
-    setLoading(true);
-
-    void fetchGalleryItem(selectedGalleryId)
-      .then((item) => {
-        setSelectedGallery(item);
-        setLoading(false);
-      })
-      .catch((nextError) => {
-        setError(nextError instanceof Error ? nextError.message : 'Failed to load gallery item');
-        setLoading(false);
-      });
-  }, [selectedGalleryId, selectedWorkspaceId]);
+    void loadGalleryItem(selectedGalleryId);
+  }, [loadGalleryItem, selectedGalleryId, selectedWorkspaceId]);
 
   const handleDeleteWorkspace = useCallback(async (): Promise<boolean> => {
     if (!selectedWorkspaceId) return false;
@@ -3042,18 +3317,21 @@ export default function App() {
       await loadGallery();
       setPendingInitialPrompt(null);
       setSelectedGalleryId(null);
+      claimNavigation({ workspaceId: result.workspaceId, galleryId: null });
       setSelectedWorkspaceId(result.workspaceId);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to clone gallery item');
     }
-  }, [loadGallery, loadWorkspaces]);
+  }, [claimNavigation, loadGallery, loadWorkspaces]);
 
   const handleOpenGalleryItem = useCallback((galleryId: string) => {
     setError(null);
+    claimNavigation({ workspaceId: null, galleryId });
     setSelectedGallery(null);
+    setSelectedWorkspace(null);
     setSelectedWorkspaceId(null);
     setSelectedGalleryId(galleryId);
-  }, []);
+  }, [claimNavigation]);
 
   const handleImportBundle = useCallback(async (file: File | null) => {
     if (!file) return;
@@ -3065,6 +3343,7 @@ export default function App() {
       await loadWorkspaces();
       setPendingInitialPrompt(null);
       setSelectedGalleryId(null);
+      claimNavigation({ workspaceId: result.workspaceId, galleryId: null });
       setSelectedWorkspaceId(result.workspaceId);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Importing didn’t work. Make sure it’s a workspace file exported from Agent Studio.');
@@ -3072,7 +3351,7 @@ export default function App() {
     } finally {
       setImporting(false);
     }
-  }, [loadWorkspaces]);
+  }, [claimNavigation, loadWorkspaces]);
 
   const handleCreateWorkspace = useCallback(async (prompt?: string) => {
     setCreating(true);
@@ -3082,25 +3361,29 @@ export default function App() {
       await loadWorkspaces();
       setPendingInitialPrompt(prompt ? { workspaceId: workspace.id, prompt } : null);
       setSelectedGalleryId(null);
+      claimNavigation({ workspaceId: workspace.id, galleryId: null });
       setSelectedWorkspaceId(workspace.id);
+      return true;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to create workspace');
+      return false;
     } finally {
       setCreating(false);
     }
-  }, [loadWorkspaces]);
+  }, [claimNavigation, loadWorkspaces]);
 
   const handleGoHome = useCallback(() => {
+    claimNavigation({ workspaceId: null, galleryId: null });
     setPendingInitialPrompt(null);
     setSelectedWorkspaceId(null);
     setSelectedGalleryId(null);
     setSelectedWorkspace(null);
     setSelectedGallery(null);
     setError(null);
-  }, []);
+  }, [claimNavigation]);
 
   // Loading state
-  if (loading && (selectedWorkspaceId || selectedGalleryId)) {
+  if (loading && (selectedWorkspaceId || selectedGalleryId) && !selectedWorkspace && !selectedGallery) {
     return (
       <div className="grain h-screen flex items-center justify-center canvas-bg">
         <div className="text-center animate-fade-in">
@@ -3111,7 +3394,7 @@ export default function App() {
   }
 
   // Error state
-  if (error && !selectedWorkspace && !selectedGallery) {
+  if (error && !selectedWorkspace && !selectedGallery && (selectedWorkspaceId || selectedGalleryId)) {
     return (
       <div className="grain h-screen flex flex-col canvas-bg">
         <div className="px-6 py-3 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
@@ -3149,7 +3432,7 @@ export default function App() {
         {error ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">{error}</div>
         ) : null}
-        {!loading && selectedWorkspace ? (
+        {selectedWorkspace ? (
           <WorkspaceShell
             key={selectedWorkspace.workspace.id}
             workspace={selectedWorkspace}
@@ -3191,6 +3474,9 @@ export default function App() {
       onSelectWorkspace={(id) => {
         setPendingInitialPrompt(null);
         setSelectedGalleryId(null);
+        setSelectedWorkspace(null);
+        setSelectedGallery(null);
+        claimNavigation({ workspaceId: id, galleryId: null });
         setSelectedWorkspaceId(id);
       }}
       onOpenGalleryItem={handleOpenGalleryItem}
@@ -3199,6 +3485,8 @@ export default function App() {
       onImportWorkspace={handleImportBundle}
       busy={creating || importing}
       importing={importing}
+      error={error}
+      onRetry={() => void loadHome()}
     />
   );
 }

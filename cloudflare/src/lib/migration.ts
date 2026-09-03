@@ -163,8 +163,14 @@ async function copyWorkspace(
     await target.persistMessages([], undefined, { _deleteStaleRows: true });
     await target.persistMessages(messages);
 
+    const queuedDownloads = await getWorkspaceDownloads(
+      env,
+      anonSessionId,
+      workspace.id,
+      { onCorrupt: 'throw' },
+    );
     const downloads = [
-      ...(await getWorkspaceDownloads(env, anonSessionId, workspace.id, { onCorrupt: 'throw' })),
+      ...queuedDownloads.map(({ id: _id, ...download }) => download),
       ...(await readLegacyDownloads(env, anonSessionId, workspace.id)),
     ];
     await putWorkspaceDownloads(env, subjectSessionId, workspace.id, downloads);

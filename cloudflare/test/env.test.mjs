@@ -55,6 +55,38 @@ test('malformed runtime configuration values fail closed without throwing', asyn
   }
 });
 
+test('identity requirement flag accepts only exact boolean strings', async () => {
+  for (const CAIL_REQUIRE_IDENTITY of [
+    '',
+    'TRUE',
+    ' true',
+    'true ',
+    'FALSE',
+    ' false',
+    'false ',
+    'yes',
+    '1',
+    123,
+    {},
+    true,
+    null,
+  ]) {
+    assert.deepEqual(
+      await validateAgentStudioConfig({ SESSION_SECRET: SECRET, CAIL_REQUIRE_IDENTITY }),
+      { ok: false, errorCode: 'cail_identity_require_flag_invalid' },
+      String(CAIL_REQUIRE_IDENTITY),
+    );
+  }
+  assert.deepEqual(await validateAgentStudioConfig({
+    SESSION_SECRET: SECRET,
+    CAIL_REQUIRE_IDENTITY: 'false',
+  }), { ok: true });
+  assert.deepEqual(await validateAgentStudioConfig({
+    SESSION_SECRET: SECRET,
+    CAIL_REQUIRE_IDENTITY: 'true',
+  }), { ok: false, errorCode: 'cail_identity_issuer_missing' });
+});
+
 test('model id and API base validation reject unsafe or placeholder values', async () => {
   for (const CAIL_MODEL of ['openai/gpt', 'cail/gpt-4.1', '@cf/']) {
     assert.deepEqual(

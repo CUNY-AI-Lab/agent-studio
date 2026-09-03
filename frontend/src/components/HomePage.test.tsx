@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { HomePage } from './HomePage';
@@ -30,11 +30,11 @@ function props(overrides: Partial<React.ComponentProps<typeof HomePage>> = {}) {
   return {
     workspaces: [],
     galleryItems: [],
-    onCreateWorkspace: vi.fn(async () => {}),
+    onCreateWorkspace: vi.fn(async () => true),
     onSelectWorkspace: vi.fn(),
     onOpenGalleryItem: vi.fn(),
     onCloneGalleryItem: vi.fn(async () => {}),
-    onStartBlank: vi.fn(async () => {}),
+    onStartBlank: vi.fn(async () => true),
     onImportWorkspace: vi.fn(async () => {}),
     busy: false,
     importing: false,
@@ -97,5 +97,54 @@ describe('HomePage', () => {
     expect(screen.getByText('Importing…')).toBeInTheDocument();
     expect(screen.getByLabelText('Import workspace bundle')).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Start blank' })).toBeDisabled();
+  });
+
+  it('does not navigate to a workspace while another home action is pending', async () => {
+    const user = userEvent.setup();
+    const onSelectWorkspace = vi.fn();
+    render(
+      <HomePage
+        {...props({
+          workspaces: [workspace(1)],
+          busy: true,
+          onSelectWorkspace,
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /Workspace 1/ }));
+
+    expect(onSelectWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('keeps a typed prompt when workspace creation fails', async () => {
+    const user = userEvent.setup();
+    const onCreateWorkspace = vi.fn(async () => false);
+    render(<HomePage {...props({ onCreateWorkspace })} />);
+
+    const input = screen.getByRole('textbox', { name: 'What would you like to work on?' });
+    await user.type(input, 'Keep this prompt');
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    expect(onCreateWorkspace).toHaveBeenCalledWith('Keep this prompt');
+    expect(input).toHaveValue('Keep this prompt');
+  });
+
+  it('owns a pending clone action so a second click cannot create another workspace', async () => {
+    const user = userEvent.setup();
+    let resolveClone!: () => void;
+    const onCloneGalleryItem = vi.fn(() => new Promise<void>((resolve) => {
+      resolveClone = resolve;
+    }));
+    render(<HomePage {...props({ galleryItems: [galleryItem(1)], onCloneGalleryItem })} />);
+
+    const cloneButton = screen.getByRole('button', { name: 'Use as workspace' });
+    await user.click(cloneButton);
+    await user.click(cloneButton);
+
+    expect(onCloneGalleryItem).toHaveBeenCalledTimes(1);
+    expect(cloneButton).toBeDisabled();
+    resolveClone();
+    await waitFor(() => expect(cloneButton).not.toBeDisabled());
   });
 });

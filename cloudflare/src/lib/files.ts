@@ -195,18 +195,36 @@ export async function readGalleryFile(
   return env.WORKSPACE_FILES.get(getGalleryFileKey(galleryId, filePath));
 }
 
-export async function deleteWorkspaceFiles(env: Env, sessionId: string, workspaceId: string): Promise<void> {
+export async function deleteWorkspaceFiles(
+  env: Env,
+  sessionId: string,
+  workspaceId: string,
+  options: { preserveMetadata?: boolean } = {},
+): Promise<void> {
   const prefix = getWorkspacePrefix(sessionId, workspaceId);
-  await deleteByPrefix(env, prefix);
+  // User deletion keeps a retry marker. Failed imports/clones must remove
+  // their whole prefix, including a record whose write outcome was ambiguous.
+  await deleteByPrefixExcept(env, prefix, new Set(options.preserveMetadata ? [`${prefix}workspace.json`] : []));
 }
 
 export async function deleteByPrefix(env: Env, prefix: string): Promise<void> {
+  await deleteByPrefixExcept(env, prefix, new Set());
+}
+
+async function deleteByPrefixExcept(
+  env: Env,
+  prefix: string,
+  excludedKeys: ReadonlySet<string>,
+): Promise<void> {
   let cursor: string | undefined;
 
   do {
     const listing = await env.WORKSPACE_FILES.list({ prefix, cursor });
-    if (listing.objects.length > 0) {
-      await env.WORKSPACE_FILES.delete(listing.objects.map((object) => object.key));
+    const keys = listing.objects
+      .map((object) => object.key)
+      .filter((key) => !excludedKeys.has(key));
+    if (keys.length > 0) {
+      await env.WORKSPACE_FILES.delete(keys);
     }
     cursor = nextR2Cursor(listing, 'prefix deletion');
   } while (cursor);

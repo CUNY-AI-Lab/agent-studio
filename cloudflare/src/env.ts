@@ -3,7 +3,7 @@ import type { MigrationRegistry } from './migration-registry';
 import { loadIdentityVerifierConfig } from '@cuny-ai-lab/cail-identity';
 import { z } from 'zod';
 import { isValidBasePath, normalizeBasePath } from './lib/base-path';
-import { CAIL_CANONICAL_ISSUER, CAIL_IDENTITY_AUDIENCE } from './lib/cail-identity';
+import { CAIL_CANONICAL_ISSUER, CAIL_IDENTITY_AUDIENCE, identityRequireFlagSchema } from './lib/cail-identity';
 import { isValidCailApiBase } from './lib/cail-model';
 import { isAllowedCailModelId } from './lib/workspace-validation';
 
@@ -73,6 +73,7 @@ export type AgentStudioConfigErrorCode =
   | 'cail_identity_issuer_invalid'
   | 'cail_identity_jwks_missing'
   | 'cail_identity_jwks_invalid'
+  | 'cail_identity_require_flag_invalid'
   | 'production_gateway_binding_missing'
   | 'cail_model_invalid'
   | 'cail_api_base_invalid'
@@ -134,7 +135,11 @@ export async function validateAgentStudioConfig(env: AgentStudioConfigInput): Pr
     return { ok: false, errorCode: 'cail_api_base_invalid' };
   }
 
-  const requireIdentity = stringSchema.safeParse(env.CAIL_REQUIRE_IDENTITY).data;
+  const requireIdentityResult = identityRequireFlagSchema.safeParse(env.CAIL_REQUIRE_IDENTITY);
+  if (!requireIdentityResult.success) {
+    return { ok: false, errorCode: 'cail_identity_require_flag_invalid' };
+  }
+  const requireIdentity = requireIdentityResult.data;
   const issuerResult = stringSchema.safeParse(env.CAIL_IDENTITY_ISSUER);
   const jwksResult = stringSchema.safeParse(env.CAIL_IDENTITY_JWKS);
   const issuer = issuerResult.data;

@@ -1,4 +1,4 @@
-import type { DownloadRequest } from '../types';
+import type { DownloadRequest, QueuedDownload } from '../types';
 import { z } from 'zod';
 
 export function downloadBlob(blob: Blob, filename: string) {
@@ -38,4 +38,44 @@ export function triggerQueuedDownload(download: DownloadRequest) {
     ? 'text/csv;charset=utf-8'
     : 'text/plain;charset=utf-8';
   downloadBlob(new Blob([content], { type: contentType }), filename);
+}
+
+/**
+ * Serialize browser consumption of the server-side download queue.
+ *
+ * A workspace can ask the shell to drain from more than one lifecycle edge
+ * (initial readiness and a same-workspace refresh). Keep one in-flight drain
+ * so two edges cannot trigger the same download before the server-side
+ * acknowledgement completes. Continue reading after each acknowledgement so
+ * items queued while that acknowledgement was in flight are delivered by the
+ * same lifecycle edge. IDs are acknowledged only after browser consumption
+ * succeeds; the server endpoint still owns cross-client ordering and
+ * acknowledgement semantics.
+ */
+export function createDownloadQueueDrainer(
+  read: () => Promise<QueuedDownload[]>,
+  clear: (ids: readonly string[]) => Promise<void>,
+  consume: (downloads: QueuedDownload[]) => void,
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+
+  return async () => {
+    if (inFlight) return inFlight;
+
+    const operation = (async () => {
+      while (true) {
+        const downloads = await read();
+        if (downloads.length === 0) return;
+        consume(downloads);
+        await clear(downloads.map((download) => download.id));
+      }
+    })();
+    inFlight = operation;
+
+    try {
+      await operation;
+    } finally {
+      if (inFlight === operation) inFlight = null;
+    }
+  };
 }

@@ -582,6 +582,12 @@ test('codemode execution is held inside the migration mutation fence', async () 
     getRuntimeWorkspace() {
       return {};
     },
+    buildSerializedStateTools() {
+      return { tools: {} };
+    },
+    buildSerializedGitTools() {
+      return { tools: {} };
+    },
     createCodeExecutor() {
       return {
         execute: async () => {

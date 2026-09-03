@@ -58,6 +58,7 @@ export interface CailIdentityEnv {
 }
 
 const identityConfigStringSchema = z.string();
+export const identityRequireFlagSchema = z.enum(['true', 'false']).optional();
 
 function readIdentityConfigString(value: string | undefined): string | undefined {
   return identityConfigStringSchema.safeParse(value).data;
@@ -114,13 +115,14 @@ async function loadIdentityConfig(
 ): Promise<{ ok: true; config: IdentityVerifierConfig } | CailIdentityConfigError | null> {
   const jwks = readIdentityConfigString(env.CAIL_IDENTITY_JWKS);
   const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
-  const requireIdentity = readIdentityConfigString(env.CAIL_REQUIRE_IDENTITY);
+  const requireIdentityResult = identityRequireFlagSchema.safeParse(env.CAIL_REQUIRE_IDENTITY);
   if (env.CAIL_IDENTITY_JWKS !== undefined && jwks === undefined) return { configError: 'jwks_malformed' };
   if (env.CAIL_IDENTITY_ISSUER !== undefined && issuer === undefined) return { configError: 'issuer_unsupported' };
-  if (env.CAIL_REQUIRE_IDENTITY !== undefined && requireIdentity === undefined) return { configError: 'required_flag_invalid' };
+  if (!requireIdentityResult.success) return { configError: 'required_flag_invalid' };
+  const requireIdentity = requireIdentityResult.data;
   const jwksConfigured = Boolean(jwks?.trim());
   const issuerConfigured = Boolean(issuer);
-  if (!jwksConfigured && !issuerConfigured && !cailIdentityRequired(env)) return null;
+  if (!jwksConfigured && !issuerConfigured && requireIdentity !== 'true') return null;
   // A pinned clock (tests, replay analysis) must never be served from — or
   // written to — the shared snapshot cache.
   const cacheKey = `${issuer ?? ''}\u0000${jwks ?? ''}`;
@@ -241,7 +243,7 @@ export function cailIdentityMisconfiguredResponse(): Response {
       'identity_verification_misconfigured',
       "Agent Studio isn't set up correctly right now. Email ailab@gc.cuny.edu.",
     )),
-    { status: 503, headers: { 'Content-Type': 'application/json' } },
+    { status: 503, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
   );
 }
 
@@ -276,6 +278,9 @@ async function loadGatewayLegConfig(
   const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
   if (env.CAIL_IDENTITY_JWKS !== undefined && jwks === undefined) return { configError: 'jwks_malformed' };
   if (env.CAIL_IDENTITY_ISSUER !== undefined && issuer === undefined) return { configError: 'issuer_unsupported' };
+  if (!identityRequireFlagSchema.safeParse(env.CAIL_REQUIRE_IDENTITY).success) {
+    return { configError: 'required_flag_invalid' };
+  }
   const cacheKey = `gateway-leg\u0000${issuer ?? ''}\u0000${jwks ?? ''}`;
   if (now === undefined) {
     const cached = verifierCache.get(cacheKey);

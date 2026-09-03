@@ -160,12 +160,16 @@ export interface DownloadRequest {
   format: 'csv' | 'json' | 'txt';
 }
 
+export interface QueuedDownload extends DownloadRequest {
+  id: string;
+}
+
 export interface WorkspaceResponse {
   workspace: WorkspaceRecord;
   state: WorkspaceState;
   messages: UIMessage[];
   files: WorkspaceFileInfo[];
-  downloads?: DownloadRequest[];
+  downloads?: QueuedDownload[];
   runtime: WorkspaceRuntimeInfo;
   agent: {
     className: string;

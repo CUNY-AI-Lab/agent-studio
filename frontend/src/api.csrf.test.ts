@@ -326,6 +326,24 @@ describe('CSRF fetch helper (cookie delivery)', () => {
     expect(headers.get(CSRF_HEADER)).toBeTruthy();
   });
 
+  it('unpublishes through the workspace operation endpoint', async () => {
+    const { unpublishWorkspace, CSRF_HEADER } = await loadApi();
+    const token = 'u'.repeat(64);
+    stubCookie(`${CSRF_COOKIE}=${token}`);
+    const spy = mockFetch(() => new Response(JSON.stringify({ success: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(unpublishWorkspace('workspace-1')).resolves.toBeUndefined();
+
+    const [input, init] = spy.mock.calls[0];
+    expect(String(input)).toContain('/api/workspaces/workspace-1/publish');
+    expect(String(input)).not.toContain('/api/gallery/');
+    expect(init?.method).toBe('DELETE');
+    expect(new Headers(init?.headers).get(CSRF_HEADER)).toBe(token);
+  });
+
   it('readingFetch attaches the X-CSRF-Token header with the cookie token', async () => {
     const { readingFetch, CSRF_HEADER } = await loadApi();
     const token = 'e'.repeat(64);

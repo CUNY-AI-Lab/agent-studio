@@ -267,7 +267,11 @@ function responseSizeError(): Error {
   return new Error(`web_fetch: response exceeds ${MAX_RESPONSE_BYTES} bytes`);
 }
 
-async function readCappedResponseText(response: Response): Promise<string> {
+async function readCappedResponseText(
+  response: Response,
+  abortSignal?: AbortSignal,
+): Promise<string> {
+  abortSignal?.throwIfAborted();
   const contentLength = response.headers.get('content-length');
   if (contentLength) {
     const parsed = Number.parseInt(contentLength, 10);
@@ -285,6 +289,7 @@ async function readCappedResponseText(response: Response): Promise<string> {
   try {
     while (true) {
       const { done, value } = await reader.read();
+      abortSignal?.throwIfAborted();
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
@@ -298,6 +303,7 @@ async function readCappedResponseText(response: Response): Promise<string> {
     reader.releaseLock();
   }
 
+  abortSignal?.throwIfAborted();
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -321,7 +327,8 @@ async function fetchFollowingRedirects(
   startUrl: URL,
   env: WebFetchCredentialEnv,
   fetchImpl: typeof fetch,
-  allowlist: { exact: Set<string>; suffixes: string[] } | null
+  allowlist: { exact: Set<string>; suffixes: string[] } | null,
+  abortSignal?: AbortSignal,
 ): Promise<{ response: Response; provider: TokenProvider | null }> {
   let url = startUrl;
   let response: Response | null = null;
@@ -330,12 +337,13 @@ async function fetchFollowingRedirects(
   let finalProvider: TokenProvider | null = null;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    abortSignal?.throwIfAborted();
     const headers: FetchRequestHeaders = {
       'User-Agent': 'agent-studio/0.1 (CUNY AI Lab research assistant)',
     };
     const provider = bearerProviderForHost(url.hostname, env);
     if (provider) {
-      const token = await getAccessToken(provider, env, fetchImpl);
+      const token = await getAccessToken(provider, env, fetchImpl, abortSignal);
       if (token) {
         headers.Authorization = `Bearer ${token}`;
         headers.Accept = 'application/json';
@@ -343,9 +351,11 @@ async function fetchFollowingRedirects(
     }
     finalProvider = provider;
 
+    abortSignal?.throwIfAborted();
     response = await fetchImpl(url.toString(), {
       redirect: 'manual',
       headers: new Headers(Object.entries(headers)),
+      signal: abortSignal,
     });
     const location = response.headers.get('location');
     if (response.status >= 300 && response.status < 400 && location) {
@@ -372,19 +382,35 @@ export async function guardedWebFetch(
   rawUrl: string,
   format: 'text' | 'json',
   env: WebFetchCredentialEnv,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  abortSignal?: AbortSignal,
 ): Promise<GuardedFetchResult> {
   const allowlist = parseWebFetchAllowlist(env.CAIL_WEBFETCH_ALLOWLIST);
   const startUrl = applyConfiguredApiParams(assertPublicHttpUrl(rawUrl, allowlist), env);
 
-  let { response, provider } = await fetchFollowingRedirects(startUrl, env, fetchImpl, allowlist);
+  let { response, provider } = await fetchFollowingRedirects(
+    startUrl,
+    env,
+    fetchImpl,
+    allowlist,
+    abortSignal,
+  );
   if (response.status === 401 && provider) {
+    abortSignal?.throwIfAborted();
     invalidateToken(provider);
-    ({ response } = await fetchFollowingRedirects(startUrl, env, fetchImpl, allowlist));
+    ({ response } = await fetchFollowingRedirects(
+      startUrl,
+      env,
+      fetchImpl,
+      allowlist,
+      abortSignal,
+    ));
   }
 
+  abortSignal?.throwIfAborted();
   const contentType = response.headers.get('content-type') || '';
-  const text = await readCappedResponseText(response);
+  const text = await readCappedResponseText(response, abortSignal);
+  abortSignal?.throwIfAborted();
   const body = format === 'json' ? JSON.stringify(JSON.parse(text)) : text;
   return {
     ok: response.ok,

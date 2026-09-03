@@ -11,15 +11,19 @@ import {
   GalleryError,
   getGalleryItem,
   listGalleryItemsPage,
-  publishWorkspace as publishGalleryWorkspace,
   unpublishGalleryItem,
 } from './lib/gallery';
 import { createWorkspaceExportBundle } from './lib/export';
 import { decodeWorkspaceImportFile, panelSchema, parseWorkspaceImportBundle } from './lib/import';
-import { clearWorkspaceDownloads, getWorkspaceDownloads } from './lib/downloads';
+import {
+  clearWorkspaceDownloads,
+  downloadIdSchema,
+  getWorkspaceDownloads,
+} from './lib/downloads';
 import {
   deleteByPrefix,
   deleteWorkspaceFiles,
+  getGalleryPrefix,
   getMimeType,
   getRuntimeFilesPrefix,
   listGalleryFilesRecursive,
@@ -90,6 +94,7 @@ const publishWorkspaceSchema = z.object({
 });
 
 const runtimeExecuteSchema = z.object({ code: runtimeCodeSchema });
+const downloadAcknowledgementSchema = z.object({ ids: z.array(downloadIdSchema) }).strict();
 
 const MAX_IMPORT_BUNDLE_BYTES = 50 * 1024 * 1024;
 const MAX_IMPORT_FILE_COUNT = 500;
@@ -128,6 +133,16 @@ function jsonError(
 app.onError((error, c) => {
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
     return c.json(canonicalError('invalid_request', "That didn't work."), 400);
+  }
+  if (error instanceof Error && (
+    error.message === 'workspace is frozen for migration'
+    || error.message === 'workspace has an active mutation; retry migration'
+  )) {
+    return c.json(canonicalError(
+      'conflict',
+      'Workspace is busy. Try again shortly.',
+      { type: 'api_error', retryable: true },
+    ), 409);
   }
   if (error instanceof GalleryError) {
     return c.json(canonicalError(error.status === 404 ? 'not_found' : 'forbidden', error.message), error.status);
@@ -238,8 +253,7 @@ function loadedWorkspace(c: AppContext): StoredWorkspaceRecord {
   return workspace;
 }
 
-function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFileInfo[] {
-  const relativeDir = dir ? sanitizeRelativePath(dir) : '';
+function listDirectoryEntries(files: WorkspaceFileInfo[], relativeDir = ''): WorkspaceFileInfo[] {
   return files
     .filter((file) => {
       const parent = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '';
@@ -487,31 +501,6 @@ app.post('/api/gallery/:id', async (c) => {
   return c.json({ workspaceId, workspace }, 201);
 });
 
-app.delete('/api/gallery/:id', async (c) => {
-  const sessionId = requireSession(c);
-  await unpublishGalleryItem(c.env, c.req.param('id'), sessionId);
-
-  const galleryId = c.req.param('id');
-  const workspaces = await listWorkspaces(c.env, sessionId);
-  await Promise.all(workspaces.map(async (workspace) => {
-    if (workspace.galleryId !== galleryId) return;
-    // CAS rewrite (V2): the record came from the listWorkspaces read above, so
-    // a blind put would revert a concurrent PATCH. Re-check the galleryId on
-    // the fresh read; skip when another writer already cleared or changed it.
-    const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) =>
-      current.galleryId === galleryId
-        ? { ...current, galleryId: undefined, updatedAt: new Date().toISOString() }
-        : null
-    );
-    // not-found: the workspace was deleted concurrently — nothing to rewrite.
-    if (!result.ok && result.reason === 'conflict') {
-      throw new Error(`Conflicting concurrent update while clearing galleryId on workspace ${workspace.id}`);
-    }
-  }));
-
-  return c.json({ success: true });
-});
-
 app.post('/api/workspaces', async (c) => {
   const sessionId = requireSession(c);
   // Empty/malformed body -> `{}` -> name.default() -> 201 "Untitled Workspace".
@@ -602,13 +591,34 @@ app.post('/api/workspaces/import', async (c) => {
     // The R2 record is the visibility/commit marker for list/get routes.
     await putWorkspace(c.env, sessionId, workspace);
   } catch {
+    const cleanupFailures: unknown[] = [];
     if (agent) {
-      await agent.destroyWorkspaceState().catch(() => undefined);
+      try {
+        await agent.destroyWorkspaceState();
+      } catch (cleanupError) {
+        cleanupFailures.push(cleanupError);
+      }
     }
-    await deleteWorkspaceFiles(c.env, sessionId, workspaceId).catch(() => undefined);
-    await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId))
-      .catch(() => undefined);
-    await deleteWorkspace(c.env, sessionId, workspaceId).catch(() => undefined);
+    try {
+      await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
+    } catch (cleanupError) {
+      cleanupFailures.push(cleanupError);
+    }
+    try {
+      await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId));
+    } catch (cleanupError) {
+      cleanupFailures.push(cleanupError);
+    }
+    try {
+      await deleteWorkspace(c.env, sessionId, workspaceId);
+    } catch (cleanupError) {
+      cleanupFailures.push(cleanupError);
+    }
+    if (cleanupFailures.length > 0) {
+      throw new Error('import_outcome_unknown: workspace rollback was not confirmed', {
+        cause: cleanupFailures[0],
+      });
+    }
     return jsonError(c, 400, 'import_failed', 'Workspace import failed');
   }
 
@@ -690,10 +700,11 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
 });
 
 app.delete('/api/workspaces/:id/downloads', async (c) => {
+  const { ids } = downloadAcknowledgementSchema.parse(await c.req.json());
   const sessionId = requireSession(c);
   const workspaceId = loadedWorkspace(c).id;
 
-  await clearWorkspaceDownloads(c.env, sessionId, workspaceId);
+  await clearWorkspaceDownloads(c.env, sessionId, workspaceId, ids);
   return c.json({ success: true });
 });
 
@@ -792,57 +803,36 @@ app.post('/api/workspaces/:id/publish', async (c) => {
   // Empty/malformed body -> `{}` -> zod (title required) -> 400.
   const body = publishWorkspaceSchema.parse(await c.req.json());
   const { agent } = await syncedWorkspaceAgent(c, workspace);
-  const [state, files] = await Promise.all([
-    agent.getSnapshot(),
-    agent.getWorkspaceFiles(),
-  ]);
-
-  const item = await publishGalleryWorkspace({
-    env: c.env,
+  const result = await agent.publishGalleryWorkspace({
     sessionId,
     workspace,
-    state,
     title: body.title,
     description: body.description,
     // A missing operation id is a new publish intent; never derive identity
     // from user-controlled title or description text.
     operationId: body.operationId ?? crypto.randomUUID(),
-    files,
-    readFile: (filePath) => agent.readWorkspaceFileContent(filePath),
   });
-
-  // CAS stamp (V2): the record was captured at request start, so a blind put
-  // here would revert a PATCH (e.g. a model override) that landed while the
-  // gallery item was being published.
-  const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => {
-    if (current.deleting) return null;
-    // One live publication per workspace. Concurrent distinct publish intents
-    // race on this CAS; the loser observes the winner's id, makes no metadata
-    // change, and compensates its deterministic gallery object below.
-    if (current.galleryId && current.galleryId !== item.id) return null;
-    return {
-      ...current,
-      galleryId: item.id,
-      updatedAt: new Date().toISOString(),
-    };
-  });
-  if (!result.ok || result.workspace.deleting || result.workspace.galleryId !== item.id) {
-    try {
-      await unpublishGalleryItem(c.env, item.id, sessionId);
-    } catch (error) {
-      if (error instanceof GalleryError && error.status === 404) {
-        // Concurrent deletion already confirmed the shared gallery copy is absent.
-      } else {
-        throw new Error('publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed');
-      }
-    }
-    return !result.ok && result.reason === 'not-found'
+  if (!result.ok) {
+    return result.reason === 'not-found'
       ? jsonError(c, 404, 'not_found', 'Workspace not found')
       : jsonError(c, 409, 'conflict', 'Someone else changed this. Reload and try again.', { retryable: true });
   }
-  await agent.syncWorkspace(result.workspace, sessionId);
 
-  return c.json({ item, workspace: result.workspace }, 201);
+  return c.json({ item: result.item, workspace: result.workspace }, 201);
+});
+
+app.delete('/api/workspaces/:id/publish', async (c) => {
+  const sessionId = requireSession(c);
+  const workspace = loadedWorkspace(c);
+  const { agent } = await syncedWorkspaceAgent(c, workspace);
+  const result = await agent.unpublishGalleryWorkspace({
+    workspace,
+    sessionId,
+  });
+  if (!result.ok) {
+    return jsonError(c, 404, 'not_found', 'Gallery item not found');
+  }
+  return c.json({ success: true });
 });
 
 app.delete('/api/workspaces/:id', async (c) => {
@@ -850,32 +840,64 @@ app.delete('/api/workspaces/:id', async (c) => {
   const workspace = loadedWorkspace(c);
   const workspaceId = workspace.id;
 
-  const marked = await updateWorkspaceWithRetry(c.env, sessionId, workspaceId, (current) =>
-    current.deleting
-      ? null
-      : { ...current, deleting: true, updatedAt: new Date().toISOString() }
-  );
+  // Freeze the DO before marking the R2 record. An in-flight publish must
+  // either finish and expose its galleryId for this deletion, or fail before
+  // the deleting marker is written; otherwise a failed publish cleanup can
+  // leave a gallery manifest with no workspace-owned id to retry.
+  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
+  await agent.freezeForMigration();
+
+  const releaseFreezeIfUnmarked = async (): Promise<StoredWorkspaceRecord | null> => {
+    const current = await getWorkspace(c.env, sessionId, workspaceId);
+    if (!current?.deleting) {
+      await agent.unfreezeAfterMigration();
+    }
+    return current;
+  };
+  let marked;
+  try {
+    marked = await updateWorkspaceWithRetry(c.env, sessionId, workspaceId, (current) =>
+      current.deleting
+        ? null
+        : { ...current, deleting: true, updatedAt: new Date().toISOString() }
+    );
+  } catch (error) {
+    // R2 may have committed the marker before surfacing an ambiguous failure.
+    // Re-read before releasing the DO freeze; a committed deleting record must
+    // remain fenced so a retry can finish destructive cleanup safely.
+    try {
+      await releaseFreezeIfUnmarked();
+    } catch {
+      // Keep the freeze when marker status is itself unknown. The original
+      // operation remains retryable and no writer can enter a half-deleted DO.
+    }
+    throw error;
+  }
   if (!marked.ok) {
+    try {
+      await releaseFreezeIfUnmarked();
+    } catch (error) {
+      throw new Error('workspace deletion freeze could not be released', { cause: error });
+    }
     return marked.reason === 'not-found'
       ? jsonError(c, 404, 'not_found', 'Workspace not found')
       : jsonError(c, 409, 'conflict', 'Someone else changed this. Reload and try again.', { retryable: true });
   }
 
+  // The DO is frozen, so no publish/unpublish operation can race this
+  // owner-checked gallery cleanup. A missing manifest means an earlier delete
+  // removed its commit marker before failing; the exact workspace-owned prefix
+  // is still safe to finish here.
   if (marked.workspace.galleryId) {
     try {
       await unpublishGalleryItem(c.env, marked.workspace.galleryId, sessionId);
     } catch (error) {
-      // A prior attempt may have removed the shared gallery copy before a later
-      // workspace-cleanup step failed. Retrying deletion must finish cleanup.
-      if (!(error instanceof GalleryError) || error.status !== 404) throw error;
+      if (!(error instanceof GalleryError && error.status === 404)) throw error;
+      await deleteByPrefix(c.env, getGalleryPrefix(marked.workspace.galleryId));
     }
   }
-
-  // The destructive RPC fences writers and fails loud before the R2 records
-  // are removed.
-  const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.destroyWorkspaceState();
-  await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
+  await deleteWorkspaceFiles(c.env, sessionId, workspaceId, { preserveMetadata: true });
   // Runtime files live under a separate prefix the sessions-prefix delete
   // misses. This authoritative cleanup fails loud so deletion stays retryable.
   await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId));
@@ -886,9 +908,14 @@ app.delete('/api/workspaces/:id', async (c) => {
 app.get('/api/workspaces/:id/files', async (c) => {
   const workspace = loadedWorkspace(c);
 
-  const dir = c.req.query('dir') || '';
+  let relativeDir = '';
+  try {
+    relativeDir = sanitizeRelativePath(c.req.query('dir') || '');
+  } catch {
+    return jsonError(c, 400, 'invalid_request', 'Invalid directory');
+  }
   const { agent } = await syncedWorkspaceAgent(c, workspace);
-  const files = listDirectoryEntries(await agent.getWorkspaceFiles(), dir);
+  const files = listDirectoryEntries(await agent.getWorkspaceFiles(), relativeDir);
   return c.json({ files });
 });
 
@@ -986,40 +1013,14 @@ app.post('/api/workspaces/:id/upload', async (c) => {
   }
 
   const { agent } = await syncedWorkspaceAgent(c, workspace);
-  const originals = new Map<string, Awaited<ReturnType<typeof agent.readWorkspaceFileContent>>>();
-  for (const filePath of new Set(paths)) {
-    originals.set(filePath, await agent.readWorkspaceFileContent(filePath));
-  }
-  try {
-    const uploaded = [];
-    for (const [index, file] of files.entries()) {
-      const filePath = paths[index];
-      await agent.writeWorkspaceFileContent(filePath, await file.arrayBuffer(), file.type || undefined);
-      uploaded.push({
-        name: filePath.split('/').pop() || filePath,
-        path: filePath,
-        size: file.size,
-      });
-    }
-    return c.json({ success: true, files: uploaded }, 201);
-  } catch (error) {
-    const rollbackFailures: string[] = [];
-    for (const [filePath, original] of originals) {
-      try {
-        if (original) {
-          await agent.writeWorkspaceFileContent(filePath, original.data, original.contentType);
-        } else {
-          await agent.deleteWorkspaceFileContent(filePath);
-        }
-      } catch {
-        rollbackFailures.push(filePath);
-      }
-    }
-    if (rollbackFailures.length > 0) {
-      throw new Error('upload_outcome_unknown: rollback did not complete');
-    }
-    throw error;
-  }
+  const uploaded = await agent.uploadWorkspaceFiles(
+    files.map((file, index) => ({
+      path: paths[index],
+      body: file.stream(),
+      contentType: file.type || undefined,
+    })),
+  );
+  return c.json({ success: true, files: uploaded }, 201);
 });
 
 app.post('/api/workspaces/:id/panels', async (c) => {
@@ -1082,7 +1083,7 @@ export default {
           type: 'api_error',
           retryable: false,
         }),
-        { status: 503 }
+        { status: 503, headers: { 'Cache-Control': 'no-store' } }
       );
     }
 

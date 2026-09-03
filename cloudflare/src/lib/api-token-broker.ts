@@ -59,8 +59,10 @@ function ttlFromExpiresIn(expiresIn: number | string | undefined): number {
 
 async function acquireWorldCatToken(
   env: TokenBrokerEnv,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  abortSignal?: AbortSignal,
 ): Promise<CachedToken> {
+  abortSignal?.throwIfAborted();
   const credentials = btoa(`${env.OCLC_CLIENT_ID}:${env.OCLC_CLIENT_SECRET}`);
   const res = await fetchImpl(OCLC_TOKEN_URL, {
     method: 'POST',
@@ -70,6 +72,7 @@ async function acquireWorldCatToken(
       Accept: 'application/json',
     },
     body: `grant_type=client_credentials&scope=${OCLC_SCOPE}`,
+    signal: abortSignal,
   });
   if (!res.ok) {
     throw new Error(`worldcat token request failed (${res.status})`);
@@ -83,8 +86,10 @@ async function acquireWorldCatToken(
 
 async function acquireLibGuidesToken(
   env: TokenBrokerEnv,
-  fetchImpl: typeof fetch
+  fetchImpl: typeof fetch,
+  abortSignal?: AbortSignal,
 ): Promise<CachedToken> {
+  abortSignal?.throwIfAborted();
   const base = (env.LIBGUIDES_BASE_URL || '').replace(/\/+$/, '');
   const tokenUrl = `${base}/oauth/token`;
   const body = new URLSearchParams({
@@ -99,6 +104,7 @@ async function acquireLibGuidesToken(
       Accept: 'application/json',
     },
     body: body.toString(),
+    signal: abortSignal,
   });
   if (!res.ok) {
     throw new Error(`libguides token request failed (${res.status})`);
@@ -130,8 +136,10 @@ export function invalidateToken(provider: TokenProvider): void {
 export async function getAccessToken(
   provider: TokenProvider,
   env: TokenBrokerEnv,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  abortSignal?: AbortSignal,
 ): Promise<string | null> {
+  abortSignal?.throwIfAborted();
   if (!isProviderConfigured(provider, env)) return null;
 
   const cached = tokenCache.get(provider);
@@ -141,8 +149,8 @@ export async function getAccessToken(
 
   const acquired =
     provider === 'worldcat'
-      ? await acquireWorldCatToken(env, fetchImpl)
-      : await acquireLibGuidesToken(env, fetchImpl);
+      ? await acquireWorldCatToken(env, fetchImpl, abortSignal)
+      : await acquireLibGuidesToken(env, fetchImpl, abortSignal);
   tokenCache.set(provider, acquired);
   return acquired.token;
 }

@@ -7,6 +7,7 @@ const idle = {
   isRecovering: false,
   isToolContinuation: false,
   contextualTurnActive: false,
+  connectionError: null,
 };
 
 describe('chat activity', () => {
@@ -50,6 +51,21 @@ describe('chat activity', () => {
       phase: 'working',
       canSubmit: false,
       canStop: true,
+      canRetry: false,
+    });
+  });
+
+  it('blocks sending and reports a terminal agent connection failure', () => {
+    expect(getChatActivity({
+      ...idle,
+      status: 'ready',
+      connectionError: new Error('socket closed'),
+      canRetry: true,
+    })).toMatchObject({
+      phase: 'error',
+      label: 'Connection lost',
+      canSubmit: false,
+      canStop: false,
       canRetry: false,
     });
   });

@@ -192,6 +192,16 @@ export async function publishWorkspace(args: {
     // without touching files or risking rollback of the existing item.
     return sharedGalleryItem(await existingManifest.json<GalleryItem>());
   }
+
+  // A prior attempt can have written file objects and then failed before the
+  // manifest commit. Clear that deterministic staging prefix before reusing
+  // the idempotency key so those objects cannot enter a later clone.
+  try {
+    await deleteByPrefix(args.env, getGalleryPrefix(id));
+  } catch (error) {
+    throw new Error('publish_cleanup_failed: prior gallery attempt could not be cleared', { cause: error });
+  }
+
   const shareablePanelCount = args.state.panels.filter(
     (panel) => panel.type !== 'chat' && panel.type !== 'fileTree' && !('filePath' in panel)
   ).length;
@@ -258,7 +268,11 @@ export async function publishWorkspace(args: {
       { httpMetadata: { contentType: 'application/json; charset=utf-8' } }
     );
   } catch (error) {
-    await deleteByPrefix(args.env, getGalleryPrefix(id)).catch(() => undefined);
+    try {
+      await deleteByPrefix(args.env, getGalleryPrefix(id));
+    } catch (cleanupError) {
+      throw new Error('publish_outcome_unknown: gallery cleanup was not confirmed', { cause: cleanupError });
+    }
     throw error;
   }
 

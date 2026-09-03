@@ -117,6 +117,28 @@ export function collectLayouts(layouts: LayoutMap, panelIds: Iterable<string>) {
   return visibleLayouts;
 }
 
+/**
+ * Return only panel layouts whose geometry differs from the edit's baseline.
+ * Layout patches are merged per panel on the server, so sending this delta
+ * keeps an edit from overwriting a concurrent change to another tile.
+ */
+export function computePanelLayoutsDelta(previous: LayoutMap, next: LayoutMap) {
+  return Object.fromEntries(
+    Object.entries(next)
+      .filter(([panelId, layout]) => {
+        const before = previous[panelId];
+        return (
+          !before ||
+          before.x !== layout.x ||
+          before.y !== layout.y ||
+          before.width !== layout.width ||
+          before.height !== layout.height
+        );
+      })
+      .map(([panelId, layout]) => [panelId, { ...layout }]),
+  );
+}
+
 export function hasOverlappingPanels(layouts: LayoutMap): boolean {
   const panelIds = Object.keys(layouts);
   for (let index = 0; index < panelIds.length; index += 1) {
@@ -129,8 +151,13 @@ export function hasOverlappingPanels(layouts: LayoutMap): boolean {
   return false;
 }
 
-export function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>): LayoutMap {
+export function resolveCollisions(
+  layouts: LayoutMap,
+  fixedPanelIds: Set<string>,
+  affectedPanelIds?: Set<string>,
+): LayoutMap {
   const panelIds = Object.keys(layouts);
+  const affectedIds = affectedPanelIds ? new Set(affectedPanelIds) : null;
 
   for (let iteration = 0; iteration < 15; iteration += 1) {
     let hadCollision = false;
@@ -143,6 +170,7 @@ export function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>
         const right = layouts[rightId];
 
         if (!rectsOverlapWithGap(left, right, PANEL_GAP)) continue;
+        if (affectedIds && !affectedIds.has(leftId) && !affectedIds.has(rightId)) continue;
         if (fixedPanelIds.has(leftId) && fixedPanelIds.has(rightId)) continue;
 
         hadCollision = true;
@@ -180,9 +208,11 @@ export function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>
         if (pushX > 0 && pushX <= pushY) {
           const dx = movedCenterX >= fixedCenterX ? pushRight : -pushLeft;
           layouts[movedId] = { ...moved, x: moved.x + dx };
+          affectedIds?.add(movedId);
         } else if (pushY > 0) {
           const dy = movedCenterY >= fixedCenterY ? pushDown : -pushUp;
           layouts[movedId] = { ...moved, y: moved.y + dy };
+          affectedIds?.add(movedId);
         }
       }
     }
@@ -196,11 +226,12 @@ export function resolveCollisions(layouts: LayoutMap, fixedPanelIds: Set<string>
 export function resolveVisibleLayoutCollisions(
   layouts: Record<string, CanvasPanelLayout>,
   visiblePanelIds: Iterable<string>,
-  fixedPanelIds: Set<string>
+  fixedPanelIds: Set<string>,
+  affectedPanelIds?: Set<string>,
 ): LayoutMap {
   const visibleLayouts = collectLayouts(layouts, visiblePanelIds);
   return hasOverlappingPanels(visibleLayouts)
-    ? resolveCollisions(visibleLayouts, fixedPanelIds)
+    ? resolveCollisions(visibleLayouts, fixedPanelIds, affectedPanelIds)
     : visibleLayouts;
 }
 

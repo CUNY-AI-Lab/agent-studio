@@ -22,6 +22,14 @@ export type ChatActivityState =
     canSubmit: true;
     canStop: false;
     canRetry: boolean;
+  }
+  | {
+    phase: 'error';
+    label: 'Connection lost';
+    tone: 'error';
+    canSubmit: false;
+    canStop: false;
+    canRetry: false;
   };
 
 export interface ChatActivityInput {
@@ -31,6 +39,7 @@ export interface ChatActivityInput {
   isRecovering: boolean;
   isToolContinuation: boolean;
   contextualTurnActive: boolean;
+  connectionError: Error | null;
   canRetry: boolean;
 }
 
@@ -42,8 +51,20 @@ export function getChatActivity({
   isRecovering,
   isToolContinuation,
   contextualTurnActive,
+  connectionError,
   canRetry,
 }: ChatActivityInput): ChatActivityState {
+  if (connectionError) {
+    return {
+      phase: 'error',
+      label: 'Connection lost',
+      tone: 'error',
+      canSubmit: false,
+      canStop: false,
+      canRetry: false,
+    };
+  }
+
   const isBusy =
     contextualTurnActive ||
     status === 'submitted' ||

@@ -10,9 +10,10 @@ import {
   aiTools,
   type CodeOutput,
 } from '@cloudflare/codemode/ai';
+import type { ToolProvider } from '@cloudflare/codemode';
 import { Workspace as RuntimeWorkspace } from '@cloudflare/shell';
 import { gitTools } from '@cloudflare/shell/git';
-import { stateTools } from '@cloudflare/shell/workers';
+import { STATE_METHODS, stateTools } from '@cloudflare/shell/workers';
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -37,6 +38,7 @@ import {
   type WorkspaceRecord,
   type WorkspaceState,
 } from '../domain/workspace';
+import type { GalleryItem } from '../domain/gallery';
 import type { Env } from '../env';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
 import {
@@ -55,6 +57,7 @@ import {
   clearPanelRelationFields,
   connectionEndpointKey,
   makePanelConnection,
+  normalizePanelGroups,
   normalizePanelRelations,
   repairPanelConnectionId,
 } from '../lib/panel-connections';
@@ -81,9 +84,20 @@ import {
   resolveMimeType,
   sanitizeRelativePath,
   toRuntimePath,
+  deleteByPrefix,
+  getGalleryPrefix,
 } from '../lib/files';
+import {
+  GalleryError,
+  publishWorkspace as publishGalleryWorkspace,
+  unpublishGalleryItem,
+} from '../lib/gallery';
 import { addWorkspaceDownload } from '../lib/downloads';
-import { updateWorkspaceWithRetry } from '../lib/workspaces';
+import {
+  getWorkspace,
+  updateWorkspaceWithRetry,
+  type StoredWorkspaceRecord,
+} from '../lib/workspaces';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
@@ -104,12 +118,35 @@ const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // output/token cap.
 const MODEL_TOOL_LOOP_STEPS = 12;
 
+const STATE_WRITE_METHODS = new Set(
+  Object.entries(STATE_METHODS)
+    .filter(([, spec]) => spec.kind === 'write')
+    .map(([name]) => name),
+);
+const GIT_WRITE_METHODS = new Set([
+  'init',
+  'clone',
+  'add',
+  'rm',
+  'commit',
+  'branch',
+  'checkout',
+  'fetch',
+  'pull',
+  'push',
+  'remote',
+]);
+
 const CODEMODE_DESCRIPTION = [
   'Write an async JavaScript arrow function and execute it in a Cloudflare Dynamic Worker sandbox.',
   'Prefer this for multi-step analysis, file transformation, aggregation, and tasks that would otherwise require many sequential tool calls.',
   'Inside the sandbox, direct network access is blocked. Use the provided codemode.* helper functions, the state.* filesystem API, and git.* repository helpers instead.',
   '{{types}}',
 ].join('\n');
+
+function throwIfAborted(abortSignal: AbortSignal | undefined): void {
+  abortSignal?.throwIfAborted();
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(value, max));
@@ -167,7 +204,12 @@ type SerializedPanelContext =
     linkedPanel: SerializedPanelContext | null;
   });
 
-function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePanel[]): SerializedPanelContext {
+function serializePanelForContext(
+  panel: WorkspacePanel,
+  allPanels: WorkspacePanel[],
+  ancestors = new Set<string>(),
+): SerializedPanelContext {
+  ancestors.add(panel.id);
   const base = {
     id: panel.id,
     title: panel.title,
@@ -231,7 +273,11 @@ function serializePanelForContext(panel: WorkspacePanel, allPanels: WorkspacePan
         ...base,
         type: 'detail',
         linkedTo: panel.linkedTo,
-        linkedPanel: linkedPanel ? serializePanelForContext(linkedPanel, allPanels) : null,
+        // Keep the relationship ID, but do not recursively repeat a tile that
+        // is already represented in this detail chain.
+        linkedPanel: linkedPanel && !ancestors.has(linkedPanel.id)
+          ? serializePanelForContext(linkedPanel, allPanels, ancestors)
+          : null,
       };
     }
     case 'chat':
@@ -251,6 +297,12 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private migrationFrozen = false;
   private activeMutations = 0;
   /**
+   * Complete workspace storage operations in one Durable Object invocation.
+   * This in-memory tail does not survive an isolate reset and is not a
+   * transaction across Durable Object storage and R2.
+   */
+  private storageOperationTail: Promise<void> = Promise.resolve();
+  /**
    * The caller's selected verified identity JWT, forwarded to the model proxy as
    * the model-call credential. Set server-side (never over the client WebSocket,
    * which cannot carry the gateway-injected header) via setCailCredential, and
@@ -266,7 +318,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
     const normalizedRelations = normalizePanelRelations(this.state.panels, this.state.connections);
-    this.setState({ ...this.state, ...normalizedRelations });
+    this.setState({
+      ...this.state, ...normalizedRelations,
+      groups: normalizePanelGroups(this.state.groups, this.state.panels),
+    });
     if (this.cailIdentityJwt === null) {
       const stored = await this.ctx.storage.get<string>(CAIL_CREDENTIAL_STORAGE_KEY);
       if (stored) {
@@ -550,7 +605,190 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       workspace,
       ...normalizedRelations,
       viewport: state.viewport || DEFAULT_WORKSPACE_STATE.viewport,
-      groups: state.groups || [],
+      groups: normalizePanelGroups(state.groups || [], panels),
+    });
+  }
+
+  /**
+   * Publish and stamp one workspace through the workspace Durable Object. The
+   * caller supplies only the already-authenticated request values; all reads,
+   * gallery writes, CAS, and compensation stay inside one serialized DO
+   * operation so another publish/unpublish cannot observe a half-complete
+   * publication.
+   */
+  async publishGalleryWorkspace(args: {
+    workspace: WorkspaceRecord;
+    sessionId: string;
+    title: string;
+    description: string;
+    operationId: string;
+  }): Promise<
+    | { ok: true; item: GalleryItem; workspace: StoredWorkspaceRecord }
+    | { ok: false; reason: 'not-found' | 'conflict' }
+  > {
+    return this.withStorageOperation(async () => {
+      this.assertAuthorizedRpc();
+      this.assertStorageOperationSession(args.sessionId);
+      const [state, files] = await Promise.all([
+        this.getSnapshot(),
+        this.getWorkspaceFiles(),
+      ]);
+      const item = await publishGalleryWorkspace({
+        env: this.env,
+        sessionId: args.sessionId,
+        workspace: args.workspace,
+        state,
+        title: args.title,
+        description: args.description,
+        operationId: args.operationId,
+        files,
+        readFile: (filePath) => this.readWorkspaceFileContent(filePath),
+      });
+
+      const result = await updateWorkspaceWithRetry(
+        this.env,
+        args.sessionId,
+        args.workspace.id,
+        (current) => {
+          if (current.deleting || (current.galleryId && current.galleryId !== item.id)) return null;
+          return {
+            ...current,
+            galleryId: item.id,
+            updatedAt: new Date().toISOString(),
+          };
+        },
+      );
+      if (!result.ok || result.workspace.deleting || result.workspace.galleryId !== item.id) {
+        try {
+          await unpublishGalleryItem(this.env, item.id, args.sessionId);
+        } catch (error) {
+          if (!(error instanceof GalleryError && error.status === 404)) {
+            throw new Error(
+              'publish_outcome_unknown: workspace stamp failed and gallery rollback was not confirmed',
+              { cause: error },
+            );
+          }
+        }
+        return {
+          ok: false,
+          reason: !result.ok && result.reason === 'not-found' ? 'not-found' : 'conflict',
+        };
+      }
+
+      this.syncWorkspace(result.workspace, args.sessionId);
+      return { ok: true, item, workspace: result.workspace };
+    });
+  }
+
+  /**
+   * Unpublish the gallery item currently owned by one workspace. Missing
+   * manifests are treated as an incomplete prior cleanup: workspace ownership
+   * is sufficient to finish deleting the deterministic prefix before clearing
+   * the metadata marker, so a retry cannot strand private gallery objects.
+   */
+  async unpublishGalleryWorkspace(args: {
+    workspace: StoredWorkspaceRecord;
+    sessionId: string;
+  }): Promise<
+    | { ok: true; workspace: StoredWorkspaceRecord }
+    | { ok: false; reason: 'not-found' }
+  > {
+    return this.withStorageOperation(async () => {
+      this.assertAuthorizedRpc();
+      this.assertStorageOperationSession(args.sessionId);
+      const current = await getWorkspace(this.env, args.sessionId, args.workspace.id);
+      const galleryId = current?.galleryId;
+      if (!current || !galleryId) {
+        return { ok: false, reason: 'not-found' };
+      }
+
+      try {
+        await unpublishGalleryItem(this.env, galleryId, args.sessionId);
+      } catch (error) {
+        if (!(error instanceof GalleryError && error.status === 404)) throw error;
+        // The manifest may already have been removed before an earlier delete
+        // failed. The workspace record is the authenticated ownership marker
+        // for this retry, so finish deleting any remaining gallery objects.
+        await deleteByPrefix(this.env, getGalleryPrefix(galleryId));
+      }
+
+      const result = await updateWorkspaceWithRetry(
+        this.env,
+        args.sessionId,
+        args.workspace.id,
+        (next) => next.galleryId === galleryId
+          ? { ...next, galleryId: undefined, updatedAt: new Date().toISOString() }
+          : null,
+      );
+      if (!result.ok) {
+        throw new Error(
+          'unpublish_outcome_unknown: gallery cleanup succeeded but workspace metadata was not updated',
+        );
+      }
+      this.syncWorkspace(result.workspace, args.sessionId);
+      return { ok: true, workspace: result.workspace };
+    });
+  }
+
+  /**
+   * Upload a validated batch and roll it back while holding the same workspace
+   * operation boundary as competing uploads and direct file RPCs.
+   */
+  async uploadWorkspaceFiles(entries: Array<{
+    path: string;
+    body: ReadableStream<Uint8Array>;
+    contentType?: string;
+  }>): Promise<Array<{ name: string; path: string; size: number }>> {
+    return this.withStorageOperation(async () => {
+      this.assertAuthorizedRpc();
+      const normalized = entries.map((entry) => ({
+        ...entry,
+        path: sanitizeRelativePath(entry.path),
+      }));
+      const originals = new Map<string, Awaited<ReturnType<typeof this.readWorkspaceFileContent>>>();
+      for (const entry of normalized) {
+        if (!originals.has(entry.path)) {
+          originals.set(entry.path, await this.readWorkspaceFileContent(entry.path));
+        }
+      }
+
+      try {
+        const uploaded: Array<{ name: string; path: string; size: number }> = [];
+        for (const entry of normalized) {
+          // RPC streams transfer ownership to this DO and avoid the 32 MiB
+          // serialized-message ceiling. Buffer only the current file because
+          // RuntimeWorkspace.writeFileBytes accepts bytes, not a stream.
+          const bytes = new Uint8Array(await new Response(entry.body).arrayBuffer());
+          await this.writeRuntimeFileBytes(entry.path, bytes, entry.contentType);
+          uploaded.push({
+            name: entry.path.split('/').pop() || entry.path,
+            path: entry.path,
+            size: bytes.byteLength,
+          });
+        }
+        return uploaded;
+      } catch (error) {
+        const rollbackFailures: string[] = [];
+        for (const [filePath, original] of originals) {
+          try {
+            if (original) {
+              await this.writeRuntimeFileBytes(
+                filePath,
+                new Uint8Array(original.data),
+                original.contentType,
+              );
+            } else {
+              await this.getRuntimeWorkspace().rm(toRuntimePath(filePath), { force: true });
+            }
+          } catch {
+            rollbackFailures.push(filePath);
+          }
+        }
+        if (rollbackFailures.length > 0) {
+          throw new Error('upload_outcome_unknown: rollback did not complete', { cause: error });
+        }
+        throw error;
+      }
     });
   }
 
@@ -638,8 +876,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           }),
         ].join('\n')
         : null;
-      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels);
-      const codemode = this.createCodeModeTool(hostTools);
+      const abortSignal = options?.abortSignal;
+      const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, abortSignal);
+      const codemode = this.createCodeModeTool(hostTools, abortSignal);
       const modelTools = this.buildModelTools(hostTools);
       const model = createCailModel({
         env: this.env,
@@ -769,25 +1008,39 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     data: string | ArrayBuffer | Uint8Array,
     contentType?: string
   ): Promise<{ ok: true; filePath: string }> {
-    return this.withMutationFence(async () => {
-      const runtime = this.getRuntimeWorkspace();
-      const relativePath = sanitizeRelativePath(filePath);
-      const textData = z.string().safeParse(data).data;
-      if (textData !== undefined) {
-        await runtime.writeFile(toRuntimePath(relativePath), textData, contentType || getMimeType(relativePath));
-      } else {
-        const binaryData = z.union([
-          z.instanceof(ArrayBuffer),
-          z.instanceof(Uint8Array),
-        ]).parse(data);
-        await runtime.writeFileBytes(toRuntimePath(relativePath), binaryData, contentType || getMimeType(relativePath));
-      }
-      return { ok: true, filePath: relativePath };
-    });
+    return this.withStorageOperation(() =>
+      this.writeWorkspaceFileContentUnchecked(filePath, data, contentType));
+  }
+
+  private async writeWorkspaceFileContentUnchecked(
+    filePath: string,
+    data: string | ArrayBuffer | Uint8Array,
+    contentType?: string,
+  ): Promise<{ ok: true; filePath: string }> {
+    const relativePath = sanitizeRelativePath(filePath);
+    const textData = z.string().safeParse(data).data;
+    if (textData !== undefined) {
+      await this.getRuntimeWorkspace().writeFile(
+        toRuntimePath(relativePath),
+        textData,
+        contentType || getMimeType(relativePath),
+      );
+    } else {
+      const binaryData = z.union([
+        z.instanceof(ArrayBuffer),
+        z.instanceof(Uint8Array),
+      ]).parse(data);
+      await this.getRuntimeWorkspace().writeFileBytes(
+        toRuntimePath(relativePath),
+        binaryData,
+        contentType || getMimeType(relativePath),
+      );
+    }
+    return { ok: true, filePath: relativePath };
   }
 
   async deleteWorkspaceFileContent(filePath: string): Promise<{ ok: true; filePath: string }> {
-    return this.withMutationFence(async () => {
+    return this.withStorageOperation(async () => {
       const runtime = this.getRuntimeWorkspace();
       const relativePath = sanitizeRelativePath(filePath);
       await runtime.rm(toRuntimePath(relativePath), { force: true });
@@ -796,7 +1049,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   async clearWorkspaceFiles(): Promise<void> {
-    await this.withMutationFence(() => this.clearRuntimeFilesUnchecked());
+    await this.withStorageOperation(() => this.clearRuntimeFilesUnchecked());
   }
 
   private async clearRuntimeFilesUnchecked(): Promise<void> {
@@ -829,9 +1082,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.setState({
       ...this.state,
       ...normalizedRelations,
-      groups: this.state.groups
-        .map((group) => ({ ...group, panelIds: group.panelIds.filter((id) => id !== panelId) }))
-        .filter((group) => group.panelIds.length >= 2),
+      groups: normalizePanelGroups(this.state.groups, panels),
     });
     return this.state;
   }
@@ -893,9 +1144,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     for (const groupId of parsedPatch.removeGroups ?? []) {
       groupsById.delete(groupId);
     }
-    const groups = [...groupsById.values()]
-      .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
-      .filter((group) => group.panelIds.length >= 2);
+    const groups = normalizePanelGroups([...groupsById.values()], panelsWithClearedRelations);
 
     this.setState({
       ...this.state,
@@ -913,16 +1162,60 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     });
   }
 
-  private createCodeModeTool(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
+  /**
+   * Code Mode has no executor AbortSignal. Check each native dispatch here;
+   * writes also wait for the workspace storage queue and recheck afterwards.
+   * The outer Code Mode call keeps only the migration mutation counter.
+   */
+  private serializeProviderWrites(
+    provider: ToolProvider,
+    writeMethods: ReadonlySet<string>,
+    abortSignal?: AbortSignal,
+  ): ToolProvider {
+    for (const [name, toolDefinition] of Object.entries(provider.tools)) {
+      if (!('execute' in toolDefinition) || !toolDefinition.execute) continue;
+      const execute = toolDefinition.execute;
+      toolDefinition.execute = async (...args: never[]) => {
+        throwIfAborted(abortSignal);
+        const invoke = async () => {
+          throwIfAborted(abortSignal);
+          return execute(...args);
+        };
+        return writeMethods.has(name) ? this.withStorageOperation(invoke) : invoke();
+      };
+    }
+    return provider;
+  }
+
+  private buildSerializedStateTools(abortSignal?: AbortSignal) {
+    return this.serializeProviderWrites(
+      stateTools(this.getRuntimeWorkspace()),
+      STATE_WRITE_METHODS,
+      abortSignal,
+    );
+  }
+
+  private buildSerializedGitTools(abortSignal?: AbortSignal) {
+    return this.serializeProviderWrites(
+      guardGitToken(gitTools(this.getRuntimeWorkspace()), {
+        token: this.env.GIT_AUTH_TOKEN,
+        allowedHosts: parseGitAllowedHosts(this.env),
+      }),
+      GIT_WRITE_METHODS,
+      abortSignal,
+    );
+  }
+
+  private createCodeModeTool(
+    tools: ReturnType<WorkspaceAgent['buildHostTools']>,
+    abortSignal?: AbortSignal,
+  ) {
     const codeModeTools = this.buildCodeModeHostTools(tools);
     const codemode = createCodeTool({
       tools: [
         aiTools(codeModeTools),
-        stateTools(this.getRuntimeWorkspace()),
-        guardGitToken(gitTools(this.getRuntimeWorkspace()), {
-          token: this.env.GIT_AUTH_TOKEN,
-          allowedHosts: parseGitAllowedHosts(this.env),
-        }),
+        this.buildSerializedStateTools(abortSignal),
+        this.buildSerializedGitTools(abortSignal),
       ],
       executor: this.createCodeExecutor(),
       description: CODEMODE_DESCRIPTION,
@@ -936,24 +1229,28 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (!execute) {
       throw new Error('codemode tool is missing its executor');
     }
-    codemode.execute = (input, options) => this.withMutationFence(async () => {
-      const output = await execute(input, options);
-      // SAFETY: createCodeTool's concrete executor always returns CodeOutput;
-      // the AI SDK Tool type also permits streaming results for other tools.
-      return output as CodeOutput;
-    });
+    codemode.execute = async (input, options) => {
+      throwIfAborted(abortSignal);
+      return this.withMutationFence(async () => {
+        throwIfAborted(abortSignal);
+        const output = await execute(input, options);
+        // SAFETY: createCodeTool's concrete executor always returns CodeOutput;
+        // the AI SDK Tool type also permits streaming results for other tools.
+        return output as CodeOutput;
+      });
+    };
     return codemode;
   }
 
-  private buildCodeProviders(tools: ReturnType<WorkspaceAgent['buildHostTools']>) {
+  private buildCodeProviders(
+    tools: ReturnType<WorkspaceAgent['buildHostTools']>,
+    abortSignal?: AbortSignal,
+  ) {
     const codeModeTools = this.buildCodeModeHostTools(tools);
     return [
       resolveProvider(aiTools(codeModeTools)),
-      resolveProvider(stateTools(this.getRuntimeWorkspace())),
-      resolveProvider(guardGitToken(gitTools(this.getRuntimeWorkspace()), {
-        token: this.env.GIT_AUTH_TOKEN,
-        allowedHosts: parseGitAllowedHosts(this.env),
-      })),
+      resolveProvider(this.buildSerializedStateTools(abortSignal)),
+      resolveProvider(this.buildSerializedGitTools(abortSignal)),
     ];
   }
 
@@ -972,6 +1269,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     workspace: WorkspaceRecord,
     sessionId: string,
     scopedPanels: WorkspacePanel[] = [],
+    abortSignal?: AbortSignal,
   ) {
     const turnMessageId = [...(this.messages ?? [])]
       .reverse()
@@ -1061,6 +1359,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
           if (mode === 'append') {
             const existing = await runtime.exists(runtimePath);
+            throwIfAborted(abortSignal);
             if (existing) {
               await runtime.appendFile(runtimePath, content, mimeType);
             } else {
@@ -1082,7 +1381,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           url: z.string().url(),
           format: z.enum(['text', 'json']).default('text'),
         }),
-        execute: async ({ url, format }) => guardedWebFetch(url, format, this.env),
+        execute: async ({ url, format }) => guardedWebFetch(url, format, this.env, fetch, abortSignal),
       }),
       read_skill: tool({
         description: [
@@ -1172,6 +1471,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         }),
         execute: async ({ filePath, content }) => {
           const bytes = await buildDocx(content);
+          throwIfAborted(abortSignal);
           const relativePath = await this.writeRuntimeFileBytes(filePath, bytes);
           return { ok: true, filePath: relativePath, bytes: bytes.byteLength, blocks: content.length };
         },
@@ -1300,6 +1600,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         }),
         execute: async ({ id, title, filePath, sourcePanelId }) => {
           const file = await this.readRuntimeFileContent(filePath);
+          throwIfAborted(abortSignal);
           if (file === null) {
             throw new Error(`File not found: ${filePath}`);
           }
@@ -1318,13 +1619,16 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         inputSchema: z.object({
           filename: z.string().min(1),
           format: z.enum(['csv', 'json', 'txt']),
-          data: z.json(),
+          data: z.json().describe('For csv or txt, supply the complete formatted text as a string. For json, supply the structured JSON value.'),
         }),
         execute: async ({ filename, format, data }) => {
+          const contents = format === 'json'
+            ? data
+            : z.string({ error: 'CSV and text downloads require a formatted text string.' }).parse(data);
           await addWorkspaceDownload(this.env, sessionId, workspace.id, {
             filename,
             format,
-            data,
+            data: contents,
           });
           return { ok: true, filename, format };
         },
@@ -1362,6 +1666,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           // landed while this turn was streaming. Patch the freshly read
           // record through the etag CAS instead.
           const result = await updateWorkspaceWithRetry(this.env, sessionId, workspace.id, (current) => {
+            throwIfAborted(abortSignal);
             // The model is working from the turn-start record. A field-level
             // compare keeps a manual edit made during the stream authoritative
             // while still allowing unrelated fields to be updated.
@@ -1434,8 +1739,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       const toolDefinition = mutableTools[name];
       const original = toolDefinition?.execute;
       if (!original) continue;
-      toolDefinition.execute = (...args: never[]) =>
-        this.withMutationFence(() => original(...args));
+      toolDefinition.execute = async (...args: never[]) => {
+        throwIfAborted(abortSignal);
+        return this.withStorageOperation(async () => {
+          // Stop may arrive while this write is waiting behind an upload.
+          throwIfAborted(abortSignal);
+          return original(...args);
+        });
+      };
     }
 
     if (scopedPanels.length > 0) {
@@ -1557,10 +1868,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   /** Write raw bytes to a durable workspace file, returning the relative path. */
-  private async writeRuntimeFileBytes(filePath: string, bytes: Uint8Array): Promise<string> {
+  private async writeRuntimeFileBytes(
+    filePath: string,
+    bytes: Uint8Array,
+    contentType?: string,
+  ): Promise<string> {
     const runtime = this.getRuntimeWorkspace();
     const relativePath = sanitizeRelativePath(filePath);
-    await runtime.writeFileBytes(toRuntimePath(relativePath), bytes, getMimeType(relativePath));
+    await runtime.writeFileBytes(
+      toRuntimePath(relativePath),
+      bytes,
+      contentType || getMimeType(relativePath),
+    );
     return relativePath;
   }
 
@@ -1582,6 +1901,18 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (this.migrationFrozen) {
       throw new Error('workspace is frozen for migration');
     }
+  }
+
+  private assertStorageOperationSession(sessionId: string): void {
+    if (this.csrfSessionId() !== sessionId) {
+      throw new Error('storage operation session does not match workspace owner');
+    }
+  }
+
+  private withStorageOperation<T>(operation: () => Promise<T>): Promise<T> {
+    const current = this.storageOperationTail.then(() => this.withMutationFence(operation));
+    this.storageOperationTail = current.then(() => undefined, () => undefined);
+    return current;
   }
 
   private async withMutationFence<T>(operation: () => Promise<T> | T): Promise<T> {

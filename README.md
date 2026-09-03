@@ -134,9 +134,13 @@ bun run smoke
 The deterministic browser acceptance path builds the frontend, starts a local
 Wrangler Worker, creates a workspace through the home page, seeds two card
 tiles through that local API, and exercises the visible canvas controls through
-Playwright: association, disconnect, pan, zoom, resize, download, reload, and
-workspace deletion. It does not call a model, so it does not claim model
-streaming, provider routing, or model-generated artifact quality.
+Playwright: association, disconnect, pan, zoom, resize, file upload and preview,
+downloaded content, byte-preserving workspace export/import, gallery
+publish/unpublish, two-client canvas edits, reload, and workspace deletion.
+It also checks scoped retry with a deliberately failed model boundary and
+uploads a valid batch larger than the RPC serialized-message limit. It does
+not call a model, so it does not claim provider routing or model-generated
+artifact quality.
 
 ```bash
 bun run test:browser:install
