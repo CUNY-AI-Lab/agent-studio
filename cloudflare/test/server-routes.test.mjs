@@ -168,6 +168,7 @@ test('startup guard refuses application traffic when SESSION_SECRET is missing',
   delete env.SESSION_SECRET;
   const res = await app.fetch(new Request('https://studio.test/api/session'), env, {});
   assert.equal(res.status, 503);
+  assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.equal((await readError(res)).code, 'session_secret_missing');
 });
 
@@ -889,6 +890,52 @@ test('files: PUT -> GET (content-type) -> list -> DELETE', async () => {
 
   const goneRes = await session.request(app, `/api/workspaces/${workspace.id}/files/notes.md`);
   assert.equal(goneRes.status, 404);
+});
+
+test('files: invalid list directory returns 400 before backend access and backend failures remain 500', async () => {
+  const { env, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+  const syncCountBeforeList = agent.syncCount;
+  agent.getWorkspaceFiles = async () => {
+    throw new Error('injected file listing failure');
+  };
+
+  const invalid = await session.request(app, `/api/workspaces/${workspace.id}/files?dir=..`);
+  assert.equal(invalid.status, 400);
+  assert.equal((await readError(invalid)).code, 'invalid_request');
+  assert.equal(agent.syncCount, syncCountBeforeList, 'invalid directory must be rejected before DO access');
+
+  const backendFailure = await session.request(app, `/api/workspaces/${workspace.id}/files`);
+  assert.equal(backendFailure.status, 500);
+  assert.equal((await readError(backendFailure)).code, 'internal_error');
+});
+
+test('files: PUT uses the heavy limiter and rejects before writing', async () => {
+  const { env, agents } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+  const agent = agents.get(`${sessionId}-${workspace.id}`);
+  const keys = [];
+  env.HEAVY_RATE_LIMIT = {
+    limit: async ({ key }) => {
+      keys.push(key);
+      return { success: false };
+    },
+  };
+
+  const response = await session.request(app, `/api/workspaces/${workspace.id}/files/blocked.txt`, {
+    method: 'PUT',
+    headers: { 'content-type': 'text/plain' },
+    body: 'must not be written',
+  });
+  assert.equal(response.status, 429);
+  const error = await readError(response);
+  assert.equal(error.code, 'rate_limited');
+  assert.equal(error.type, 'rate_limit_error');
+  assert.deepEqual(keys, [sessionId]);
+  assert.equal(agent.files.has('blocked.txt'), false);
 });
 
 test('files: raw PUT rejects a declared body over the per-file limit before writing', async () => {

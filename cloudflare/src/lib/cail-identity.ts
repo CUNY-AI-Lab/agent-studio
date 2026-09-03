@@ -243,7 +243,7 @@ export function cailIdentityMisconfiguredResponse(): Response {
       'identity_verification_misconfigured',
       "Agent Studio isn't set up correctly right now. Email ailab@gc.cuny.edu.",
     )),
-    { status: 503, headers: { 'Content-Type': 'application/json' } },
+    { status: 503, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } },
   );
 }
 

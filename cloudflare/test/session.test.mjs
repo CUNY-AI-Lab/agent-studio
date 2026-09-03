@@ -92,6 +92,7 @@ test('middleware maps an unloadable identity config to a typed 503, distinct fro
     }
   );
   assert.equal(misconfigured.status, 503);
+  assert.equal(misconfigured.headers.get('cache-control'), 'no-store');
   const misconfiguredBody = await misconfigured.json();
   assert.equal(misconfiguredBody.error.code, 'identity_verification_misconfigured');
   assert.deepEqual(parseCailAuthErrorEnvelope(misconfiguredBody), misconfiguredBody);

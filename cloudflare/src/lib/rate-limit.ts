@@ -9,8 +9,8 @@ import { canonicalError } from './error-envelope';
  * Mechanism: Cloudflare's Rate Limiting binding (wrangler.jsonc `unsafe.bindings`,
  * type "ratelimit"). Counting is per-colo and zero-latency — acceptable for
  * launch scale. The one HEAVY_RATE_LIMIT namespace protects paid chat,
- * sandbox execution, upload, import, and publish. Ordinary API reads and
- * writes have no arbitrary application cap.
+ * sandbox execution, upload, raw workspace-file writes, import, and publish.
+ * Ordinary API reads and other writes have no arbitrary application cap.
  *
  * Keying: by session id (c.get('sessionId')), which is stable across SSO
  * subjects and anonymous cookies — never by IP.
@@ -29,8 +29,12 @@ import { canonicalError } from './error-envelope';
 const HEAVY_PATH_PATTERNS = ['/runtime/execute', '/upload', '/import', '/publish'];
 
 function isHeavyRequest(method: string, path: string): boolean {
-  if (method !== 'POST') return false;
-  return HEAVY_PATH_PATTERNS.some((pattern) => path.includes(pattern));
+  if (method === 'POST') return HEAVY_PATH_PATTERNS.some((pattern) => path.includes(pattern));
+  // Raw workspace-file writes are the same expensive storage operation as the
+  // multipart upload, but use PUT /api/workspaces/:id/files/*.
+  return method === 'PUT'
+    && path.startsWith('/api/workspaces/')
+    && path.includes('/files/');
 }
 
 async function consumeHeavyLimit(

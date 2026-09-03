@@ -238,8 +238,7 @@ function loadedWorkspace(c: AppContext): StoredWorkspaceRecord {
   return workspace;
 }
 
-function listDirectoryEntries(files: WorkspaceFileInfo[], dir = ''): WorkspaceFileInfo[] {
-  const relativeDir = dir ? sanitizeRelativePath(dir) : '';
+function listDirectoryEntries(files: WorkspaceFileInfo[], relativeDir = ''): WorkspaceFileInfo[] {
   return files
     .filter((file) => {
       const parent = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : '';
@@ -886,9 +885,14 @@ app.delete('/api/workspaces/:id', async (c) => {
 app.get('/api/workspaces/:id/files', async (c) => {
   const workspace = loadedWorkspace(c);
 
-  const dir = c.req.query('dir') || '';
+  let relativeDir = '';
+  try {
+    relativeDir = sanitizeRelativePath(c.req.query('dir') || '');
+  } catch {
+    return jsonError(c, 400, 'invalid_request', 'Invalid directory');
+  }
   const { agent } = await syncedWorkspaceAgent(c, workspace);
-  const files = listDirectoryEntries(await agent.getWorkspaceFiles(), dir);
+  const files = listDirectoryEntries(await agent.getWorkspaceFiles(), relativeDir);
   return c.json({ files });
 });
 
@@ -1082,7 +1086,7 @@ export default {
           type: 'api_error',
           retryable: false,
         }),
-        { status: 503 }
+        { status: 503, headers: { 'Cache-Control': 'no-store' } }
       );
     }
 
