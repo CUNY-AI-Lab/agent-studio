@@ -100,8 +100,8 @@ describe('ChatPanel', () => {
       role: 'assistant',
       parts: [
         { type: 'tool-write_file', toolCallId: 't1', state: 'output-error', input: {}, errorText: 'hidden detail' },
-        { type: 'tool-read_file', toolCallId: 't2', state: 'output-denied', input: {}, errorText: 'hidden detail' },
-        { type: 'tool-ask_user', toolCallId: 't3', state: 'approval-requested', input: {} },
+        { type: 'tool-read_file', toolCallId: 't2', state: 'output-denied', input: {}, approval: { id: 'approval-2', approved: false } },
+        { type: 'tool-ask_user', toolCallId: 't3', state: 'approval-requested', input: {}, approval: { id: 'approval-3' } },
       ],
     };
     render(<ChatPanel {...baseProps} messages={[message]} />);

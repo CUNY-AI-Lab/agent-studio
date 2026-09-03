@@ -396,7 +396,7 @@ describe('CanvasFlow selection state', () => {
       target: leftConnection.targetId,
       selected: false,
       data: { connection: leftConnection, sourceTitle: 'One', targetTitle: 'Two' },
-    }];
+    }] satisfies Parameters<typeof flowEdgesMatch>[0];
     const rightEdges = [{
       id: rightConnection.id,
       type: 'association',
@@ -404,7 +404,7 @@ describe('CanvasFlow selection state', () => {
       target: rightConnection.targetId,
       selected: false,
       data: { connection: rightConnection, sourceTitle: 'One', targetTitle: 'Two' },
-    }];
+    }] satisfies Parameters<typeof flowEdgesMatch>[0];
 
     expect(flowEdgesMatch(leftEdges, rightEdges)).toBe(true);
     expect(flowEdgesMatch(leftEdges, [{

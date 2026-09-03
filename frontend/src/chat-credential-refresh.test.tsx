@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAgentChat } from '@cloudflare/ai-chat/react';
 import { refreshModelCredential } from './api';
 import { z } from 'zod';
+import type { UIMessage } from 'ai';
 
 let hookResult: ReturnType<typeof useAgentChat> | null = null;
 const chatRequestSchema = z.object({
@@ -50,11 +51,12 @@ function fakeAgent() {
 }
 
 function Harness({ agent }: { agent: ReturnType<typeof fakeAgent> }) {
+  const messages: UIMessage[] = [];
   hookResult = useAgentChat({
     agent,
     getInitialMessages: null,
     resume: false,
-    messages: [],
+    messages,
     prepareSendMessagesRequest: async () => {
       await refreshModelCredential('workspace-1');
       return {};

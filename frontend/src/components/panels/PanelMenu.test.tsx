@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PanelMenu } from './PanelMenu';
-import type { WorkspacePanel } from '../../types';
+import type { FilePanel, WorkspacePanel } from '../../types';
 
 function makeProps(panel: WorkspacePanel, overrides: Partial<Parameters<typeof PanelMenu>[0]> = {}) {
   return {
@@ -22,7 +22,7 @@ function makeProps(panel: WorkspacePanel, overrides: Partial<Parameters<typeof P
 }
 
 const tablePanel: Extract<WorkspacePanel, { type: 'table' }> = { id: 'p1', type: 'table', columns: [], rows: [] };
-const filePanel: Extract<WorkspacePanel, { type: 'editor' }> = { id: 'p2', type: 'editor', filePath: 'doc.md' };
+const filePanel: FilePanel = { id: 'p2', type: 'editor', filePath: 'doc.md' };
 const cardsPanel: Extract<WorkspacePanel, { type: 'cards' }> = {
   id: 'p3',
   type: 'cards',

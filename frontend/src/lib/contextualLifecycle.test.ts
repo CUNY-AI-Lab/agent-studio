@@ -38,7 +38,7 @@ describe('contextual lifecycle', () => {
     const hidden = transitionContextualLifecycle(activeState(), { type: 'hide', panelIds: ['one'] });
     expect(hidden.phase).toBe('active');
     expect(hidden.target).toBeNull();
-    expect(hidden.turn.turnId).toBe('turn-1');
+    expect(hidden.turn?.turnId).toBe('turn-1');
 
     const finished = transitionContextualLifecycle(hidden, { type: 'finish', turnId: 'turn-1' });
     expect(finished).toEqual(INITIAL_CONTEXTUAL_LIFECYCLE);
@@ -73,7 +73,7 @@ describe('contextual lifecycle', () => {
     const reopened = transitionContextualLifecycle(hidden, { type: 'open', target: tile });
     expect(reopened.phase).toBe('active');
     expect(reopened.target).toEqual(tile);
-    expect(reopened.turn.turnId).toBe('turn-1');
+    expect(reopened.turn?.turnId).toBe('turn-1');
   });
 
   it('rejects stale terminal events without changing a newer turn', () => {
