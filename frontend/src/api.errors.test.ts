@@ -125,6 +125,50 @@ describe('fetchWorkspaceExport error extraction (aligned with parseJson)', () =>
   });
 });
 
+describe('protected binary response handling', () => {
+  beforeEach(() => {
+    vi.unstubAllGlobals();
+    vi.stubGlobal('document', { cookie: `cail_csrf_agentstudio=${'a'.repeat(64)}` });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses the canonical auth redirect for an expired workspace file response', async () => {
+    const { fetchWorkspaceFile } = await loadApi();
+    const assign = vi.fn();
+    vi.stubGlobal('window', {
+      location: {
+        pathname: '/agent-studio/',
+        search: '?workspace=ws-1',
+        assign,
+      },
+    });
+    mockFetch((input) => {
+      if (String(input).includes('/files/')) {
+        return jsonResponse({
+          error: {
+            code: 'authentication_required',
+            message: 'Sign in to continue.',
+            launch: '/agent-studio',
+          },
+        }, 401);
+      }
+      return jsonResponse({}, 200);
+    });
+    await expect(fetchWorkspaceFile('ws-1', 'notes.md')).rejects.toThrow('Sign in to continue.');
+    expect(assign).toHaveBeenCalledWith('https://tools.ailab.gc.cuny.edu/agent-studio/?workspace=ws-1');
+  });
+
+  it('returns a successful binary Response without consuming its body', async () => {
+    const { fetchWorkspaceFile } = await loadApi();
+    mockFetch((input) => String(input).includes('/files/')
+      ? new Response('file bytes', { status: 200, headers: { 'Content-Type': 'text/plain' } })
+      : jsonResponse({}, 200));
+    const response = await fetchWorkspaceFile('ws-1', 'notes.md');
+    expect(response.ok).toBe(true);
+    expect(await response.text()).toBe('file bytes');
+  });
+});
+
 describe('fetchModels quota errors', () => {
   afterEach(() => vi.unstubAllGlobals());
 

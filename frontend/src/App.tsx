@@ -41,7 +41,7 @@ import {
   ModelsUnavailableError,
   importWorkspaceBundle,
   publishWorkspace,
-  unpublishGalleryItem,
+  unpublishWorkspace,
   updateWorkspace,
   uploadWorkspaceFiles,
   handleAuthRequired,
@@ -126,6 +126,11 @@ import {
   type ViewportPersistenceQueue,
 } from './lib/viewportPersistence';
 
+type AppNavigationTarget = {
+  workspaceId: string | null;
+  galleryId: string | null;
+};
+
 function WorkspaceShell({
   workspace,
   onWorkspaceRefresh,
@@ -208,13 +213,13 @@ function WorkspaceShell({
     };
   }
   const [viewportPersistenceRevision, setViewportPersistenceRevision] = useState(0);
-  const autoFocusTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const autoFocusTimeoutRef = useRef<number | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
   const panelSourceRef = useRef<Record<string, string>>({});
   const automaticLayoutPersistenceRef = useRef<ReturnType<typeof useAutomaticLayoutPersistence> | null>(null);
-  const clearFileHighlightTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const toastTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
-  const hoverClearTimeoutRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const clearFileHighlightTimeoutRef = useRef<number | null>(null);
+  const toastTimeoutRef = useRef<number | null>(null);
+  const hoverClearTimeoutRef = useRef<number | null>(null);
   const hoveredPanelIdRef = useRef<string | null>(null);
   const hoveredToolbarPanelIdRef = useRef<string | null>(null);
   const previousDockedChatRef = useRef<boolean | null>(null);
@@ -227,6 +232,7 @@ function WorkspaceShell({
   const publishOperationIdRef = useRef<string | null>(null);
   const chatStopRef = useRef<() => void>(() => undefined);
   const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
+  const workspaceFilesRequestRef = useRef(0);
 
   const transitionContextualTurn = useCallback((action: ContextualLifecycleAction) => {
     const current = contextualLifecycleRef.current;
@@ -459,6 +465,7 @@ function WorkspaceShell({
     viewportInteractionRef.current = false;
     viewportRef.current = nextWorkspaceState.viewport;
     setWorkspaceState(nextWorkspaceState);
+    workspaceFilesRequestRef.current += 1;
     setWorkspaceFiles(workspace.files);
     workspaceFilesRef.current = workspace.files;
     if (workspaceChanged) {
@@ -755,25 +762,25 @@ function WorkspaceShell({
 
   useEffect(() => () => {
     if (hoverClearTimeoutRef.current) {
-      clearTimeout(hoverClearTimeoutRef.current);
+      window.clearTimeout(hoverClearTimeoutRef.current);
     }
   }, []);
 
   useEffect(() => () => {
     if (clearFileHighlightTimeoutRef.current) {
-      clearTimeout(clearFileHighlightTimeoutRef.current);
+      window.clearTimeout(clearFileHighlightTimeoutRef.current);
     }
   }, []);
 
   useEffect(() => () => {
     if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current);
+      window.clearTimeout(toastTimeoutRef.current);
     }
   }, []);
 
   useEffect(() => () => {
     if (autoFocusTimeoutRef.current) {
-      clearTimeout(autoFocusTimeoutRef.current);
+      window.clearTimeout(autoFocusTimeoutRef.current);
     }
   }, []);
 
@@ -989,7 +996,7 @@ function WorkspaceShell({
 
   const showToast = useCallback((message: string, type: 'success' | 'info' = 'success') => {
     if (toastTimeoutRef.current) {
-      clearTimeout(toastTimeoutRef.current);
+      window.clearTimeout(toastTimeoutRef.current);
     }
 
     setToast({ message, type });
@@ -1077,7 +1084,7 @@ function WorkspaceShell({
     setHighlightedFilePaths(new Set(uniquePaths));
 
     if (clearFileHighlightTimeoutRef.current) {
-      clearTimeout(clearFileHighlightTimeoutRef.current);
+      window.clearTimeout(clearFileHighlightTimeoutRef.current);
     }
     clearFileHighlightTimeoutRef.current = window.setTimeout(() => {
       setHighlightedFilePaths(new Set());
@@ -1096,7 +1103,12 @@ function WorkspaceShell({
   }, []);
 
   const refreshWorkspaceFiles = useCallback(async (options?: { announceChanges?: boolean; scrollToChanged?: boolean }) => {
+    const requestGeneration = workspaceFilesRequestRef.current + 1;
+    workspaceFilesRequestRef.current = requestGeneration;
     const files = await fetchWorkspaceFiles(workspace.workspace.id);
+    if (requestGeneration !== workspaceFilesRequestRef.current) {
+      return workspaceFilesRef.current;
+    }
     const previousFiles = workspaceFilesRef.current.filter((file) => !file.isDirectory);
     const previousByPath = new Map(previousFiles.map((file) => [file.path, file]));
     const nextFileEntries = files.filter((file) => !file.isDirectory);
@@ -1233,7 +1245,7 @@ function WorkspaceShell({
   }, [onWorkspaceRefresh, workspace.workspace.id]);
 
   const handleUpload = useCallback(async (files: File[]) => {
-    if (files.length === 0) return;
+    if (files.length === 0 || uploading) return;
     setUploading(true);
     setError(null);
     try {
@@ -1245,7 +1257,7 @@ function WorkspaceShell({
     } finally {
       setUploading(false);
     }
-  }, [refreshWorkspaceFiles, showToast, workspace.workspace.id]);
+  }, [refreshWorkspaceFiles, showToast, uploading, workspace.workspace.id]);
 
   const openFileOnCanvas = useCallback(async (file: WorkspaceFileInfo) => {
     highlightWorkspaceFiles([file.path], { scroll: false });
@@ -1554,7 +1566,7 @@ function WorkspaceShell({
     if (!canvasViewportRef.current) return;
 
     if (autoFocusTimeoutRef.current) {
-      clearTimeout(autoFocusTimeoutRef.current);
+      window.clearTimeout(autoFocusTimeoutRef.current);
     }
 
     autoFocusTimeoutRef.current = window.setTimeout(() => {
@@ -2257,7 +2269,7 @@ function WorkspaceShell({
     setPublishing(true);
     setError(null);
     try {
-      await unpublishGalleryItem(workspace.workspace.galleryId);
+      await unpublishWorkspace(workspace.workspace.id);
       await refreshWorkspace();
       showToast('Removed from gallery', 'info');
     } catch (nextError) {
@@ -2265,7 +2277,7 @@ function WorkspaceShell({
     } finally {
       setPublishing(false);
     }
-  }, [refreshWorkspace, showToast, workspace.workspace.galleryId]);
+  }, [refreshWorkspace, showToast, workspace.workspace.id, workspace.workspace.galleryId]);
 
   const handleExportDownload = useCallback(async () => {
     setError(null);
@@ -2716,7 +2728,7 @@ function WorkspaceShell({
             onNodeHover={(panelId) => {
               if (selectedPanelIds.size > 0) return;
               if (hoverClearTimeoutRef.current) {
-                clearTimeout(hoverClearTimeoutRef.current);
+                window.clearTimeout(hoverClearTimeoutRef.current);
                 hoverClearTimeoutRef.current = null;
               }
               if (panelId) {
@@ -2725,7 +2737,7 @@ function WorkspaceShell({
                 return;
               }
               const lastPanelId = hoveredPanelIdRef.current;
-              hoverClearTimeoutRef.current = setTimeout(() => {
+              hoverClearTimeoutRef.current = window.setTimeout(() => {
                 if (hoveredToolbarPanelIdRef.current === lastPanelId) return;
                 hoveredPanelIdRef.current = null;
                 setHoveredPanelId(null);
@@ -2931,15 +2943,35 @@ export default function App() {
   const [importing, setImporting] = useState(false);
   const [pendingInitialPrompt, setPendingInitialPrompt] = useState<{ workspaceId: string; prompt: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const navigationOwnerRef = useRef<AppNavigationTarget>({
+    workspaceId: initialWorkspaceId,
+    galleryId: initialWorkspaceId ? null : initialGalleryId,
+  });
+  const homeLoadOwnerRef = useRef({
+    workspaces: 0,
+    gallery: 0,
+  });
+
+  const claimNavigation = useCallback((target: AppNavigationTarget) => {
+    navigationOwnerRef.current = { ...target };
+  }, []);
 
   const loadWorkspaces = useCallback(async () => {
+    const requestGeneration = homeLoadOwnerRef.current.workspaces + 1;
+    homeLoadOwnerRef.current.workspaces = requestGeneration;
     const items = await fetchWorkspaces();
-    setWorkspaces(items);
+    if (requestGeneration === homeLoadOwnerRef.current.workspaces) {
+      setWorkspaces(items);
+    }
   }, []);
 
   const loadGallery = useCallback(async () => {
+    const requestGeneration = homeLoadOwnerRef.current.gallery + 1;
+    homeLoadOwnerRef.current.gallery = requestGeneration;
     const items = await fetchGalleryItems();
-    setGalleryItems(items);
+    if (requestGeneration === homeLoadOwnerRef.current.gallery) {
+      setGalleryItems(items);
+    }
   }, []);
 
   const loadHome = useCallback(async () => {
@@ -2952,16 +2984,27 @@ export default function App() {
   }, [loadGallery, loadWorkspaces]);
 
   const loadWorkspace = useCallback(async (workspaceId: string) => {
+    const owner = navigationOwnerRef.current;
+    if (
+      owner.workspaceId !== workspaceId
+      || owner.galleryId !== null
+    ) {
+      return;
+    }
+    const requestOwner = { ...owner };
+    navigationOwnerRef.current = requestOwner;
+    const isCurrentRequest = () => navigationOwnerRef.current === requestOwner;
     setLoading(true);
     setError(null);
     try {
       const response = await fetchWorkspace(workspaceId);
+      if (!isCurrentRequest()) return;
       setSelectedWorkspace(response);
-      setSelectedWorkspaceId(workspaceId);
     } catch (nextError) {
+      if (!isCurrentRequest()) return;
       setError(nextError instanceof ApiError ? nextError.message : 'The workspace didn’t load. Reload the page to try again.');
     } finally {
-      setLoading(false);
+      if (isCurrentRequest()) setLoading(false);
     }
   }, []);
 
@@ -2994,6 +3037,31 @@ export default function App() {
     void loadWorkspace(selectedWorkspaceId);
   }, [loadWorkspace, selectedGalleryId, selectedWorkspaceId]);
 
+  const loadGalleryItem = useCallback(async (galleryId: string) => {
+    const owner = navigationOwnerRef.current;
+    if (
+      owner.galleryId !== galleryId
+      || owner.workspaceId !== null
+    ) {
+      return;
+    }
+    const requestOwner = { ...owner };
+    navigationOwnerRef.current = requestOwner;
+    const isCurrentRequest = () => navigationOwnerRef.current === requestOwner;
+    setLoading(true);
+
+    try {
+      const item = await fetchGalleryItem(galleryId);
+      if (!isCurrentRequest()) return;
+      setSelectedGallery(item);
+    } catch (nextError) {
+      if (!isCurrentRequest()) return;
+      setError(nextError instanceof Error ? nextError.message : 'Failed to load gallery item');
+    } finally {
+      if (isCurrentRequest()) setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (!selectedGalleryId || selectedWorkspaceId) {
       if (!selectedWorkspaceId) {
@@ -3006,18 +3074,8 @@ export default function App() {
     url.searchParams.set('gallery', selectedGalleryId);
     url.searchParams.delete('workspace');
     window.history.replaceState({}, '', url);
-    setLoading(true);
-
-    void fetchGalleryItem(selectedGalleryId)
-      .then((item) => {
-        setSelectedGallery(item);
-        setLoading(false);
-      })
-      .catch((nextError) => {
-        setError(nextError instanceof Error ? nextError.message : 'Failed to load gallery item');
-        setLoading(false);
-      });
-  }, [selectedGalleryId, selectedWorkspaceId]);
+    void loadGalleryItem(selectedGalleryId);
+  }, [loadGalleryItem, selectedGalleryId, selectedWorkspaceId]);
 
   const handleDeleteWorkspace = useCallback(async (): Promise<boolean> => {
     if (!selectedWorkspaceId) return false;
@@ -3040,18 +3098,21 @@ export default function App() {
       await loadGallery();
       setPendingInitialPrompt(null);
       setSelectedGalleryId(null);
+      claimNavigation({ workspaceId: result.workspaceId, galleryId: null });
       setSelectedWorkspaceId(result.workspaceId);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to clone gallery item');
     }
-  }, [loadGallery, loadWorkspaces]);
+  }, [claimNavigation, loadGallery, loadWorkspaces]);
 
   const handleOpenGalleryItem = useCallback((galleryId: string) => {
     setError(null);
+    claimNavigation({ workspaceId: null, galleryId });
     setSelectedGallery(null);
+    setSelectedWorkspace(null);
     setSelectedWorkspaceId(null);
     setSelectedGalleryId(galleryId);
-  }, []);
+  }, [claimNavigation]);
 
   const handleImportBundle = useCallback(async (file: File | null) => {
     if (!file) return;
@@ -3063,6 +3124,7 @@ export default function App() {
       await loadWorkspaces();
       setPendingInitialPrompt(null);
       setSelectedGalleryId(null);
+      claimNavigation({ workspaceId: result.workspaceId, galleryId: null });
       setSelectedWorkspaceId(result.workspaceId);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Importing didn’t work. Make sure it’s a workspace file exported from Agent Studio.');
@@ -3070,7 +3132,7 @@ export default function App() {
     } finally {
       setImporting(false);
     }
-  }, [loadWorkspaces]);
+  }, [claimNavigation, loadWorkspaces]);
 
   const handleCreateWorkspace = useCallback(async (prompt?: string) => {
     setCreating(true);
@@ -3080,25 +3142,29 @@ export default function App() {
       await loadWorkspaces();
       setPendingInitialPrompt(prompt ? { workspaceId: workspace.id, prompt } : null);
       setSelectedGalleryId(null);
+      claimNavigation({ workspaceId: workspace.id, galleryId: null });
       setSelectedWorkspaceId(workspace.id);
+      return true;
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Failed to create workspace');
+      return false;
     } finally {
       setCreating(false);
     }
-  }, [loadWorkspaces]);
+  }, [claimNavigation, loadWorkspaces]);
 
   const handleGoHome = useCallback(() => {
+    claimNavigation({ workspaceId: null, galleryId: null });
     setPendingInitialPrompt(null);
     setSelectedWorkspaceId(null);
     setSelectedGalleryId(null);
     setSelectedWorkspace(null);
     setSelectedGallery(null);
     setError(null);
-  }, []);
+  }, [claimNavigation]);
 
   // Loading state
-  if (loading && (selectedWorkspaceId || selectedGalleryId)) {
+  if (loading && (selectedWorkspaceId || selectedGalleryId) && !selectedWorkspace && !selectedGallery) {
     return (
       <div className="grain h-screen flex items-center justify-center canvas-bg">
         <div className="text-center animate-fade-in">
@@ -3147,7 +3213,7 @@ export default function App() {
         {error ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">{error}</div>
         ) : null}
-        {!loading && selectedWorkspace ? (
+        {selectedWorkspace ? (
           <WorkspaceShell
             key={selectedWorkspace.workspace.id}
             workspace={selectedWorkspace}
@@ -3189,6 +3255,9 @@ export default function App() {
       onSelectWorkspace={(id) => {
         setPendingInitialPrompt(null);
         setSelectedGalleryId(null);
+        setSelectedWorkspace(null);
+        setSelectedGallery(null);
+        claimNavigation({ workspaceId: id, galleryId: null });
         setSelectedWorkspaceId(id);
       }}
       onOpenGalleryItem={handleOpenGalleryItem}

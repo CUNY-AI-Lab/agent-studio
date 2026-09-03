@@ -12,11 +12,11 @@ const EXAMPLE_PROMPTS = [
 interface HomePageProps {
   workspaces: WorkspaceRecord[];
   galleryItems: GalleryItem[];
-  onCreateWorkspace: (name: string) => Promise<void>;
+  onCreateWorkspace: (name: string) => Promise<boolean>;
   onSelectWorkspace: (id: string) => void;
   onOpenGalleryItem: (id: string) => void;
   onCloneGalleryItem: (id: string) => Promise<void>;
-  onStartBlank: () => Promise<void>;
+  onStartBlank: () => Promise<boolean>;
   onImportWorkspace: (file: File | null) => Promise<void>;
   busy: boolean;
   importing: boolean;
@@ -35,17 +35,29 @@ export function HomePage({
   importing,
 }: HomePageProps) {
   const [prompt, setPrompt] = useState('');
+  const [cloningGalleryId, setCloningGalleryId] = useState<string | null>(null);
+  const actionBusy = busy || cloningGalleryId !== null;
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || busy) return;
-    await onCreateWorkspace(prompt.trim());
-    setPrompt('');
+    if (!prompt.trim() || actionBusy) return;
+    const created = await onCreateWorkspace(prompt.trim());
+    if (created) setPrompt('');
   };
 
   const handleExamplePrompt = async (p: string) => {
-    if (busy) return;
+    if (actionBusy) return;
     await onCreateWorkspace(p);
+  };
+
+  const handleCloneGalleryItem = async (galleryId: string) => {
+    if (actionBusy) return;
+    setCloningGalleryId(galleryId);
+    try {
+      await onCloneGalleryItem(galleryId);
+    } finally {
+      setCloningGalleryId(null);
+    }
   };
 
   return (
@@ -85,11 +97,11 @@ export function HomePage({
                 aria-label="What would you like to work on?"
                 className="w-full px-5 py-4 pr-14 text-base bg-card transition-all focus:outline-none"
                 autoFocus
-                disabled={busy}
+                disabled={actionBusy}
               />
               <button
                 type="submit"
-                disabled={!prompt.trim() || busy}
+                disabled={!prompt.trim() || actionBusy}
                 className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-primary text-primary-foreground transition-all hover:opacity-90 disabled:opacity-40"
                 aria-label="Start"
               >
@@ -129,18 +141,18 @@ export function HomePage({
                     <button
                       type="button"
                       onClick={() => onOpenGalleryItem(item.id)}
-                      disabled={busy}
+                      disabled={actionBusy}
                       className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
                     >
                       Open read-only
                     </button>
                     <button
                       type="button"
-                      onClick={() => void onCloneGalleryItem(item.id)}
-                      disabled={busy}
+                      onClick={() => void handleCloneGalleryItem(item.id)}
+                      disabled={actionBusy}
                       className="rounded-md bg-primary px-2.5 py-1.5 text-xs text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
                     >
-                      Use as workspace
+                      {cloningGalleryId === item.id ? 'Creating…' : 'Use as workspace'}
                     </button>
                   </div>
                 </article>
@@ -161,7 +173,7 @@ export function HomePage({
                   key={example.label}
                   type="button"
                   onClick={() => handleExamplePrompt(example.prompt)}
-                  disabled={busy}
+                  disabled={actionBusy}
                   className="px-4 py-2 text-sm border border-border bg-card/50 text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground hover:bg-card disabled:opacity-50"
                 >
                   {example.label}
@@ -176,7 +188,7 @@ export function HomePage({
           <button
             type="button"
             onClick={onStartBlank}
-            disabled={busy}
+            disabled={actionBusy}
             className="px-4 py-2 text-sm border border-border text-muted-foreground/70 transition-all hover:border-border hover:text-muted-foreground disabled:opacity-50"
           >
             Start blank
@@ -187,7 +199,7 @@ export function HomePage({
               className="sr-only"
               type="file"
               accept=".json,.agent-studio.json,application/json"
-              disabled={busy}
+              disabled={actionBusy}
               aria-label="Import workspace bundle"
               onChange={(event) => {
                 void onImportWorkspace(event.target.files?.[0] ?? null);
