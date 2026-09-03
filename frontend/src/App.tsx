@@ -1228,7 +1228,7 @@ function WorkspaceShell({
     })().catch(() => {
       // Ignore background refresh failures in the shell.
     });
-  }, [chat.status, drainWorkspaceDownloads, refreshWorkspaceFiles, workspace]);
+  }, [chat.status, drainWorkspaceDownloads, refreshWorkspaceFiles]);
 
   useEffect(() => {
     if (!initialPrompt) return;
