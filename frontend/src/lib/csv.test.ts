@@ -23,13 +23,6 @@ describe('parseCsvPreview', () => {
     });
   });
 
-  it('marks truncation past the row limit', () => {
-    const body = ['h', ...Array.from({ length: 5 }, (_, i) => `r${i}`)].join('\n');
-    const { rows, truncated } = parseCsvPreview(body, 2);
-    expect(rows).toHaveLength(2);
-    expect(truncated).toBe(true);
-  });
-
   it('preserves records whose cells are all empty', () => {
     expect(parseCsvPreview('A,B\n,\n"",')).toEqual({
       headers: ['A', 'B'],

@@ -79,6 +79,11 @@ type ApiCallOptions<T> = {
 
 const HealthPayloadSchema = z.object({ ok: z.literal(true) }).passthrough();
 const AcknowledgementPayloadSchema = z.object({}).passthrough();
+const ChatRequestSchema = z.object({
+  type: z.literal('cf_agent_use_chat_request'),
+  id: z.string(),
+  init: z.object({ body: z.string() }),
+});
 const WorkspacePayloadSchema = z.object({
   state: z.object({
     viewport: z.object({ x: z.number(), y: z.number(), zoom: z.number() }),
@@ -678,11 +683,6 @@ async function verifyConcurrentLayoutEdits(page: Page, baseUrl: string, workspac
 async function verifyContextualRetry(page: Page): Promise<void> {
   const chatPage = await page.context().newPage();
   await chatPage.setViewportSize({ width: 1440, height: 1000 });
-  const requestSchema = z.object({
-    type: z.literal('cf_agent_use_chat_request'),
-    id: z.string(),
-    init: z.object({ body: z.string() }),
-  });
   const bodySchema = z.object({
     scopePanelIds: z.array(z.string()),
     messages: z.array(z.object({ id: z.string(), role: z.string() }).passthrough()),
@@ -694,7 +694,7 @@ async function verifyContextualRetry(page: Page): Promise<void> {
   await chatPage.routeWebSocket('**/agents/**', (socket) => {
     const server = socket.connectToServer();
     socket.onMessage((message) => {
-      const request = requestSchema.safeParse(JSON.parse(message.toString()));
+      const request = ChatRequestSchema.safeParse(JSON.parse(message.toString()));
       if (!request.success) {
         server.send(message);
         return;
@@ -736,9 +736,35 @@ async function verifyContextualRetry(page: Page): Promise<void> {
   }
 }
 
-async function verifyCompactNewResult(page: Page, baseUrl: string): Promise<void> {
+async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<void> {
   const compactPage = await page.context().newPage();
   let workspaceId: string | undefined;
+  let releasePreparation: (() => void) | undefined;
+  const preparation = new Promise<void>((resolvePreparation) => { releasePreparation = resolvePreparation; });
+  let credentialRequests = 0;
+  let modelRequests = 0;
+  // Deliberately stall preparation, then complete the next model response
+  // locally. The rendered App and Stop action are real; no paid call is made.
+  await compactPage.route('**/model-credential', async (route) => {
+    credentialRequests += 1;
+    if (credentialRequests === 1) await preparation;
+    await route.fulfill({ status: 204 });
+  });
+  await compactPage.routeWebSocket('**/agents/**', (socket) => {
+    const server = socket.connectToServer();
+    socket.onMessage((message) => {
+      const request = ChatRequestSchema.safeParse(JSON.parse(message.toString()));
+      if (!request.success) {
+        server.send(message);
+        return;
+      }
+      modelRequests += 1;
+      socket.send(JSON.stringify({
+        type: 'cf_agent_use_chat_response', id: request.data.id,
+        body: JSON.stringify({ type: 'finish' }), done: true,
+      }));
+    });
+  });
   try {
     await compactPage.setViewportSize({ width: 390, height: 844 });
     await compactPage.goto(baseUrl, { waitUntil: 'networkidle' });
@@ -746,6 +772,18 @@ async function verifyCompactNewResult(page: Page, baseUrl: string): Promise<void
     await compactPage.waitForURL(/workspace=/);
     workspaceId = workspaceIdFromUrl(compactPage.url());
     await compactPage.getByRole('tab', { name: 'Chat', exact: true }).click();
+    const composer = compactPage.getByRole('textbox', { name: 'Message the agent' });
+    await composer.fill('Stop this synthetic turn before dispatch.');
+    await compactPage.getByRole('button', { name: 'Send message' }).click();
+    await expect.poll(() => credentialRequests).toBe(1);
+    await compactPage.getByRole('button', { name: 'Stop response' }).click();
+    await expect(compactPage.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
+    expect(modelRequests).toBe(0);
+    releasePreparation?.();
+    await composer.fill('Complete the next synthetic turn.');
+    await compactPage.getByRole('button', { name: 'Send message' }).click();
+    await expect.poll(() => modelRequests).toBe(1);
+    await expect(compactPage.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
     await apiCall(compactPage, baseUrl, `/api/workspaces/${workspaceId}/panels`, {
       method: 'POST', label: 'deliver a new result while the canvas is hidden',
       body: { panel: {
@@ -760,6 +798,7 @@ async function verifyCompactNewResult(page: Page, baseUrl: string): Promise<void
     await compactPage.getByRole('tab', { name: 'Canvas', exact: true }).click();
     await expect(panelLocator(compactPage, 'New research result', 'markdown')).toBeInViewport({ ratio: 0.9 });
   } finally {
+    releasePreparation?.();
     if (workspaceId) await apiCall(compactPage, baseUrl, `/api/workspaces/${workspaceId}`, {
       method: 'DELETE', label: 'cleanup compact result workspace', schema: AcknowledgementPayloadSchema,
     });
@@ -800,7 +839,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
 
     await verifyConcurrentLayoutEdits(page, baseUrl, workspaceId);
     await verifyContextualRetry(page);
-    await verifyCompactNewResult(page, baseUrl);
+    await verifyCompactChatRecovery(page, baseUrl);
     await page.bringToFront();
 
     await selectPanel(page, 'Source cards', 'cards');

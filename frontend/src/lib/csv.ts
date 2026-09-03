@@ -8,23 +8,21 @@ export type CsvPreview = { headers: string[]; rows: string[][]; truncated: boole
 export function parseCsvPreview(content: string, limit = 50): CsvPreview {
   let headers: string[] = [];
   const rows: string[][] = [];
-  let dataRowCount = 0;
-  const rowLimit = Math.max(0, limit);
+  let truncated = false;
 
   CSV_FORMAT.parseRows(content, (row, rowIndex) => {
     if (rowIndex === 0) {
       headers = row;
-    } else {
-      dataRowCount += 1;
-      if (rows.length < rowLimit) rows.push(row);
-    }
+    } else if (rows.length < limit) {
+      rows.push(row);
+    } else truncated = true;
     return null;
   });
 
   return {
     headers,
     rows,
-    truncated: dataRowCount > rowLimit,
+    truncated,
   };
 }
 
