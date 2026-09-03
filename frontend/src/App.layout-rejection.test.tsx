@@ -75,7 +75,17 @@ class TestWebSocket extends EventTarget {
   }
 }
 
-function workspaceResponse(): WorkspaceResponse {
+function workspaceResponse(
+  panels: WorkspaceResponse['state']['panels'] = [
+    {
+      id: 'panel-one',
+      type: 'markdown',
+      title: 'One',
+      content: 'One',
+      layout: { x: 40, y: 40, width: 360, height: 220 },
+    },
+  ],
+): WorkspaceResponse {
   const workspace = {
     id: 'workspace-1',
     name: 'Workspace one',
@@ -88,15 +98,7 @@ function workspaceResponse(): WorkspaceResponse {
     state: {
       sessionId: null,
       workspace,
-      panels: [
-        {
-          id: 'panel-one',
-          type: 'markdown',
-          title: 'One',
-          content: 'One',
-          layout: { x: 40, y: 40, width: 360, height: 220 },
-        },
-      ],
+      panels,
       viewport: { x: 0, y: 0, zoom: 1 },
       groups: [],
       connections: [],
@@ -153,5 +155,45 @@ describe('real App layout-save failure handling', () => {
     expect(screen.getAllByText(
       'Some layout changes were not saved. Reload to restore the saved workspace; unsaved changes will be lost.',
     )).not.toHaveLength(0);
+  });
+
+  it('sends only the moved panel when another existing overlap is unrelated', async () => {
+    const panels: WorkspaceResponse['state']['panels'] = [
+      {
+        id: 'panel-a',
+        type: 'markdown',
+        title: 'A',
+        content: 'A',
+        layout: { x: 700, y: 40, width: 360, height: 220 },
+      },
+      {
+        id: 'panel-b',
+        type: 'markdown',
+        title: 'B',
+        content: 'B',
+        layout: { x: 40, y: 40, width: 360, height: 220 },
+      },
+      {
+        id: 'panel-c',
+        type: 'markdown',
+        title: 'C',
+        content: 'C',
+        layout: { x: 100, y: 40, width: 360, height: 220 },
+      },
+    ];
+    vi.mocked(api.fetchWorkspace).mockResolvedValue(workspaceResponse(panels));
+    TestWebSocket.shouldRejectNextRpc = false;
+
+    render(<App />);
+    const tile = await screen.findByRole('group', { name: 'A (markdown tile)' });
+
+    fireEvent.keyDown(tile, { key: 'ArrowRight' });
+    await waitFor(() => expect(TestWebSocket.rpcMessages).toHaveLength(1));
+
+    expect(TestWebSocket.rpcMessages[0]).toEqual({
+      id: expect.any(String),
+      method: 'applyLayoutPatch',
+      args: [{ panels: { 'panel-a': { x: 716, y: 40, width: 360, height: 220 } } }],
+    });
   });
 });

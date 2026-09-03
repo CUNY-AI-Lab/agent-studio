@@ -1713,7 +1713,12 @@ function WorkspaceShell({
       Object.entries(panelLayoutsRef.current).map(([id, layout]) => [id, { ...layout }]),
     );
     const fixedPanelIds = new Set([panelId].filter((visiblePanelId) => visiblePanelIds.has(visiblePanelId)));
-    const resolved = resolveVisibleLayoutCollisions(panelLayoutsRef.current, visiblePanelIds, fixedPanelIds);
+    const resolved = resolveVisibleLayoutCollisions(
+      panelLayoutsRef.current,
+      visiblePanelIds,
+      fixedPanelIds,
+      new Set([panelId]),
+    );
     const baseline = panelGestureBaselineRef.current;
     panelGestureBaselineRef.current = null;
     if (!baseline || !resolved[panelId]) return;
@@ -1843,7 +1848,12 @@ function WorkspaceShell({
       Object.entries(panelLayoutsRef.current).map(([id, layout]) => [id, { ...layout }]),
     );
     const fixedPanelIds = new Set(group.panelIds.filter((panelId) => visiblePanelIds.has(panelId)));
-    const resolved = resolveVisibleLayoutCollisions(panelLayoutsRef.current, visiblePanelIds, fixedPanelIds);
+    const resolved = resolveVisibleLayoutCollisions(
+      panelLayoutsRef.current,
+      visiblePanelIds,
+      fixedPanelIds,
+      new Set(Object.keys(baseline)),
+    );
 
     panelLayoutsRef.current = {
       ...panelLayoutsRef.current,
