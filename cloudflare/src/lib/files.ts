@@ -195,12 +195,16 @@ export async function readGalleryFile(
   return env.WORKSPACE_FILES.get(getGalleryFileKey(galleryId, filePath));
 }
 
-export async function deleteWorkspaceFiles(env: Env, sessionId: string, workspaceId: string): Promise<void> {
+export async function deleteWorkspaceFiles(
+  env: Env,
+  sessionId: string,
+  workspaceId: string,
+  options: { preserveMetadata?: boolean } = {},
+): Promise<void> {
   const prefix = getWorkspacePrefix(sessionId, workspaceId);
-  // Keep the workspace record as the retry marker until every artifact is
-  // gone. The DELETE route removes this marker explicitly after runtime and
-  // workspace-prefix cleanup both succeed.
-  await deleteByPrefixExcept(env, prefix, new Set([`${prefix}workspace.json`]));
+  // User deletion keeps a retry marker. Failed imports/clones must remove
+  // their whole prefix, including a record whose write outcome was ambiguous.
+  await deleteByPrefixExcept(env, prefix, new Set(options.preserveMetadata ? [`${prefix}workspace.json`] : []));
 }
 
 export async function deleteByPrefix(env: Env, prefix: string): Promise<void> {

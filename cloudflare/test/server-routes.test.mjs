@@ -1945,6 +1945,34 @@ test('import: workspace remains undiscoverable until files and state are committ
   assert.equal(afterImport.workspaces.length, 1);
 });
 
+test('import rollback removes an ambiguously written record even if its final delete fails', async () => {
+  const { env, r2 } = makeEnv();
+  const { session } = await openSession(app, env);
+  const realPut = r2.put.bind(r2);
+  const realDelete = r2.delete.bind(r2);
+  let recordKey;
+  r2.put = async (key, value, options) => {
+    const result = await realPut(key, value, options);
+    if (key.endsWith('/workspace.json')) {
+      recordKey = key;
+      throw new Error('injected post-write failure');
+    }
+    return result;
+  };
+  r2.delete = async (keys) => {
+    if (keys === recordKey) {
+      throw new Error('injected explicit metadata deletion failure');
+    }
+    return realDelete(keys);
+  };
+  const form = new FormData();
+  form.append('bundle', new File([JSON.stringify(makeImportBundle())], 'rollback.json', { type: 'application/json' }));
+  const result = await session.request(app, '/api/workspaces/import', { method: 'POST', body: form });
+  assert.equal(result.status, 400);
+  const list = await (await session.request(app, '/api/workspaces')).json();
+  assert.deepEqual(list.workspaces, []);
+});
+
 test('import: no bundle part -> 400', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);

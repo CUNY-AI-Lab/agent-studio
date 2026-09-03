@@ -875,7 +875,7 @@ app.delete('/api/workspaces/:id', async (c) => {
   // are removed.
   const agent = await getWorkspaceAgent(c.env, sessionId, workspaceId);
   await agent.destroyWorkspaceState();
-  await deleteWorkspaceFiles(c.env, sessionId, workspaceId);
+  await deleteWorkspaceFiles(c.env, sessionId, workspaceId, { preserveMetadata: true });
   // Runtime files live under a separate prefix the sessions-prefix delete
   // misses. This authoritative cleanup fails loud so deletion stays retryable.
   await deleteByPrefix(c.env, getRuntimeFilesPrefix(sessionId, workspaceId));
