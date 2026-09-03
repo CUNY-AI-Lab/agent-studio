@@ -73,6 +73,7 @@ export type AgentStudioConfigErrorCode =
   | 'cail_identity_issuer_invalid'
   | 'cail_identity_jwks_missing'
   | 'cail_identity_jwks_invalid'
+  | 'cail_identity_require_flag_invalid'
   | 'production_gateway_binding_missing'
   | 'cail_model_invalid'
   | 'cail_api_base_invalid'
@@ -98,6 +99,7 @@ export interface AgentStudioConfigInput {
 }
 
 const stringSchema = z.string();
+const identityRequireFlagSchema = z.enum(['true', 'false']).optional();
 const gatewayBindingSchema = z.object({ fetch: z.function() });
 
 function validCanonicalOrigin(value: string | undefined): boolean {
@@ -134,7 +136,11 @@ export async function validateAgentStudioConfig(env: AgentStudioConfigInput): Pr
     return { ok: false, errorCode: 'cail_api_base_invalid' };
   }
 
-  const requireIdentity = stringSchema.safeParse(env.CAIL_REQUIRE_IDENTITY).data;
+  const requireIdentityResult = identityRequireFlagSchema.safeParse(env.CAIL_REQUIRE_IDENTITY);
+  if (!requireIdentityResult.success) {
+    return { ok: false, errorCode: 'cail_identity_require_flag_invalid' };
+  }
+  const requireIdentity = requireIdentityResult.data;
   const issuerResult = stringSchema.safeParse(env.CAIL_IDENTITY_ISSUER);
   const jwksResult = stringSchema.safeParse(env.CAIL_IDENTITY_JWKS);
   const issuer = issuerResult.data;
