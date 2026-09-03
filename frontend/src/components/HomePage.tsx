@@ -20,6 +20,8 @@ interface HomePageProps {
   onImportWorkspace: (file: File | null) => Promise<void>;
   busy: boolean;
   importing: boolean;
+  error?: string | null;
+  onRetry?: () => void;
 }
 
 export function HomePage({
@@ -33,6 +35,8 @@ export function HomePage({
   onImportWorkspace,
   busy,
   importing,
+  error = null,
+  onRetry,
 }: HomePageProps) {
   const [prompt, setPrompt] = useState('');
   const [cloningGalleryId, setCloningGalleryId] = useState<string | null>(null);
@@ -67,6 +71,22 @@ export function HomePage({
 
       {/* Theme toggle */}
       <ThemeToggle className="fixed top-4 right-4 z-50" />
+
+      {error ? (
+        <div
+          role="alert"
+          className="mx-auto mt-8 max-w-3xl px-6 text-sm text-destructive"
+        >
+          <div className="flex items-center justify-between gap-4 border border-destructive/20 bg-destructive/10 px-4 py-3">
+            <span>{error}</span>
+            {onRetry ? (
+              <button type="button" className="shrink-0 underline" onClick={onRetry}>
+                Try again
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <main className="max-w-3xl mx-auto px-6 py-16">
         {/* Header */}
@@ -221,7 +241,8 @@ export function HomePage({
                   key={ws.id}
                   type="button"
                   onClick={() => onSelectWorkspace(ws.id)}
-                  className="w-full text-left p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group"
+                  disabled={actionBusy}
+                  className="w-full text-left p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">

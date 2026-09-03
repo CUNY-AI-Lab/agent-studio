@@ -5,7 +5,7 @@ import App from './App';
 import * as api from './api';
 import type { WorkspaceFileInfo, WorkspaceResponse } from './types';
 
-function workspaceResponse(id = 'workspace-1'): WorkspaceResponse {
+function workspaceResponse(id = 'workspace-1', files: WorkspaceFileInfo[] = []): WorkspaceResponse {
   const workspace = {
     id,
     name: id === 'workspace-1' ? 'Workspace one' : 'Workspace two',
@@ -24,7 +24,7 @@ function workspaceResponse(id = 'workspace-1'): WorkspaceResponse {
       connections: [],
     },
     messages: [],
-    files: [],
+    files,
     runtime: { provider: 'dynamic-workers', codemode: true, git: true, outbound: 'tool-only' },
     agent: { className: 'WorkspaceAgent', name: id },
   };
@@ -56,6 +56,22 @@ afterEach(() => {
 });
 
 describe('real App', () => {
+  it('keeps the home prompt visible with an error after creation is rejected', async () => {
+    const user = userEvent.setup();
+    window.history.replaceState({}, '', '/agent-studio/');
+    vi.spyOn(api, 'createWorkspace').mockRejectedValueOnce(new Error('Create failed'));
+    vi.mocked(api.fetchWorkspaces).mockResolvedValue([]);
+    render(<App />);
+
+    const input = await screen.findByRole('textbox', { name: 'What would you like to work on?' });
+    await user.type(input, 'Keep this prompt');
+    await user.click(screen.getByRole('button', { name: 'Start' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Create failed');
+    expect(screen.getByRole('textbox', { name: 'What would you like to work on?' })).toHaveValue('Keep this prompt');
+  });
+
   it('keeps home after refresh and Back', async () => {
     const user = userEvent.setup();
     const refresh = deferred<WorkspaceResponse>();
@@ -116,6 +132,39 @@ describe('real App', () => {
       await initialList.promise;
     });
     expect(screen.getByText('new.txt')).toBeInTheDocument();
+    expect(screen.queryByText('old.txt')).not.toBeInTheDocument();
+  });
+
+  it('does not let an old same-workspace header refresh hide an uploaded file', async () => {
+    const user = userEvent.setup();
+    const oldFiles = [{ name: 'old.txt', path: 'old.txt', isDirectory: false }];
+    const uploadedFiles = [{ name: 'new.txt', path: 'new.txt', isDirectory: false }];
+    const headerRefresh = deferred<WorkspaceResponse>();
+    vi.mocked(api.fetchWorkspace)
+      .mockResolvedValueOnce(workspaceResponse())
+      .mockReturnValueOnce(headerRefresh.promise);
+    vi.mocked(api.fetchWorkspaceFiles)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(uploadedFiles);
+
+    render(<App />);
+    await screen.findByRole('textbox', { name: 'Workspace name' });
+    await waitFor(() => expect(api.fetchWorkspaceFiles).toHaveBeenCalledTimes(1));
+
+    await user.click(screen.getByRole('button', { name: 'Refresh workspace' }));
+    await waitFor(() => expect(api.fetchWorkspace).toHaveBeenCalledTimes(2));
+    await user.upload(
+      screen.getByLabelText('Upload files to workspace'),
+      new File(['new'], 'new.txt', { type: 'text/plain' }),
+    );
+    await waitFor(() => expect(api.fetchWorkspaceFiles).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('new.txt')).toBeInTheDocument();
+
+    await act(async () => {
+      headerRefresh.resolve(workspaceResponse('workspace-1', oldFiles));
+      await headerRefresh.promise;
+    });
+    await waitFor(() => expect(screen.getByText('new.txt')).toBeInTheDocument());
     expect(screen.queryByText('old.txt')).not.toBeInTheDocument();
   });
 });

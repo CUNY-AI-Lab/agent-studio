@@ -99,6 +99,24 @@ describe('HomePage', () => {
     expect(screen.getByRole('button', { name: 'Start blank' })).toBeDisabled();
   });
 
+  it('does not navigate to a workspace while another home action is pending', async () => {
+    const user = userEvent.setup();
+    const onSelectWorkspace = vi.fn();
+    render(
+      <HomePage
+        {...props({
+          workspaces: [workspace(1)],
+          busy: true,
+          onSelectWorkspace,
+        })}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /Workspace 1/ }));
+
+    expect(onSelectWorkspace).not.toHaveBeenCalled();
+  });
+
   it('keeps a typed prompt when workspace creation fails', async () => {
     const user = userEvent.setup();
     const onCreateWorkspace = vi.fn(async () => false);

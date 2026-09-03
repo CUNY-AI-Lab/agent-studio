@@ -470,10 +470,14 @@ function WorkspaceShell({
     viewportInteractionRef.current = false;
     viewportRef.current = nextWorkspaceState.viewport;
     setWorkspaceState(nextWorkspaceState);
-    workspaceFilesRequestRef.current += 1;
-    setWorkspaceFiles(workspace.files);
-    workspaceFilesRef.current = workspace.files;
     if (workspaceChanged) {
+      // File refreshes are owned by this shell. A same-ID parent refresh can
+      // carry an older workspace snapshot (for example, a header save that
+      // started before a file upload); feeding its files back here would hide
+      // the newer list already fetched by the shell.
+      workspaceFilesRequestRef.current += 1;
+      setWorkspaceFiles(workspace.files);
+      workspaceFilesRef.current = workspace.files;
       setAutomaticLayoutSaveError(null);
       setManualSaveError(null);
       setViewportSaveError(null);
@@ -3266,7 +3270,7 @@ export default function App() {
   }
 
   // Error state
-  if (error && !selectedWorkspace && !selectedGallery) {
+  if (error && !selectedWorkspace && !selectedGallery && (selectedWorkspaceId || selectedGalleryId)) {
     return (
       <div className="grain h-screen flex flex-col canvas-bg">
         <div className="px-6 py-3 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
@@ -3357,6 +3361,8 @@ export default function App() {
       onImportWorkspace={handleImportBundle}
       busy={creating || importing}
       importing={importing}
+      error={error}
+      onRetry={() => void loadHome()}
     />
   );
 }
