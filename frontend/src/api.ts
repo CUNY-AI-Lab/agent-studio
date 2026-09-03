@@ -1,7 +1,7 @@
 import type {
-  DownloadRequest,
   GalleryItem,
   GalleryItemFull,
+  QueuedDownload,
   WorkspaceFileInfo,
   WorkspaceRecord,
   WorkspaceResponse,
@@ -528,15 +528,17 @@ export async function fetchWorkspaceFiles(workspaceId: string): Promise<Workspac
   return payload.files;
 }
 
-export async function fetchWorkspaceDownloads(workspaceId: string): Promise<DownloadRequest[]> {
+export async function fetchWorkspaceDownloads(workspaceId: string): Promise<QueuedDownload[]> {
   const response = await readingFetch(`/api/workspaces/${workspaceId}/downloads`);
-  const payload = await parseJson<{ downloads: DownloadRequest[] }>(response);
+  const payload = await parseJson<{ downloads: QueuedDownload[] }>(response);
   return payload.downloads;
 }
 
-export async function clearWorkspaceDownloads(workspaceId: string): Promise<void> {
+export async function clearWorkspaceDownloads(workspaceId: string, ids: readonly string[]): Promise<void> {
   const response = await mutatingFetch(`/api/workspaces/${workspaceId}/downloads`, {
     method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
   });
   await parseJson<{ success: boolean }>(response);
 }

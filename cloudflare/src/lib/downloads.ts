@@ -9,11 +9,23 @@ export interface DownloadRequest {
   format: 'csv' | 'json' | 'txt';
 }
 
+export interface QueuedDownload extends DownloadRequest {
+  /** Opaque per-object key suffix used to acknowledge this item. */
+  id: string;
+}
+
+/** Download object keys are scalar leaves, never paths or traversal segments. */
+export const downloadIdSchema = z.string().regex(
+  /^[A-Za-z0-9][A-Za-z0-9._-]*$/,
+  'Download id must be a scalar key',
+);
+
 // Each queued download is stored as its OWN R2 object under `downloads/`, so
 // appending is a plain PUT of a uniquely-keyed object — no read-modify-write and
 // therefore no lost-write race under concurrent `addWorkspaceDownload` calls
 // (AS-2-4). Reading lists the prefix, gets each object, and sorts by the stored
-// sequence. Clearing deletes the whole prefix.
+// sequence. Acknowledgement deletes only the explicitly listed object keys, so
+// a download appended after a read remains queued.
 //
 // The object key embeds a zero-padded creation timestamp plus a per-process
 // counter and a random suffix, so keys sort chronologically (R2 list returns
@@ -78,10 +90,10 @@ export async function getWorkspaceDownloads(
   sessionId: string,
   workspaceId: string,
   options: ReadDownloadsOptions = {}
-): Promise<DownloadRequest[]> {
+): Promise<QueuedDownload[]> {
   const onCorrupt = options.onCorrupt ?? 'skip';
   const prefix = getDownloadsPrefix(sessionId, workspaceId);
-  const stored: StoredDownload[] = [];
+  const stored: Array<{ key: string; value: StoredDownload }> = [];
 
   let cursor: string | undefined;
   do {
@@ -107,13 +119,16 @@ export async function getWorkspaceDownloads(
       })
     );
     for (const entry of objects) {
-      if (entry) stored.push(entry.value);
+      if (entry) stored.push(entry);
     }
     cursor = nextR2Cursor(listing, 'download listing');
   } while (cursor);
 
-  stored.sort((left, right) => left.seq - right.seq);
-  return stored.map((entry) => entry.download);
+  stored.sort((left, right) => left.value.seq - right.value.seq);
+  return stored.map(({ key, value }) => ({
+    id: key.slice(prefix.length),
+    ...value.download,
+  }));
 }
 
 export async function addWorkspaceDownload(
@@ -140,9 +155,14 @@ export async function addWorkspaceDownload(
 export async function clearWorkspaceDownloads(
   env: Env,
   sessionId: string,
-  workspaceId: string
+  workspaceId: string,
+  ids: readonly string[],
 ): Promise<void> {
-  await deleteByPrefix(env, getDownloadsPrefix(sessionId, workspaceId));
+  const prefix = getDownloadsPrefix(sessionId, workspaceId);
+  const uniqueIds = [...new Set(ids)].map((id) => downloadIdSchema.parse(id));
+  for (const id of uniqueIds) {
+    await env.WORKSPACE_FILES.delete(`${prefix}${id}`);
+  }
 }
 
 /** Replace the current per-object queue with a deterministic ordered set. */

@@ -32,6 +32,7 @@ import {
 } from '../src/lib/cail-identity.ts';
 import { galleryOwnerTag } from '../src/lib/gallery.ts';
 import { DEFAULT_CAIL_MODEL } from '../src/lib/cail-model.ts';
+import { addWorkspaceDownload } from '../src/lib/downloads.ts';
 
 const app = await importServer();
 const deployedV1Fixture = JSON.parse(
@@ -2087,20 +2088,109 @@ test('import: runtime failures use the private canonical error envelope', async 
 // Downloads + runtime (secondary routes)
 // ---------------------------------------------------------------------------
 
-test('downloads: GET is empty, DELETE clears', async () => {
+test('downloads: GET returns queued items and DELETE acknowledges only those ids', async () => {
+  const { env } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+
+  await addWorkspaceDownload(env, sessionId, workspace.id, {
+    filename: 'first.txt', format: 'txt', data: 'first',
+  });
+  const getRes = await session.request(app, `/api/workspaces/${workspace.id}/downloads`);
+  assert.equal(getRes.status, 200);
+  const first = (await getRes.json()).downloads[0];
+  assert.equal(first.filename, 'first.txt');
+  assert.match(first.id, /^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+
+  await addWorkspaceDownload(env, sessionId, workspace.id, {
+    filename: 'second.txt', format: 'txt', data: 'second',
+  });
+
+  const delRes = await session.request(app, `/api/workspaces/${workspace.id}/downloads`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids: [first.id] }),
+  });
+  assert.equal(delRes.status, 200);
+  assert.deepEqual(await delRes.json(), { success: true });
+
+  const remaining = await session.request(app, `/api/workspaces/${workspace.id}/downloads`);
+  assert.deepEqual((await remaining.json()).downloads.map((download) => download.filename), ['second.txt']);
+});
+
+test('downloads: duplicate acknowledgement is harmless', async () => {
+  const { env } = makeEnv();
+  const { session, sessionId } = await openSession(app, env);
+  const workspace = await createWorkspace(session);
+  await addWorkspaceDownload(env, sessionId, workspace.id, {
+    filename: 'one.txt', format: 'txt', data: 'one',
+  });
+  const queued = (await (await session.request(app, `/api/workspaces/${workspace.id}/downloads`)).json()).downloads[0];
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const response = await session.request(app, `/api/workspaces/${workspace.id}/downloads`, {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids: [queued.id] }),
+    });
+    assert.equal(response.status, 200);
+  }
+  assert.deepEqual(
+    (await (await session.request(app, `/api/workspaces/${workspace.id}/downloads`)).json()).downloads,
+    [],
+  );
+});
+
+test('downloads: acknowledgement ids cannot cross workspace namespaces', async () => {
+  const { env } = makeEnv();
+  const ownerA = await openSession(app, env);
+  const ownerB = await openSession(app, env);
+  const workspaceA = await createWorkspace(ownerA.session, 'Owner A');
+  const workspaceB = await createWorkspace(ownerB.session, 'Owner B');
+  await addWorkspaceDownload(env, ownerA.sessionId, workspaceA.id, {
+    filename: 'owner-a.txt', format: 'txt', data: 'owner-a',
+  });
+  await addWorkspaceDownload(env, ownerB.sessionId, workspaceB.id, {
+    filename: 'owner-b.txt', format: 'txt', data: 'owner-b',
+  });
+  const ownerAItem = (await (await ownerA.session.request(app, `/api/workspaces/${workspaceA.id}/downloads`)).json()).downloads[0];
+
+  const response = await ownerB.session.request(app, `/api/workspaces/${workspaceB.id}/downloads`, {
+    method: 'DELETE',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ids: [ownerAItem.id] }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    (await (await ownerA.session.request(app, `/api/workspaces/${workspaceA.id}/downloads`)).json()).downloads.map((download) => download.filename),
+    ['owner-a.txt'],
+  );
+  assert.deepEqual(
+    (await (await ownerB.session.request(app, `/api/workspaces/${workspaceB.id}/downloads`)).json()).downloads.map((download) => download.filename),
+    ['owner-b.txt'],
+  );
+});
+
+test('downloads: DELETE requires explicit scalar ids', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session);
 
-  const getRes = await session.request(app, `/api/workspaces/${workspace.id}/downloads`);
-  assert.equal(getRes.status, 200);
-  assert.deepEqual((await getRes.json()).downloads, []);
-
-  const delRes = await session.request(app, `/api/workspaces/${workspace.id}/downloads`, {
-    method: 'DELETE',
-  });
-  assert.equal(delRes.status, 200);
-  assert.deepEqual(await delRes.json(), { success: true });
+  for (const body of [
+    undefined,
+    {},
+    { ids: ['../escape.json'] },
+    { ids: ['nested/id.json'] },
+    { ids: [123] },
+  ]) {
+    const request = {
+      method: 'DELETE',
+      headers: { 'content-type': 'application/json' },
+    };
+    if (body !== undefined) request.body = JSON.stringify(body);
+    const response = await session.request(app, `/api/workspaces/${workspace.id}/downloads`, request);
+    assert.equal(response.status, 400);
+  }
 });
 
 test('runtime: info and execute routes respond via the agent', async () => {

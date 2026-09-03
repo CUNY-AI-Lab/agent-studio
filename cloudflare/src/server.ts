@@ -16,7 +16,11 @@ import {
 } from './lib/gallery';
 import { createWorkspaceExportBundle } from './lib/export';
 import { decodeWorkspaceImportFile, panelSchema, parseWorkspaceImportBundle } from './lib/import';
-import { clearWorkspaceDownloads, getWorkspaceDownloads } from './lib/downloads';
+import {
+  clearWorkspaceDownloads,
+  downloadIdSchema,
+  getWorkspaceDownloads,
+} from './lib/downloads';
 import {
   deleteByPrefix,
   deleteWorkspaceFiles,
@@ -90,6 +94,7 @@ const publishWorkspaceSchema = z.object({
 });
 
 const runtimeExecuteSchema = z.object({ code: runtimeCodeSchema });
+const downloadAcknowledgementSchema = z.object({ ids: z.array(downloadIdSchema) }).strict();
 
 const MAX_IMPORT_BUNDLE_BYTES = 50 * 1024 * 1024;
 const MAX_IMPORT_FILE_COUNT = 500;
@@ -689,10 +694,11 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
 });
 
 app.delete('/api/workspaces/:id/downloads', async (c) => {
+  const { ids } = downloadAcknowledgementSchema.parse(await c.req.json());
   const sessionId = requireSession(c);
   const workspaceId = loadedWorkspace(c).id;
 
-  await clearWorkspaceDownloads(c.env, sessionId, workspaceId);
+  await clearWorkspaceDownloads(c.env, sessionId, workspaceId, ids);
   return c.json({ success: true });
 });
 

@@ -361,7 +361,13 @@ test('retry replaces partial target downloads when the legacy queue shrinks', as
   source.messages = [
     { id: 'replacement-message', role: 'user', parts: [{ type: 'text', text: 'replacement' }] },
   ];
-  await clearWorkspaceDownloads(env(r2), SOURCE_SESSION, WORKSPACE_ONE);
+  const sourceDownloads = await getWorkspaceDownloads(env(r2), SOURCE_SESSION, WORKSPACE_ONE);
+  await clearWorkspaceDownloads(
+    env(r2),
+    SOURCE_SESSION,
+    WORKSPACE_ONE,
+    sourceDownloads.map(({ id: _id }) => _id),
+  );
   await addWorkspaceDownload(env(r2), SOURCE_SESSION, WORKSPACE_ONE, {
     filename: 'current.txt', format: 'txt', data: 'current',
   });
