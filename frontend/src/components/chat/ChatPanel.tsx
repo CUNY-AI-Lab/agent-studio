@@ -22,6 +22,7 @@ export function ChatPanel({
   onStop,
   onClear,
   onRetry,
+  onReload,
   errorNotice,
   selectedScopeLabel,
   onClearScope,
@@ -34,6 +35,7 @@ export function ChatPanel({
   onStop: () => void;
   onClear: () => void;
   onRetry: () => void;
+  onReload: () => void;
   errorNotice?: string | null;
   selectedScopeLabel: string | null;
   onClearScope: () => void;
@@ -108,18 +110,27 @@ export function ChatPanel({
               </p>
               <p className="text-xs text-muted-foreground">
                 {activity.label === 'Connection lost'
-                  ? 'Refresh the workspace to reconnect.'
+                  ? 'Reload the page to reconnect.'
                   : 'Retry the last turn or clear the thread and continue.'}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                className="rounded-md border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={onRetry}
-                disabled={!activity.canRetry}
-              >
-                Retry
-              </button>
+              {activity.label === 'Connection lost' ? (
+                <button
+                  className="rounded-md border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10"
+                  onClick={onReload}
+                >
+                  Reload page
+                </button>
+              ) : (
+                <button
+                  className="rounded-md border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={onRetry}
+                  disabled={!activity.canRetry}
+                >
+                  Retry
+                </button>
+              )}
               <button
                 className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                 onClick={clearConversation}

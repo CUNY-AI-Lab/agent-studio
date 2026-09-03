@@ -242,6 +242,7 @@ function WorkspaceShell({
   const pendingAutoFocusRef = useRef<Set<string>>(new Set());
   const previousArtifactIdsRef = useRef<Set<string>>(new Set());
   const contextualAutoPanKeyRef = useRef<string | null>(null);
+  const initialPromptSentRef = useRef(false);
   const publishOperationIdRef = useRef<string | null>(null);
   const chatStopRef = useRef<() => void>(() => undefined);
   const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
@@ -529,6 +530,7 @@ function WorkspaceShell({
         workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
       );
       contextualAutoPanKeyRef.current = null;
+      initialPromptSentRef.current = false;
       contextualRetryRef.current = null;
     } else {
       setWorkspaceName((current) => reconcileWorkspaceDraft(
@@ -1051,7 +1053,7 @@ function WorkspaceShell({
 
   useEffect(() => {
     if (agent.connectionError) {
-      announce('The connection to the agent was lost. Refresh the workspace to reconnect.');
+      announce('The connection to the agent was lost. Reload the page to reconnect.');
     }
   }, [agent.connectionError, announce]);
 
@@ -1240,13 +1242,15 @@ function WorkspaceShell({
   }, [chat.status, drainWorkspaceDownloads, refreshWorkspaceFiles]);
 
   useEffect(() => {
-    if (!initialPrompt) return;
+    if (!initialPrompt || initialPromptSentRef.current) return;
     if (chat.status !== 'ready') return;
     if (chat.messages.some((message) => message.role === 'user' || message.role === 'assistant')) {
+      initialPromptSentRef.current = true;
       onInitialPromptConsumed?.();
       return;
     }
 
+    initialPromptSentRef.current = true;
     void sendChatMessage(initialPrompt);
     onInitialPromptConsumed?.();
   }, [chat, initialPrompt, onInitialPromptConsumed, sendChatMessage]);
@@ -2632,6 +2636,10 @@ function WorkspaceShell({
     if (pending) finishContextualTurn(pending, 'cancel');
   }, [finishContextualTurn]);
 
+  const handleConnectionReload = useCallback(() => {
+    globalThis.location.reload();
+  }, []);
+
   const chatActivity = getChatActivity({
     status: chat.status,
     isStreaming: chat.isStreaming,
@@ -2643,7 +2651,7 @@ function WorkspaceShell({
     canRetry: Boolean(lastUserPrompt),
   });
   const connectionErrorNotice = agent.connectionError
-    ? 'The connection to the agent was lost. Refresh the workspace to reconnect.'
+    ? 'The connection to the agent was lost. Reload the page to reconnect.'
     : null;
 
   const canvasViewportSize = canvasViewportRef.current
@@ -2666,6 +2674,7 @@ function WorkspaceShell({
       onStop={handleChatStop}
       onClear={handleChatClear}
       onRetry={handleChatRetry}
+      onReload={handleConnectionReload}
       errorNotice={connectionErrorNotice ?? chatErrorNotice}
       selectedScopeLabel={selectedScopeLabel}
       onClearScope={clearSelection}

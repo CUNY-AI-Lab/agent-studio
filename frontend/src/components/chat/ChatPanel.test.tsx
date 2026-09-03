@@ -27,6 +27,7 @@ const baseProps = {
   onStop: () => {},
   onClear: () => {},
   onRetry: () => {},
+  onReload: () => {},
   selectedScopeLabel: null,
   onClearScope: () => {},
 };
@@ -148,7 +149,9 @@ describe('ChatPanel', () => {
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
   });
 
-  it('shows a terminal connection failure without exposing the socket error', () => {
+  it('shows a terminal connection failure and offers a full-page reload without exposing the socket error', async () => {
+    const user = userEvent.setup();
+    const onReload = vi.fn();
     render(
       <ChatPanel
         {...baseProps}
@@ -162,14 +165,17 @@ describe('ChatPanel', () => {
           connectionError: new Error('private socket detail'),
           canRetry: true,
         })}
-        errorNotice="The connection to the agent was lost. Refresh the workspace to reconnect."
+        onReload={onReload}
+        errorNotice="The connection to the agent was lost. Reload the page to reconnect."
       />
     );
     expect(screen.getByText('Connection lost')).toBeInTheDocument();
-    expect(screen.getByText('The connection to the agent was lost. Refresh the workspace to reconnect.')).toBeInTheDocument();
-    expect(screen.getByText('Refresh the workspace to reconnect.')).toBeInTheDocument();
+    expect(screen.getByText('The connection to the agent was lost. Reload the page to reconnect.')).toBeInTheDocument();
+    expect(screen.getByText('Reload the page to reconnect.')).toBeInTheDocument();
     expect(screen.queryByText('private socket detail')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message the agent' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Reload page' }));
+    expect(onReload).toHaveBeenCalledOnce();
   });
 
   it('confirms before clearing a conversation with messages', async () => {
