@@ -711,6 +711,33 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     const sourcePanelState = persistedState.panels.find((panel) => panel.id === 'browser-source-cards');
     if ((sourcePanelState?.layout?.width ?? 0) <= 360) fail('Card resize did not survive reload');
 
+    // Delay the real refresh request. Back must remain usable, and its late
+    // response must not pull the user back into a workspace they just left.
+    const workspaceUrl = appPath(baseUrl, `api/workspaces/${workspaceId}`);
+    let releaseRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolveRefresh) => { releaseRefresh = resolveRefresh; });
+    await page.route(workspaceUrl, async (route) => {
+      await refreshGate;
+      await route.continue();
+    });
+    try {
+      const refreshRequest = page.waitForRequest(workspaceUrl);
+      await page.getByRole('button', { name: 'Refresh workspace' }).click();
+      await refreshRequest;
+      await page.getByRole('button', { name: 'Back to home' }).click();
+      const lateResponse = page.waitForResponse(workspaceUrl);
+      releaseRefresh();
+      await lateResponse;
+      await page.waitForLoadState('networkidle');
+      await expect(page.getByRole('textbox', { name: 'What would you like to work on?' })).toBeVisible();
+    } finally {
+      releaseRefresh();
+      await page.unroute(workspaceUrl);
+    }
+    await page.getByRole('button', { name: /^Agent Studio browser acceptance/ }).click();
+    await page.waitForURL(/workspace=/);
+    await expect(page.getByRole('textbox', { name: 'Workspace name' })).toHaveValue('Agent Studio browser acceptance');
+
     await verifyFileAndSharingLifecycle(page, baseUrl);
     await verifyFileExecutionBoundary(page, baseUrl);
 
