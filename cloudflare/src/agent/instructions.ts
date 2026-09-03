@@ -10,6 +10,7 @@ export function buildWorkspaceAgentSystemPrompt(scopedPanelPrompt?: string | nul
     'Ground research claims in retrievable sources. When you report a finding from a search or dataset, include the identifier a reader needs to verify it: DOI, arXiv id, PMID, catalog permalink, or URL.',
     'Prefer showing the underlying records (as tables, cards, or files with metadata) over paraphrasing them away. Preserve source metadata in every artifact you generate.',
     'Be transparent about limits: say when results come from your general knowledge rather than a live search, when a search was incomplete, and when sources disagree. Never fabricate a citation, DOI, or bibliographic detail — verify identifiers against a live lookup before presenting them.',
+    'A failed or blocked web_fetch is not a retrieved source. Report the failure; do not describe remembered information as that page’s contents or put raw error pages on the canvas unless requested.',
     '',
     '## Research sources and capability skills',
     'Reference docs for the sources below are available through the read_skill tool. Before your first use of a source in a conversation, call read_skill to get exact endpoints, parameters, and response shapes rather than guessing from memory.',
@@ -40,6 +41,7 @@ export function buildWorkspaceAgentSystemPrompt(scopedPanelPrompt?: string | nul
     'Dynamic Workers code mode is available via the codemode tool. Prefer codemode for multi-step transformations, repeated file operations, aggregation, and derived artifact generation.',
     'Inside codemode, use git.* for repository workflows and codemode.* for host APIs such as web fetches and canvas updates.',
     'Document files are handled inside codemode: extract PDF text with codemode.parse_pdf, read/write spreadsheets with codemode.read_xlsx / codemode.write_xlsx, and generate Word documents with codemode.write_docx (read the pdf/xlsx/docx skills for the exact shapes and limits).',
+    'PDF generation is not supported. Say so rather than assembling PDF bytes yourself; offer a supported document format. Report file creation or a tool operation as successful only after its result confirms success, and disclose any failed part of the request.',
     scopedPanelPrompt,
   ].filter((line) => line !== null && line !== undefined).join('\n');
 }

@@ -225,7 +225,6 @@ function WorkspaceShell({
     };
   }
   const [viewportPersistenceRevision, setViewportPersistenceRevision] = useState(0);
-  const autoFocusTimeoutRef = useRef<number | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
   const panelGestureBaselineRef = useRef<Record<string, CanvasPanelLayout> | null>(null);
   const groupGestureBaselineRef = useRef<Record<string, CanvasPanelLayout> | null>(null);
@@ -803,12 +802,6 @@ function WorkspaceShell({
     }
   }, []);
 
-  useEffect(() => () => {
-    if (autoFocusTimeoutRef.current) {
-      window.clearTimeout(autoFocusTimeoutRef.current);
-    }
-  }, []);
-
   useEffect(() => {
     const visibleIds = new Set(visiblePanels.map((panel) => panel.id));
     setSelectedPanelIds((current) => {
@@ -979,6 +972,7 @@ function WorkspaceShell({
     if (!canvasViewportRef.current) return;
     const viewportWidth = canvasViewportRef.current.clientWidth;
     const viewportHeight = canvasViewportRef.current.clientHeight;
+    if (viewportWidth === 0 || viewportHeight === 0) return;
     const centerX = bounds.x + bounds.width / 2;
     const centerY = bounds.y + bounds.height / 2;
 
@@ -1626,13 +1620,11 @@ function WorkspaceShell({
   useEffect(() => {
     if (pendingAutoFocusRef.current.size === 0) return;
     if (!canvasViewportRef.current) return;
+    if (isDrawerChatLayout && narrowActiveTab !== 'canvas') return;
 
-    if (autoFocusTimeoutRef.current) {
-      window.clearTimeout(autoFocusTimeoutRef.current);
-    }
-
-    autoFocusTimeoutRef.current = window.setTimeout(() => {
-      autoFocusTimeoutRef.current = null;
+    const timeout = window.setTimeout(() => {
+      const canvas = canvasViewportRef.current;
+      if (!canvas || canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
       const pendingIds = Array.from(pendingAutoFocusRef.current);
       if (pendingIds.length === 0) return;
 
@@ -1648,7 +1640,8 @@ function WorkspaceShell({
       if (!bounds) return;
       focusCanvasBounds(bounds);
     }, 120);
-  }, [focusCanvasBounds, panelLayouts]);
+    return () => window.clearTimeout(timeout);
+  }, [focusCanvasBounds, isDrawerChatLayout, narrowActiveTab, panelLayouts]);
 
   const renameGroup = useCallback(async (groupId: string, newName: string) => {
     const trimmedName = newName.trim();
@@ -2732,7 +2725,7 @@ function WorkspaceShell({
       <main
         id="workspace-canvas"
         aria-label="Workspace"
-        className={`flex-1 min-w-0 flex flex-col transition-[margin] duration-300 ${chatOpen && isDockedChatLayout ? 'mr-[400px]' : ''} ${isDrawerChatLayout && narrowActiveTab !== 'canvas' ? 'hidden' : ''}`}
+        className={`flex-1 min-w-0 flex flex-col transition-[margin] duration-300 ${chatOpen && isDockedChatLayout ? 'mr-[400px]' : ''}`}
       >
         <WorkspaceHeader
           workspaceName={workspaceName}
@@ -2840,14 +2833,13 @@ function WorkspaceShell({
           </div>
         ) : null}
 
-        {fileShelf}
-
         <div
           id="canvas-panel"
           role="tabpanel"
           aria-labelledby="canvas-tab"
-          className="flex-1 flex flex-col min-h-0 relative"
+          className={`flex-1 min-h-0 relative ${isDrawerChatLayout && narrowActiveTab !== 'canvas' ? 'hidden' : 'flex flex-col'}`}
         >
+          {fileShelf}
           <div className="canvas-header flex items-center justify-between px-4 py-2 z-10">
             <div />
             <div className="flex items-center gap-3 text-xs text-muted-foreground">
@@ -3086,12 +3078,12 @@ function WorkspaceShell({
             </div>
           ) : null}
         </div>
+        {isDrawerChatLayout && narrowActiveTab === 'chat' ? (
+          <div id="chat-panel" role="tabpanel" aria-labelledby="chat-tab" className="flex-1 min-h-0 chat-panel flex flex-col">
+            {chatPanelContent}
+          </div>
+        ) : null}
       </main>
-      {isDrawerChatLayout && narrowActiveTab === 'chat' ? (
-        <div id="chat-panel" role="tabpanel" aria-labelledby="chat-tab" className="flex-1 min-h-0 chat-panel flex flex-col">
-          {chatPanelContent}
-        </div>
-      ) : null}
       {isDockedChatLayout ? (
         <aside
           aria-label="Agent chat"
