@@ -3,6 +3,7 @@ import {
   PANEL_GAP,
   buildPanelLayouts,
   collectLayouts,
+  computePanelLayoutsDelta,
   findOpenPanelPosition,
   getGroupBounds,
   getLayoutsBounds,
@@ -114,6 +115,35 @@ describe('collectLayouts', () => {
     expect(Object.keys(picked)).toEqual(['a']);
     expect(picked.a).not.toBe(source.a);
     expect(picked.a).toEqual(source.a);
+  });
+});
+
+describe('computePanelLayoutsDelta', () => {
+  it('returns only ids whose geometry changed', () => {
+    const previous: LayoutMap = {
+      unchanged: { x: 0, y: 0, width: 100, height: 80 },
+      moved: { x: 120, y: 0, width: 100, height: 80 },
+      resized: { x: 240, y: 0, width: 100, height: 80 },
+    };
+    const next: LayoutMap = {
+      unchanged: { ...previous.unchanged },
+      moved: { ...previous.moved, x: 140 },
+      resized: { ...previous.resized, height: 120 },
+      added: { x: 360, y: 0, width: 100, height: 80 },
+    };
+
+    expect(computePanelLayoutsDelta(previous, next)).toEqual({
+      moved: next.moved,
+      resized: next.resized,
+      added: next.added,
+    });
+  });
+
+  it('does not mutate the next layouts while cloning changed entries', () => {
+    const next: LayoutMap = { moved: { x: 12, y: 8, width: 100, height: 80 } };
+    const delta = computePanelLayoutsDelta({}, next);
+    expect(delta.moved).not.toBe(next.moved);
+    expect(delta.moved).toEqual(next.moved);
   });
 });
 

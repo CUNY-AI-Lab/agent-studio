@@ -51,6 +51,7 @@ import type { ModelCatalog } from './api';
 import {
   PANEL_GAP,
   buildPanelLayouts,
+  computePanelLayoutsDelta,
   findOpenPanelPosition,
   getGroupBounds,
   getLayoutsBounds,
@@ -154,6 +155,7 @@ function WorkspaceShell({
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [automaticLayoutSaveError, setAutomaticLayoutSaveError] = useState<string | null>(null);
+  const [manualSaveError, setManualSaveError] = useState<string | null>(null);
   const [viewportSaveError, setViewportSaveError] = useState<string | null>(null);
   const [chatErrorNotice, setChatErrorNotice] = useState<string | null>(null);
   const [savingWorkspace, setSavingWorkspace] = useState(false);
@@ -215,6 +217,8 @@ function WorkspaceShell({
   const [viewportPersistenceRevision, setViewportPersistenceRevision] = useState(0);
   const autoFocusTimeoutRef = useRef<number | null>(null);
   const panelLayoutsRef = useRef<Record<string, CanvasPanelLayout>>({});
+  const panelGestureBaselineRef = useRef<Record<string, CanvasPanelLayout> | null>(null);
+  const groupGestureBaselineRef = useRef<Record<string, CanvasPanelLayout> | null>(null);
   const panelSourceRef = useRef<Record<string, string>>({});
   const automaticLayoutPersistenceRef = useRef<ReturnType<typeof useAutomaticLayoutPersistence> | null>(null);
   const clearFileHighlightTimeoutRef = useRef<number | null>(null);
@@ -290,9 +294,10 @@ function WorkspaceShell({
         : viewportPersistence.queue.reapply(state);
       viewportRef.current = nextState.viewport;
       const automaticLayoutPersistence = automaticLayoutPersistenceRef.current;
-      setWorkspaceState(automaticLayoutPersistence
+      const effectiveState = automaticLayoutPersistence
         ? automaticLayoutPersistence.acknowledgeServerState(nextState)
-        : nextState);
+        : nextState;
+      setWorkspaceState(effectiveState);
       pendingWorkspaceMetadataRef.current = nextState.workspace;
     },
   });
@@ -470,6 +475,7 @@ function WorkspaceShell({
     workspaceFilesRef.current = workspace.files;
     if (workspaceChanged) {
       setAutomaticLayoutSaveError(null);
+      setManualSaveError(null);
       setViewportSaveError(null);
       setWorkspaceName(workspace.workspace.name);
       setWorkspaceDescription(workspace.workspace.description);
@@ -492,6 +498,8 @@ function WorkspaceShell({
       closeContextualChat();
       setContextualThreads({});
       panelSourceRef.current = {};
+      panelGestureBaselineRef.current = null;
+      groupGestureBaselineRef.current = null;
       previousArtifactIdsRef.current = new Set(
         workspace.state.panels.filter((panel) => panel.type !== 'chat').map((panel) => panel.id)
       );
@@ -1033,6 +1041,10 @@ function WorkspaceShell({
   }, [announce, automaticLayoutSaveError]);
 
   useEffect(() => {
+    if (manualSaveError) announce(manualSaveError);
+  }, [announce, manualSaveError]);
+
+  useEffect(() => {
     if (viewportSaveError) announce(viewportSaveError);
   }, [announce, viewportSaveError]);
 
@@ -1063,18 +1075,21 @@ function WorkspaceShell({
     const panelIndex = artifactPanels.findIndex((panel) => panel.id === panelId);
     if (panelIndex < 0 || !canvasViewportRef.current) return;
     const panel = artifactPanels[panelIndex];
-    const layout = inferPanelLayout(panel, panelIndex);
+    const layout = panelLayoutsRef.current[panelId]
+      ?? panelLayouts[panelId]
+      ?? inferPanelLayout(panel, panelIndex);
     const viewportWidth = canvasViewportRef.current.clientWidth;
     const viewportHeight = canvasViewportRef.current.clientHeight;
     const panelCenterX = layout.x + layout.width / 2;
     const panelCenterY = layout.y + layout.height / 2;
 
-    updateViewport((current) => ({
+    const nextViewport = updateViewport((current) => ({
       ...current,
       x: viewportWidth / 2 - panelCenterX * current.zoom,
       y: viewportHeight / 2 - panelCenterY * current.zoom,
     }));
-  }, [artifactPanels, updateViewport]);
+    persistViewport(nextViewport);
+  }, [artifactPanels, panelLayouts, persistViewport, updateViewport]);
 
   const highlightWorkspaceFiles = useCallback((paths: string[], options?: { scroll?: boolean }) => {
     const uniquePaths = Array.from(new Set(paths)).filter(Boolean);
@@ -1325,22 +1340,22 @@ function WorkspaceShell({
     }
   }, [agent, workspace.workspace.id]);
 
-  const saveGroups = useCallback(async (groups: WorkspaceState['groups']) => {
-    // Every caller computes `groups` from the same workspaceState.groups
-    // snapshot this callback closes over, so diffing against it yields exactly
-    // what THIS edit changed. The server merges groups per id, so sending only
-    // the delta (plus explicit removals) keeps a concurrent edit to a
-    // different group in another tab alive (V3).
+  const saveGroups = useCallback(async (groups: WorkspaceState['groups']): Promise<boolean> => {
+    // The server merges groups per id, so sending only the delta (plus explicit
+    // removals) keeps a concurrent edit to a different group alive (V3).
     const { upserts, removeIds } = computeGroupsDelta(workspaceState.groups, groups);
-    setWorkspaceState((current) => ({
-      ...current,
-      groups,
-    }));
-    if (upserts.length === 0 && removeIds.length === 0) return;
+    setWorkspaceState((current) => ({ ...current, groups }));
+    if (upserts.length === 0 && removeIds.length === 0) return true;
     const patch: Parameters<WorkspaceAgentClient['applyLayoutPatch']>[0] = {};
     if (upserts.length > 0) patch.groups = upserts;
     if (removeIds.length > 0) patch.removeGroups = removeIds;
-    await agent.call('applyLayoutPatch', [patch]);
+    try {
+      await agent.call('applyLayoutPatch', [patch]);
+    } catch {
+      setManualSaveError('Some layout changes were not saved. Reload to restore the saved workspace; unsaved changes will be lost.');
+      return false;
+    }
+    return true;
   }, [agent, workspaceState.groups]);
 
   const toggleSelectedConnection = useCallback(async () => {
@@ -1428,18 +1443,25 @@ function WorkspaceShell({
     }
   }, [agent, showToast, workspaceState.connections]);
 
-  const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>) => {
-    const manualLayouts: AutomaticPanelLayouts = {};
+  const savePanelLayouts = useCallback(async (layouts: Record<string, { x: number; y: number; width?: number; height?: number }>): Promise<boolean> => {
+    const persistedLayouts: AutomaticPanelLayouts = {};
     for (const [panelId, layout] of Object.entries(layouts)) {
       const baseLayout = panelLayoutsRef.current[panelId];
       if (!baseLayout) continue;
-      manualLayouts[panelId] = { ...baseLayout, ...layout };
+      const nextLayout = { ...baseLayout, ...layout };
+      persistedLayouts[panelId] = nextLayout;
     }
-    automaticLayoutPersistenceRef.current?.recordManualLayouts(manualLayouts);
+    if (Object.keys(persistedLayouts).length === 0) return true;
+
+    panelLayoutsRef.current = {
+      ...panelLayoutsRef.current,
+      ...persistedLayouts,
+    };
+    automaticLayoutPersistenceRef.current?.recordManualLayouts(persistedLayouts);
     setWorkspaceState((current) => {
       let changed = false;
       const panels = current.panels.map((panel) => {
-        const nextLayout = layouts[panel.id];
+        const nextLayout = persistedLayouts[panel.id];
         if (!nextLayout) return panel;
         const mergedLayout = {
           ...panel.layout,
@@ -1461,7 +1483,13 @@ function WorkspaceShell({
       });
       return changed ? { ...current, panels } : current;
     });
-    await agent.call('applyLayoutPatch', [{ panels: layouts }]);
+    try {
+      await agent.call('applyLayoutPatch', [{ panels: persistedLayouts }]);
+    } catch {
+      setManualSaveError('Some layout changes were not saved. Reload to restore the saved workspace; unsaved changes will be lost.');
+      return false;
+    }
+    return true;
   }, [agent]);
 
   const queueAutomaticPanelLayouts = useCallback((layouts: AutomaticPanelLayouts) => {
@@ -1597,8 +1625,7 @@ function WorkspaceShell({
     );
     setEditingGroupId(null);
     setGroupNameInput('');
-    await saveGroups(nextGroups);
-    if (trimmedName) {
+    if (await saveGroups(nextGroups) && trimmedName) {
       showToast(`Group renamed to "${trimmedName}"`);
     }
   }, [saveGroups, showToast, workspaceState.groups]);
@@ -1606,48 +1633,69 @@ function WorkspaceShell({
   const handlePanelLayoutChange = useCallback((panelId: string, layout: Partial<CanvasPanelLayout>) => {
     // A direct user edit supersedes an automatic placement that has not yet
     // reached the server. The drag/resize save below remains authoritative.
-    const baseLayout = panelLayoutsRef.current[panelId];
-    if (baseLayout) {
-      automaticLayoutPersistenceRef.current?.recordManualLayouts({
-        [panelId]: { ...baseLayout, ...layout },
-      });
-    } else {
+    const panel = artifactPanels.find((entry) => entry.id === panelId);
+    const panelIndex = artifactPanels.findIndex((entry) => entry.id === panelId);
+    const baseLayout = panelLayoutsRef.current[panelId]
+      ?? (panel && panelIndex >= 0 ? inferPanelLayout(panel, panelIndex) : null);
+    if (!baseLayout) {
       automaticLayoutPersistenceRef.current?.discard([panelId]);
+      return;
     }
+    if (!panelGestureBaselineRef.current) {
+      panelGestureBaselineRef.current = { [panelId]: { ...baseLayout } };
+    }
+    const nextLayout = { ...baseLayout, ...layout };
+    panelLayoutsRef.current = {
+      ...panelLayoutsRef.current,
+      [panelId]: nextLayout,
+    };
+    automaticLayoutPersistenceRef.current?.recordManualLayouts({
+      [panelId]: nextLayout,
+    });
     if (!automaticLayoutPersistenceRef.current?.hasFailure()) setAutomaticLayoutSaveError(null);
     setWorkspaceState((current) => {
-      const nextPanels = current.panels.map((panel, index) => {
-        if (panel.id !== panelId) return panel;
-        const baseLayout = panelLayoutsRef.current[panelId] ?? inferPanelLayout(panel, index);
-        const nextLayout = { ...baseLayout, ...layout };
-        panelLayoutsRef.current = {
-          ...panelLayoutsRef.current,
-          [panelId]: nextLayout,
-        };
-        return {
-          ...panel,
-          layout: nextLayout,
-        };
-      });
+      const nextPanels = current.panels.map((currentPanel) => currentPanel.id === panelId
+        ? { ...currentPanel, layout: nextLayout }
+        : currentPanel);
       return {
         ...current,
         panels: nextPanels,
       };
     });
-  }, []);
+  }, [artifactPanels]);
 
   const handlePanelDragStart = useCallback((panelId: string) => {
+    const currentLayout = panelLayoutsRef.current[panelId] ?? panelLayouts[panelId];
+    panelGestureBaselineRef.current = currentLayout ? { [panelId]: { ...currentLayout } } : {};
     setFocusedPanelId(panelId);
-  }, []);
+  }, [panelLayouts]);
 
   const handlePanelDragEnd = useCallback(async (panelId: string) => {
+    const beforeCollision = Object.fromEntries(
+      Object.entries(panelLayoutsRef.current).map(([id, layout]) => [id, { ...layout }]),
+    );
     const fixedPanelIds = new Set([panelId].filter((visiblePanelId) => visiblePanelIds.has(visiblePanelId)));
     const resolved = resolveVisibleLayoutCollisions(panelLayoutsRef.current, visiblePanelIds, fixedPanelIds);
-    if (!resolved[panelId]) return;
+    const baseline = panelGestureBaselineRef.current;
+    panelGestureBaselineRef.current = null;
+    if (!baseline || !resolved[panelId]) return;
 
     panelLayoutsRef.current = {
       ...panelLayoutsRef.current,
       ...resolved,
+    };
+    const resolvedExistingLayouts = Object.fromEntries(
+      Object.keys(beforeCollision)
+        .map((id) => [id, resolved[id]] as const)
+        .filter((entry): entry is readonly [string, CanvasPanelLayout] => Boolean(entry[1])),
+    );
+    const collisionLayouts = computePanelLayoutsDelta(beforeCollision, resolvedExistingLayouts);
+    const gestureLayouts = computePanelLayoutsDelta(baseline, {
+      [panelId]: resolved[panelId],
+    });
+    const changedLayouts = {
+      ...collisionLayouts,
+      ...gestureLayouts,
     };
 
     let nextGroups = workspaceState.groups;
@@ -1692,7 +1740,10 @@ function WorkspaceShell({
       }
     }
 
-    await savePanelLayouts(resolved);
+    if (Object.keys(changedLayouts).length > 0) {
+      const layoutsSaved = await savePanelLayouts(changedLayouts);
+      if (!layoutsSaved) return;
+    }
     if (nextGroups !== workspaceState.groups) {
       await saveGroups(nextGroups);
     }
@@ -1702,9 +1753,18 @@ function WorkspaceShell({
     const group = workspaceState.groups.find((entry) => entry.id === groupId);
     if (!group) return;
 
-    const groupPanelIds = new Set(group.panelIds);
+    const groupPanelIds = new Set(group.panelIds.filter((panelId) => visiblePanelIds.has(panelId)));
+    if (!groupGestureBaselineRef.current) {
+      const currentLayouts = { ...panelLayouts, ...panelLayoutsRef.current };
+      const baselineLayouts: Record<string, CanvasPanelLayout> = {};
+      groupPanelIds.forEach((panelId) => {
+        const layout = currentLayouts[panelId];
+        if (layout) baselineLayouts[panelId] = { ...layout };
+      });
+      groupGestureBaselineRef.current = baselineLayouts;
+    }
     const nextLayouts: AutomaticPanelLayouts = {};
-    workspaceState.panels.forEach((panel, index) => {
+    visiblePanels.forEach((panel, index) => {
       if (!groupPanelIds.has(panel.id)) return;
       const baseLayout = panelLayoutsRef.current[panel.id] ?? inferPanelLayout(panel, index);
       nextLayouts[panel.id] = {
@@ -1714,6 +1774,10 @@ function WorkspaceShell({
       };
     });
     automaticLayoutPersistenceRef.current?.recordManualLayouts(nextLayouts);
+    panelLayoutsRef.current = {
+      ...panelLayoutsRef.current,
+      ...nextLayouts,
+    };
 
     setWorkspaceState((current) => {
       const nextPanels = current.panels.map((panel) => {
@@ -1724,21 +1788,22 @@ function WorkspaceShell({
           layout: nextLayout,
         };
       });
-      panelLayoutsRef.current = {
-        ...panelLayoutsRef.current,
-        ...nextLayouts,
-      };
       return {
         ...current,
         panels: nextPanels,
       };
     });
-  }, [workspaceState.groups, workspaceState.panels]);
+  }, [panelLayouts, visiblePanelIds, visiblePanels, workspaceState.groups]);
 
   const handleGroupDragEnd = useCallback(async (groupId: string) => {
     const group = workspaceState.groups.find((entry) => entry.id === groupId);
-    if (!group) return;
+    const baseline = groupGestureBaselineRef.current;
+    groupGestureBaselineRef.current = null;
+    if (!group || !baseline) return;
 
+    const beforeCollision = Object.fromEntries(
+      Object.entries(panelLayoutsRef.current).map(([id, layout]) => [id, { ...layout }]),
+    );
     const fixedPanelIds = new Set(group.panelIds.filter((panelId) => visiblePanelIds.has(panelId)));
     const resolved = resolveVisibleLayoutCollisions(panelLayoutsRef.current, visiblePanelIds, fixedPanelIds);
 
@@ -1746,9 +1811,24 @@ function WorkspaceShell({
       ...panelLayoutsRef.current,
       ...resolved,
     };
+    const resolvedExistingLayouts = Object.fromEntries(
+      Object.keys(beforeCollision)
+        .map((id) => [id, resolved[id]] as const)
+        .filter((entry): entry is readonly [string, CanvasPanelLayout] => Boolean(entry[1])),
+    );
+    const collisionLayouts = computePanelLayoutsDelta(beforeCollision, resolvedExistingLayouts);
+    const gestureLayouts = Object.fromEntries(
+      Object.keys(baseline)
+        .map((panelId) => [panelId, resolved[panelId]] as const)
+        .filter((entry): entry is readonly [string, CanvasPanelLayout] => Boolean(entry[1])),
+    );
+    const changedLayouts = {
+      ...collisionLayouts,
+      ...computePanelLayoutsDelta(baseline, gestureLayouts),
+    };
 
-    if (Object.keys(resolved).length > 0) {
-      await savePanelLayouts(resolved);
+    if (Object.keys(changedLayouts).length > 0) {
+      await savePanelLayouts(changedLayouts);
     }
   }, [savePanelLayouts, visiblePanelIds, workspaceState.groups]);
 
@@ -1853,8 +1933,8 @@ function WorkspaceShell({
         }
       }
 
-      if (finalLayouts) {
-        await savePanelLayouts(finalLayouts);
+      if (finalLayouts && !(await savePanelLayouts(finalLayouts))) {
+        return;
       }
     }
 
@@ -1872,15 +1952,17 @@ function WorkspaceShell({
         color: ['#a47430', '#4c78a8', '#2d8f6f', '#9b5dc4'][workspaceState.groups.length % 4],
       },
     ];
-    await saveGroups(nextGroups);
-    showToast(`Grouped ${groupIds.length} tiles`);
+    if (await saveGroups(nextGroups)) {
+      showToast(`Grouped ${groupIds.length} tiles`);
+    }
   }, [saveGroups, selectedPanelIds, showToast, workspaceState.groups]);
 
   const ungroupSelection = useCallback(async () => {
     if (!selectedGroup) return;
     const groupName = selectedGroup.name || `${selectedGroup.panelIds.length} tiles`;
-    await saveGroups(workspaceState.groups.filter((group) => group.id !== selectedGroup.id));
-    showToast(`Ungrouped "${groupName}"`);
+    if (await saveGroups(workspaceState.groups.filter((group) => group.id !== selectedGroup.id))) {
+      showToast(`Ungrouped "${groupName}"`);
+    }
   }, [saveGroups, selectedGroup, showToast, workspaceState.groups]);
 
   const removePanelFromGroup = useCallback(async (panelId: string) => {
@@ -1895,7 +1977,7 @@ function WorkspaceShell({
         : [];
     });
 
-    await saveGroups(nextGroups);
+    if (!(await saveGroups(nextGroups))) return;
     setSelectedPanelIds((current) => new Set(Array.from(current).filter((selectedId) => selectedId !== panelId)));
     showToast('Removed from group');
   }, [saveGroups, showToast, workspaceState.groups]);
@@ -2553,10 +2635,19 @@ function WorkspaceShell({
           onOpenShortcuts={() => setShortcutsOpen(true)}
         />
 
-        {error || automaticLayoutSaveError || viewportSaveError ? (
+        {error || automaticLayoutSaveError || manualSaveError || viewportSaveError ? (
           <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
             <div className="flex items-center justify-between gap-3">
-              <span>{automaticLayoutSaveError || viewportSaveError || error}</span>
+              <span>{manualSaveError || automaticLayoutSaveError || viewportSaveError || error}</span>
+              {manualSaveError ? (
+                <button
+                  type="button"
+                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  onClick={() => window.location.reload()}
+                >
+                  Reload saved workspace
+                </button>
+              ) : null}
               {automaticLayoutSaveError ? (
                 <button
                   type="button"

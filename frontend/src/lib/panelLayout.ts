@@ -117,6 +117,28 @@ export function collectLayouts(layouts: LayoutMap, panelIds: Iterable<string>) {
   return visibleLayouts;
 }
 
+/**
+ * Return only panel layouts whose geometry differs from the edit's baseline.
+ * Layout patches are merged per panel on the server, so sending this delta
+ * keeps an edit from overwriting a concurrent change to another tile.
+ */
+export function computePanelLayoutsDelta(previous: LayoutMap, next: LayoutMap) {
+  return Object.fromEntries(
+    Object.entries(next)
+      .filter(([panelId, layout]) => {
+        const before = previous[panelId];
+        return (
+          !before ||
+          before.x !== layout.x ||
+          before.y !== layout.y ||
+          before.width !== layout.width ||
+          before.height !== layout.height
+        );
+      })
+      .map(([panelId, layout]) => [panelId, { ...layout }]),
+  );
+}
+
 export function hasOverlappingPanels(layouts: LayoutMap): boolean {
   const panelIds = Object.keys(layouts);
   for (let index = 0; index < panelIds.length; index += 1) {
