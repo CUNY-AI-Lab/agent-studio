@@ -72,6 +72,7 @@ type AcceptanceOptions = {
 type ApiCallOptions<T> = {
   method?: string;
   body?: unknown;
+  expectedStatus?: number;
   label: string;
   schema: z.ZodType<T>;
 };
@@ -119,7 +120,7 @@ async function apiCall<T>(
   page: Page,
   baseUrl: string,
   suffix: string,
-  { method = 'GET', body, label, schema }: ApiCallOptions<T>,
+  { method = 'GET', body, expectedStatus, label, schema }: ApiCallOptions<T>,
 ): Promise<T> {
   const path = applicationPath(baseUrl, suffix);
   const result = await page.evaluate(
@@ -145,7 +146,9 @@ async function apiCall<T>(
     },
     { path, method, body },
   );
-  if (result.status < 200 || result.status >= 300) {
+  if (expectedStatus === undefined
+    ? result.status < 200 || result.status >= 300
+    : result.status !== expectedStatus) {
     fail(`${method} ${label} failed with HTTP ${result.status}`);
   }
   return schema.parse(result.payload);
@@ -441,6 +444,10 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
     page.once('dialog', (confirmation) => void confirmation.accept());
     await page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ }).click();
     await expect(page.getByRole('button', { name: /^Publish(?: to gallery)?$/ })).toBeVisible();
+    await apiCall(page, baseUrl, `/api/workspaces/${workspaceIdFromUrl(page.url())}/publish`, {
+      method: 'DELETE', expectedStatus: 404, label: 'unpublish an already-unpublished workspace',
+      schema: z.object({ error: z.object({ code: z.literal('not_found') }).passthrough() }).passthrough(),
+    });
     await otherPage.reload({ waitUntil: 'networkidle' });
     await expect(otherPage.getByText('Gallery item not found', { exact: false })).toBeVisible();
 
