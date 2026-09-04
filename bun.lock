@@ -24,6 +24,7 @@
         "@cloudflare/shell": "0.4.1",
         "@cuny-ai-lab/cail-client": "6.0.0",
         "@cuny-ai-lab/cail-identity": "5.2.5",
+        "@cuny-ai-lab/cail-log": "0.6.2",
         "@modelcontextprotocol/sdk": "1.30.0",
         "agents": "0.20.1",
         "ai": "6.0.225",
@@ -230,6 +231,8 @@
     "@cuny-ai-lab/cail-client": ["@cuny-ai-lab/cail-client@6.0.0", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-client/6.0.0/64ad481bee8426cfe99494c7a638272026e10624", { "dependencies": { "zod": "4.4.3" } }, "sha512-/3oqsdunTg3QDnolyVIPPZzzQvSZ3O3aFe/qtHRoz3BJVxqfCZRoYdsMorb7oUV0FCT5L5v55QAggSV2Z5atRA=="],
 
     "@cuny-ai-lab/cail-identity": ["@cuny-ai-lab/cail-identity@5.2.5", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-identity/5.2.5/6c3b216acc750451eabb9ed9b32179460a8445d0", { "dependencies": { "jose": "6.2.3", "zod": "4.4.3" } }, "sha512-MqCXFwDCp2fO/m7RLPeKLg4mZSa/ArBoXt52Gl29YlWxiqM9YZMKdieV46/mrHPGbZkTEHHljZgHLUzvdnoGYQ=="],
+
+    "@cuny-ai-lab/cail-log": ["@cuny-ai-lab/cail-log@0.6.2", "https://npm.pkg.github.com/download/@cuny-ai-lab/cail-log/0.6.2/e1ef55a2700efa55dd8f7a757a3fd0a425a899e0", { "dependencies": { "zod": "4.4.3" } }, "sha512-8//bT7YO8oNpYlxZN7tB4M/LVCKj27pzFtyP2914vGfB0psAkh5S0xIWzgbUSsJKhsMpFUTv6sJdc+WtaWWXRA=="],
 
     "@emnapi/runtime": ["@emnapi/runtime@1.11.3", "", { "dependencies": { "tslib": "^2.4.0" } }, "sha512-Xz4Tpyki7XyrpbUK1jR1AhdAdaXyhhY4lZ3neLodmhpuWfy2PAQN5B46sAiU4liOXGLkHypn/qU+jvfWSCYYLA=="],
 

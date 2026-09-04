@@ -25,6 +25,7 @@ export interface Env {
   CAIL_IDENTITY_JWKS?: string;
   CAIL_IDENTITY_ISSUER?: string;
   CAIL_REQUIRE_IDENTITY?: string;
+  CAIL_LOG_ENV?: string;
   CAIL_CANONICAL_ORIGIN?: string;
   CAIL_BASE_PATH?: string;
   GIT_AUTH_TOKEN?: string;

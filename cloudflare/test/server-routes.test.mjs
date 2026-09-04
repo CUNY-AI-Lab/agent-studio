@@ -41,6 +41,26 @@ const deployedV1Fixture = JSON.parse(
 
 const JSON_HEADERS = { 'content-type': 'application/json' };
 
+function captureStructuredLogs() {
+  const values = [];
+  const methods = ['log', 'warn', 'error'];
+  const originals = new Map(methods.map((method) => [method, console[method]]));
+  for (const method of methods) {
+    console[method] = (...args) => values.push(...args);
+  }
+  return {
+    events() {
+      return values.filter((value) => value?.['event.name']);
+    },
+    text() {
+      return JSON.stringify(values);
+    },
+    restore() {
+      for (const [method, original] of originals) console[method] = original;
+    },
+  };
+}
+
 function jsonInit(method, body) {
   return { method, headers: JSON_HEADERS, body: JSON.stringify(body) };
 }
@@ -107,6 +127,123 @@ test('health check is public and needs no session', async () => {
   });
   assert.equal(res.headers.get('cache-control'), 'no-store');
   assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('Worker request boundary correlates canonical errors without logging request content', async () => {
+  const { env } = makeEnv();
+  const requestId = '11111111-1111-4111-8111-111111111111';
+  const capture = captureStructuredLogs();
+  try {
+    const response = await app.fetch(
+      new Request('https://studio.test/api/gallery/abcdef12-3?diagnostic=PRIVATE-QUERY-VALUE', {
+        headers: { 'x-cail-request-id': requestId },
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 404);
+    assert.equal(response.headers.get('x-cail-request-id'), requestId);
+    assert.equal(response.headers.get('x-request-id'), null);
+    const body = await response.json();
+    assert.equal(body.error.cail.request_id, requestId);
+
+    const events = capture.events();
+    const received = events.filter((event) => event['event.name'] === 'cail.request.received');
+    const completed = events.filter((event) => event['event.name'] === 'cail.request.completed');
+    assert.equal(received.length, 1);
+    assert.equal(completed.length, 1);
+    assert.equal(received[0]['cail.request.id'], requestId);
+    assert.equal(completed[0]['cail.request.id'], requestId);
+    assert.equal(received[0]['url.template'], '/api/gallery/{id}');
+    assert.equal(completed[0]['url.template'], '/api/gallery/{id}');
+    assert.equal(completed[0]['http.response.status_code'], 404);
+    assert.equal(completed[0]['cail.outcome'], 'client_error');
+    assert.equal(completed[0]['cail.outcome.reason'], 'client_error');
+    assert.equal(completed[0]['error.type'], 'client_error');
+    assert.ok(Number.isFinite(completed[0]['cail.operation.duration_ms']));
+    assert.ok(completed[0]['cail.operation.duration_ms'] >= 0);
+    assert.doesNotMatch(capture.text(), /PRIVATE-QUERY-VALUE|Gallery item not found|abcdef12-3/);
+  } finally {
+    capture.restore();
+  }
+});
+
+test('Worker response correlation preserves an untouched asset stream', async () => {
+  const { env } = makeEnv();
+  let pulled = false;
+  let cancelled = false;
+  const bodyBytes = new TextEncoder().encode('asset-bytes');
+  env.ASSETS = {
+    fetch: async () => new Response(new ReadableStream({
+      pull(controller) {
+        pulled = true;
+        controller.enqueue(bodyBytes);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), { headers: { 'content-type': 'application/javascript' } }),
+  };
+  const requestId = '22222222-2222-4222-8222-222222222222';
+  const capture = captureStructuredLogs();
+  try {
+    const response = await app.fetch(
+      new Request('https://studio.test/assets/app.js?diagnostic=PRIVATE-ASSET-QUERY', {
+        headers: { 'x-cail-request-id': requestId },
+      }),
+      env,
+      {},
+    );
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-cail-request-id'), requestId);
+    assert.equal(response.bodyUsed, false);
+    const completed = capture.events().filter((event) => event['event.name'] === 'cail.request.completed');
+    assert.equal(completed.length, 1);
+    assert.equal(completed[0]['url.template'], '/assets/{path}');
+    assert.equal(completed[0]['http.response.status_code'], 200);
+    assert.equal(completed[0]['cail.outcome'], 'ok');
+    const reader = response.body.getReader();
+    const first = await reader.read();
+    assert.deepEqual([...first.value], [...bodyBytes]);
+    assert.equal(pulled, true);
+    await reader.cancel();
+    assert.equal(cancelled, true);
+    assert.doesNotMatch(capture.text(), /PRIVATE-ASSET-QUERY/);
+  } finally {
+    capture.restore();
+  }
+});
+
+test('invalid logging environment reports a fixed diagnostic and keeps the app healthy', async () => {
+  for (const [configuredValue, requestId] of [
+    [undefined, '33333333-3333-4333-8333-333333333333'],
+    ['invalid', '44444444-4444-4444-8444-444444444444'],
+  ]) {
+    const { env } = makeEnv();
+    if (configuredValue === undefined) delete env.CAIL_LOG_ENV;
+    else env.CAIL_LOG_ENV = configuredValue;
+    const capture = captureStructuredLogs();
+    try {
+      const response = await app.fetch(
+        new Request('https://studio.test/health', {
+          headers: { 'x-cail-request-id': requestId },
+        }),
+        env,
+        {},
+      );
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('x-cail-request-id'), requestId);
+      assert.deepEqual(await response.json(), {
+        ok: true,
+        service: 'agent-studio',
+        version_id: null,
+      });
+      assert.equal(capture.events().length, 0);
+      assert.match(capture.text(), /logging_configuration_invalid/);
+    } finally {
+      capture.restore();
+    }
+  }
 });
 
 test('configured base path mounts assets, API, health, and sockets under one prefix', async () => {

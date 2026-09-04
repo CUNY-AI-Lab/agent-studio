@@ -755,7 +755,8 @@ export function makeMigrationRegistryNamespace() {
 // ---------------------------------------------------------------------------
 
 /**
- * Build an anonymous-mode env (CAIL_* unset). Returns the env plus the R2 and
+ * Build an anonymous-mode env with an explicit valid logging environment.
+ * Returns the env plus the R2 and
  * agent-namespace doubles so tests can seed and assert against storage.
  */
 export function makeEnv() {
@@ -767,6 +768,7 @@ export function makeEnv() {
       fetch: async (request) => new Response(`asset:${new URL(request.url).pathname}`),
     },
     SESSION_SECRET: 'ab'.repeat(32), // 64 hex chars
+    CAIL_LOG_ENV: 'test',
     // Leave identity entirely unconfigured for anonymous route fixtures.
     // Supplying only an issuer is a partial verifier config and now fails
     // closed before the absent-token path is considered.
