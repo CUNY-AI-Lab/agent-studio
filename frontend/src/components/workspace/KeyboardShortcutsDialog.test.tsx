@@ -1,7 +1,17 @@
-import { describe, expect, it, vi } from 'vitest';
+import { useState } from 'react';
+import { describe, expect, it } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { KeyboardShortcutsDialog } from './KeyboardShortcutsDialog';
+
+function ShortcutsHarness() {
+  const [open, setOpen] = useState(false);
+  return <>
+    <button type="button" onClick={() => setOpen(true)}>Show shortcuts</button>
+    <KeyboardShortcutsDialog open={open} onClose={() => setOpen(false)} />
+    <button type="button">Outside action</button>
+  </>;
+}
 
 describe('KeyboardShortcutsDialog', () => {
   it('renders nothing when closed', () => {
@@ -21,25 +31,31 @@ describe('KeyboardShortcutsDialog', () => {
     expect(screen.getByText('Toggle selection of the focused tile')).toBeInTheDocument();
   });
 
-  it('traps focus and closes on Escape', async () => {
-    const onClose = vi.fn();
+  it('keeps Tab and Shift+Tab inside, then restores the opener after Escape', async () => {
     const user = userEvent.setup();
-    render(<KeyboardShortcutsDialog open onClose={onClose} />);
+    render(<ShortcutsHarness />);
+    const opener = screen.getByRole('button', { name: 'Show shortcuts' });
+    await user.click(opener);
+    const close = screen.getByRole('button', { name: 'Close keyboard shortcuts' });
+    expect(close).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(close).toHaveFocus();
     await user.keyboard('{Escape}');
-    expect(onClose).toHaveBeenCalledOnce();
-  });
-
-  it('moves initial focus into the dialog on open', () => {
-    render(<KeyboardShortcutsDialog open onClose={() => {}} />);
-    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    expect(active?.getAttribute('aria-label')).toBe('Close keyboard shortcuts');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Outside action' })).toHaveFocus();
   });
 
   it('closes when the close button is pressed', async () => {
-    const onClose = vi.fn();
     const user = userEvent.setup();
-    render(<KeyboardShortcutsDialog open onClose={onClose} />);
+    render(<ShortcutsHarness />);
+    const opener = screen.getByRole('button', { name: 'Show shortcuts' });
+    await user.click(opener);
     await user.click(screen.getByRole('button', { name: 'Close keyboard shortcuts' }));
-    expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(opener).toHaveFocus();
   });
 });

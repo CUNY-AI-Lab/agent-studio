@@ -9,6 +9,34 @@ import assert from 'node:assert/strict';
 
 import { createWorkspaceExportBundle } from '../src/lib/export.ts';
 import { decodeWorkspaceImportFile, parseWorkspaceImportBundle } from '../src/lib/import.ts';
+import { PANEL_TYPES } from '../src/domain/workspace.ts';
+
+test('round-trip preserves every supported panel type and its content', async () => {
+  const workspace = {
+    id: 'ws-panels', name: 'All panels', description: '',
+    createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+  };
+  const panels = [
+    { id: 'chat', type: 'chat' },
+    { id: 'table', type: 'table', columns: [{ key: 'value', label: 'Value' }], rows: [{ value: 3 }] },
+    { id: 'chart', type: 'chart', chartType: 'bar', data: [{ value: 3 }] },
+    { id: 'cards', type: 'cards', items: [{ title: 'Card' }] },
+    { id: 'markdown', type: 'markdown', content: '# Note' },
+    { id: 'pdf', type: 'pdf', filePath: 'paper.pdf' },
+    { id: 'preview', type: 'preview', content: '<p>Preview</p>' },
+    { id: 'fileTree', type: 'fileTree' },
+    { id: 'editor', type: 'editor', filePath: 'note.txt' },
+    { id: 'file', type: 'file', filePath: 'data.csv' },
+    { id: 'detail', type: 'detail', linkedTo: 'cards' },
+  ];
+  assert.deepEqual(panels.map(panel => panel.type).sort(), [...PANEL_TYPES].sort());
+  const bundle = await createWorkspaceExportBundle({
+    workspace, state: { ...baseState(workspace), panels },
+    messages: [], files: [], readFile: async () => null,
+  });
+  const imported = parseWorkspaceImportBundle(JSON.parse(JSON.stringify(bundle)));
+  assert.deepEqual(imported.state.panels, panels);
+});
 
 function baseState(workspace) {
   return {
