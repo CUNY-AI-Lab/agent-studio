@@ -69,6 +69,21 @@ import {
 import { rateLimitMiddleware } from './lib/rate-limit';
 import { stripBasePath } from './lib/base-path';
 import { canonicalError } from './lib/error-envelope';
+import { correlationFromHeaders } from '@cuny-ai-lab/cail-log';
+import {
+  completeRequestLogging,
+  createAgentStudioLogger,
+  createRequestLoggingContext,
+  emitRequestReceived,
+  parseLoggingEnvironment,
+  reportLoggingConfigurationInvalid,
+  requestIdForError,
+  routeTemplateForContext,
+  routeTemplateForPath,
+  withResponseCorrelation,
+  type RequestLoggingBindings,
+  type RequestLoggingContext,
+} from './lib/request-logging';
 import { isAllowedUpload } from './lib/upload-validation';
 import { fileServingHeaders, previewServingHeaders } from './lib/file-serving';
 import {
@@ -102,19 +117,31 @@ const MAX_UPLOAD_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_UPLOAD_FILE_COUNT = 50;
 const MAX_UPLOAD_TOTAL_BYTES = 50 * 1024 * 1024;
 
+type AppBindings = Env & RequestLoggingBindings;
+
 const app = new Hono<{
-  Bindings: Env;
+  Bindings: AppBindings;
   Variables: AppVariables;
 }>();
 
 type AppVariables = SessionVariables & { workspace?: StoredWorkspaceRecord };
 
 type AppContext = Context<{
-  Bindings: Env;
+  Bindings: AppBindings;
   Variables: AppVariables;
 }>;
 
 type ErrorStatus = 400 | 401 | 403 | 404 | 409 | 413 | 429 | 500 | 502 | 503;
+
+function canonicalErrorOptions(
+  c: AppContext,
+  options: Parameters<typeof canonicalError>[2] = {},
+) {
+  const requestId = requestIdForError(c.env);
+  return requestId && options.requestId === undefined
+    ? { ...options, requestId }
+    : options;
+}
 
 function jsonError(
   c: AppContext,
@@ -123,16 +150,20 @@ function jsonError(
   message: string,
   options: Parameters<typeof canonicalError>[2] = {},
 ) {
-  return c.json(canonicalError(code, message, options), status);
+  return c.json(canonicalError(code, message, canonicalErrorOptions(c, options)), status);
 }
 
 // Validation failures are client errors: routes validate with zod .parse and
 // rely on this mapping instead of try/catch at every call site. The outer
-// boundary middleware resumes after Hono maps the throw and remains the single
-// request-event emitter.
+// Worker boundary adds the request correlation and emits the terminal event
+// after this mapping has produced the response.
 app.onError((error, c) => {
   if (error instanceof z.ZodError || error instanceof SyntaxError) {
-    return c.json(canonicalError('invalid_request', "That didn't work."), 400);
+    return c.json(canonicalError(
+      'invalid_request',
+      "That didn't work.",
+      canonicalErrorOptions(c),
+    ), 400);
   }
   if (error instanceof Error && (
     error.message === 'workspace is frozen for migration'
@@ -141,22 +172,38 @@ app.onError((error, c) => {
     return c.json(canonicalError(
       'conflict',
       'Workspace is busy. Try again shortly.',
-      { type: 'api_error', retryable: true },
+      canonicalErrorOptions(c, { type: 'api_error', retryable: true }),
     ), 409);
   }
   if (error instanceof GalleryError) {
-    return c.json(canonicalError(error.status === 404 ? 'not_found' : 'forbidden', error.message), error.status);
+    return c.json(canonicalError(
+      error.status === 404 ? 'not_found' : 'forbidden',
+      error.message,
+      canonicalErrorOptions(c),
+    ), error.status);
   }
   if (error instanceof ModelCatalogAuthError) {
     return cailAuthRequiredResponse('/agent-studio', 502, "Couldn't load the model list.");
   }
   if (error instanceof ModelCatalogQuotaError) {
-    return c.json(canonicalError('quota_exceeded', error.message, { type: 'rate_limit_error', retryable: false }), 429);
+    return c.json(canonicalError(
+      'quota_exceeded',
+      error.message,
+      canonicalErrorOptions(c, { type: 'rate_limit_error', retryable: false }),
+    ), 429);
   }
   if (error instanceof ModelCatalogDefaultError) {
-    return c.json(canonicalError('model_unavailable', 'Agent Studio’s default model is unavailable.', { type: 'api_error', retryable: true }), 502);
+    return c.json(canonicalError(
+      'model_unavailable',
+      'Agent Studio’s default model is unavailable.',
+      canonicalErrorOptions(c, { type: 'api_error', retryable: true }),
+    ), 502);
   }
-  return c.json(canonicalError('internal_error', 'Something went wrong.', { type: 'api_error', retryable: true }), 500);
+  return c.json(canonicalError(
+    'internal_error',
+    'Something went wrong.',
+    canonicalErrorOptions(c, { type: 'api_error', retryable: true }),
+  ), 500);
 });
 
 // AS-3-6 boundary checks. `import` is a literal POST sub-route of
@@ -266,6 +313,14 @@ function listDirectoryEntries(files: WorkspaceFileInfo[], relativeDir = ''): Wor
 }
 
 app.use('*', async (c, next) => {
+  const logging = c.env.requestLogging;
+  if (!logging) return next();
+
+  emitRequestReceived(logging, routeTemplateForContext(c));
+  await next();
+});
+
+app.use('*', async (c, next) => {
   await next();
   c.header('Referrer-Policy', 'no-referrer');
 });
@@ -307,7 +362,7 @@ app.get('/health', async (c) => {
         ...canonicalError(
           config.errorCode,
           'Service unavailable: invalid configuration',
-          { type: 'api_error', retryable: false },
+          canonicalErrorOptions(c, { type: 'api_error', retryable: false }),
         ),
       },
       503
@@ -1068,62 +1123,119 @@ app.patch('/api/workspaces/:id/layout', async (c) => {
 
 export { AgentStudioReadiness, MigrationRegistry, WorkspaceAgent };
 
+async function dispatchRequest(
+  request: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  logging: RequestLoggingContext,
+): Promise<Response> {
+  const mountedRequest = stripBasePath(request, env.CAIL_BASE_PATH);
+  if (!mountedRequest) {
+    emitRequestReceived(logging, routeTemplateForPath(new URL(request.url).pathname));
+    return new Response('Not Found', { status: 404 });
+  }
+
+  request = mountedRequest;
+  const pathname = new URL(request.url).pathname;
+  const config = await validateAgentStudioConfig(env);
+  if (!config.ok && pathname !== '/health') {
+    emitRequestReceived(logging, routeTemplateForPath(pathname));
+    return Response.json(
+      canonicalError(config.errorCode, "Agent Studio isn't available right now.", {
+        type: 'api_error',
+        retryable: false,
+        requestId: logging.correlation.request_id,
+      }),
+      { status: 503, headers: { 'Cache-Control': 'no-store' } },
+    );
+  }
+
+  // All external paths enter the Worker first. Static and SPA requests are
+  // explicitly delegated only after the configured mount has been stripped;
+  // root-absolute sibling paths can never fall through to the asset binding.
+  if (
+    pathname !== '/health'
+    && !pathname.startsWith('/api/')
+    && pathname !== '/api'
+    && !pathname.startsWith('/agents/')
+    && pathname !== '/agents'
+  ) {
+    emitRequestReceived(logging, routeTemplateForPath(pathname));
+    const response = await env.ASSETS.fetch(request);
+    return response;
+  }
+
+  // Origin-check the /agents/* WebSocket upgrade BEFORE routeAgentRequest
+  // accepts it (rule 4): the browser does not enforce same-origin on WS
+  // handshakes, and the connection-lifetime identity JWT means an origin
+  // mistake at accept time is unrecoverable. A present-but-mismatched Origin
+  // is rejected here; the per-connection CSRF token gate then runs inside the
+  // Durable Object on connect (see WorkspaceAgent.onConnect).
+  if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+    if (!wsOriginAllowed(request, env.CAIL_CANONICAL_ORIGIN)) {
+      emitRequestReceived(logging, routeTemplateForPath(pathname));
+      return new Response('Forbidden: cross-origin WebSocket upgrade', { status: 403 });
+    }
+    // Reject an unauthenticated /agents/* socket at the edge, before routeAgentRequest
+    // instantiates the DO — the SDK sends the full persisted state on connect BEFORE the
+    // DO's onConnect can close the socket, so the token must be checked at the edge.
+    const wsPath = pathname;
+    if (
+      wsAgentSessionIdFromPath(wsPath)
+      && !(await wsAgentCsrfValid(request, env.SESSION_SECRET, env.CAIL_REQUIRE_IDENTITY === 'true'))
+    ) {
+      emitRequestReceived(logging, routeTemplateForPath(pathname));
+      return new Response('Forbidden: missing or invalid connection token', { status: 403 });
+    }
+  }
+
+  const isAgentPath = pathname === '/agents' || pathname.startsWith('/agents/');
+  if (isAgentPath) emitRequestReceived(logging, routeTemplateForPath(pathname));
+  const agentResponse = await routeAgentRequest(request, env);
+  if (agentResponse) {
+    return agentResponse;
+  }
+  return app.fetch(request, { ...env, requestLogging: logging }, ctx);
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-    const mountedRequest = stripBasePath(request, env.CAIL_BASE_PATH);
-    if (!mountedRequest) {
-      return new Response('Not Found', { status: 404 });
-    }
-    request = mountedRequest;
-    const pathname = new URL(request.url).pathname;
-    const config = await validateAgentStudioConfig(env);
-    if (!config.ok && pathname !== '/health') {
-      return Response.json(
-        canonicalError(config.errorCode, "Agent Studio isn't available right now.", {
-          type: 'api_error',
-          retryable: false,
-        }),
-        { status: 503, headers: { 'Cache-Control': 'no-store' } }
-      );
+    const originalRequest = request;
+    const correlation = correlationFromHeaders(request);
+    const logging = createRequestLoggingContext(request, correlation);
+    const loggingEnvironment = parseLoggingEnvironment(env.CAIL_LOG_ENV);
+    if (!loggingEnvironment) {
+      reportLoggingConfigurationInvalid();
+    } else {
+      try {
+        logging.logger = createAgentStudioLogger(env, loggingEnvironment);
+      } catch {
+        reportLoggingConfigurationInvalid();
+      }
     }
 
-    // All external paths enter the Worker first. Static and SPA requests are
-    // explicitly delegated only after the configured mount has been stripped;
-    // root-absolute sibling paths can never fall through to the asset binding.
-    if (
-      pathname !== '/health'
-      && !pathname.startsWith('/api/')
-      && pathname !== '/api'
-      && !pathname.startsWith('/agents/')
-      && pathname !== '/agents'
-    ) {
-      return env.ASSETS.fetch(request);
-    }
-    // Origin-check the /agents/* WebSocket upgrade BEFORE routeAgentRequest
-    // accepts it (rule 4): the browser does not enforce same-origin on WS
-    // handshakes, and the connection-lifetime identity JWT means an origin
-    // mistake at accept time is unrecoverable. A present-but-mismatched Origin
-    // is rejected here; the per-connection CSRF token gate then runs inside the
-    // Durable Object on connect (see WorkspaceAgent.onConnect).
-    if (request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
-      if (!wsOriginAllowed(request, env.CAIL_CANONICAL_ORIGIN)) {
-        return new Response('Forbidden: cross-origin WebSocket upgrade', { status: 403 });
+    try {
+      const response = await dispatchRequest(request, env, ctx, logging);
+      completeRequestLogging(logging, response.status);
+      return withResponseCorrelation(response, correlation);
+    } catch (error) {
+      if (originalRequest.signal.aborted) {
+        completeRequestLogging(logging, 499, 'cancelled');
+        throw error;
       }
-      // Reject an unauthenticated /agents/* socket at the edge, before routeAgentRequest
-      // instantiates the DO — the SDK sends the full persisted state on connect BEFORE the
-      // DO's onConnect can close the socket, so the token must be checked here (A2).
-      const wsPath = pathname;
-      if (
-        wsAgentSessionIdFromPath(wsPath)
-        && !(await wsAgentCsrfValid(request, env.SESSION_SECRET, env.CAIL_REQUIRE_IDENTITY === 'true'))
-      ) {
-        return new Response('Forbidden: missing or invalid connection token', { status: 403 });
-      }
+      emitRequestReceived(logging, routeTemplateForPath(new URL(request.url).pathname));
+      completeRequestLogging(logging, 500);
+      return withResponseCorrelation(
+        Response.json(
+          canonicalError('internal_error', 'Something went wrong.', {
+            type: 'api_error',
+            retryable: true,
+            requestId: logging.correlation.request_id,
+          }),
+          { status: 500, headers: { 'Cache-Control': 'no-store' } },
+        ),
+        correlation,
+      );
     }
-    const agentResponse = await routeAgentRequest(request, env);
-    if (agentResponse) {
-      return agentResponse;
-    }
-    return app.fetch(request, env, ctx);
   },
 };

@@ -33,6 +33,11 @@ Production and staging use the standalone Doorway issuer
 `https://tools.ailab.gc.cuny.edu`. Configure that one issuer with
 its matching JWKS.
 
+Set `CAIL_LOG_ENV` explicitly to `development`, `staging`, `production`, or
+`test`. The Worker emits one correlated request pair with the canonical
+`x-cail-request-id` support reference; its duration ends when the response is
+dispatched, not when a streamed body or WebSocket connection later closes.
+
 Production is reached only through Doorway's canonical host. Its Worker
 manifest disables workers.dev and preview URLs and declares no public route;
 Doorway forwards `/agent-studio/*` over the private default service binding.

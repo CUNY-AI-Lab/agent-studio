@@ -67,6 +67,7 @@
     "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
     "CAIL_CANONICAL_ORIGIN": "https://tools.ailab.gc.cuny.edu",
     "CAIL_BASE_PATH": "/agent-studio",
+    "CAIL_LOG_ENV": "production",
     "CAIL_REQUIRE_IDENTITY": "true"
   },
   "env": {
@@ -121,6 +122,7 @@
         "CAIL_IDENTITY_ISSUER": "https://tools.ailab.gc.cuny.edu/cail-sso",
         "CAIL_CANONICAL_ORIGIN": "https://tools.ailab.gc.cuny.edu",
         "CAIL_BASE_PATH": "/agent-studio",
+        "CAIL_LOG_ENV": "staging",
         "CAIL_REQUIRE_IDENTITY": "true"
       }
     }
