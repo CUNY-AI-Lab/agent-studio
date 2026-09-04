@@ -391,6 +391,54 @@ async function settledReactFlowViewport(page: Page): Promise<WorkspaceViewport> 
   return second;
 }
 
+async function verifyToolbarAtCanvasEdges(page: Page): Promise<void> {
+  const canvas = page.getByRole('region', { name: /^Workspace canvas/ });
+  const panel = panelLocator(page, 'Source cards', 'cards');
+  const toolbar = page.getByRole('toolbar', { name: 'Actions for Source cards' });
+  await selectPanel(page, 'Source cards', 'cards');
+  const original = await toolbar.boundingBox();
+  if (!original) fail('Selection toolbar has no rendered size');
+
+  for (const edge of ['left', 'top', 'right', 'bottom'] as const) {
+    await page.getByRole('button', { name: 'Reset zoom and position' }).click();
+    await settledReactFlowViewport(page);
+    await page.getByRole('button', { name: edge === 'left' || edge === 'top' ? 'Zoom out' : 'Zoom in', exact: true }).click();
+    await settledReactFlowViewport(page);
+    const area = await canvas.boundingBox();
+    const tile = await panel.boundingBox();
+    if (!area || !tile) fail('Canvas edge test has no rendered tile bounds');
+    const targetX = area.x + (edge === 'left' ? 20 : edge === 'right' ? area.width - 20 : area.width / 2);
+    const targetY = area.y + (edge === 'top' ? 20 : edge === 'bottom' ? area.height - 20 : area.height / 2);
+    const dx = targetX - (tile.x + tile.width / 2);
+    const dy = targetY - (tile.y + tile.height / 2);
+    const start = { x: area.x + area.width / 2 - dx / 2, y: area.y + area.height / 2 - dy / 2 };
+    await page.mouse.move(start.x, start.y);
+    await page.mouse.down({ button: 'middle' });
+    await page.mouse.move(start.x + dx, start.y + dy, { steps: 10 });
+    await page.mouse.up({ button: 'middle' });
+    await settledReactFlowViewport(page);
+    const moved = await panel.boundingBox();
+    if (!moved) fail('Panned tile has no rendered bounds');
+    expect(Math.abs(moved.x + moved.width / 2 - targetX)).toBeLessThan(2);
+    expect(Math.abs(moved.y + moved.height / 2 - targetY)).toBeLessThan(2);
+    await expect(toolbar).toBeInViewport({ ratio: 1 });
+    const actions = await toolbar.boundingBox();
+    if (!actions) fail('Toolbar disappeared at the canvas edge');
+    expect(actions.x).toBeGreaterThanOrEqual(area.x);
+    expect(actions.y).toBeGreaterThanOrEqual(area.y);
+    expect(actions.x + actions.width).toBeLessThanOrEqual(area.x + area.width);
+    expect(actions.y + actions.height).toBeLessThanOrEqual(area.y + area.height);
+    expect(Math.abs(actions.width - original.width)).toBeLessThan(1);
+    expect(Math.abs(actions.height - original.height)).toBeLessThan(1);
+    await toolbar.getByRole('button', { name: 'Maximize tile', exact: true }).click();
+    const maximized = page.getByRole('dialog', { name: 'Source cards', exact: true });
+    await expect(maximized.getByRole('heading', { name: 'Source finding' })).toBeVisible();
+    await maximized.getByRole('button', { name: 'Close maximized tile' }).click();
+  }
+  await page.getByRole('button', { name: 'Reset zoom and position' }).click();
+  await settledReactFlowViewport(page);
+}
+
 async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promise<void> {
   const note = '# Research note\n\nA durable artifact with café and 数字.\n';
   const binaryText = Buffer.from([0xff, 0xfe, 0x00, 0x61]);
@@ -841,6 +889,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
     await verifyContextualRetry(page);
     await verifyCompactChatRecovery(page, baseUrl);
     await page.bringToFront();
+    await verifyToolbarAtCanvasEdges(page);
 
     await selectPanel(page, 'Source cards', 'cards');
     await selectPanel(page, 'Related cards', 'cards', 'ControlOrMeta');
