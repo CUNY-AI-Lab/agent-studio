@@ -493,7 +493,8 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   await dialog.getByRole('button', { name: 'Publish', exact: true }).click();
   const publication = await publicationPromise;
   if (publication.status() !== 201) fail('Workspace publication failed');
-  const published = z.object({ item: z.object({ id: z.string() }) }).parse(await publication.json());
+  const published = z.object({ item: z.object({ id: z.string(), title: z.string() }) }).parse(await publication.json());
+  if (published.item.title !== 'Shared research') fail('Publication response did not preserve the chosen title');
   await expect(page.getByRole('button', { name: /^Unpublish(?: from gallery)?$/ })).toBeVisible();
 
   const browser = page.context().browser();
@@ -504,8 +505,22 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   try {
     const galleryUrl = new URL(baseUrl);
     galleryUrl.searchParams.set('gallery', published.item.id);
+    let sessionStatus: number | undefined;
+    let detailStatus: number | undefined;
+    let pageError = false;
+    otherPage.on('response', (response) => {
+      const path = new URL(response.url()).pathname;
+      if (path === applicationPath(baseUrl, '/api/session')) sessionStatus = response.status();
+      if (path === applicationPath(baseUrl, `/api/gallery/${published.item.id}`)) detailStatus = response.status();
+    });
+    otherPage.on('pageerror', () => { pageError = true; });
     await otherPage.goto(galleryUrl.toString(), { waitUntil: 'networkidle' });
-    await expect(otherPage.getByRole('heading', { name: 'Shared research', exact: true })).toBeVisible();
+    try {
+      await expect(otherPage.getByRole('heading', { name: 'Shared research', exact: true })).toBeVisible();
+    } catch (error) {
+      console.error(`[browser] gallery boundary: session=${sessionStatus ?? 'unobserved'} detail=${detailStatus ?? 'unobserved'} pageError=${pageError}`);
+      throw error;
+    }
     await expect(otherPage.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();
     await apiCall(otherPage, baseUrl, `/api/gallery/${published.item.id}`, {
       label: 'read only chosen publication metadata from another session',
