@@ -7,7 +7,6 @@ import { AgentStudioReadiness } from './lib/readiness';
 import type { WorkspaceFileInfo, WorkspaceRecord } from './domain/workspace';
 import { validateAgentStudioConfig, type Env } from './env';
 import {
-  cloneGalleryItem,
   GalleryError,
   getGalleryItem,
   listGalleryItemsPage,
@@ -489,12 +488,10 @@ app.post('/api/gallery/:id', async (c) => {
   const sessionId = requireSession(c);
   const sourceGalleryId = c.req.param('id');
   const workspaceId = createOpaqueId();
-  const item = await cloneGalleryItem({
-    env: c.env,
-    galleryId: sourceGalleryId,
-    sessionId,
-    workspaceId,
-  });
+  const item = await getGalleryItem(c.env, sourceGalleryId);
+  if (!item) {
+    return jsonError(c, 404, 'not_found', 'Gallery item not found');
+  }
 
   const now = new Date().toISOString();
   const workspace = createDefaultWorkspace({
