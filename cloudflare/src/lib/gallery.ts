@@ -162,21 +162,6 @@ export async function galleryOwnerTag(sessionId: string, secret: string): Promis
   return Array.from(new Uint8Array(sig), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-export async function listGalleryItems(env: Env): Promise<GalleryItem[]> {
-  const ids = await listGalleryIds(env);
-  const items = await Promise.all(
-    ids.map(async (id) => {
-      const object = await env.WORKSPACE_FILES.get(galleryManifestKey(id));
-      if (!object) return null;
-      return sharedGalleryItem(await object.json<GalleryManifest>());
-    })
-  );
-
-  return items
-    .filter((item): item is GalleryItem => Boolean(item))
-    .sort((left, right) => right.publishedAt.localeCompare(left.publishedAt));
-}
-
 export async function getGalleryItem(env: Env, id: string): Promise<GalleryItemFull | null> {
   const [manifest, state] = await Promise.all([
     env.WORKSPACE_FILES.get(galleryManifestKey(id)),
@@ -302,20 +287,6 @@ export async function publishWorkspace(args: {
       throw new Error('publish_outcome_unknown: gallery cleanup was not confirmed', { cause: cleanupError });
     }
     throw error;
-  }
-
-  return item;
-}
-
-export async function cloneGalleryItem(args: {
-  env: Env;
-  galleryId: string;
-  sessionId: string;
-  workspaceId: string;
-}): Promise<GalleryItemFull> {
-  const item = await getGalleryItem(args.env, args.galleryId);
-  if (!item) {
-    throw new GalleryError('Gallery item not found', 404);
   }
 
   return item;

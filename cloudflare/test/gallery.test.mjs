@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   getGalleryItem,
-  listGalleryItems,
+  listGalleryItemsPage,
   publishWorkspace,
   reassignGalleryAuthor,
   unpublishGalleryItem,
@@ -136,7 +136,7 @@ test('gallery reads project legacy manifests and workspace metadata into the pub
       connections: [],
     },
   });
-  assert.deepEqual(await listGalleryItems(targetEnv), [expected]);
+  assert.deepEqual(await listGalleryItemsPage(targetEnv), { items: [expected] });
 
   // Reads project old records without a migration or storage rewrite.
   const persistedManifest = await (await r2.get(`agent-studio/gallery/items/${galleryId}/manifest.json`)).json();
@@ -243,7 +243,7 @@ test('private owner records authorize unpublish without exposing an owner identi
   assert.equal(await r2.get(`agent-studio/gallery/items/${item.id}/manifest.json`), null);
 });
 
-test('gallery listing follows every R2 delimiter page', async () => {
+test('gallery listing returns a cursor for the next R2 delimiter page', async () => {
   class PagedR2 extends MockR2 {
     async list(options = {}) {
       const full = await super.list({ ...options, cursor: undefined });
@@ -260,9 +260,21 @@ test('gallery listing follows every R2 delimiter page', async () => {
   }
   const r2 = new PagedR2();
   const targetEnv = env(r2);
-  await publish(targetEnv, 'page-one');
-  await publish(targetEnv, 'page-two');
-  assert.equal((await listGalleryItems(targetEnv)).length, 2);
+  const firstItem = await publish(targetEnv, 'page-one');
+  const secondItem = await publish(targetEnv, 'page-two');
+  const firstPage = await listGalleryItemsPage(targetEnv, { limit: 1 });
+  assert.equal(firstPage.items.length, 1);
+  assert.ok(firstPage.nextCursor);
+  const secondPage = await listGalleryItemsPage(targetEnv, {
+    limit: 1,
+    cursor: firstPage.nextCursor,
+  });
+  assert.equal(secondPage.items.length, 1);
+  assert.equal(secondPage.nextCursor, undefined);
+  assert.deepEqual(
+    [...firstPage.items, ...secondPage.items].map((item) => item.id).sort(),
+    [firstItem.id, secondItem.id].sort(),
+  );
 });
 
 test('gallery reassignment skips malformed legacy author ids', async () => {

@@ -99,7 +99,6 @@ import {
   type StoredWorkspaceRecord,
 } from '../lib/workspaces';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
-import { assertClientStateIdentity } from '../lib/agent-state-guard';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
 import {
   extractCanonicalCailError,
@@ -424,10 +423,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
   }
 
-  validateStateChange(nextState: WorkspaceState, source: 'server' | unknown): void {
+  validateStateChange(_nextState: WorkspaceState, source: 'server' | unknown): void {
     if (source === 'server') return;
     this.assertAuthorizedRpc();
-    assertClientStateIdentity(this.name, nextState);
     // The browser has bounded callable methods for every supported mutation.
     // Accepting the Agents SDK's generic full-state replacement would bypass
     // those schemas, migration/deletion freezes, and layout merge semantics.

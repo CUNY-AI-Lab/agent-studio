@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import {
   assertPublicHttpUrl,
   applyConfiguredApiParams,
-  bearerProviderForHost,
+  bearerProviderForUrl,
   guardedWebFetch,
   parseWebFetchAllowlist,
   hostAllowlisted,
@@ -258,12 +258,69 @@ test('guardedWebFetch rejects streamed responses that exceed the response cap', 
   assert.equal(canceled, true);
 });
 
-test('bearerProviderForHost matches only allowlisted hosts with configured creds', () => {
-  assert.equal(bearerProviderForHost('metadata.api.oclc.org', WORLDCAT_ENV), 'worldcat');
-  assert.equal(bearerProviderForHost('metadata.api.oclc.org', {}), null);
-  assert.equal(bearerProviderForHost('lgapi-us.libapps.com', LIBGUIDES_ENV), 'libguides');
-  assert.equal(bearerProviderForHost('lgapi-us.libapps.com', {}), null);
-  assert.equal(bearerProviderForHost('api.openalex.org', { ...WORLDCAT_ENV, ...LIBGUIDES_ENV }), null);
+test('bearer providers require their exact configured HTTPS origin', () => {
+  assert.equal(bearerProviderForUrl(new URL('https://metadata.api.oclc.org'), WORLDCAT_ENV), 'worldcat');
+  assert.equal(bearerProviderForUrl(new URL('https://metadata.api.oclc.org'), {}), null);
+  assert.equal(bearerProviderForUrl(new URL('https://lgapi-us.libapps.com'), LIBGUIDES_ENV), 'libguides');
+  assert.equal(bearerProviderForUrl(new URL('https://lgapi-us.libapps.com'), {}), null);
+  for (const target of ['http://metadata.api.oclc.org', 'https://metadata.api.oclc.org:8443', 'http://lgapi-us.libapps.com', 'https://lgapi-us.libapps.com:8443', 'https://api.openalex.org']) {
+    assert.equal(bearerProviderForUrl(new URL(target), { ...WORLDCAT_ENV, ...LIBGUIDES_ENV }), null);
+  }
+  assert.equal(bearerProviderForUrl(new URL('https://lgapi-us.libapps.com'), {
+    ...LIBGUIDES_ENV, LIBGUIDES_BASE_URL: 'http://lgapi-us.libapps.com',
+  }), null);
+});
+
+test('Primo injection rejects HTTP, changed ports, and non-HTTPS configuration', () => {
+  const env = { PRIMO_API_BASE: 'https://primo.example.org/search', PRIMO_API_KEY: 'disposable-key' };
+  for (const target of ['http://primo.example.org/search', 'https://primo.example.org:8443/search']) {
+    assert.equal(applyConfiguredApiParams(new URL(target), env).searchParams.has('apikey'), false);
+  }
+  assert.equal(applyConfiguredApiParams(new URL('http://primo.example.org/search'), {
+    ...env, PRIMO_API_BASE: 'http://primo.example.org/search',
+  }).searchParams.has('apikey'), false);
+});
+
+test('redirects remove copied Primo keys when scheme, port, or host changes', async () => {
+  const env = { PRIMO_API_BASE: 'https://primo.example.org/search', PRIMO_API_KEY: 'disposable-key' };
+  for (const destination of ['http://primo.example.org/final', 'https://primo.example.org:8443/final', 'https://other.example.org/final']) {
+    const calls = [];
+    await guardedWebFetch(env.PRIMO_API_BASE, 'text', env, async (url) => {
+      calls.push(new URL(url));
+      return calls.length === 1
+        ? new Response(null, { status: 302, headers: { location: `${destination}?apikey=disposable-key&query=kept` } })
+        : new Response('done');
+    });
+    assert.equal(calls[0].searchParams.get('apikey'), 'disposable-key');
+    assert.equal(calls[1].searchParams.has('apikey'), false);
+    assert.equal(calls[1].searchParams.get('query'), 'kept');
+  }
+});
+
+test('bearer redirects never attach credentials after a scheme downgrade or port change', async () => {
+  for (const destination of ['http://metadata.api.oclc.org/final', 'https://metadata.api.oclc.org:8443/final']) {
+    __resetTokenCacheForTests();
+    const { fetchImpl, apiCalls } = stubbedFetch({
+      apiHandler: (_url, _init, count) => count === 1
+        ? new Response(null, { status: 302, headers: { location: destination } })
+        : new Response('done'),
+    });
+    await guardedWebFetch('https://metadata.api.oclc.org/start', 'text', WORLDCAT_ENV, fetchImpl);
+    assert.equal(apiCalls[0].authorization, 'Bearer TKN');
+    assert.equal(apiCalls[1].authorization, undefined);
+  }
+});
+
+test('redirects preserve a destination-owned API key', async () => {
+  const env = { PRIMO_API_BASE: 'https://primo.example.org/search', PRIMO_API_KEY: 'disposable-key' };
+  const calls = [];
+  await guardedWebFetch(env.PRIMO_API_BASE, 'text', env, async (url) => {
+    calls.push(new URL(url));
+    return calls.length === 1
+      ? new Response(null, { status: 302, headers: { location: 'https://other.example.org/final?apikey=destination-key&apikey=disposable-key' } })
+      : new Response('done');
+  });
+  assert.deepEqual(calls[1].searchParams.getAll('apikey'), ['destination-key']);
 });
 
 test('libguides site_id is injected server-side for the LibGuides host', () => {

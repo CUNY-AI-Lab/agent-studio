@@ -96,11 +96,6 @@ export function isCailIdentityConfigError(value: IdentityConfigValue): value is 
 
 const encoder = new TextEncoder();
 
-export function resolveCailIdentityIssuer(env: CailIdentityEnv): string | null {
-  const issuer = readIdentityConfigString(env.CAIL_IDENTITY_ISSUER);
-  return issuer === CAIL_CANONICAL_ISSUER ? CAIL_CANONICAL_ISSUER : null;
-}
-
 /**
  * Load the verification config via the shared parseIdentityConfig primitive.
  *
@@ -144,17 +139,7 @@ async function loadIdentityConfig(
 }
 
 /**
- * Verify a client-supplied credential JWT AND bind it to an expected session id.
- *
- * Used by the internal WorkspaceAgent.setCailCredential RPC. Even though the
- * method is not browser-callable, it treats the forwarded token as untrusted:
- * an unverified string must never become the model-proxy credential, and a
- * valid token for a DIFFERENT subject must not be installable onto this DO. We
- * verify the signature/claims, then derive the subject's session id the same
- * way session.ts does and require it to equal this DO's session id.
- *
- * Returns the verified identity on success, or null when the token is
- * invalid/expired OR its subject maps to a different session id. Never throws.
+ * Verify the application-audience identity token from an HTTP request.
  */
 async function verifyCailIdentityToken(
   token: string | null | undefined,
@@ -174,24 +159,10 @@ async function verifyCailIdentityToken(
   return verifyIdentityJwt(token, config.config);
 }
 
-export async function verifyCredentialForSession(
-  token: string | null | undefined,
-  expectedSessionId: string,
-  env: CailIdentityEnv,
-  now?: number,
-): Promise<CailIdentity | CailIdentityConfigError | null> {
-  const identity = await verifyCailIdentityToken(token, env, now);
-  if (isCailIdentityConfigError(identity)) return identity;
-  if (!identity) return null;
-  const derived = await sessionIdForSubject(identity.subject);
-  if (derived !== expectedSessionId) return null;
-  return identity;
-}
-
 /**
  * Derive the stable session id from a CAIL subject: SHA-256 over `cail:`+subject,
  * first 16 bytes as hex. This is the single source of truth — session.ts's
- * middleware imports it to key per-user data, and credential-binding above uses
+ * middleware imports it to key per-user data, and gateway credential binding uses
  * it so an installed credential's subject is always tied to the same session id
  * the user's data lives under. Owned here (not in session.ts) so cail-identity
  * stays leaf-level and there is no import cycle.
@@ -204,8 +175,7 @@ export async function sessionIdForSubject(subject: string): Promise<string> {
 
 /**
  * Read and verify the identity JWT from a request. Returns both the raw token
- * (which model calls forward to the proxy as the caller's credential) and the
- * verified identity, or null when the request is anonymous / the token fails.
+ * and the verified identity, or null when the request is anonymous / the token fails.
  */
 export async function getCailIdentityFromRequest(
   request: Request,
@@ -301,10 +271,9 @@ async function loadGatewayLegConfig(
 
 /**
  * Verify the gateway-audience credential installed into a WorkspaceAgent and
- * bind it to that Durable Object's session. This is intentionally separate
- * from verifyCredentialForSession: application-leg validation remains closed
- * to `cail:agent-studio`, while the internal server-to-DO RPC accepts only the
- * already gateway-scoped `cail:gateway` leg.
+ * bind it to that Durable Object's session. The internal server-to-DO RPC
+ * accepts only the gateway-scoped `cail:gateway` leg; HTTP identity validation
+ * uses `cail:agent-studio`.
  */
 export async function verifyGatewayCredentialForSession(
   token: string | null | undefined,

@@ -34,7 +34,6 @@ import {
   getCailIdentityFromRequest,
   cailIdentityRequired,
   cailAuthRequiredResponse,
-  verifyCredentialForSession,
   verifyGatewayCredentialForSession,
   resolveKeyringGatewayJwt,
   sessionIdForSubject,
@@ -264,6 +263,7 @@ test('canonical header rejects wrong audience, issuer, and expired tokens', asyn
 
   for (const overrides of [
     { audience: 'cail:other-service' },
+    { audience: CAIL_GATEWAY_AUDIENCE },
     { issuer: 'https://evil.example/cail-sso' },
     // exp = NOW - 120.
     { now: NOW - 3720, expiresInSeconds: 3600 },
@@ -320,36 +320,6 @@ test('sessionIdForSubject is stable and subject-specific', async () => {
   assert.notEqual(id, await sessionIdForSubject(TEST_SUBJECTS.bob));
 });
 
-test('verifyCredentialForSession accepts only a matching subject session', async () => {
-  const issuer = await createTestIdentityIssuer({ kid: 'credential-key' });
-  const token = await mintValid(issuer);
-  const env = identityEnv(issuer);
-  const expected = await sessionIdForSubject(TEST_SUBJECTS.alice);
-  const identity = await verifyCredentialForSession(token, expected, env, NOW);
-
-  assert.ok(identity);
-  assert.equal(identity.subject, TEST_SUBJECTS.alice);
-  assert.equal(
-    await verifyCredentialForSession(
-      token,
-      await sessionIdForSubject(TEST_SUBJECTS.carol),
-      env,
-      NOW,
-    ),
-    null,
-  );
-});
-
-test('verifyCredentialForSession rejects empty and malformed credentials', async () => {
-  const issuer = await createTestIdentityIssuer({ kid: 'credential-key' });
-  const env = identityEnv(issuer);
-  const expected = await sessionIdForSubject(TEST_SUBJECTS.alice);
-
-  assert.equal(await verifyCredentialForSession('not-a-jwt', expected, env, NOW), null);
-  assert.equal(await verifyCredentialForSession('', expected, env, NOW), null);
-  assert.equal(await verifyCredentialForSession(null, expected, env, NOW), null);
-});
-
 test('gateway credential verifier accepts only the gateway leg and matching session', async () => {
   const issuer = await createTestIdentityIssuer({ kid: 'gateway-key' });
   const env = identityEnv(issuer);
@@ -359,8 +329,6 @@ test('gateway credential verifier accepts only the gateway leg and matching sess
 
   assert.ok(identity);
   assert.equal(identity.subject, TEST_SUBJECTS.alice);
-  // The application verifier must remain closed to the gateway audience.
-  assert.equal(await verifyCredentialForSession(gatewayToken, expected, env, NOW), null);
   // A gateway token for another subject cannot be installed onto this DO.
   const otherSubject = await mintGateway(issuer, { subject: TEST_SUBJECTS.carol });
   assert.equal(

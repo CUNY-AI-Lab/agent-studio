@@ -188,49 +188,45 @@ export interface WebFetchCredentialEnv extends TokenBrokerEnv, WebFetchAllowlist
   PRIMO_SCOPE?: string;
 }
 
-/** OCLC WorldCat Metadata/Search API host (bearer-auth). */
-const WORLDCAT_API_HOST = 'metadata.api.oclc.org';
+const WORLDCAT_API_ORIGIN = 'https://metadata.api.oclc.org';
+
+function configuredHttpsOrigin(base: string | undefined): string | null {
+  if (!base) return null;
+  try {
+    const url = new URL(base);
+    return url.protocol === 'https:' && !url.username && !url.password ? url.origin : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
- * Resolve which bearer-token provider (if any) owns a given hop host. Only the
- * exact allowlisted host qualifies, and only when its credentials are
- * configured — so a redirect to any other host attaches no Authorization.
+ * Resolve the provider for this exact HTTPS origin, including its port.
+ * Re-evaluate every redirect so credentials cannot follow a downgrade.
  */
-export function bearerProviderForHost(
-  hostname: string,
+export function bearerProviderForUrl(
+  url: URL,
   env: WebFetchCredentialEnv
 ): TokenProvider | null {
-  const host = hostname.toLowerCase();
-  if (host === WORLDCAT_API_HOST && isProviderConfigured('worldcat', env)) {
+  if (url.origin === WORLDCAT_API_ORIGIN && isProviderConfigured('worldcat', env)) {
     return 'worldcat';
   }
-  if (isProviderConfigured('libguides', env) && env.LIBGUIDES_BASE_URL) {
-    let libguidesHost: string | null = null;
-    try {
-      libguidesHost = new URL(env.LIBGUIDES_BASE_URL).hostname.toLowerCase();
-    } catch {
-      libguidesHost = null;
-    }
-    if (libguidesHost && host === libguidesHost) return 'libguides';
+  if (isProviderConfigured('libguides', env)
+    && url.origin === configuredHttpsOrigin(env.LIBGUIDES_BASE_URL)) {
+    return 'libguides';
   }
   return null;
 }
 
 /**
  * Attach configured institutional API credentials when the destination
- * matches an allowlisted host. Injection happens after the public-URL check
+ * matches the configured HTTPS origin. Injection happens after the public-URL check
  * and only fills parameters the request does not already carry (except the
  * API key, which is always server-owned). Mutates and returns the URL.
  */
 export function applyConfiguredApiParams(url: URL, env: WebFetchCredentialEnv): URL {
   if (env.PRIMO_API_BASE && env.PRIMO_API_KEY) {
-    let primoHost: string | null = null;
-    try {
-      primoHost = new URL(env.PRIMO_API_BASE).hostname.toLowerCase();
-    } catch {
-      primoHost = null;
-    }
-    if (primoHost && url.hostname.toLowerCase() === primoHost) {
+    if (url.origin === configuredHttpsOrigin(env.PRIMO_API_BASE)) {
       url.searchParams.set('apikey', env.PRIMO_API_KEY);
       if (env.PRIMO_VID && !url.searchParams.has('vid')) {
         url.searchParams.set('vid', env.PRIMO_VID);
@@ -244,7 +240,7 @@ export function applyConfiguredApiParams(url: URL, env: WebFetchCredentialEnv): 
   // LibGuides requests require the site_id query param; inject it server-side
   // for the LibGuides API host so the agent never needs to carry it. The bearer
   // token itself is attached per-hop in fetchFollowingRedirects.
-  if (env.LIBGUIDES_SITE_ID && bearerProviderForHost(url.hostname, env) === 'libguides') {
+  if (env.LIBGUIDES_SITE_ID && bearerProviderForUrl(url, env) === 'libguides') {
     if (!url.searchParams.has('site_id')) {
       url.searchParams.set('site_id', env.LIBGUIDES_SITE_ID);
     }
@@ -316,9 +312,8 @@ async function readCappedResponseText(
 /**
  * Follow redirects with the destination policy enforced on the initial URL and
  * every hop. Institutional query params (Primo) are injected only on the
- * initial URL; bearer tokens (WorldCat/LibGuides) are attached per-hop and only
- * when the hop's host is the allowlisted API host, so a redirect off that host
- * carries neither the params nor the Authorization header.
+ * initial URL; copied Primo keys are stripped on redirects to another origin.
+ * Bearer tokens are attached per-hop only on the provider's HTTPS origin.
  *
  * The bearer cache is consulted per call; the caller invalidates it before a
  * 401 retry so the next call re-acquires a fresh token.
@@ -341,7 +336,7 @@ async function fetchFollowingRedirects(
     const headers: FetchRequestHeaders = {
       'User-Agent': 'agent-studio/0.1 (CUNY AI Lab research assistant)',
     };
-    const provider = bearerProviderForHost(url.hostname, env);
+    const provider = bearerProviderForUrl(url, env);
     if (provider) {
       const token = await getAccessToken(provider, env, fetchImpl, abortSignal);
       if (token) {
@@ -363,6 +358,11 @@ async function fetchFollowingRedirects(
         throw new Error('web_fetch: too many redirects');
       }
       url = assertPublicHttpUrl(new URL(location, url).toString(), allowlist);
+      // Redirect URLs can copy the query from the credentialed request.
+      // A server-owned Primo key must not travel to a different origin.
+      if (env.PRIMO_API_KEY && url.origin !== configuredHttpsOrigin(env.PRIMO_API_BASE)) {
+        url.searchParams.delete('apikey', env.PRIMO_API_KEY);
+      }
       continue;
     }
     break;

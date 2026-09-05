@@ -15,11 +15,7 @@
 import { register } from 'node:module';
 import { z } from 'zod';
 import {
-  clearPanelRelationFields,
-  connectionEndpointKey,
-  makePanelConnection,
   normalizePanelRelations,
-  repairPanelConnectionId,
 } from '../../src/lib/panel-connections.ts';
 
 // Mirror the DO's own path sanitization so the fake agent rejects traversal the
@@ -571,102 +567,24 @@ export class FakeWorkspaceAgent {
     return this.runtime;
   }
 
-  async addPanel(panel) {
-    const existing = this.state.panels.findIndex((candidate) => candidate.id === panel.id);
-    const panels = [...this.state.panels];
-    const previousPanel = existing >= 0 ? panels[existing] : undefined;
-    const sourcePanelIdProvided = Object.hasOwn(panel, 'sourcePanelId');
-    const linkedToProvided = panel.type === 'detail' && Object.hasOwn(panel, 'linkedTo');
-    let mergedPanel = existing >= 0 ? { ...panels[existing], ...panel } : panel;
-    if (existing >= 0 && panel.layout) {
-      mergedPanel = { ...mergedPanel, layout: { ...panels[existing].layout, ...panel.layout } };
-    }
-    if (sourcePanelIdProvided) {
-      mergedPanel = { ...mergedPanel, sourcePanelId: panel.sourcePanelId };
-    }
-    if (existing >= 0) panels[existing] = mergedPanel;
-    else panels.push(mergedPanel);
+  setState(next) {
+    this.state = next;
+  }
 
-    const relationshipChanges = [];
-    if (sourcePanelIdProvided) {
-      relationshipChanges.push({ previous: previousPanel?.sourcePanelId, next: mergedPanel.sourcePanelId });
-    }
-    if (linkedToProvided) {
-      relationshipChanges.push({
-        previous: previousPanel?.type === 'detail' ? previousPanel.linkedTo : undefined,
-        next: mergedPanel.linkedTo,
-      });
-    }
-    let connections = this.state.connections.filter((connection) => relationshipChanges.every(({ previous }) =>
-      previous === undefined
-      || connectionEndpointKey(connection.sourceId, connection.targetId)
-        !== connectionEndpointKey(previous, mergedPanel.id),
-    ));
-    for (const { next } of relationshipChanges) {
-      if (next === undefined) continue;
-      const connection = makePanelConnection(next, mergedPanel.id);
-      if (!connections.some((current) => connectionEndpointKey(current.sourceId, current.targetId) === connectionEndpointKey(connection.sourceId, connection.targetId))) {
-        connections.push(connection);
-      }
-    }
-    const normalizedRelations = normalizePanelRelations(panels, connections);
-    this.state = { ...this.state, ...normalizedRelations };
-    return this.state;
+  upsertPanelWithAssociation(...args) {
+    return workspaceAgentPrototype.upsertPanelWithAssociation.call(this, ...args);
+  }
+
+  async addPanel(panel) {
+    return workspaceAgentPrototype.addPanel.call(this, panel);
   }
 
   async removePanel(panelId) {
-    // Mirrors the real DO: removing a panel also drops its connections and
-    // filters it out of groups (collapsing groups below two members).
-    this.state = {
-      ...this.state,
-      panels: this.state.panels.filter((panel) => panel.id !== panelId),
-      groups: this.state.groups
-        .map((group) => ({ ...group, panelIds: group.panelIds.filter((id) => id !== panelId) }))
-        .filter((group) => group.panelIds.length >= 2),
-      connections: this.state.connections.filter(
-        (connection) => connection.sourceId !== panelId && connection.targetId !== panelId,
-      ),
-    };
-    return this.state;
+    return workspaceAgentPrototype.removePanel.call(this, panelId);
   }
 
   async applyLayoutPatch(patch) {
-    const panels = this.state.panels.map((panel) => {
-      const next = patch.panels?.[panel.id];
-      if (!next) return panel;
-      return { ...panel, layout: { ...panel.layout, ...next } };
-    });
-
-    // Mirrors the real DO (V3): groups/connections are per-id upserts, group
-    // removal is explicit, and entries referencing missing panels are dropped.
-    const panelIds = new Set(panels.map((panel) => panel.id));
-    const removedConnectionIds = new Set(patch.removeConnections ?? []);
-    const removedConnections = this.state.connections.filter((connection) => removedConnectionIds.has(connection.id));
-    const panelsWithClearedRelations = clearPanelRelationFields(panels, removedConnections);
-    const connectionsById = new Map(this.state.connections.map((connection) => [connection.id, connection]));
-    for (const connection of patch.connections ?? []) {
-      const repairedConnection = repairPanelConnectionId(connection, [...connectionsById.values()]);
-      connectionsById.set(repairedConnection.id, repairedConnection);
-    }
-    for (const connectionId of patch.removeConnections ?? []) connectionsById.delete(connectionId);
-    const connections = [...connectionsById.values()].filter(
-      (connection) => panelIds.has(connection.sourceId) && panelIds.has(connection.targetId),
-    );
-    const groupsById = new Map(this.state.groups.map((group) => [group.id, group]));
-    for (const group of patch.groups ?? []) groupsById.set(group.id, group);
-    for (const groupId of patch.removeGroups ?? []) groupsById.delete(groupId);
-    const groups = [...groupsById.values()]
-      .map((group) => ({ ...group, panelIds: group.panelIds.filter((panelId) => panelIds.has(panelId)) }))
-      .filter((group) => group.panelIds.length >= 2);
-
-    const normalizedRelations = normalizePanelRelations(panelsWithClearedRelations, connections);
-    this.state = {
-      ...this.state,
-      ...normalizedRelations,
-      groups,
-    };
-    if (patch.viewport) this.state.viewport = patch.viewport;
-    return this.state;
+    return workspaceAgentPrototype.applyLayoutPatch.call(this, patch);
   }
 }
 
