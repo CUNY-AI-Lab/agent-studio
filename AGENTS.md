@@ -40,6 +40,10 @@
   dual reads, aliases, synchronization, framework jobs, or a broad time
   window. Keep the narrow per-legacy-session lock that fences already-admitted
   anonymous writes; it contains claim/lease state only, never user content.
+- `bun run lint` starts with the vendored full generic anti-slop profile in
+  `tools/oxlint/anti-slop/`. Fix findings at the actual contract or boundary;
+  do not add rule suppressions, evasive wrappers, or generic `SAFETY` comments.
+  Effect-specific rules stay disabled because this repository has no Effect code.
 - Run `bun run lint`, `bun run typecheck`, `bun run test`, `bun run build`, and
   the local smoke before claiming a change is ready. Review source and checks
   before the direct staging command:
