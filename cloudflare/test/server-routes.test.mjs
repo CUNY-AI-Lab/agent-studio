@@ -1990,7 +1990,7 @@ test('/api/models uses the configured default only when it is function-calling c
           {
             id: DEFAULT_CAIL_MODEL,
             object: 'model',
-            capabilities: ['function-calling'],
+            capabilities: ['text-generation', 'function-calling'],
             tier: 'advanced',
           },
         ],
@@ -2014,7 +2014,7 @@ test('/api/models fails closed when the configured default is absent or lacks fu
   configureRequiredIdentity(env, jwks);
   const session = new Session(env);
   for (const data of [
-    [{ id: '@cf/other/model', object: 'model', capabilities: ['function-calling'] }],
+    [{ id: '@cf/other/model', object: 'model', capabilities: ['text-generation', 'function-calling'] }],
     [{ id: DEFAULT_CAIL_MODEL, object: 'model', capabilities: ['text-generation'] }],
   ]) {
     env.GATEWAY = { fetch: async () => Response.json({ object: 'list', data }) };

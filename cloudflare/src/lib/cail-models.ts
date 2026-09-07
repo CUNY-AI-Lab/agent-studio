@@ -153,7 +153,13 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
   );
   const parsedEntries = z.array(modelEntrySchema).min(1).safeParse(supportedEntries);
   if (!parsedEntries.success) throw new Error('Model catalog response did not match the CAIL schema.');
-  return { models: parsedEntries.data.map(normalizeEntry) };
+  const chatEntries = parsedEntries.data.filter(
+    (entry) => entry.capabilities?.includes('text-generation'),
+  );
+  if (chatEntries.length === 0) {
+    throw new Error('No Workers AI text-generation models are available.');
+  }
+  return { models: chatEntries.map(normalizeEntry) };
 }
 
 export { resolveCailModelName };
