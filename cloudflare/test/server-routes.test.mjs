@@ -650,7 +650,7 @@ test('workspace lifecycle: create -> list -> get -> patch -> delete', async () =
   const detail = await getRes.json();
   assert.deepEqual(
     Object.keys(detail).sort(),
-    ['agent', 'downloads', 'files', 'messages', 'runtime', 'state', 'workspace'],
+    ['agent', 'downloads', 'files', 'messages', 'state', 'workspace'],
   );
   assert.equal(detail.workspace.id, created.id);
   assert.equal(detail.agent.name, `${sessionId}-${created.id}`);
@@ -1958,13 +1958,11 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
   assert.deepEqual(await res.json(), {
     models: [{
       id: '@cf/zai-org/glm-5.2',
-      recommended: true,
       tier: 'recommended',
       status: 'active',
       sunset: null,
       capabilities: ['text-generation', 'function-calling'],
       contextLength: null,
-      registryUrl: null,
       name: null,
       description: null,
     }],
@@ -2412,14 +2410,10 @@ test('downloads: DELETE requires explicit scalar ids', async () => {
   }
 });
 
-test('runtime: info and execute routes respond via the agent', async () => {
+test('runtime: execute route responds via the agent', async () => {
   const { env } = makeEnv();
   const { session } = await openSession(app, env);
   const workspace = await createWorkspace(session);
-
-  const infoRes = await session.request(app, `/api/workspaces/${workspace.id}/runtime`);
-  assert.equal(infoRes.status, 200);
-  assert.equal((await infoRes.json()).runtime.provider, 'dynamic-workers');
 
   const execRes = await session.request(
     app,

@@ -80,7 +80,6 @@ async function main() {
     const created = await fetchWorkspace(session, workspaceId, { includeGateway: true });
     assert(created.workspace.id === workspaceId, 'Workspace fetch returned the wrong id');
     assert(created.agent?.className === 'WorkspaceAgent', 'Workspace agent metadata is missing');
-    assert(created.runtime?.provider === 'dynamic-workers', 'Runtime provider is not dynamic-workers');
     assert(created.state?.panels?.some((panel) => panel.id === 'chat'), 'Initial chat panel is missing');
     log('workspace state readable');
 

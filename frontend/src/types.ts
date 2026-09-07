@@ -140,13 +140,6 @@ export interface WorkspaceFileInfo {
   etag?: string;
 }
 
-export interface WorkspaceRuntimeInfo {
-  provider: 'dynamic-workers';
-  codemode: boolean;
-  git: boolean;
-  outbound: 'tool-only';
-}
-
 export interface WorkspaceRuntimeExecution {
   result: unknown;
   error?: string;
@@ -169,7 +162,6 @@ export interface WorkspaceResponse {
   messages: UIMessage[];
   files: WorkspaceFileInfo[];
   downloads?: QueuedDownload[];
-  runtime: WorkspaceRuntimeInfo;
   agent: {
     className: string;
     name: string;

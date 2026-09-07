@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { WorkspaceAgent } from './agent/workspace-agent';
 import { MigrationRegistry } from './migration-registry';
 import { AgentStudioReadiness } from './lib/readiness';
-import type { WorkspaceFileInfo, WorkspaceRecord } from './domain/workspace';
+import type { WorkspaceFileInfo, WorkspaceRecord, WorkspaceState } from './domain/workspace';
 import { validateAgentStudioConfig, type Env } from './env';
 import {
   GalleryError,
@@ -436,21 +436,21 @@ app.get('/api/gallery/:id', async (c) => {
   return c.json({ item });
 });
 
-app.get('/api/gallery/:id/panels/:panelId/preview', async (c) => {
-  const item = await getGalleryItem(c.env, c.req.param('id'));
-  if (!item) {
-    return jsonError(c, 404, 'not_found', 'Gallery item not found');
-  }
-
-  const panel = item.state.panels.find((candidate) => candidate.id === c.req.param('panelId'));
+async function servePreviewPanel(
+  c: AppContext,
+  state: WorkspaceState,
+  readFile: (filePath: string) => Promise<BodyInit | null>,
+  panelId: string,
+): Promise<Response> {
+  const panel = state.panels.find((candidate) => candidate.id === panelId);
   if (!panel || panel.type !== 'preview') {
     return jsonError(c, 404, 'not_found', 'Preview panel not found');
   }
 
   if (panel.filePath) {
-    const file = await readGalleryFile(c.env, item.id, panel.filePath);
+    const file = await readFile(panel.filePath);
     if (!file) return jsonError(c, 404, 'not_found', 'Preview file not found');
-    return new Response(file.body, {
+    return new Response(file, {
       status: 200,
       headers: new Headers(Object.entries(previewServingHeaders())),
     });
@@ -462,6 +462,19 @@ app.get('/api/gallery/:id/panels/:panelId/preview', async (c) => {
     status: 200,
     headers: new Headers(Object.entries(previewServingHeaders())),
   });
+}
+
+app.get('/api/gallery/:id/panels/:panelId/preview', async (c) => {
+  const item = await getGalleryItem(c.env, c.req.param('id'));
+  if (!item) {
+    return jsonError(c, 404, 'not_found', 'Gallery item not found');
+  }
+  return servePreviewPanel(
+    c,
+    item.state,
+    async (filePath) => (await readGalleryFile(c.env, item.id, filePath))?.body ?? null,
+    c.req.param('panelId'),
+  );
 });
 
 app.get('/api/gallery/:id/files/*', async (c) => {
@@ -683,11 +696,10 @@ app.get('/api/workspaces/:id', async (c) => {
   const workspaceId = workspace.id;
   const agentName = createWorkspaceAgentName(sessionId, workspaceId);
   const { agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true });
-  const [state, messages, files, runtime] = await Promise.all([
+  const [state, messages, files] = await Promise.all([
     agent.getSnapshot(),
     agent.getMessages(),
     agent.getWorkspaceFiles(),
-    agent.getRuntimeInfo(),
   ]);
   const downloads = await getWorkspaceDownloads(c.env, sessionId, workspaceId);
 
@@ -697,7 +709,6 @@ app.get('/api/workspaces/:id', async (c) => {
     messages,
     files,
     downloads,
-    runtime,
     agent: {
       className: 'WorkspaceAgent',
       name: agentName,
@@ -729,26 +740,12 @@ app.get('/api/workspaces/:id/panels/:panelId/preview', async (c) => {
   const workspace = loadedWorkspace(c);
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const state = await agent.getSnapshot();
-  const panel = state.panels.find((candidate) => candidate.id === c.req.param('panelId'));
-  if (!panel || panel.type !== 'preview') {
-    return jsonError(c, 404, 'not_found', 'Preview panel not found');
-  }
-
-  if (panel.filePath) {
-    const file = await agent.readWorkspaceFileContent(panel.filePath);
-    if (!file) return jsonError(c, 404, 'not_found', 'Preview file not found');
-    return new Response(file.data, {
-      status: 200,
-      headers: new Headers(Object.entries(previewServingHeaders())),
-    });
-  }
-
-  if (!panel.content) return jsonError(c, 404, 'not_found', 'Preview panel not found');
-
-  return new Response(panel.content, {
-    status: 200,
-    headers: new Headers(Object.entries(previewServingHeaders())),
-  });
+  return servePreviewPanel(
+    c,
+    state,
+    async (filePath) => (await agent.readWorkspaceFileContent(filePath))?.data ?? null,
+    c.req.param('panelId'),
+  );
 });
 
 app.delete('/api/workspaces/:id/downloads', async (c) => {
@@ -766,14 +763,6 @@ app.get('/api/workspaces/:id/downloads', async (c) => {
 
   const downloads = await getWorkspaceDownloads(c.env, sessionId, workspaceId);
   return c.json({ downloads });
-});
-
-app.get('/api/workspaces/:id/runtime', async (c) => {
-  const workspace = loadedWorkspace(c);
-  const { agent } = await syncedWorkspaceAgent(c, workspace);
-  const runtime = await agent.getRuntimeInfo();
-
-  return c.json({ runtime });
 });
 
 app.post('/api/workspaces/:id/runtime/execute', async (c) => {

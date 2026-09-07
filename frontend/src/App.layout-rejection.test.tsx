@@ -121,7 +121,6 @@ function workspaceResponse(
     },
     messages: [],
     files: [],
-    runtime: { provider: 'dynamic-workers', codemode: true, git: true, outbound: 'tool-only' },
     agent: { className: 'WorkspaceAgent', name: 'workspace-1' },
   };
 }
