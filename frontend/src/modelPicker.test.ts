@@ -6,13 +6,11 @@ const catalog: ModelCatalog = {
   models: [
     {
       id: '@cf/deepseek-ai/deepseek-v4-flash-0731',
-      recommended: true,
       tier: 'recommended',
       status: 'active',
       sunset: null,
       capabilities: ['text-generation', 'function-calling', 'reasoning'],
       contextLength: null,
-      registryUrl: null,
       name: 'DeepSeek V4 Flash 0731',
       description: null,
     },

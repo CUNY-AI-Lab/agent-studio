@@ -958,20 +958,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.messages;
   }
 
-  async getRuntimeInfo(): Promise<{
-    provider: 'dynamic-workers';
-    codemode: true;
-    git: true;
-    outbound: 'tool-only';
-  }> {
-    return {
-      provider: 'dynamic-workers',
-      codemode: true,
-      git: true,
-      outbound: 'tool-only',
-    };
-  }
-
   @callable()
   async executeCode(code: string): Promise<ExecuteResult> {
     return this.withMutationFence(() => this.executeCodeFenced(code));

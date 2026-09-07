@@ -25,7 +25,6 @@ function workspaceResponse(id = 'workspace-1', files: WorkspaceFileInfo[] = []):
     },
     messages: [],
     files,
-    runtime: { provider: 'dynamic-workers', codemode: true, git: true, outbound: 'tool-only' },
     agent: { className: 'WorkspaceAgent', name: id },
   };
 }
