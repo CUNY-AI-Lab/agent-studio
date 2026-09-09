@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from 'react';
+import { Suspense, lazy, memo, useEffect, useState } from 'react';
 import { LoaderCircle, MessageSquare, Send, Square } from 'lucide-react';
 import { getToolName, isTextUIPart, isToolUIPart, type UIMessage } from 'ai';
 import { z } from 'zod';
@@ -56,6 +56,53 @@ function ToolCall({ part }: { part: ToolCallPart }) {
     </details>
   );
 }
+
+const MessageRow = memo(function MessageRow({ message }: { message: UIMessage }) {
+  if (message.role === 'user') {
+    return (
+      <article className="max-w-[85%] bg-primary text-primary-foreground rounded-2xl rounded-br-sm p-3 self-end">
+        <pre className="whitespace-pre-wrap font-sans text-sm">{extractMessageText(message)}</pre>
+      </article>
+    );
+  }
+  const visibleParts = Array.isArray(message.parts)
+    ? message.parts.filter((part) => isToolUIPart(part) || (isTextUIPart(part) && part.text))
+    : [];
+  const toolNotices = getToolNotices(message);
+  if (visibleParts.length === 0 && toolNotices.length === 0) return null;
+  return (
+    <article className="max-w-[90%] self-start space-y-2">
+      {toolNotices.map((notice) => (
+        <p
+          key={`${message.id}-${notice.kind}`}
+          role={notice.kind === 'error' ? 'alert' : 'status'}
+          className={cn(
+            'rounded-2xl border px-3 py-2 text-sm',
+            notice.kind === 'error'
+              ? 'border-destructive/20 bg-destructive/8 text-destructive'
+              : notice.kind === 'approval'
+                ? 'border-accent/20 bg-accent/5 text-accent'
+                : 'border-border bg-secondary text-secondary-foreground'
+          )}
+        >
+          {notice.message}
+        </p>
+      ))}
+      {visibleParts.map((part, index) => isToolUIPart(part) ? (
+        <ToolCall key={part.toolCallId} part={part} />
+      ) : isTextUIPart(part) ? (
+        <div key={index} className="bg-secondary text-secondary-foreground rounded-2xl rounded-bl-sm p-3">
+          <Suspense fallback={<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{part.text}</div>}>
+            <LazyMarkdownRenderer
+              className="prose prose-sm dark:prose-invert max-w-none"
+              content={part.text}
+            />
+          </Suspense>
+        </div>
+      ) : null)}
+    </article>
+  );
+});
 
 function WorkingProgress({ detail }: { detail: string }) {
   const [startedAt] = useState(() => Date.now());
@@ -207,52 +254,7 @@ export function ChatPanel({
         </div>
       ) : null}
       <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
-        {messages.map((message) => {
-          if (message.role === 'user') {
-            return (
-              <article key={message.id} className="max-w-[85%] bg-primary text-primary-foreground rounded-2xl rounded-br-sm p-3 self-end">
-                <pre className="whitespace-pre-wrap font-sans text-sm">{extractMessageText(message)}</pre>
-              </article>
-            );
-          }
-          const visibleParts = Array.isArray(message.parts)
-            ? message.parts.filter((part) => isToolUIPart(part) || (isTextUIPart(part) && part.text))
-            : [];
-          const toolNotices = getToolNotices(message);
-          if (visibleParts.length === 0 && toolNotices.length === 0) return null;
-          return (
-            <article key={message.id} className="max-w-[90%] self-start space-y-2">
-              {toolNotices.map((notice) => (
-                <p
-                  key={`${message.id}-${notice.kind}`}
-                  role={notice.kind === 'error' ? 'alert' : 'status'}
-                  className={cn(
-                    'rounded-2xl border px-3 py-2 text-sm',
-                    notice.kind === 'error'
-                      ? 'border-destructive/20 bg-destructive/8 text-destructive'
-                      : notice.kind === 'approval'
-                        ? 'border-accent/20 bg-accent/5 text-accent'
-                        : 'border-border bg-secondary text-secondary-foreground'
-                  )}
-                >
-                  {notice.message}
-                </p>
-              ))}
-              {visibleParts.map((part, index) => isToolUIPart(part) ? (
-                <ToolCall key={part.toolCallId} part={part} />
-              ) : isTextUIPart(part) ? (
-                <div key={index} className="bg-secondary text-secondary-foreground rounded-2xl rounded-bl-sm p-3">
-                  <Suspense fallback={<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{part.text}</div>}>
-                    <LazyMarkdownRenderer
-                      className="prose prose-sm dark:prose-invert max-w-none"
-                      content={part.text}
-                    />
-                  </Suspense>
-                </div>
-              ) : null)}
-            </article>
-          );
-        })}
+        {messages.map((message) => <MessageRow key={message.id} message={message} />)}
       </div>
       {activity.phase === 'working' ? <WorkingProgress detail={activity.detail} /> : null}
       <form
