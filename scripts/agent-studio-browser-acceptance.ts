@@ -487,7 +487,11 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   await page.getByRole('button', { name: /^Publish(?: to gallery)?$/ }).click();
   const dialog = page.getByRole('dialog', { name: 'Publish to Gallery' });
   await dialog.getByRole('textbox', { name: 'Title', exact: true }).fill('Shared research');
-  await dialog.getByRole('textbox', { name: 'Description', exact: true }).fill('Local browser acceptance');
+  const publicationDescription = dialog.getByRole('textbox', { name: 'Description', exact: true });
+  await publicationDescription.fill('');
+  await publicationDescription.pressSequentially('Local browser acceptance');
+  await expect(publicationDescription).toHaveValue('Local browser acceptance');
+  await expect(dialog.getByRole('textbox', { name: 'Title', exact: true })).toHaveValue('Shared research');
   const publicationPromise = page.waitForResponse((response) => (
     response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/publish')
   ));
