@@ -33,8 +33,8 @@ function captureGateway(responder) {
 
 test('catalog makes one direct authenticated service-binding request', async (t) => {
   const capture = captureGateway(() => response([
-    { id: '@cf/zai-org/glm-5.2', object: 'model', capabilities: ['text-generation'] },
-    { id: '@cf/openai/gpt-oss-120b', object: 'model', capabilities: ['text-generation'] },
+    { id: 'glm-5.2', object: 'model', capabilities: ['text-generation'] },
+    { id: 'gpt-oss-120b', object: 'model', capabilities: ['text-generation'] },
   ]));
   const originalFetch = globalThis.fetch;
   let globalCalls = 0;
@@ -58,8 +58,8 @@ test('catalog makes one direct authenticated service-binding request', async (t)
   assert.equal(capture.calls[0].init.credentials, 'omit');
   assert.equal(capture.calls[0].init.redirect, 'manual');
   assert.deepEqual(result.models.map(({ id, tier }) => ({ id, tier })), [
-    { id: '@cf/zai-org/glm-5.2', tier: 'recommended' },
-    { id: '@cf/openai/gpt-oss-120b', tier: 'advanced' },
+    { id: 'glm-5.2', tier: 'recommended' },
+    { id: 'gpt-oss-120b', tier: 'advanced' },
   ]);
 });
 
@@ -94,14 +94,14 @@ test('catalog aborts a delayed service-binding request without retrying', async 
   assert.equal(requestSignal?.aborted, true);
 });
 
-test('catalog keeps Workers chat models and excludes speech despite its text output', async () => {
+test('catalog keeps canonical chat models across providers and excludes speech despite its text output', async () => {
   const capture = captureGateway(() => response([
-    { id: 'anthropic/claude-sonnet-4', provider: 'openrouter' },
-    { id: '@cf/audio/transcriber', provider: 'workers-ai', modality: 'text', capabilities: ['automatic-speech-recognition'] },
-    { id: '@cf/unclassified/model', provider: 'workers-ai', modality: 'text' },
-    { id: '@cf/zai-org/glm-5.2', provider: 'workers-ai', capabilities: ['text-generation', 'function-calling'] },
-    { id: 'google/gemini-2.5-pro', provider: 'openrouter' },
-    { id: '@cf/openai/gpt-oss-120b', provider: 'workers-ai', capabilities: ['text-generation'] },
+    { id: 'claude-sonnet-4', provider: 'openrouter' },
+    { id: 'transcriber', provider: 'workers-ai', modality: 'text', capabilities: ['automatic-speech-recognition'] },
+    { id: 'model', provider: 'workers-ai', modality: 'text' },
+    { id: 'glm-5.2', provider: 'workers-ai', capabilities: ['text-generation', 'function-calling'] },
+    { id: 'gemini-2.5-pro', provider: 'openrouter' },
+    { id: 'gpt-oss-120b', provider: 'workers-ai', capabilities: ['text-generation'] },
   ]));
 
   const result = await fetchCailModels({
@@ -110,10 +110,10 @@ test('catalog keeps Workers chat models and excludes speech despite its text out
   });
 
   assert.deepEqual(result.models.map(({ id, tier }) => ({ id, tier })), [
-    { id: '@cf/zai-org/glm-5.2', tier: 'recommended' },
-    { id: '@cf/openai/gpt-oss-120b', tier: 'advanced' },
+    { id: 'glm-5.2', tier: 'recommended' },
+    { id: 'gpt-oss-120b', tier: 'advanced' },
   ]);
-  assert.equal(requireFunctionCallingModel(result.models, '@cf/zai-org/glm-5.2').tier, 'recommended');
+  assert.equal(requireFunctionCallingModel(result.models, 'glm-5.2').tier, 'recommended');
 });
 
 test('catalog rejects a speech-only inventory without selecting a chat fallback', async () => {
@@ -121,14 +121,14 @@ test('catalog rejects a speech-only inventory without selecting a chat fallback'
     env: { CAIL_API_BASE: BASE },
     identityJwt: JWT,
     fetchImpl: async () => response([{
-      id: '@cf/audio/transcriber',
+      id: 'transcriber',
       modality: 'text',
       capabilities: ['automatic-speech-recognition'],
     }]),
-  }), /No Workers AI text-generation models are available/);
+  }), /No Gateway text-generation models are available/);
 });
 
-test('catalog fails closed when no supported Workers AI entries remain', async () => {
+test('catalog rejects obsolete provider-prefixed IDs', async () => {
   const capture = captureGateway(() => response([
     { id: 'anthropic/claude-sonnet-4', provider: 'openrouter' },
   ]));
@@ -139,10 +139,10 @@ test('catalog fails closed when no supported Workers AI entries remain', async (
   }), /CAIL schema/);
 });
 
-test('catalog fails closed when a supported Workers AI entry is malformed', async () => {
+test('catalog fails closed when a canonical entry is malformed', async () => {
   const capture = captureGateway(() => response([
     { id: 'anthropic/claude-sonnet-4', provider: 'openrouter' },
-    { id: '@cf/zai-org/glm-5.2', provider: 'workers-ai', context_length: 'unknown' },
+    { id: 'glm-5.2', provider: 'workers-ai', context_length: 'unknown' },
   ]));
 
   await assert.rejects(fetchCailModels({
@@ -186,7 +186,7 @@ test('catalog rejects control characters in CAIL_API_BASE before any request', a
     'https://proxy.example/\u007f',
   ]) {
     const capture = captureGateway(() => response([
-      { id: '@cf/zai-org/glm-5.2', object: 'model' },
+      { id: 'glm-5.2', object: 'model' },
     ]));
     await assert.rejects(fetchCailModels({
       env: { CAIL_API_BASE, GATEWAY: capture.gateway },
@@ -234,7 +234,7 @@ test('catalog reports 5xx, network, and schema failures without retry or fallbac
 test('catalog preserves current fields and normalizes optional metadata', async () => {
   const capture = captureGateway(() => response([
     {
-      id: '@cf/zai-org/glm-5.2',
+      id: 'glm-5.2',
       name: 'GLM 5.2',
       description: 'General model.',
       tier: 'recommended',
@@ -243,8 +243,8 @@ test('catalog preserves current fields and normalizes optional metadata', async 
       context_length: 131072,
       registry_url: 'https://registry.example/model',
     },
-    { id: '@cf/old', tier: 'advanced', status: 'retiring', sunset: '2026-12-31', capabilities: ['text-generation'] },
-    { id: '@cf/recommended/model', recommended: true, capabilities: ['text-generation'] },
+    { id: 'old', tier: 'advanced', status: 'retiring', sunset: '2026-12-31', capabilities: ['text-generation'] },
+    { id: 'model', recommended: true, capabilities: ['text-generation'] },
   ]));
   const result = await fetchCailModels({
     env: { CAIL_API_BASE: BASE },
@@ -252,7 +252,7 @@ test('catalog preserves current fields and normalizes optional metadata', async 
     fetchImpl: capture.gateway.fetch.bind(capture.gateway),
   });
   assert.deepEqual(result.models[0], {
-    id: '@cf/zai-org/glm-5.2',
+    id: 'glm-5.2',
     tier: 'recommended',
     status: 'active',
     sunset: null,
@@ -268,7 +268,7 @@ test('catalog preserves current fields and normalizes optional metadata', async 
 
 test('the DeepSeek V4 Flash 0731 Workers model advertises function calling', async () => {
   const capture = captureGateway(() => response([{
-    id: '@cf/deepseek-ai/deepseek-v4-flash-0731',
+    id: 'deepseek-v4-flash-0731',
     name: 'DeepSeek V4 Flash 0731',
     capabilities: ['text-generation', 'function-calling', 'reasoning'],
   }]));
@@ -278,24 +278,24 @@ test('the DeepSeek V4 Flash 0731 Workers model advertises function calling', asy
   });
 
   assert.equal(supportsFunctionCalling(result.models[0]), true);
-  assert.equal(result.models[0].id, '@cf/deepseek-ai/deepseek-v4-flash-0731');
+  assert.equal(result.models[0].id, 'deepseek-v4-flash-0731');
   assert.doesNotThrow(() => requireFunctionCallingModel(
     result.models,
-    '@cf/deepseek-ai/deepseek-v4-flash-0731',
+    'deepseek-v4-flash-0731',
   ));
 });
 
 test('function capability selection never falls back to another model', () => {
   const models = [{
-    id: '@cf/no-tools/model',
+    id: 'model',
     capabilities: [],
   }];
   assert.throws(
-    () => requireFunctionCallingModel(models, '@cf/no-tools/model'),
+    () => requireFunctionCallingModel(models, 'model'),
     ModelCatalogCapabilityError,
   );
   assert.throws(
-    () => requireFunctionCallingModel(models, '@cf/missing/model'),
+    () => requireFunctionCallingModel(models, 'model'),
     ModelCatalogCapabilityError,
   );
 });

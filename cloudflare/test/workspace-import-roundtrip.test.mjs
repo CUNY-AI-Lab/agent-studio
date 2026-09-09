@@ -57,7 +57,7 @@ test('round-trip: a workspace WITH a model override exports and re-imports', asy
     description: 'has a model override',
     createdAt: now,
     updatedAt: now,
-    model: '@cf/zai-org/glm-5.2',
+    model: 'glm-5.2',
   };
 
   const bundle = await createWorkspaceExportBundle({
@@ -71,13 +71,13 @@ test('round-trip: a workspace WITH a model override exports and re-imports', asy
   });
 
   // The exported bundle must carry the override verbatim at both positions.
-  assert.equal(bundle.workspace.model, '@cf/zai-org/glm-5.2');
-  assert.equal(bundle.state.workspace.model, '@cf/zai-org/glm-5.2');
+  assert.equal(bundle.workspace.model, 'glm-5.2');
+  assert.equal(bundle.state.workspace.model, 'glm-5.2');
 
   // Re-import: this threw before the fix (strict schema rejected `model`).
   const reparsed = parseWorkspaceImportBundle(JSON.parse(JSON.stringify(bundle)));
-  assert.equal(reparsed.workspace.model, '@cf/zai-org/glm-5.2');
-  assert.equal(reparsed.state.workspace.model, '@cf/zai-org/glm-5.2');
+  assert.equal(reparsed.workspace.model, 'glm-5.2');
+  assert.equal(reparsed.state.workspace.model, 'glm-5.2');
 });
 
 test('round-trip: a workspace WITHOUT a model override still imports', async () => {
@@ -147,7 +147,7 @@ test('round-trip: a malformed model id is still rejected on import', () => {
       description: 'not a @cf id',
       createdAt: now,
       updatedAt: now,
-      model: 'gpt-4o',
+      model: 'openai/gpt-4o',
     },
     state: baseState({
       id: 'ws-3',
@@ -217,4 +217,17 @@ test('round-trip: invalid UTF-8 bytes fall back to base64 without changing bytes
   const decoded = decodeWorkspaceImportFile(bundle.files[0]);
   assert.ok(decoded instanceof Uint8Array);
   assert.deepEqual([...decoded], [...original]);
+});
+
+test('legacy imports retain previously valid unknown model paths for explicit replacement', () => {
+  const workspace = {
+    id: 'legacy-model-path', name: 'Legacy selection', description: '',
+    createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    model: '@cf/legacy/vendor/model-variant',
+  };
+  const imported = parseWorkspaceImportBundle({
+    version: 1, exportedAt: new Date(0).toISOString(), workspace,
+    state: baseState(workspace), messages: [], files: [],
+  });
+  assert.equal(imported.workspace.model, workspace.model);
 });

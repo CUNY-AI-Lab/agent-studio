@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { buildModelPickerView, type ModelCatalog } from './api';
 
 const catalog: ModelCatalog = {
-  default: '@cf/deepseek-ai/deepseek-v4-flash-0731',
+  default: 'deepseek-v4-flash-0731',
   models: [
     {
-      id: '@cf/deepseek-ai/deepseek-v4-flash-0731',
+      id: 'deepseek-v4-flash-0731',
       tier: 'recommended',
       status: 'active',
       sunset: null,
@@ -22,19 +22,19 @@ describe('buildModelPickerView', () => {
     const view = buildModelPickerView(catalog, undefined);
 
     expect(view.recommended.map((option) => option.id)).toEqual([
-      '@cf/deepseek-ai/deepseek-v4-flash-0731',
+      'deepseek-v4-flash-0731',
     ]);
     expect(view.advanced).toEqual([]);
     expect(view.unsupportedEffectiveModel).toBeNull();
   });
 
   it('shows a stored override absent from the server catalog as unavailable without falling back', () => {
-    const view = buildModelPickerView(catalog, '@cf/deepseek-ai/deepseek-r1-distill-qwen-32b');
+    const view = buildModelPickerView(catalog, 'deepseek-r1-distill-qwen-32b');
 
-    expect(view.effectiveModel).toBe('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b');
-    expect(view.unsupportedEffectiveModel).toBe('@cf/deepseek-ai/deepseek-r1-distill-qwen-32b');
+    expect(view.effectiveModel).toBe('deepseek-r1-distill-qwen-32b');
+    expect(view.unsupportedEffectiveModel).toBe('deepseek-r1-distill-qwen-32b');
     expect(view.recommended.map((option) => option.id)).toEqual([
-      '@cf/deepseek-ai/deepseek-v4-flash-0731',
+      'deepseek-v4-flash-0731',
     ]);
   });
 });

@@ -77,10 +77,6 @@ const modelListEnvelopeSchema = z.object({
   data: z.array(z.unknown()),
 });
 
-const supportedModelIdSchema = z.object({
-  id: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200),
-});
-
 function normalizeEntry(entry: z.infer<typeof modelEntrySchema>, index: number): CailModelInfo {
   const tier: CailModelTier = entry.tier === 'recommended' || entry.tier === 'advanced'
     ? entry.tier
@@ -138,21 +134,13 @@ export async function fetchCailModels(options: FetchCailModelsOptions): Promise<
   const envelope = modelListEnvelopeSchema.safeParse(payload);
   if (!envelope.success) throw new Error('Model catalog response did not match the CAIL schema.');
 
-  // The shared Gateway serves multiple products and may include OpenRouter
-  // entries alongside Workers AI. Agent Studio's runtime and workspace model
-  // contract are intentionally Workers AI-only, so discard unsupported
-  // provider namespaces before validating individual supported entries. A
-  // malformed @cf entry still fails closed rather than being hidden.
-  const supportedEntries = envelope.data.data.filter(
-    (entry) => supportedModelIdSchema.safeParse(entry).success,
-  );
-  const parsedEntries = z.array(modelEntrySchema).min(1).safeParse(supportedEntries);
+  const parsedEntries = z.array(modelEntrySchema).min(1).safeParse(envelope.data.data);
   if (!parsedEntries.success) throw new Error('Model catalog response did not match the CAIL schema.');
   const chatEntries = parsedEntries.data.filter(
     (entry) => entry.capabilities?.includes('text-generation'),
   );
   if (chatEntries.length === 0) {
-    throw new Error('No Workers AI text-generation models are available.');
+    throw new Error('No Gateway text-generation models are available.');
   }
   return { models: chatEntries.map(normalizeEntry) };
 }

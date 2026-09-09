@@ -42,6 +42,7 @@ import {
 import type { GalleryItem } from '../domain/gallery';
 import type { Env } from '../env';
 import { createCailModel, resolveCailModelName } from '../lib/cail-model';
+import { migratedModelId, migrateWorkspaceModel } from '../lib/model-migration';
 import {
   fetchCailModels,
   ModelCatalogAuthError,
@@ -904,7 +905,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     }
 
     try {
-      const modelName = workspace.model ?? resolveCailModelName(this.env);
+      let modelName = workspace.model ?? resolveCailModelName(this.env);
       if (this.functionCallingModelId !== modelName) {
         const { models } = await fetchCailModels({
           env: this.env,
@@ -912,6 +913,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           abortSignal,
         });
         throwIfAborted(abortSignal);
+        if (migratedModelId(modelName)) {
+          const migration = await migrateWorkspaceModel(this.env, sessionId, workspace.id);
+          throwIfAborted(abortSignal);
+          if (!migration.ok) throw new ModelCatalogCapabilityError('Reload the workspace and choose an available model that supports tools.');
+          await this.syncWorkspace(migration.workspace, sessionId);
+          modelName = migration.workspace.model ?? resolveCailModelName(this.env);
+        }
         requireFunctionCallingModel(models, modelName);
         this.functionCallingModelId = modelName;
       }

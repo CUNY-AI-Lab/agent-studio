@@ -40,10 +40,13 @@ import {
   fetchCailModels,
   ModelCatalogAuthError,
   ModelCatalogDefaultError,
+  ModelCatalogCapabilityError,
+  requireFunctionCallingModel,
   ModelCatalogQuotaError,
   supportsFunctionCalling,
 } from './lib/cail-models';
 import { resolveCailModelName } from './lib/cail-model';
+import { migratedModelId, migrateWorkspaceModel } from './lib/model-migration';
 import { cailAuthRequiredResponse } from './lib/cail-identity';
 import {
   layoutPatchSchema,
@@ -258,9 +261,21 @@ async function requireWorkspace(
   const sessionId = requireSession(c);
   const workspaceId = c.req.param('id') ?? '';
   if (workspaceId === 'import' && c.req.method === 'POST') return next();
-  const workspace = await getWorkspace(c.env, sessionId, workspaceId);
+  let workspace = await getWorkspace(c.env, sessionId, workspaceId);
   if (!workspace) {
     return jsonError(c, 404, 'not_found', 'Workspace not found');
+  }
+  if (workspace.deleting && c.req.method !== 'DELETE') {
+    return jsonError(c, 404, 'not_found', 'Workspace not found');
+  }
+  if (workspace.model && migratedModelId(workspace.model)) {
+    const migration = await migrateWorkspaceModel(c.env, sessionId, workspaceId);
+    if (!migration.ok) {
+      return migration.reason === 'not-found'
+        ? jsonError(c, 404, 'not_found', 'Workspace not found')
+        : jsonError(c, 409, 'conflict', 'Someone else changed this. Reload and try again.', { retryable: true });
+    }
+    workspace = migration.workspace;
   }
   if (workspace.deleting && c.req.method !== 'DELETE') {
     return jsonError(c, 404, 'not_found', 'Workspace not found');
@@ -516,6 +531,7 @@ app.post('/api/gallery/:id', async (c) => {
   workspace.createdAt = now;
   workspace.updatedAt = now;
 
+  if (workspace.model) workspace.model = migratedModelId(workspace.model) ?? workspace.model;
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
   try {
@@ -638,6 +654,7 @@ app.post('/api/workspaces/import', async (c) => {
     updatedAt: now,
     model: bundle.workspace.model ?? resolveCailModelName(c.env),
   };
+  if (workspace.model) workspace.model = migratedModelId(workspace.model) ?? workspace.model;
   let agent: Awaited<ReturnType<typeof getWorkspaceAgent>> | null = null;
 
   try {
@@ -795,6 +812,15 @@ app.patch('/api/workspaces/:id', async (c) => {
     return jsonError(c, 400, 'invalid_request', "That didn't work.");
   }
   const patch = parsed.data;
+  if (patch.model !== undefined) {
+    const { models } = await fetchCailModels({ env: c.env, identityJwt: cailGatewayJwt(c) });
+    try {
+      requireFunctionCallingModel(models, patch.model);
+    } catch (error) {
+      if (!(error instanceof ModelCatalogCapabilityError)) throw error;
+      return jsonError(c, 400, 'model_capability_required', 'Choose an available model that supports tools.');
+    }
+  }
 
   // CAS retry so two concurrent field edits don't clobber each other (A12).
   const result = await updateWorkspaceWithRetry(c.env, sessionId, workspace.id, (current) => {

@@ -7,7 +7,7 @@ export interface WorkspaceRecord {
   createdAt: string;
   updatedAt: string;
   galleryId?: string;
-  /** Optional per-workspace Workers AI model override (`@cf/...`). */
+  /** Optional per-workspace canonical Gateway model selection. */
   model?: string;
 }
 
