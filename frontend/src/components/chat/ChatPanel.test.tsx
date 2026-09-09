@@ -225,34 +225,47 @@ describe('ChatPanel', () => {
     expect(screen.getAllByRole('article')).toHaveLength(1);
   });
 
-  it('streams named code stages and keeps the completed activity visible during the next tool', () => {
+  it('streams named code stages and keeps the completed activity visible during the next tool', async () => {
     const working = {
       status: 'streaming', isStreaming: true, isServerStreaming: true,
       isRecovering: false, isToolContinuation: false, contextualTurnActive: false,
       connectionError: null, canRetry: false,
     };
+    const earlier: UIMessage = { id: 'earlier', role: 'assistant', parts: [
+      { type: 'tool-read_file', toolCallId: 'earlier-failure', state: 'output-error', input: {}, errorText: 'hidden exception' },
+    ] };
     const preparing: UIMessage = { id: 'code', role: 'assistant', parts: [
       { type: 'tool-codemode', toolCallId: 'code', state: 'input-streaming', input: { code: 'private code' } },
     ] };
-    const { rerender } = render(<ChatPanel {...baseProps} messages={[preparing]}
+    const { rerender } = render(<ChatPanel {...baseProps} messages={[earlier, preparing]}
       activity={getChatActivity({ ...working, messages: [preparing] })} />);
     expect(screen.getByText('Preparing code…')).toBeInTheDocument();
     const running: UIMessage = { ...preparing, parts: [
       { type: 'tool-codemode', toolCallId: 'code', state: 'input-available', input: { code: 'private code' } },
     ] };
-    rerender(<ChatPanel {...baseProps} messages={[running]}
+    rerender(<ChatPanel {...baseProps} messages={[earlier, running]}
       activity={getChatActivity({ ...working, messages: [running] })} />);
     expect(screen.getByText('Running code…')).toBeInTheDocument();
     const nextTool: UIMessage = { ...preparing, parts: [
       { type: 'tool-codemode', toolCallId: 'code', state: 'output-available', input: {}, output: { private: 'result' } },
       { type: 'tool-ui_show_file', toolCallId: 'display', state: 'input-available', input: {} },
     ] };
-    rerender(<ChatPanel {...baseProps} messages={[nextTool]}
+    rerender(<ChatPanel {...baseProps} messages={[earlier, nextTool]}
       activity={getChatActivity({ ...working, messages: [nextTool] })} />);
     expect(screen.getByLabelText('codemode: Done')).toBeInTheDocument();
     expect(screen.getByText('Displaying a file…')).toBeInTheDocument();
     expect(screen.queryByText('private code')).not.toBeInTheDocument();
     expect(screen.queryByText('result')).not.toBeInTheDocument();
+    const textStarted: UIMessage = { ...nextTool, parts: [...nextTool.parts, { type: 'text', text: 'First streamed words.' }] };
+    rerender(<ChatPanel {...baseProps} messages={[earlier, textStarted]}
+      activity={getChatActivity({ ...working, messages: [textStarted] })} />);
+    expect(await screen.findByText('First streamed words.')).toBeInTheDocument();
+    const textContinued: UIMessage = { ...nextTool, parts: [...nextTool.parts, { type: 'text', text: 'First streamed words. More detail.' }] };
+    rerender(<ChatPanel {...baseProps} messages={[earlier, textContinued]}
+      activity={getChatActivity({ ...working, messages: [textContinued] })} />);
+    expect(await screen.findByText('First streamed words. More detail.')).toBeInTheDocument();
+    expect(screen.getByText('A tool attempt failed. Review the response and any files it produced.')).toBeInTheDocument();
+    expect(screen.getByLabelText('read_file: Failed')).toBeInTheDocument();
   });
 
   it('shows the error recovery banner and retry gating', () => {
