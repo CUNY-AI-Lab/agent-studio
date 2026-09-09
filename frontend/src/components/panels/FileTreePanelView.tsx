@@ -34,53 +34,48 @@ export function FileTreePanelView({
   }
 
   return (
-    <div className="p-3 space-y-1">
+    <div className="file-list">
       {entries.map((file) => {
         const depth = Math.max(0, file.path.split('/').length - 1);
         const isHighlighted = highlightedPaths?.has(file.path) ?? false;
         const timestamp = file.modifiedAt ?? file.uploadedAt;
         return (
           <article
-            className={cn(
-              'rounded-lg border px-3 py-2',
-              isHighlighted ? 'border-primary bg-primary/5' : 'border-border/60 bg-background/70'
-            )}
+            className={cn('file-row', isHighlighted && 'file-row-highlighted')}
             key={file.path}
-            style={{ marginLeft: `${depth * 14}px` }}
+            style={{ paddingLeft: `${6 + depth * 14}px` }}
           >
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <span className="text-muted-foreground">{file.isDirectory ? 'Folder' : 'File'}</span>
-                  <span className="truncate text-sm font-medium">{file.name}</span>
-                </div>
-                <p className="truncate text-xs text-muted-foreground mt-1">{file.path}</p>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <span className="file-row-kind">{file.isDirectory ? 'Folder' : 'File'}</span>
+                <span className="file-row-name">{file.name}</span>
               </div>
+              <p className="file-row-path mt-1">{file.path}</p>
               {!file.isDirectory ? (
-                <div className="flex items-center gap-2">
-                  {fileSource.kind === 'workspace' && onOpenFile && canOpenFileInPanel(file.path) ? (
-                    <button
-                      onClick={() => onOpenFile(file)}
-                      className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
-                    >
-                      {getFileActionLabel?.(file.path) ?? 'Open'}
-                    </button>
-                  ) : null}
-                  {onDownloadFile ? (
-                    <button
-                      onClick={() => onDownloadFile(fileSource, file.path, file.name)}
-                      className="px-2 py-1 text-xs rounded-md bg-muted hover:bg-muted/80 transition-colors"
-                    >
-                      Download File
-                    </button>
-                  ) : null}
-                </div>
+                <p className="file-row-meta mt-0.5">
+                  {formatFileSize(file.size)} · {formatRelativeTime(timestamp)}
+                </p>
               ) : null}
             </div>
             {!file.isDirectory ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                {formatFileSize(file.size)} · {formatRelativeTime(timestamp)}
-              </p>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {fileSource.kind === 'workspace' && onOpenFile && canOpenFileInPanel(file.path) ? (
+                  <button
+                    onClick={() => onOpenFile(file)}
+                    className="ui-btn ui-btn-xs"
+                  >
+                    {getFileActionLabel?.(file.path) ?? 'Open'}
+                  </button>
+                ) : null}
+                {onDownloadFile ? (
+                  <button
+                    onClick={() => onDownloadFile(fileSource, file.path, file.name)}
+                    className="ui-btn ui-btn-xs"
+                  >
+                    Download File
+                  </button>
+                ) : null}
+              </div>
             ) : null}
           </article>
         );

@@ -1,4 +1,4 @@
-import { Layout } from 'lucide-react';
+import { ArrowLeft, Layout } from 'lucide-react';
 import { CanvasFlow } from './CanvasFlow';
 import type { WorkspaceState } from '../../types';
 
@@ -19,23 +19,25 @@ export function ReadOnlyCanvas({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
-      <header className="canvas-header flex items-center gap-4 px-6 py-3">
-        <button
-          type="button"
-          onClick={onGoHome}
-          className="shrink-0 rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          title="Back to home"
-          aria-label="Back to home"
-        >
-          <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5} aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
-          </svg>
-        </button>
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate font-serif text-lg font-medium">{title}</h2>
-          <p className="truncate text-sm text-muted-foreground">{description}</p>
-        </div>
-      </header>
+      <div className="shrink-0">
+        <header className="ws-header flex items-center gap-4 px-5 py-2.5">
+          <button
+            type="button"
+            onClick={onGoHome}
+            className="ui-icon-btn"
+            title="Back to home"
+            aria-label="Back to home"
+          >
+            <ArrowLeft size={18} strokeWidth={1.75} aria-hidden="true" />
+          </button>
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-xl font-semibold tracking-tight">{title}</h2>
+            <p className="truncate text-[13px] text-muted-foreground">{description}</p>
+          </div>
+          <span className="ui-label shrink-0">Read-only</span>
+        </header>
+        <div className="ws-header-rule" aria-hidden="true" />
+      </div>
       <CanvasFlow
         panels={visiblePanels}
         allPanels={visiblePanels}

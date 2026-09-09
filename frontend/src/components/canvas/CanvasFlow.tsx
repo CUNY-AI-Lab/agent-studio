@@ -383,7 +383,7 @@ function PanelNode({ data, selected }: NodeProps<PanelFlowNode>) {
                 aria-label={`Open menu for ${panelTitle}`}
                 aria-haspopup="menu"
                 aria-expanded={data.isMenuOpen}
-                className="panel-menu-trigger nodrag nopan inline-flex h-8 w-8 touch-manipulation items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="panel-menu-trigger ui-icon-btn ui-icon-btn-sm nodrag nopan touch-manipulation"
                 onClick={(event) => {
                   event.stopPropagation();
                   data.onOpenMenu?.(data.isMenuOpen ? '' : data.panel.id);
@@ -397,7 +397,7 @@ function PanelNode({ data, selected }: NodeProps<PanelFlowNode>) {
                 <div
                   role="menu"
                   aria-label={`Actions for ${panelTitle}`}
-                  className="panel-menu nopan nodrag absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-lg border border-border bg-popover py-1 shadow-xl"
+                  className="panel-menu ui-surface ui-menu nopan nodrag absolute right-0 top-full z-50 mt-1 w-52"
                   onClick={(event) => event.stopPropagation()}
                 >
                   {data.menuContent}
@@ -590,23 +590,23 @@ function CanvasZoomControls({
   }, [hasContent, onViewportChange, reactFlow]);
 
   return (
-    <div className="fixed bottom-4 left-4 z-40 flex items-center gap-1 rounded-lg border border-border bg-card/90 p-1 shadow-lg backdrop-blur" role="group" aria-label="Canvas zoom">
+    <div className="zoom-controls ui-surface" role="group" aria-label="Canvas zoom">
       <button
         type="button"
         onClick={() => handleZoom('out')}
-        className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="ui-icon-btn ui-icon-btn-sm"
         title="Zoom out"
         aria-label="Zoom out"
       >
         <Minus size={14} aria-hidden="true" />
       </button>
-      <span className="w-12 text-center font-mono text-xs text-muted-foreground" aria-live="polite" aria-label={`Zoom ${Math.round(viewport.zoom * 100)} percent`}>
+      <span className="zoom-value" aria-live="polite" aria-label={`Zoom ${Math.round(viewport.zoom * 100)} percent`}>
         {Math.round(viewport.zoom * 100)}%
       </span>
       <button
         type="button"
         onClick={() => handleZoom('in')}
-        className="rounded p-1.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="ui-icon-btn ui-icon-btn-sm"
         title="Zoom in"
         aria-label="Zoom in"
       >
@@ -616,7 +616,7 @@ function CanvasZoomControls({
         <button
           type="button"
           onClick={handleReset}
-          className="rounded px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="ui-btn ui-btn-quiet ui-btn-xs"
           title="Reset view"
           aria-label="Reset zoom and position"
         >
@@ -1158,7 +1158,6 @@ function CanvasFlowInner({
           gap={24}
           size={1}
           color="var(--canvas-grid-color)"
-          bgColor="var(--background)"
         />
         <CanvasZoomControls
           viewport={viewport}

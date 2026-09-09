@@ -38,7 +38,7 @@ export function PanelMenu({
           onAskAboutTile(panel.id);
           onCloseMenu();
         }}
-        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+        className="ui-menu-item"
       >
         Ask about this tile
       </button>
@@ -53,7 +53,7 @@ export function PanelMenu({
               onRevealFile(filePath);
               onCloseMenu();
             }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+            className="ui-menu-item"
           >
             Show in workspace files
           </button>
@@ -63,7 +63,7 @@ export function PanelMenu({
               onPanelDownload(panel, 'file');
               onCloseMenu();
             }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+            className="ui-menu-item"
           >
             Download
           </button>
@@ -79,7 +79,7 @@ export function PanelMenu({
               onPanelDownload(panel, 'csv');
               onCloseMenu();
             }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+            className="ui-menu-item"
           >
             Export as CSV
           </button>
@@ -89,7 +89,7 @@ export function PanelMenu({
               onPanelDownload(panel, 'json');
               onCloseMenu();
             }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+            className="ui-menu-item"
           >
             Export as JSON
           </button>
@@ -103,7 +103,7 @@ export function PanelMenu({
               onPanelDownload(panel, 'csv');
               onCloseMenu();
             }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+            className="ui-menu-item"
           >
             Export as CSV
           </button>
@@ -113,7 +113,7 @@ export function PanelMenu({
               onPanelDownload(panel, 'json');
               onCloseMenu();
             }}
-            className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+            className="ui-menu-item"
           >
             Export as JSON
           </button>
@@ -126,7 +126,7 @@ export function PanelMenu({
             onPanelDownload(panel, 'json');
             onCloseMenu();
           }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+          className="ui-menu-item"
         >
           Export as JSON
         </button>
@@ -138,7 +138,7 @@ export function PanelMenu({
             onPanelDownload(panel, 'txt');
             onCloseMenu();
           }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+          className="ui-menu-item"
         >
           Export Markdown (.md)
         </button>
@@ -151,7 +151,7 @@ export function PanelMenu({
             downloadBlob(new Blob([panel.content || ''], { type: 'text/html;charset=utf-8' }), `${safeTitle}.html`);
             onCloseMenu();
           }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+          className="ui-menu-item"
         >
           Download as HTML
         </button>
@@ -163,7 +163,7 @@ export function PanelMenu({
             onPanelDownload(panel, 'png');
             onCloseMenu();
           }}
-          className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+          className="ui-menu-item"
         >
           Save as image (PNG)
         </button>
@@ -177,7 +177,7 @@ export function PanelMenu({
           }
           onCloseMenu();
         }}
-        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+        className="ui-menu-item"
       >
         Minimize
       </button>
@@ -187,18 +187,18 @@ export function PanelMenu({
           onMaximize(panel.id);
           onCloseMenu();
         }}
-        className="w-full px-3 py-1.5 text-left text-sm hover:bg-muted transition-colors"
+        className="ui-menu-item"
       >
         Maximize
       </button>
-      <div className="border-t border-border my-1" />
+      <div className="ui-menu-sep" />
       <button
         role="menuitem"
         onClick={() => {
           onRemovePanel(panel.id);
           onCloseMenu();
         }}
-        className="w-full px-3 py-1.5 text-left text-sm text-red-500 hover:bg-red-500/10 transition-colors"
+        className="ui-menu-item ui-menu-item-danger"
       >
         Remove
       </button>

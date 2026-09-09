@@ -47,7 +47,7 @@ const ChartPanelView = memo(function ChartPanelView({
   const { labelKey, valueKey } = inferChartKeys(panel.data);
   const xKey = labelKey || 'label';
   const yKey = valueKey || 'value';
-  const colors = ['#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#8b5cf6'];
+  const colors = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)'];
   const reservedProps = ['style', 'className', 'key', 'ref', 'children'];
   const sanitizedData = panel.data.map((item) => {
     const clean: ChartDatum = {};
@@ -67,19 +67,19 @@ const ChartPanelView = memo(function ChartPanelView({
   };
 
   return (
-    <div className="h-full w-full bg-card rounded-lg">
+    <div className="chart-tile">
       <ChartContainer config={chartConfig} className="h-full w-full">
         {panel.chartType === 'bar' ? (
           <BarChart data={sanitizedData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Bar dataKey={yKey} fill={colors[0]} radius={[4, 4, 0, 0]} />
+            <Bar dataKey={yKey} fill={colors[0]} />
           </BarChart>
         ) : panel.chartType === 'line' ? (
           <LineChart data={sanitizedData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
@@ -87,11 +87,11 @@ const ChartPanelView = memo(function ChartPanelView({
           </LineChart>
         ) : panel.chartType === 'area' ? (
           <AreaChart data={sanitizedData} margin={{ top: 10, right: 10, left: 0, bottom: 40 }}>
-            <CartesianGrid strokeDasharray="3 3" className="stroke-muted/50" />
+            <CartesianGrid strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey={xKey} tick={{ fontSize: 10 }} angle={-45} textAnchor="end" height={50} className="fill-muted-foreground" />
             <YAxis tick={{ fontSize: 10 }} className="fill-muted-foreground" />
             <ChartTooltip content={<ChartTooltipContent />} />
-            <Area type="monotone" dataKey={yKey} stroke={colors[1]} strokeWidth={2} fill={`${colors[1]}80`} />
+            <Area type="monotone" dataKey={yKey} stroke={colors[1]} strokeWidth={2} fill={colors[1]} fillOpacity={0.35} />
           </AreaChart>
         ) : panel.chartType === 'pie' ? (
           <PieChart>

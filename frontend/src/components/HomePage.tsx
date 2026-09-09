@@ -65,22 +65,17 @@ export function HomePage({
   };
 
   return (
-    <div className="min-h-screen canvas-bg">
-      {/* Top accent line */}
-      <div className="fixed top-0 left-0 w-full h-0.5 bg-gradient-to-r from-transparent via-accent/50 to-transparent" />
+    <div className="grain min-h-screen canvas-bg">
+      <div className="accent-rule fixed top-0 left-0 z-40 w-full" aria-hidden="true" />
 
-      {/* Theme toggle */}
       <ThemeToggle className="fixed top-4 right-4 z-50" />
 
       {error ? (
-        <div
-          role="alert"
-          className="mx-auto mt-8 max-w-3xl px-6 text-sm text-destructive"
-        >
-          <div className="flex items-center justify-between gap-4 border border-destructive/20 bg-destructive/10 px-4 py-3">
+        <div role="alert" className="mx-auto mt-8 max-w-3xl px-6">
+          <div className="ui-notice flex items-center justify-between gap-4">
             <span>{error}</span>
             {onRetry ? (
-              <button type="button" className="shrink-0 underline" onClick={onRetry}>
+              <button type="button" className="ui-link ui-link-danger shrink-0" onClick={onRetry}>
                 Try again
               </button>
             ) : null}
@@ -88,44 +83,41 @@ export function HomePage({
         </div>
       ) : null}
 
-      <main className="max-w-3xl mx-auto px-6 py-16">
-        {/* Header */}
-        <header className="mb-12 animate-fade-in text-center">
-          <div className="inline-flex items-center gap-2 mb-6">
-            <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-              <svg className="w-4 h-4 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+      <main className="mx-auto max-w-3xl px-6 pb-24 pt-20">
+        <header className="mb-10 animate-fade-in text-center">
+          <div className="home-brand mb-8">
+            <div className="home-brand-mark" aria-hidden="true">
+              <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
               </svg>
             </div>
-            <span className="text-sm font-medium tracking-wide text-muted-foreground">Agent Studio</span>
+            <span className="ui-label text-foreground">Agent Studio</span>
           </div>
 
-          <h1 className="text-3xl font-medium tracking-tight">
+          <h1 className="home-title">
             What would you like to work on?
           </h1>
         </header>
 
-        {/* Main input */}
-        <section className="mb-8 animate-fade-in-up" style={{ animationDelay: '100ms' }}>
+        <section className="mb-10 animate-fade-in-up" style={{ animationDelay: '100ms' }}>
           <form onSubmit={handleSubmit}>
-            <div className="relative composer-frame">
+            <div className="composer-frame home-composer">
               <input
                 type="text"
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
                 placeholder="Ask anything or describe what you want to build..."
                 aria-label="What would you like to work on?"
-                className="w-full px-5 py-4 pr-14 text-base bg-card transition-all focus:outline-none"
                 autoFocus
                 disabled={actionBusy}
               />
               <button
                 type="submit"
                 disabled={!prompt.trim() || actionBusy}
-                className="absolute right-2 top-1/2 -translate-y-1/2 p-2.5 bg-primary text-primary-foreground transition-all hover:opacity-90 disabled:opacity-40"
+                className="ui-btn ui-btn-primary home-composer-send"
                 aria-label="Start"
               >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
                 </svg>
               </button>
@@ -133,36 +125,31 @@ export function HomePage({
           </form>
         </section>
 
-        {/* Gallery */}
         {galleryItems.length > 0 && (
           <section className="mb-12 animate-fade-in-up" style={{ animationDelay: '150ms' }}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-medium text-muted-foreground">Gallery</h2>
-              <span className="text-xs text-muted-foreground/70">{galleryItems.length} shared with CAIL members</span>
+            <div className="ui-section-head mb-4">
+              <h2 className="ui-label">Gallery</h2>
+              <span className="ws-stat">{galleryItems.length} shared with CAIL members</span>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
               {galleryItems.map((item) => (
                 <article
                   key={item.id}
                   role="group"
                   aria-label={`${item.title} gallery item`}
-                  className="w-full p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group"
+                  className="gallery-card rule-lead"
                 >
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <h3 className="font-medium text-sm group-hover:text-primary transition-colors line-clamp-1">
-                      {item.title}
-                    </h3>
-                    <span className="flex-shrink-0 text-xs text-muted-foreground/70 bg-muted px-1.5 py-0.5 rounded">
-                      {item.artifactCount}
-                    </span>
+                  <div className="mb-2 flex items-start justify-between gap-2">
+                    <h3 className="line-clamp-2">{item.title}</h3>
+                    <span className="gallery-count shrink-0">{item.artifactCount}</span>
                   </div>
-                  <p className="text-xs text-muted-foreground line-clamp-2">{item.description}</p>
-                  <div className="mt-4 flex flex-wrap gap-2">
+                  <p className="line-clamp-3 text-xs leading-relaxed text-muted-foreground">{item.description}</p>
+                  <div className="mt-auto flex flex-wrap gap-2 pt-4">
                     <button
                       type="button"
                       onClick={() => onOpenGalleryItem(item.id)}
                       disabled={actionBusy}
-                      className="rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:opacity-50"
+                      className="ui-btn ui-btn-sm"
                     >
                       Open read-only
                     </button>
@@ -170,7 +157,7 @@ export function HomePage({
                       type="button"
                       onClick={() => void handleCloneGalleryItem(item.id)}
                       disabled={actionBusy}
-                      className="rounded-md bg-primary px-2.5 py-1.5 text-xs text-primary-foreground transition-opacity hover:opacity-90 disabled:opacity-50"
+                      className="ui-btn ui-btn-sm ui-btn-primary"
                     >
                       {cloningGalleryId === item.id ? 'Creating…' : 'Use as workspace'}
                     </button>
@@ -181,20 +168,19 @@ export function HomePage({
           </section>
         )}
 
-        {/* Example prompts (when no gallery) */}
         {galleryItems.length === 0 && (
           <section className="mb-12 animate-fade-in-up" style={{ animationDelay: '150ms' }}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-medium text-muted-foreground">Try these</h2>
+            <div className="ui-section-head mb-4">
+              <h2 className="ui-label">Try these</h2>
             </div>
-            <div className="flex flex-wrap gap-2 justify-center">
+            <div className="flex flex-wrap justify-center gap-2">
               {EXAMPLE_PROMPTS.map((example) => (
                 <button
                   key={example.label}
                   type="button"
                   onClick={() => handleExamplePrompt(example.prompt)}
                   disabled={actionBusy}
-                  className="px-4 py-2 text-sm border border-border bg-card/50 text-muted-foreground transition-all hover:border-primary/40 hover:text-foreground hover:bg-card disabled:opacity-50"
+                  className="home-chip"
                 >
                   {example.label}
                 </button>
@@ -203,17 +189,16 @@ export function HomePage({
           </section>
         )}
 
-        {/* Start blank */}
-        <section className="mb-12 animate-fade-in-up flex flex-wrap justify-center gap-2" style={{ animationDelay: '200ms' }}>
+        <section className="mb-14 flex flex-wrap justify-center gap-2 animate-fade-in-up" style={{ animationDelay: '200ms' }}>
           <button
             type="button"
             onClick={onStartBlank}
             disabled={actionBusy}
-            className="px-4 py-2 text-sm border border-border text-muted-foreground/70 transition-all hover:border-border hover:text-muted-foreground disabled:opacity-50"
+            className="ui-btn"
           >
             Start blank
           </button>
-          <label className="px-4 py-2 text-sm border border-border text-muted-foreground/70 transition-all hover:text-muted-foreground has-[:disabled]:opacity-50 has-[:disabled]:cursor-not-allowed cursor-pointer focus-within:ring-2 focus-within:ring-ring">
+          <label className="ui-btn cursor-pointer has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50 focus-within:outline-3 focus-within:outline-ring">
             {importing ? 'Importing…' : 'Import workspace'}
             <input
               className="sr-only"
@@ -229,34 +214,32 @@ export function HomePage({
           </label>
         </section>
 
-        {/* Your Workspaces */}
         {workspaces.length > 0 && (
           <section className="animate-fade-in-up" style={{ animationDelay: '250ms' }}>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-medium text-muted-foreground">Your Workspaces</h2>
+            <div className="ui-section-head mb-3">
+              <h2 className="ui-label">Your Workspaces</h2>
+              <span className="ws-stat">{workspaces.length}</span>
             </div>
-            <div className="grid gap-2">
+            <div className="ws-list">
               {workspaces.map((ws) => (
                 <button
                   key={ws.id}
                   type="button"
                   onClick={() => onSelectWorkspace(ws.id)}
                   disabled={actionBusy}
-                  className="w-full text-left p-4 border border-border bg-card/50 transition-all hover:border-primary/40 hover:bg-card group disabled:cursor-not-allowed disabled:opacity-50"
+                  className="ws-row"
                 >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <h3 className="font-medium text-sm group-hover:text-primary transition-colors truncate">
-                        {ws.name || 'Untitled'}
-                      </h3>
-                      {ws.description && (
-                        <p className="text-xs text-muted-foreground line-clamp-1 mt-0.5">{ws.description}</p>
-                      )}
-                    </div>
-                    <span className="flex-shrink-0 text-xs text-muted-foreground/70">
-                      {new Date(ws.updatedAt || ws.createdAt).toLocaleDateString()}
-                    </span>
+                  <div className="min-w-0">
+                    <h3 className="truncate">
+                      {ws.name || 'Untitled'}
+                    </h3>
+                    {ws.description && (
+                      <p className="mt-1 line-clamp-1 text-xs text-muted-foreground">{ws.description}</p>
+                    )}
                   </div>
+                  <span className="ws-row-date">
+                    {new Date(ws.updatedAt || ws.createdAt).toLocaleDateString()}
+                  </span>
                 </button>
               ))}
             </div>
