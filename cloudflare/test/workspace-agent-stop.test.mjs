@@ -175,6 +175,7 @@ test('ui_show_file rechecks the turn abort after reading the file', async () => 
     },
   };
   const agent = makeQueuedAgent(WorkspaceAgent, {
+    state: { panels: [] },
     readRuntimeFileContent: WorkspaceAgent.prototype.readRuntimeFileContent,
     getRuntimeWorkspace() {
       return runtime;

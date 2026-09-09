@@ -1,12 +1,61 @@
 import { Suspense, lazy, useEffect, useState } from 'react';
 import { LoaderCircle, MessageSquare, Send, Square } from 'lucide-react';
-import { isTextUIPart, type UIMessage } from 'ai';
+import { getToolName, isTextUIPart, isToolUIPart, type UIMessage } from 'ai';
+import { z } from 'zod';
 import { cn } from '../../lib/utils';
 import { extractMessageText, getToolNotices } from '../../lib/messages';
 import type { ChatActivityState } from '../../lib/chatActivity';
-import { lastFinishedToolActivity } from '../../lib/toolActivity';
 
 const LazyMarkdownRenderer = lazy(() => import('../renderers/MarkdownRenderer'));
+
+type ToolCallPart = Extract<UIMessage['parts'][number], { toolCallId: string }>;
+const codeInputSchema = z.object({ code: z.string() });
+const stringPayloadSchema = z.string();
+
+function ToolPayload({ part, field }: { part: ToolCallPart; field: 'input' | 'output' }) {
+  const input = part.state === 'output-error' && part.input === undefined && 'rawInput' in part
+    ? part.rawInput
+    : part.input;
+  const value = field === 'input' ? input : part.state === 'output-available' ? part.output : undefined;
+  const code = field === 'input' && getToolName(part) === 'codemode'
+    ? codeInputSchema.safeParse(value).data?.code
+    : undefined;
+  const text = code ?? stringPayloadSchema.safeParse(value).data ?? JSON.stringify(value, null, 2);
+  if (text === undefined) return <p className="text-xs text-muted-foreground">Not available yet.</p>;
+  return (
+    <pre tabIndex={0} className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-background p-2 text-xs text-foreground">
+      {text}
+    </pre>
+  );
+}
+
+function ToolCall({ part }: { part: ToolCallPart }) {
+  const [expanded, setExpanded] = useState(false);
+  const status = {
+    'input-streaming': 'Preparing',
+    'input-available': 'Running',
+    'output-available': 'Done',
+    'output-error': 'Failed',
+    'output-denied': 'Not allowed',
+    'approval-requested': 'Needs approval',
+    'approval-responded': 'Approval received',
+  }[part.state];
+  return (
+    <details className="rounded-lg border border-border bg-secondary/50 text-foreground" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary className="cursor-pointer px-3 py-2 text-xs" aria-label={`${getToolName(part)}: ${status}`}>
+        <span className="font-mono">{getToolName(part)}</span><span className="ml-2">{status}</span>
+      </summary>
+      {expanded ? (
+        <div className="space-y-2 border-t border-border p-3">
+          <h4 className="text-xs font-medium">Input</h4>
+          <ToolPayload part={part} field="input" />
+          {part.state === 'output-available' ? <><h4 className="text-xs font-medium">Output</h4><ToolPayload part={part} field="output" /></> : null}
+          {part.state === 'output-error' ? <p className="text-xs">This tool attempt failed. Review the subsequent activity and response.</p> : null}
+        </div>
+      ) : null}
+    </details>
+  );
+}
 
 function WorkingProgress({ detail }: { detail: string }) {
   const [startedAt] = useState(() => Date.now());
@@ -166,20 +215,13 @@ export function ChatPanel({
               </article>
             );
           }
-          const textParts: string[] = [];
-          if (Array.isArray(message.parts)) {
-            for (const part of message.parts) {
-              if (isTextUIPart(part) && part.text) {
-                textParts.push(part.text);
-              }
-            }
-          }
+          const visibleParts = Array.isArray(message.parts)
+            ? message.parts.filter((part) => isToolUIPart(part) || (isTextUIPart(part) && part.text))
+            : [];
           const toolNotices = getToolNotices(message);
-          const finishedToolActivity = lastFinishedToolActivity(message);
-          if (textParts.length === 0 && toolNotices.length === 0 && !finishedToolActivity) return null;
+          if (visibleParts.length === 0 && toolNotices.length === 0) return null;
           return (
             <article key={message.id} className="max-w-[90%] self-start space-y-2">
-              {finishedToolActivity ? <p className="text-xs text-foreground">{finishedToolActivity}</p> : null}
               {toolNotices.map((notice) => (
                 <p
                   key={`${message.id}-${notice.kind}`}
@@ -196,16 +238,18 @@ export function ChatPanel({
                   {notice.message}
                 </p>
               ))}
-              {textParts.length > 0 && (
-                <div className="bg-secondary text-secondary-foreground rounded-2xl rounded-bl-sm p-3">
-                  <Suspense fallback={<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{textParts.join('\n')}</div>}>
+              {visibleParts.map((part, index) => isToolUIPart(part) ? (
+                <ToolCall key={part.toolCallId} part={part} />
+              ) : isTextUIPart(part) ? (
+                <div key={index} className="bg-secondary text-secondary-foreground rounded-2xl rounded-bl-sm p-3">
+                  <Suspense fallback={<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{part.text}</div>}>
                     <LazyMarkdownRenderer
                       className="prose prose-sm dark:prose-invert max-w-none"
-                      content={textParts.join('\n')}
+                      content={part.text}
                     />
                   </Suspense>
                 </div>
-              )}
+              ) : null)}
             </article>
           );
         })}

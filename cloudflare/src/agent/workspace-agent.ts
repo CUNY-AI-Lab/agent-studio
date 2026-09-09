@@ -1343,8 +1343,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       .find((message) => message.role === 'user')?.id;
     const generatedPanelOccurrences = new Map<string, number>();
     const workspaceTitleRequired = isPlaceholderWorkspaceName(workspace.name ?? '');
-    let automaticWorkspaceRenameAvailable = workspaceTitleRequired;
-    let automaticWorkspaceTitle: string | undefined;
     const workspaceToolInputSchema = workspaceTitleRequired
       ? z.object({
         name: workspaceTitleSchema.refine(
@@ -1656,6 +1654,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       ui_show_file: tool({
         description: [
           'Add a file-backed panel to the canvas. Use this after writing durable files such as HTML, JS apps, SVG, markdown, CSV, images, or PDFs.',
+          'Without an id, update an existing tile for the same file and view type. Supply a new explicit id only when the user requests a separate view.',
           'Give the panel a concise, readable, task-specific display title; never omit it or use the filename as the title.',
           'When sourcePanelId is provided, it is an explicit persisted association to that existing tile.',
         ].join(' '),
@@ -1671,10 +1670,21 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           if (file === null) {
             throw new Error(`File not found: ${filePath}`);
           }
-          const panelId = panelIdForTool(id, 'ui_show_file');
+          const panelType = inferFilePanelType(filePath);
+          const existingPanel = id === undefined
+            ? this.state.panels.find((panel) => panel.type === panelType
+              && 'filePath' in panel && panel.filePath === filePath)
+            : undefined;
+          let generatedPanelId = panelIdForTool(id, 'ui_show_file');
+          if (id === undefined && existingPanel === undefined) {
+            while (this.state.panels.some((panel) => panel.id === generatedPanelId)) {
+              generatedPanelId = panelIdForTool(undefined, 'ui_show_file');
+            }
+          }
+          const panelId = existingPanel?.id ?? generatedPanelId;
           this.upsertPanelWithAssociation({
             id: panelId,
-            type: inferFilePanelType(filePath),
+            type: panelType,
             title,
             filePath,
           }, sourcePanelId);
@@ -1706,7 +1716,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           workspaceTitleRequired
             ? 'Provide a concise, readable, task-specific name for this placeholder workspace; a placeholder is not valid.'
             : 'The name must be a concise, readable, task-specific title, not a placeholder, filename, or generic label.',
-          'Later title changes belong in the workspace header.',
+          'Rename an existing workspace when the user asks; otherwise leave its title unchanged.',
         ].join(' '),
         inputSchema: workspaceToolInputSchema,
         execute: async ({ name, description }) => {
@@ -1715,18 +1725,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
             && (name === undefined || isPlaceholderWorkspaceName(name))
           ) {
             throw new Error('Workspace title must be a specific, non-placeholder name.');
-          }
-          if (
-            name !== undefined
-            && name !== workspace.name
-            && !automaticWorkspaceRenameAvailable
-            && name !== automaticWorkspaceTitle
-          ) {
-            throw new Error('Workspace title is owned by the user; rename it from the workspace header.');
-          }
-          if (name !== undefined && name !== workspace.name) {
-            automaticWorkspaceTitle ??= name;
-            automaticWorkspaceRenameAvailable = false;
           }
           // CAS update (V2): `workspace` was captured at turn start, so a
           // blind put of it would revert a PATCH (e.g. a model override) that

@@ -1249,3 +1249,86 @@ test('a failed provider stream during tool arguments preserves instructions and 
   assert.match(await responseBodies[1], /Recovered chart instructions/);
   assert.deepEqual(agent.messages[0], instructions);
 });
+
+test('repeated framework turns preserve corrections across Stop during a tool and an explicit resume', { timeout: 5_000 }, async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  const requests = [];
+  let toolStarted;
+  const toolEntered = new Promise((resolve) => { toolStarted = resolve; });
+  let toolSignal;
+  const gateway = {
+    async fetch(_input, init) {
+      requests.push(JSON.parse(init.body));
+      const correcting = requests.length === 2;
+      const delta = correcting
+        ? { role: 'assistant', tool_calls: [{ index: 0, id: 'chart-revision', type: 'function',
+          function: { name: 'codemode', arguments: JSON.stringify({ code: 'revise chart' }) } }] }
+        : { role: 'assistant', content: `Completed turn ${requests.length}.` };
+      return new Response(
+        'data: ' + JSON.stringify({ id: 'survey-turn', choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n'
+        + 'data: ' + JSON.stringify({ id: 'survey-turn', choices: [{ index: 0, delta: {}, finish_reason: correcting ? 'tool_calls' : 'stop' }] }) + '\n\n'
+        + 'data: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  };
+  const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+  Object.assign(agent, {
+    requireWorkspace() { return { id: 'workspace-1' }; },
+    requireSessionId() { return 'session-1'; },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() { return { status: 'valid' }; },
+    functionCallingModelId: DEFAULT_CAIL_MODEL,
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
+    buildHostTools() { return {}; },
+    buildModelTools() { return {}; },
+    createCodeModeTool() {
+      return tool({
+        inputSchema: z.object({ code: z.string() }),
+        execute: async (_input, options) => {
+          toolSignal = options.abortSignal;
+          toolStarted();
+          await new Promise((_resolve, reject) => {
+            options.abortSignal.addEventListener('abort', () => reject(options.abortSignal.reason), { once: true });
+          });
+          throw new Error('a cancelled tool must never complete');
+        },
+      });
+    },
+  });
+  // SQLite persistence and provider execution are deterministic adapters;
+  // submit, cancel, history repair, tool execution, and reply use the real SDK.
+  agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
+  const userMessages = [];
+  async function submit(id, text) {
+    const message = { id, role: 'user', parts: [{ type: 'text', text }] };
+    userMessages.push(message);
+    return agent.onMessage(testConnection(), JSON.stringify({
+      type: 'cf_agent_use_chat_request', id,
+      init: { method: 'POST', body: JSON.stringify({ messages: [...agent.messages, message] }) },
+    }));
+  }
+  await submit('initial-survey', 'Use the uploaded survey. Keep all original emotion labels in a count chart.');
+  const correction = submit('correct-chart', 'Combine capitalization variants, but keep anxious and nervous separate.');
+  await toolEntered;
+  await agent.onMessage(testConnection(), JSON.stringify({ type: 'cf_agent_chat_request_cancel', id: 'correct-chart' }));
+  await correction;
+  assert.equal(toolSignal.aborted, true);
+  assert.equal(requests.length, 2, 'Stop must prevent another inference after the cancelled tool');
+  assert.deepEqual(agent.messages.filter((message) => message.role === 'user'), userMessages);
+
+  await submit('resume-chart', 'Continue with my correction.');
+  assert.equal(requests.length, 3, 'resume must send exactly one new inference');
+  assert.ok(requests[2].messages.some((message) => message.role === 'tool'
+    && message.tool_call_id === 'chart-revision'));
+  await submit('explain-chart', 'Explain which labels were combined.');
+  assert.equal(requests.length, 4, 'the later follow-up must also send exactly one inference');
+  for (const message of userMessages) {
+    assert.ok(requests[3].messages.some((sent) => sent.role === 'user' && sent.content === message.parts[0].text));
+  }
+  assert.deepEqual(agent.messages.filter((message) => message.role === 'user'), userMessages);
+  assert.ok(agent.messages.at(-1).parts.some((part) => part.type === 'text' && part.text === 'Completed turn 4.'));
+});
