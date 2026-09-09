@@ -110,7 +110,7 @@ describe('ChatPanel', () => {
     expect(screen.getByText('hello there')).toBeInTheDocument();
   });
 
-  it('keeps tool protocol details out of the conversation while rendering the assistant text', () => {
+  it('shows completed tool calls alongside the assistant text', () => {
     const message: UIMessage = {
       id: 'a1',
       role: 'assistant',
@@ -123,9 +123,74 @@ describe('ChatPanel', () => {
     expect(screen.getByText('The file is ready.')).toBeInTheDocument();
     expect(screen.queryByText('Agent activity')).not.toBeInTheDocument();
     expect(screen.queryByText('Write file')).not.toBeInTheDocument();
-    expect(screen.queryByText('Done')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('write_file: Done')).toBeInTheDocument();
     expect(screen.queryByText('output-available')).not.toBeInTheDocument();
-    expect(screen.queryByText('write_file')).not.toBeInTheDocument();
+    expect(screen.getByText('write_file')).toBeInTheDocument();
+  });
+
+  it('lets users expand each streamed tool call and inspect its code and result', async () => {
+    const user = userEvent.setup();
+    const message: UIMessage = { id: 'inspect', role: 'assistant', parts: [
+      { type: 'tool-codemode', toolCallId: 'run', state: 'input-streaming', input: { code: 'async () => {' } },
+    ] };
+    const { rerender, unmount } = render(<ChatPanel {...baseProps} messages={[message]} />);
+    expect(screen.queryByText('async () => {')).not.toBeInTheDocument();
+    await user.click(screen.getByLabelText('codemode: Preparing'));
+    expect(await screen.findByText('async () => {')).toBeVisible();
+    const completed: UIMessage = { ...message, parts: [
+      { type: 'tool-codemode', toolCallId: 'run', state: 'output-available', input: { code: 'async () => {\n  return rows.length;\n}' }, output: { rows: 12 } },
+      { type: 'tool-ui_show_file', toolCallId: 'display', state: 'output-available', input: { filePath: 'chart.html' }, output: { shown: true } },
+    ] };
+    rerender(<ChatPanel {...baseProps} messages={[completed]} />);
+    expect(screen.getByText(/return rows.length;/)).toBeVisible();
+    expect(screen.getByText(/"rows": 12/)).toBeVisible();
+    await user.click(screen.getByLabelText('ui_show_file: Done'));
+    expect(await screen.findByText(/"filePath": "chart.html"/)).toBeVisible();
+    expect(screen.getByText(/"shown": true/)).toBeVisible();
+    unmount();
+    render(<ChatPanel {...baseProps} messages={[completed]} />);
+    expect(screen.getByLabelText('codemode: Done')).toBeInTheDocument();
+    expect(screen.getByLabelText('ui_show_file: Done')).toBeInTheDocument();
+    await user.click(screen.getByLabelText('codemode: Done'));
+    expect(await screen.findByText(/return rows.length;/)).toBeVisible();
+  });
+
+  it('makes the full expanded result inspectable and never displays raw tool exceptions', async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...baseProps} messages={[{ id: 'large', role: 'assistant', parts: [
+      { type: 'tool-read_file', toolCallId: 'read', state: 'output-available', input: {}, output: 'a'.repeat(12000) + 'omitted tail' },
+      { type: 'tool-codemode', toolCallId: 'failed', state: 'output-error', input: { code: 'async () => {}' }, errorText: 'private provider exception' },
+    ] }]} />);
+    await user.click(screen.getByLabelText('read_file: Done'));
+    expect(await screen.findByText(/omitted tail/)).toBeVisible();
+    await user.click(screen.getByLabelText('codemode: Failed'));
+    expect(await screen.findByText('This tool attempt failed. Review the subsequent activity and response.')).toBeVisible();
+    expect(screen.queryByText('private provider exception')).not.toBeInTheDocument();
+  });
+
+  it('shows rejected raw arguments when a failed tool input could not be parsed', async () => {
+    const user = userEvent.setup();
+    render(<ChatPanel {...baseProps} messages={[{ id: 'malformed', role: 'assistant', parts: [
+      { type: 'tool-codemode', toolCallId: 'invalid', state: 'output-error', input: undefined,
+        rawInput: '{"code": "async () => {', errorText: 'private validation exception' },
+    ] }]} />);
+    await user.click(screen.getByLabelText('codemode: Failed'));
+    expect(await screen.findByText('{"code": "async () => {')).toBeVisible();
+    expect(screen.queryByText('Not available yet.')).not.toBeInTheDocument();
+    expect(screen.queryByText('private validation exception')).not.toBeInTheDocument();
+  });
+
+  it('keeps a failed attempt visible without a retry alert after later tool work', () => {
+    render(<ChatPanel {...baseProps} messages={[{ id: 'continued', role: 'assistant', parts: [
+      { type: 'tool-codemode', toolCallId: 'failed', state: 'output-error', input: {}, errorText: 'hidden exception' },
+      { type: 'tool-ui_show_file', toolCallId: 'shown', state: 'output-available', input: {}, output: {} },
+      { type: 'text', text: 'Review the chart.' },
+    ] }]} />);
+    expect(screen.getByLabelText('codemode: Failed')).toBeInTheDocument();
+    expect(screen.getByLabelText('ui_show_file: Done')).toBeInTheDocument();
+    expect(screen.getByText('A tool attempt failed. The agent continued with other tools.')).toHaveAttribute('role', 'status');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Try again/)).not.toBeInTheDocument();
   });
 
   it('keeps exceptional tool outcomes visible without showing tool protocol', () => {
@@ -139,7 +204,7 @@ describe('ChatPanel', () => {
       ],
     };
     render(<ChatPanel {...baseProps} messages={[message]} />);
-    expect(screen.getByText("A tool couldn't complete this request. Try again.")).toBeInTheDocument();
+    expect(screen.getByText('A tool attempt failed. Review the response and any files it produced.')).toBeInTheDocument();
     expect(screen.getByText("A tool wasn't allowed to run.")).toBeInTheDocument();
     expect(screen.getByText('Approval is needed before this can continue.')).toBeInTheDocument();
     expect(screen.queryByText('hidden detail')).not.toBeInTheDocument();
@@ -156,7 +221,7 @@ describe('ChatPanel', () => {
     ];
     render(<ChatPanel {...baseProps} messages={messages} />);
     expect(screen.queryByText('A tool')).not.toBeInTheDocument();
-    expect(screen.getByText('File save finished')).toBeInTheDocument();
+    expect(screen.getByLabelText('write_file: Done')).toBeInTheDocument();
     expect(screen.getAllByRole('article')).toHaveLength(1);
   });
 
@@ -184,7 +249,7 @@ describe('ChatPanel', () => {
     ] };
     rerender(<ChatPanel {...baseProps} messages={[nextTool]}
       activity={getChatActivity({ ...working, messages: [nextTool] })} />);
-    expect(screen.getByText('Code run finished')).toBeInTheDocument();
+    expect(screen.getByLabelText('codemode: Done')).toBeInTheDocument();
     expect(screen.getByText('Displaying a file…')).toBeInTheDocument();
     expect(screen.queryByText('private code')).not.toBeInTheDocument();
     expect(screen.queryByText('result')).not.toBeInTheDocument();

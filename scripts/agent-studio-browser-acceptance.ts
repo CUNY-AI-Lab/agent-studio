@@ -860,11 +860,24 @@ async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<v
     await expect.poll(() => modelRequests).toBe(1);
     deliverChunk?.({ type: 'tool-input-start', toolCallId: 'compact-tool', toolName: 'codemode' });
     await expect(compactPage.getByRole('status').filter({ hasText: /^Preparing code…$/ })).toBeVisible();
+    await compactPage.screenshot({ path: '/tmp/agent-studio-tool-timeline.png' });
+    await compactPage.getByLabel('codemode: Preparing', { exact: true }).click();
     deliverChunk?.({ type: 'tool-input-available', toolCallId: 'compact-tool', toolName: 'codemode', input: { code: 'return 1;' } });
     await expect(compactPage.getByRole('status').filter({ hasText: /^Running code…$/ })).toBeVisible();
+    await expect(compactPage.getByText('return 1;', { exact: true })).toBeVisible();
     await compactPage.screenshot({ path: '/tmp/agent-studio-chat-progress.png' });
     deliverChunk?.({ type: 'tool-output-available', toolCallId: 'compact-tool', output: { result: 1 } });
-    await expect(compactPage.getByText('Code run finished', { exact: true })).toBeVisible();
+    await expect(compactPage.getByLabel('codemode: Done', { exact: true })).toBeVisible();
+    await expect(compactPage.getByText('{ "result": 1 }', { exact: true })).toBeVisible();
+    deliverChunk?.({ type: 'tool-input-available', toolCallId: 'failed-read', toolName: 'read_file', input: { name: 'missing.txt' } });
+    deliverChunk?.({ type: 'tool-output-error', toolCallId: 'failed-read', errorText: 'Synthetic file unavailable' });
+    await expect(compactPage.getByLabel('read_file: Failed', { exact: true })).toBeVisible();
+    deliverChunk?.({ type: 'tool-input-available', toolCallId: 'recovered-read', toolName: 'read_file', input: { name: 'result.txt' } });
+    deliverChunk?.({ type: 'tool-output-available', toolCallId: 'recovered-read', output: 'Recovered synthetic result' });
+    await compactPage.getByLabel('read_file: Done', { exact: true }).click();
+    await expect(compactPage.getByText('Recovered synthetic result', { exact: true })).toBeVisible();
+    await expect(compactPage.getByRole('alert')).toHaveCount(0);
+    await expect(compactPage.getByText('A tool attempt failed. The agent continued with other tools.', { exact: true })).toBeVisible();
     // The SDK event reaches the real browser renewal caller; only its HTTP
     // response is substituted here. Backend tests cover signed credential acceptance.
     const renewalRequestId = crypto.randomUUID();

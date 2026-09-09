@@ -227,7 +227,7 @@ test('ui_workspace gives concurrent manual title edits precedence per field', as
   assert.equal(result.description, 'A task summary');
 });
 
-test('ui_workspace cannot rename an existing workspace after title ownership is established', async () => {
+test('ui_workspace can apply a requested rename to an existing named workspace', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
 
@@ -250,17 +250,15 @@ test('ui_workspace cannot rename an existing workspace after title ownership is 
   };
   const tools = WorkspaceAgent.prototype.buildHostTools.call(fakeAgent, workspace, sessionId);
 
-  await assert.rejects(
-    tools.ui_workspace.execute(
-      { name: 'Model rewrite' },
-      { toolCallId: 'tool-owned-title', messages: [] },
-    ),
-    /owned by the user/,
+  const result = await tools.ui_workspace.execute(
+    { name: 'Revised research title' },
+    { toolCallId: 'tool-requested-title', messages: [] },
   );
-  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'Human title');
+  assert.equal(result.name, 'Revised research title');
+  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'Revised research title');
 });
 
-test('ui_workspace keeps description-only updates available after title ownership is fixed', async () => {
+test('ui_workspace description-only updates leave an existing title unchanged', async () => {
   registerCloudflareStub();
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
 
@@ -336,48 +334,6 @@ test('ui_workspace treats a repeated generated title as a no-op within one model
   assert.equal(stored.description, 'A task summary');
   assert.equal(repeated.name, 'Campus research dashboard');
   assert.equal(repeated.description, 'A task summary');
-});
-
-test('ui_workspace rejects a different second generated title within one model turn', async () => {
-  registerCloudflareStub();
-  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-
-  const { env } = makeEnv();
-  const sessionId = 'm'.repeat(32);
-  const workspace = {
-    id: 'n'.repeat(32),
-    name: 'New Workspace',
-    description: '',
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString(),
-  };
-  await putWorkspace(env, sessionId, workspace);
-  const fakeAgent = {
-    env,
-    assertNotFrozen() {},
-    async withStorageOperation(operation) { return operation(); },
-    async withMutationFence(operation) { return operation(); },
-    async syncWorkspace() {},
-  };
-  const tools = WorkspaceAgent.prototype.buildHostTools.call(
-    fakeAgent,
-    workspace,
-    sessionId,
-    [],
-  );
-
-  await tools.ui_workspace.execute(
-    { name: 'Campus research dashboard' },
-    { toolCallId: 'tool-first-title', messages: [] },
-  );
-  await assert.rejects(
-    tools.ui_workspace.execute(
-      { name: 'Campus research brief' },
-      { toolCallId: 'tool-different-title', messages: [] },
-    ),
-    /owned by the user/,
-  );
-  assert.equal((await getWorkspace(env, sessionId, workspace.id)).name, 'Campus research dashboard');
 });
 
 test('placeholder ui_workspace requires a specific non-placeholder name', async () => {
@@ -1252,4 +1208,89 @@ test('removeGroups deletes a group explicitly and stale group upserts cannot res
     [],
     'a stale group upsert must not resurrect a removed panel membership'
   );
+});
+
+test('ui_show_file updates the same file tiles across turns and preserves explicitly separate views', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const source = panel('survey-source');
+  const fake = {
+    state: {
+      sessionId: 'session', workspace: null, panels: [source],
+      viewport: { x: 0, y: 0, zoom: 1 }, groups: [], connections: [],
+    },
+    messages: [{ id: 'initial-turn', role: 'user', parts: [] }],
+    setState(next) { this.state = next; },
+    async readRuntimeFileContent() { return new Uint8Array(); },
+    async withStorageOperation(operation) { return operation(); },
+    async withMutationFence(operation) { return operation(); },
+  };
+  fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+    WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+  const workspace = { id: 'workspace', name: 'Survey', description: '', createdAt: '', updatedAt: '' };
+  const initialTools = WorkspaceAgent.prototype.buildHostTools.call(fake, workspace, 'session');
+  const files = ['cleaned.csv', 'counts.csv', 'chart.html'];
+  const ids = [];
+  for (const filePath of files) {
+    const result = await initialTools.ui_show_file.execute({ filePath, title: 'Survey result', sourcePanelId: source.id });
+    ids.push(result.panelId);
+  }
+  fake.state.panels[1].layout = { x: 100, y: 200, width: 500, height: 300 };
+  const originalLayout = { ...fake.state.panels[1].layout };
+  const originalConnections = structuredClone(fake.state.connections);
+  fake.messages = [{ id: 'correction-turn', role: 'user', parts: [] }];
+  const followUpTools = WorkspaceAgent.prototype.buildHostTools.call(fake, workspace, 'session');
+  for (const [index, filePath] of files.entries()) {
+    const result = await followUpTools.ui_show_file.execute({ filePath, title: 'Corrected survey result' });
+    assert.equal(result.panelId, ids[index]);
+  }
+  assert.equal(fake.state.panels.length, 4, 'three revised files retain three tiles plus the source');
+  assert.deepEqual(fake.state.panels[1].layout, originalLayout);
+  assert.deepEqual(fake.state.connections, originalConnections);
+  assert.ok(fake.state.panels.slice(1).every((tile) => tile.title === 'Corrected survey result'));
+
+  const separate = await followUpTools.ui_show_file.execute({ id: 'comparison-view', filePath: 'chart.html', title: 'Separate chart view' });
+  assert.equal(separate.panelId, 'comparison-view');
+  assert.equal(fake.state.panels.length, 5);
+  await followUpTools.ui_show_file.execute({ id: 'comparison-view', filePath: 'chart.html', title: 'Updated separate view' });
+  assert.equal(fake.state.panels.length, 5);
+  assert.equal(fake.state.panels.find((tile) => tile.id === ids[2]).title, 'Corrected survey result');
+  assert.equal(fake.state.panels.find((tile) => tile.id === 'comparison-view').title, 'Updated separate view');
+});
+
+test('replaying a turn preserves both file tiles even when the calls are reordered', async () => {
+  registerCloudflareStub();
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  for (const repeatFirst of [true, false]) {
+    const fake = {
+      state: {
+        sessionId: 'session', workspace: null, panels: [],
+        viewport: { x: 0, y: 0, zoom: 1 }, groups: [], connections: [],
+      },
+      messages: [{ id: 'interrupted-turn', role: 'user', parts: [] }],
+      setState(next) { this.state = next; },
+      async readRuntimeFileContent() { return new Uint8Array(); },
+      async withStorageOperation(operation) { return operation(); },
+      async withMutationFence(operation) { return operation(); },
+    };
+    fake.upsertPanelWithAssociation = (nextPanel, sourcePanelId) =>
+      WorkspaceAgent.prototype.upsertPanelWithAssociation.call(fake, nextPanel, sourcePanelId);
+    const workspace = { id: 'workspace', name: 'Survey', description: '', createdAt: '', updatedAt: '' };
+    const interruptedTools = WorkspaceAgent.prototype.buildHostTools.call(fake, workspace, 'session');
+    const first = await interruptedTools.ui_show_file.execute({ filePath: 'counts.csv', title: 'Counts' });
+
+    // The original user message is replayed after interruption, rebuilding the
+    // per-turn tool closures while the first tile is already persisted.
+    const replayTools = WorkspaceAgent.prototype.buildHostTools.call(fake, workspace, 'session');
+    const repeat = () => replayTools.ui_show_file.execute({ filePath: 'counts.csv', title: 'Revised counts' });
+    const showSecond = () => replayTools.ui_show_file.execute({ filePath: 'chart.html', title: 'Chart' });
+    const replayed = repeatFirst ? await repeat() : undefined;
+    const second = await showSecond();
+    const repeated = replayed ?? await repeat();
+    assert.equal(repeated.panelId, first.panelId);
+    assert.notEqual(second.panelId, first.panelId);
+    assert.deepEqual(fake.state.panels.map((tile) => [tile.filePath, tile.title]), [
+      ['counts.csv', 'Revised counts'], ['chart.html', 'Chart'],
+    ]);
+  }
 });

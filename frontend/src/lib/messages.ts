@@ -18,7 +18,7 @@ export interface ContextualChatTarget {
 }
 
 export interface ToolNotice {
-  kind: 'error' | 'denied' | 'approval';
+  kind: 'error' | 'continued' | 'denied' | 'approval';
   message: string;
 }
 
@@ -38,14 +38,17 @@ export function extractMessageText(message: UIMessage): string {
 export function getToolNotices(message: UIMessage): ToolNotice[] {
   if (!Array.isArray(message.parts)) return [];
 
-  const states = new Set(
-    message.parts
-      .filter(isToolUIPart)
-      .map((part) => part.state)
-  );
+  const toolParts = message.parts.filter(isToolUIPart);
+  const states = new Set(toolParts.map((part) => part.state));
   const notices: ToolNotice[] = [];
   if (states.has('output-error')) {
-    notices.push({ kind: 'error', message: "A tool couldn't complete this request. Try again." });
+    const lastError = toolParts.map((part) => part.state).lastIndexOf('output-error');
+    const continued = toolParts.slice(lastError + 1).some((part) =>
+      part.state === 'input-streaming' || part.state === 'input-available' || part.state === 'output-available'
+    );
+    notices.push(continued
+      ? { kind: 'continued', message: 'A tool attempt failed. The agent continued with other tools.' }
+      : { kind: 'error', message: 'A tool attempt failed. Review the response and any files it produced.' });
   }
   if (states.has('output-denied')) {
     notices.push({ kind: 'denied', message: "A tool wasn't allowed to run." });

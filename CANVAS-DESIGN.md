@@ -67,6 +67,9 @@ These should support actions like:
 - `Show in Workspace Files`
 - `Download File`
 
+Showing an existing file reuses its matching view unless a separate view is
+explicitly requested.
+
 ### Derived Tiles
 
 Examples:
@@ -200,8 +203,9 @@ write with a latest-wins pending value, so rapid movement cannot pile up RPCs;
 an unsuccessful save remains visible and can be retried explicitly.
 
 For a newly created workspace, the model replaces the placeholder with one
-concise task-specific title. Once that title is established, later title edits
-belong to the user in the workspace header. Files and surfaced tiles likewise
+concise task-specific title. Once that title is established, the agent leaves
+it unchanged unless the user requests a rename. Users can also rename it in
+the workspace header. Files and surfaced tiles likewise
 receive concise content-specific display titles rather than filenames or
 generic labels.
 
