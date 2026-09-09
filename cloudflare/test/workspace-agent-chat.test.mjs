@@ -1025,3 +1025,227 @@ test('chat caches function capability per model and revalidates a changed model'
   assert.equal(catalogCalls, 2, 'a changed model must be validated once');
   assert.equal(inferenceCalls, 3, 'the changed model should still make one inference request');
 });
+
+test('framework chat repairs an interrupted tool before a follow-up reaches inference', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  const requests = [];
+  const gateway = {
+    async fetch(_input, init) {
+      requests.push(JSON.parse(init.body));
+      return new Response(
+        'data: {"id":"recovery","choices":[{"index":0,"delta":{"role":"assistant","content":"Recovered"},"finish_reason":null}]}\n\n'
+        + 'data: {"id":"recovery","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  };
+  const messages = [
+    { id: 'first', role: 'user', parts: [{ type: 'text', text: 'Read the file' }] },
+    { id: 'interrupted', role: 'assistant', parts: [
+      { type: 'text', text: 'Opening the file.' },
+      { type: 'tool-read_file', toolCallId: 'interrupted-call', state: 'input-available', input: { path: 'notes.txt' } },
+      { type: 'tool-read_file', toolCallId: 'failed-call', state: 'output-error', input: { path: 'missing.txt' }, errorText: 'File not found' },
+    ] },
+    { id: 'follow-up', role: 'user', parts: [{ type: 'text', text: 'Continue please' }] },
+  ];
+  const originalMessages = structuredClone(messages);
+  const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+  Object.assign(agent, {
+    assertNotFrozen() {},
+    requireWorkspace() { return { id: 'workspace-1' }; },
+    requireSessionId() { return 'session-1'; },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() { return { status: 'valid' }; },
+    functionCallingModelId: DEFAULT_CAIL_MODEL,
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
+    messages,
+    buildHostTools() { return {}; },
+    buildModelTools() { return {}; },
+    createCodeModeTool() {
+      return tool({ inputSchema: z.object({}), execute: async () => 'ok' });
+    },
+  });
+  // The storage adapter above has no SQLite rows; keep only persistence in
+  // memory while the real framework receiver, repair, and stream handler run.
+  agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
+  await agent.onMessage(testConnection(), JSON.stringify({
+    type: 'cf_agent_use_chat_request',
+    id: 'interrupted-recovery',
+    init: { method: 'POST', body: JSON.stringify({ messages }) },
+  }));
+  assert.equal(requests.length, 1, 'the follow-up must reach inference');
+  assert.ok(agent.messages.some((message) => message.role === 'assistant'
+    && message.parts.some((part) => part.type === 'text' && part.text.includes('Recovered'))));
+  const toolCalls = requests[0].messages.flatMap((message) => message.tool_calls ?? []);
+  assert.ok(toolCalls.some((call) => call.id === 'interrupted-call'));
+  assert.ok(requests[0].messages.some((message) => message.role === 'tool'
+    && message.tool_call_id === 'interrupted-call' && message.content.includes('interrupted')));
+  assert.ok(toolCalls.some((call) => call.id === 'failed-call'));
+  assert.ok(requests[0].messages.some((message) => message.role === 'tool'
+    && message.tool_call_id === 'failed-call' && message.content.includes('File not found')));
+  assert.ok(requests[0].messages.some((message) => message.content === 'Opening the file.'));
+  assert.deepEqual(messages, originalMessages, 'client conversation remains unchanged');
+  assert.equal(agent.messages[0].parts[0].text, 'Read the file');
+});
+
+test('framework chat surfaces known Gateway failures without retrying or clearing instructions', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  const cases = [
+    { code: 'outcome_unknown', status: 502, message: 'The model service did not confirm whether the request completed. Do not retry automatically.', expectedRetryable: false },
+    { code: 'upstream_error', status: 502, message: 'The model service did not complete the request. Try again later.', retryable: false, expectedRetryable: false },
+    { code: 'upstream_rate_limited', status: 429, message: 'The model service is temporarily busy. Try again later.', retryable: true, expectedRetryable: true },
+    { code: 'provider_configuration_error', status: 503, message: 'The requested model service is temporarily unavailable. Try again later.' },
+  ];
+  for (const failure of cases) {
+    const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+    let inferenceCalls = 0;
+    let responseBody;
+    Object.assign(agent, {
+      requireWorkspace() { return { id: 'workspace-1' }; },
+      requireSessionId() { return 'session-1'; },
+      cailIdentityJwt: 'verified-jwt',
+      verifyCurrentGatewayCredential() { return { status: 'valid' }; },
+      functionCallingModelId: DEFAULT_CAIL_MODEL,
+      env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: {
+        async fetch() {
+          inferenceCalls += 1;
+          return Response.json({ error: {
+            code: failure.code, message: failure.message,
+            type: failure.status === 429 ? 'rate_limit_error' : 'server_error',
+            cail: { retryable: failure.retryable },
+          } }, { status: failure.status });
+        },
+      } },
+      buildHostTools() { return {}; },
+      buildModelTools() { return {}; },
+      createCodeModeTool() {
+        return tool({ inputSchema: z.object({}), execute: async () => 'ok' });
+      },
+    });
+    // Exercise the actual framework receiver and response handling with only
+    // storage and the Gateway boundary replaced by deterministic adapters.
+    agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
+    agent.onChatMessage = async (...args) => {
+      const response = await WorkspaceAgent.prototype.onChatMessage.apply(agent, args);
+      responseBody = response.clone().text();
+      return response;
+    };
+    await agent.onMessage(testConnection(), chatRequest());
+    const events = (await responseBody).split('\n')
+      .filter((line) => line.startsWith('data: {'))
+      .map((line) => JSON.parse(line.slice('data: '.length)));
+    const error = JSON.parse(events.find((event) => event.type === 'error').errorText).error;
+    assert.equal(error.code, failure.code);
+    assert.equal(error.message, failure.message);
+    assert.equal(error.cail.retryable, failure.expectedRetryable);
+    assert.equal(inferenceCalls, 1);
+    assert.equal(agent.messages[0].parts[0].text, 'hello');
+  }
+});
+
+test('a failed provider stream during tool arguments preserves instructions and allows one follow-up inference', async (t) => {
+  t.mock.method(console, 'error', () => {});
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  const requests = [];
+  let allowFailure;
+  const failureAllowed = new Promise((resolve) => { allowFailure = resolve; });
+  const gateway = {
+    async fetch(_input, init) {
+      requests.push(JSON.parse(init.body));
+      if (requests.length === 1) {
+        let chunk = 0;
+        return new Response(new ReadableStream({
+          async pull(controller) {
+            if (chunk++ === 0) {
+              controller.enqueue(new TextEncoder().encode('data: ' + JSON.stringify({
+                id: 'interrupted-stream', choices: [{ index: 0, delta: {
+                  role: 'assistant', content: 'Preparing the chart.',
+                  tool_calls: [{ index: 0, id: 'partial-code', type: 'function',
+                    function: { name: 'codemode', arguments: '{"code":"return ' } }],
+                }, finish_reason: null }],
+              }) + '\n\n'));
+            } else {
+              await failureAllowed;
+              controller.error(new Error('synthetic upstream body read failure'));
+            }
+          },
+        }), { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Response(
+        'data: {"id":"recovered-stream","choices":[{"index":0,"delta":{"role":"assistant","content":"Recovered chart instructions"},"finish_reason":null}]}\n\n'
+        + 'data: {"id":"recovered-stream","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  };
+  const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+  Object.assign(agent, {
+    requireWorkspace() { return { id: 'workspace-1' }; },
+    requireSessionId() { return 'session-1'; },
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() { return { status: 'valid' }; },
+    functionCallingModelId: DEFAULT_CAIL_MODEL,
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
+    buildHostTools() { return {}; },
+    buildModelTools() { return {}; },
+    createCodeModeTool() {
+      return tool({ inputSchema: z.object({ code: z.string() }), execute: async () => 'ok' });
+    },
+  });
+  agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
+  const responseBodies = [];
+  agent.onChatMessage = async (...args) => {
+    const response = await WorkspaceAgent.prototype.onChatMessage.apply(agent, args);
+    const observed = response.clone().body.pipeThrough(new TransformStream({
+      transform(chunk, controller) {
+        if (new TextDecoder().decode(chunk).includes('tool-input-delta')) allowFailure();
+        controller.enqueue(chunk);
+      },
+    }));
+    responseBodies.push(new Response(observed).text());
+    return response;
+  };
+  const instructions = { id: 'survey-request', role: 'user', parts: [
+    { type: 'text', text: 'Count each survey emotion and create a chart.' },
+  ] };
+  await agent.onMessage(testConnection(), JSON.stringify({
+    type: 'cf_agent_use_chat_request', id: 'failed-stream',
+    init: { method: 'POST', body: JSON.stringify({ messages: [instructions] }) },
+  }));
+  const firstBody = await responseBodies[0];
+  assert.match(firstBody, /The response was interrupted before it finished/);
+  const errorEvent = firstBody.split('\n').filter((line) => line.startsWith('data: {'))
+    .map((line) => JSON.parse(line.slice('data: '.length)))
+    .find((event) => event.type === 'error');
+  assert.equal(JSON.parse(errorEvent.errorText).error.code, 'response_interrupted');
+  assert.equal(JSON.parse(errorEvent.errorText).error.cail.retryable, false);
+  assert.doesNotMatch(firstBody, /synthetic upstream body read failure/);
+  assert.equal(requests.length, 1, 'the failed stream is not automatically retried');
+  assert.deepEqual(agent.messages[0], instructions);
+  assert.ok(agent.messages.some((message) => message.parts.some((part) => part.toolCallId === 'partial-code')));
+
+  await agent.onMessage(testConnection(), JSON.stringify({
+    type: 'cf_agent_use_chat_request', id: 'follow-up-stream',
+    init: { method: 'POST', body: JSON.stringify({ messages: [...agent.messages, {
+      id: 'continue-request', role: 'user', parts: [{ type: 'text', text: 'Continue with that chart.' }],
+    }] }) },
+  }));
+  assert.equal(requests.length, 2, 'the explicit follow-up makes exactly one inference');
+  assert.ok(requests[1].messages.some((message) => message.content === instructions.parts[0].text));
+  assert.ok(requests[1].messages.some((message) => message.role === 'tool'
+    && message.tool_call_id === 'partial-code' && message.content.includes('interrupted')));
+  assert.match(await responseBodies[1], /Recovered chart instructions/);
+  assert.deepEqual(agent.messages[0], instructions);
+});

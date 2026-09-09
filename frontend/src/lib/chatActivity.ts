@@ -1,3 +1,6 @@
+import { isTextUIPart, type UIMessage } from 'ai';
+import { currentToolActivity } from './toolActivity';
+
 export type ChatActivityState =
   | {
     phase: 'ready';
@@ -10,6 +13,7 @@ export type ChatActivityState =
   | {
     phase: 'working';
     label: 'Working…';
+    detail: string;
     tone: 'working';
     canSubmit: false;
     canStop: true;
@@ -41,6 +45,7 @@ export interface ChatActivityInput {
   contextualTurnActive: boolean;
   connectionError: Error | null;
   canRetry: boolean;
+  messages?: UIMessage[];
 }
 
 /** Derive every main-composer control from the same protocol state. */
@@ -53,6 +58,7 @@ export function getChatActivity({
   contextualTurnActive,
   connectionError,
   canRetry,
+  messages = [],
 }: ChatActivityInput): ChatActivityState {
   if (connectionError) {
     return {
@@ -82,6 +88,7 @@ export function getChatActivity({
     return {
       phase: 'working',
       label: 'Working…',
+      detail: getWorkingDetail(messages, isRecovering, isToolContinuation),
       tone: 'working',
       canSubmit: false,
       canStop: true,
@@ -108,4 +115,16 @@ export function getChatActivity({
     canStop: false,
     canRetry,
   };
+}
+
+function getWorkingDetail(messages: UIMessage[], recovering: boolean, continuing: boolean): string {
+  if (recovering) return 'Recovering the response…';
+  const latest = messages[messages.length - 1];
+  // A previous turn must not lend its tool or text state to a new request.
+  const parts = latest?.role === 'assistant' ? latest.parts : [];
+  const toolActivity = currentToolActivity(latest);
+  if (toolActivity) return toolActivity;
+  if (continuing) return 'Continuing after tools…';
+  if (parts.some((part) => isTextUIPart(part) && part.text.trim())) return 'Writing the response…';
+  return 'Thinking…';
 }

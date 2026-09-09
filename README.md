@@ -51,7 +51,11 @@ Both production and staging use the standalone Doorway issuer
 Credentialed model work uses the separate gateway leg in
 `X-CAIL-Gateway-Identity-JWT`, whose audience is `cail:gateway`. The Worker
 installs that verified credential into the workspace Durable Object before a
-chat request. `CAIL_API_BASE` is the public Gateway origin
+chat request. Between model steps, the AI SDK's `prepareStep` hook requests a
+fresh credential through a transient data event. The browser calls the same
+authenticated renewal endpoint, and the step waits for its matching response
+before making the next model request. Tokens stay on the server.
+`CAIL_API_BASE` is the public Gateway origin
 `https://tools.ailab.gc.cuny.edu`; the transport appends the canonical `/v1`
 path. The `GATEWAY` Cloudflare service binding carries the direct Vercel AI SDK
 OpenAI-compatible transport. Each chat turn uses the workspace id as the

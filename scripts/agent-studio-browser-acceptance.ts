@@ -27,6 +27,7 @@ import {
   type Page,
 } from 'playwright';
 import { expect } from 'playwright/test';
+import type { UIMessageChunk } from 'ai';
 import { z } from 'zod';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -805,11 +806,18 @@ async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<v
   let releasePreparation: (() => void) | undefined;
   const preparation = new Promise<void>((resolvePreparation) => { releasePreparation = resolvePreparation; });
   let credentialRequests = 0;
+  const renewalRequests: string[] = [];
   let modelRequests = 0;
+  let deliverChunk: ((chunk: UIMessageChunk, done?: boolean) => void) | undefined;
   // Deliberately stall preparation, then complete the next model response
   // locally. The rendered App and Stop action are real; no paid call is made.
   await compactPage.route('**/model-credential', async (route) => {
     credentialRequests += 1;
+    const body = route.request().postData();
+    if (body) {
+      const request = z.object({ requestId: z.uuid() }).strict().parse(JSON.parse(body));
+      renewalRequests.push(request.requestId);
+    }
     if (credentialRequests === 1) await preparation;
     await route.fulfill({ status: 204 });
   });
@@ -822,10 +830,11 @@ async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<v
         return;
       }
       modelRequests += 1;
-      socket.send(JSON.stringify({
+      deliverChunk = (chunk, done = false) => socket.send(JSON.stringify({
         type: 'cf_agent_use_chat_response', id: request.data.id,
-        body: JSON.stringify({ type: 'finish' }), done: true,
+        body: JSON.stringify(chunk), done,
       }));
+      deliverChunk({ type: 'start', messageId: 'compact-agent-response' });
     });
   });
   try {
@@ -839,14 +848,37 @@ async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<v
     await composer.fill('Stop this synthetic turn before dispatch.');
     await compactPage.getByRole('button', { name: 'Send message' }).click();
     await expect.poll(() => credentialRequests).toBe(1);
+    await expect(compactPage.getByRole('status').filter({ hasText: /^Thinking…$/ })).toBeVisible();
+    await expect(compactPage.getByLabel(/Elapsed time: [1-9]\d* seconds/)).toBeVisible();
     await compactPage.getByRole('button', { name: 'Stop response' }).click();
     await expect(compactPage.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
+    await expect(compactPage.getByLabel(/Elapsed time:/)).toHaveCount(0);
     expect(modelRequests).toBe(0);
     releasePreparation?.();
     await composer.fill('Complete the next synthetic turn.');
     await compactPage.getByRole('button', { name: 'Send message' }).click();
     await expect.poll(() => modelRequests).toBe(1);
+    deliverChunk?.({ type: 'tool-input-start', toolCallId: 'compact-tool', toolName: 'codemode' });
+    await expect(compactPage.getByRole('status').filter({ hasText: /^Preparing code…$/ })).toBeVisible();
+    deliverChunk?.({ type: 'tool-input-available', toolCallId: 'compact-tool', toolName: 'codemode', input: { code: 'return 1;' } });
+    await expect(compactPage.getByRole('status').filter({ hasText: /^Running code…$/ })).toBeVisible();
+    await compactPage.screenshot({ path: '/tmp/agent-studio-chat-progress.png' });
+    deliverChunk?.({ type: 'tool-output-available', toolCallId: 'compact-tool', output: { result: 1 } });
+    await expect(compactPage.getByText('Code run finished', { exact: true })).toBeVisible();
+    // The SDK event reaches the real browser renewal caller; only its HTTP
+    // response is substituted here. Backend tests cover signed credential acceptance.
+    const renewalRequestId = crypto.randomUUID();
+    deliverChunk?.({ type: 'data-credential-refresh', data: { requestId: renewalRequestId }, transient: true });
+    await expect.poll(() => renewalRequests).toEqual([renewalRequestId]);
+    expect(modelRequests).toBe(1);
+    deliverChunk?.({ type: 'text-start', id: 'compact-text' });
+    deliverChunk?.({ type: 'text-delta', id: 'compact-text', delta: 'The synthetic result is ready.' });
+    await expect(compactPage.getByRole('status').filter({ hasText: /^Writing the response…$/ })).toBeVisible();
+    deliverChunk?.({ type: 'text-end', id: 'compact-text' });
+    deliverChunk?.({ type: 'finish' }, true);
     await expect(compactPage.getByRole('status', { name: 'Chat status: Ready' })).toBeVisible();
+    await expect(compactPage.getByLabel(/Elapsed time:/)).toHaveCount(0);
+    await expect(compactPage.getByText('The synthetic result is ready.', { exact: true })).toBeVisible();
     await apiCall(compactPage, baseUrl, `/api/workspaces/${workspaceId}/panels`, {
       method: 'POST', label: 'deliver a new result while the canvas is hidden',
       body: { panel: {

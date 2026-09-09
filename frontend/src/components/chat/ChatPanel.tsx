@@ -1,11 +1,33 @@
-import { Suspense, lazy } from 'react';
-import { MessageSquare, Send, Square } from 'lucide-react';
+import { Suspense, lazy, useEffect, useState } from 'react';
+import { LoaderCircle, MessageSquare, Send, Square } from 'lucide-react';
 import { isTextUIPart, type UIMessage } from 'ai';
 import { cn } from '../../lib/utils';
 import { extractMessageText, getToolNotices } from '../../lib/messages';
 import type { ChatActivityState } from '../../lib/chatActivity';
+import { lastFinishedToolActivity } from '../../lib/toolActivity';
 
 const LazyMarkdownRenderer = lazy(() => import('../renderers/MarkdownRenderer'));
+
+function WorkingProgress({ detail }: { detail: string }) {
+  const [startedAt] = useState(() => Date.now());
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  return (
+    <div className="flex items-center gap-3 border-t border-border bg-secondary px-4 py-3">
+      <LoaderCircle size={18} className="shrink-0 animate-spin motion-reduce:animate-none text-foreground" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <p role="status" className="text-sm font-medium text-foreground">{detail}</p>
+        <p className="text-xs text-muted-foreground">You can stop this response at any time.</p>
+      </div>
+      <span className="shrink-0 text-xs tabular-nums text-muted-foreground" aria-label={`Elapsed time: ${elapsed} seconds`}>
+        {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
+      </span>
+    </div>
+  );
+}
 
 /**
  * Presentational main chat panel. All state (composer text, chat status,
@@ -111,7 +133,7 @@ export function ChatPanel({
               <p className="text-xs text-muted-foreground">
                 {activity.label === 'Connection lost'
                   ? 'Reload the page to reconnect.'
-                  : 'Retry the last turn or clear the thread and continue.'}
+                  : 'Retry the last turn or send another message. Your conversation is kept.'}
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -131,13 +153,6 @@ export function ChatPanel({
                   Retry
                 </button>
               )}
-              <button
-                className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                onClick={clearConversation}
-                aria-label="Clear conversation"
-              >
-                Clear conversation
-              </button>
             </div>
           </div>
         </div>
@@ -160,9 +175,11 @@ export function ChatPanel({
             }
           }
           const toolNotices = getToolNotices(message);
-          if (textParts.length === 0 && toolNotices.length === 0) return null;
+          const finishedToolActivity = lastFinishedToolActivity(message);
+          if (textParts.length === 0 && toolNotices.length === 0 && !finishedToolActivity) return null;
           return (
             <article key={message.id} className="max-w-[90%] self-start space-y-2">
+              {finishedToolActivity ? <p className="text-xs text-foreground">{finishedToolActivity}</p> : null}
               {toolNotices.map((notice) => (
                 <p
                   key={`${message.id}-${notice.kind}`}
@@ -193,6 +210,7 @@ export function ChatPanel({
           );
         })}
       </div>
+      {activity.phase === 'working' ? <WorkingProgress detail={activity.detail} /> : null}
       <form
         className="flex gap-2 p-3 border-t border-border"
         onSubmit={(event) => {

@@ -25,6 +25,8 @@ import {
   type StreamTextOnFinishCallback,
   type ToolSet,
   type UIMessage,
+  type UIMessageStreamOptions,
+  type UIMessageStreamWriter,
 } from 'ai';
 import {
   createCailAuthError,
@@ -100,16 +102,16 @@ import {
 } from '../lib/workspaces';
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
-import {
-  extractCanonicalCailError,
-  quotaSignalFromError,
-} from '../lib/quota-error';
+import { modelErrorSignal } from '../lib/model-error';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
 import {
   isPlaceholderWorkspaceName,
 } from '../lib/workspace-title';
 
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
+// A disconnected browser cannot acknowledge a credential request. Bound only
+// that HTTP round trip; model execution itself has no added deadline.
+const CREDENTIAL_REFRESH_WAIT_MS = 15_000;
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
 const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // Keep a finite stop for the AI SDK tool loop so a malformed or non-terminating
@@ -311,6 +313,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private cailSubject: string | null = null;
   /** In-memory capability proof for the model used by the warm DO instance. */
   private functionCallingModelId: string | null = null;
+  private pendingCredentialRefresh: {
+    requestId: string;
+    resolve: (identityJwt: string) => void;
+    reject: (error: Error) => void;
+  } | null = null;
 
   async onStart() {
     if (!this.state.workspace) {
@@ -474,6 +481,55 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.cailIdentityJwt = identityJwt;
     this.cailSubject = identity.subject;
     await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
+  }
+
+  /** Only the authenticated HTTP refresh route may complete a pending step. */
+  async completeModelCredentialRefresh(requestId: string, identityJwt: string): Promise<boolean> {
+    z.uuid().parse(requestId);
+    const pending = this.pendingCredentialRefresh;
+    if (!pending || pending.requestId !== requestId) return false;
+    const sessionId = this.csrfSessionId();
+    if (!sessionId) return false;
+    const identity = await verifyGatewayCredentialForSession(
+      identityJwt,
+      sessionId,
+      this.env,
+      Math.floor(Date.now() / 1000),
+    );
+    if (!identity || isCailIdentityConfigError(identity)) throw new Error('The refreshed credential was rejected.');
+    // Cancellation or a newer turn may have invalidated the request while
+    // signature verification yielded. Do not install a late credential.
+    if (this.pendingCredentialRefresh !== pending) return false;
+    this.cailIdentityJwt = identityJwt;
+    this.cailSubject = identity.subject;
+    await this.ctx.storage.put(CAIL_CREDENTIAL_STORAGE_KEY, identityJwt);
+    if (this.pendingCredentialRefresh !== pending) return false;
+    pending.resolve(identityJwt);
+    return true;
+  }
+
+  private async requestModelCredential(
+    writer: UIMessageStreamWriter<UIMessage>,
+    abortSignal?: AbortSignal,
+  ): Promise<string> {
+    throwIfAborted(abortSignal);
+    this.pendingCredentialRefresh?.reject(new Error('A new credential request replaced this step.'));
+    const requestId = crypto.randomUUID();
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        this.pendingCredentialRefresh = { requestId, resolve, reject };
+        onAbort = () => reject(abortSignal?.reason ?? new Error('Chat cancelled.'));
+        abortSignal?.addEventListener('abort', onAbort, { once: true });
+        timeout = setTimeout(() => reject(new Error('The browser did not refresh model access.')), CREDENTIAL_REFRESH_WAIT_MS);
+        writer.write({ type: 'data-credential-refresh', data: { requestId }, transient: true });
+      });
+    } finally {
+      clearTimeout(timeout);
+      if (onAbort) abortSignal?.removeEventListener('abort', onAbort);
+      if (this.pendingCredentialRefresh?.requestId === requestId) this.pendingCredentialRefresh = null;
+    }
   }
 
   /**
@@ -893,31 +949,49 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
       const modelMessages = await convertToModelMessages(this.messages);
       throwIfAborted(abortSignal);
-      const result = streamText({
-        model,
-        // The gateway does not yet deduplicate model execution. A retry after
-        // an uncertain response could run and bill the same turn twice.
-        maxRetries: 0,
-        abortSignal,
-        system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),
-        messages: pruneMessages({
-          messages: modelMessages,
-          toolCalls: 'before-last-2-messages',
+      const onStreamError: NonNullable<UIMessageStreamOptions<UIMessage>['onError']> = (error) => {
+        const errorCandidate = error instanceof Error ? error : null;
+        return modelErrorSignal(errorCandidate)
+          ?? JSON.stringify(canonicalError(
+            'response_interrupted',
+            'The response was interrupted before it finished. Your saved conversation and workspace files are kept.',
+            { type: 'server_error', retryable: false },
+          ));
+      };
+      return createUIMessageStreamResponse({
+        stream: createUIMessageStream({
+          execute: ({ writer }) => {
+            const result = streamText({
+              model,
+              // The gateway does not deduplicate execution; never replay a
+              // possibly billed request after an uncertain response.
+              maxRetries: 0,
+              abortSignal,
+              system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),
+              messages: pruneMessages({
+                messages: modelMessages,
+                toolCalls: 'before-last-2-messages',
+              }),
+              tools: { ...modelTools, codemode },
+              stopWhen: stepCountIs(MODEL_TOOL_LOOP_STEPS),
+              prepareStep: async ({ stepNumber }) => {
+                if (stepNumber === 0) return;
+                const nextIdentityJwt = await this.requestModelCredential(writer, abortSignal);
+                throwIfAborted(abortSignal);
+                return {
+                  model: createCailModel({
+                    env: this.env,
+                    identityJwt: nextIdentityJwt,
+                    sessionId: workspace.id,
+                    model: modelName,
+                  }),
+                };
+              },
+            });
+            writer.merge(result.toUIMessageStream({ onError: onStreamError }));
+          },
+          onError: onStreamError,
         }),
-        tools: {
-          ...modelTools,
-          codemode,
-        },
-        stopWhen: stepCountIs(MODEL_TOOL_LOOP_STEPS),
-      });
-
-      return result.toUIMessageStreamResponse({
-        onError: (error) => {
-          const errorCandidate = error instanceof Error ? error : null;
-          const cail = extractCanonicalCailError(errorCandidate);
-          const quota = quotaSignalFromError(errorCandidate, cail);
-          return quota ?? 'Agent Studio hit an internal error while streaming this response.';
-        },
       });
     } catch (error) {
       if (abortSignal?.aborted) throw error;

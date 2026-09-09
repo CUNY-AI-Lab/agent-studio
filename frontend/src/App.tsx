@@ -36,6 +36,7 @@ import {
   fetchWorkspaces,
   fetchModels,
   refreshModelCredential,
+  respondToModelCredentialRefresh,
   ModelsQuotaError,
   ModelsAuthError,
   ModelsUnavailableError,
@@ -79,7 +80,7 @@ import {
   downloadBlob,
   triggerQueuedDownload,
 } from './lib/download';
-import { quotaMessageFromChatError } from './lib/quotaError';
+import { noticeFromChatError } from './lib/chatError';
 import {
   contextualFailureMessage,
   getContextualTurnMessages,
@@ -251,6 +252,7 @@ function WorkspaceShell({
     chatPreflightControllerRef.current = null;
     controller.abort();
   }, []);
+  useEffect(() => abortChatPreflight, [abortChatPreflight]);
   const contextualLifecycleRef = useRef<ContextualLifecycleState>(INITIAL_CONTEXTUAL_LIFECYCLE);
   const workspaceFilesRequestRef = useRef(0);
   const contextualRetryRef = useRef<ContextualRetry | null>(null);
@@ -332,6 +334,21 @@ function WorkspaceShell({
     body: () => selectedPanelIds.size > 0
       ? { scopePanelIds: Array.from(selectedPanelIds) }
       : {},
+    onData: (part) => {
+      if (part.type !== 'data-credential-refresh') return;
+      abortChatPreflight();
+      const controller = new AbortController();
+      chatPreflightControllerRef.current = controller;
+      void respondToModelCredentialRefresh(
+        part,
+        workspace.workspace.id,
+        controller.signal,
+      ).finally(() => {
+        if (chatPreflightControllerRef.current === controller) {
+          chatPreflightControllerRef.current = null;
+        }
+      });
+    },
     prepareSendMessagesRequest: async () => {
       abortChatPreflight();
       const controller = new AbortController();
@@ -358,15 +375,17 @@ function WorkspaceShell({
           // ordinary chat failures and keep the retry affordance visible.
         }
       }
-      // Surface CAIL quota exhaustion distinctly (the stream error text carries a
-      // { type: 'quota_exceeded', ... } JSON signal from the worker — see quota-error.ts).
-      const quotaMessage = quotaMessageFromChatError(chatError);
-      if (quotaMessage) {
-        setChatErrorNotice(quotaMessage);
+      const notice = noticeFromChatError(chatError);
+      if (notice) {
+        setChatErrorNotice(notice);
         return;
       }
     },
   });
+
+  useEffect(() => {
+    if (chat.status === 'error') abortChatPreflight();
+  }, [abortChatPreflight, chat.status]);
 
   const automaticLayoutPersistence = useAutomaticLayoutPersistence({
     workspaceId: workspace.workspace.id,
@@ -1053,12 +1072,16 @@ function WorkspaceShell({
     lastChatStatusRef.current = status;
     if (status === 'submitted' || status === 'streaming') {
       announce('Agent is thinking…');
-    } else if (status === 'error') {
-      announce('The agent response failed. You can retry or clear the thread.');
     } else if (status === 'ready') {
       announce('Agent response ready.');
     }
   }, [announce, chat.status]);
+
+  useEffect(() => {
+    if (chat.status === 'error') {
+      announce(chatErrorNotice ?? 'The agent response failed. Check the conversation and workspace files before retrying. Your conversation is kept.');
+    }
+  }, [announce, chat.status, chatErrorNotice]);
 
   useEffect(() => {
     if (agent.connectionError) {
@@ -2660,6 +2683,7 @@ function WorkspaceShell({
   }, []);
 
   const chatActivity = getChatActivity({
+    messages: chat.messages,
     status: chat.status,
     isStreaming: chat.isStreaming,
     isServerStreaming: chat.isServerStreaming,

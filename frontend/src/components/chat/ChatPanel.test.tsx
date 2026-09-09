@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { UIMessage } from 'ai';
 import { ChatPanel } from './ChatPanel';
 import { getChatActivity } from '../../lib/chatActivity';
+import { noticeFromChatError } from '../../lib/chatError';
 
 function userMessage(text: string): UIMessage {
   return { id: 'u1', role: 'user', parts: [{ type: 'text', text }] };
@@ -33,6 +34,35 @@ const baseProps = {
 };
 
 describe('ChatPanel', () => {
+  it.each([
+    ['upstream_error', 'The model provider could not finish this response. You can try again.'],
+    ['upstream_rate_limited', 'The model provider is busy. Wait a moment before trying again.'],
+    ['outcome_unknown', 'The model connection ended before the result could be confirmed. Check the conversation and workspace files before retrying; the request may already have produced a result.'],
+    ['response_interrupted', 'The response was interrupted before it finished. Your saved conversation and workspace files are kept. Check them before retrying.'],
+    ['provider_configuration_error', 'The model is unavailable because of a service configuration problem. Choose another model or try again later.'],
+  ])('shows bounded recovery for %s and retains the conversation', async (code, expectedNotice) => {
+    const onRetry = vi.fn();
+    const user = userEvent.setup();
+    render(<ChatPanel {...baseProps}
+      messages={[userMessage('Keep the task instructions')]}
+      activity={getChatActivity({
+        status: 'error', isStreaming: false, isServerStreaming: false,
+        isRecovering: false, isToolContinuation: false, contextualTurnActive: false,
+        connectionError: null, canRetry: true,
+      })}
+      errorNotice={noticeFromChatError(new Error(JSON.stringify({
+        error: { code, message: 'private provider detail', cail: { retryable: false } },
+      })))}
+      onRetry={onRetry}
+    />);
+    expect(screen.getByText(expectedNotice)).toBeInTheDocument();
+    expect(screen.queryByText('private provider detail')).not.toBeInTheDocument();
+    expect(screen.getByText('Keep the task instructions')).toBeInTheDocument();
+    expect(onRetry).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
+
   it('shows the current chat status in plain words', () => {
     render(<ChatPanel {...baseProps} />);
     expect(screen.getByText('Ready')).toBeInTheDocument();
@@ -115,7 +145,7 @@ describe('ChatPanel', () => {
     expect(screen.queryByText('hidden detail')).not.toBeInTheDocument();
   });
 
-  it('omits successful tool-only messages and empty assistant articles', () => {
+  it('shows concise completed tool activity while omitting empty assistant messages', () => {
     const messages: UIMessage[] = [
       {
         id: 'a3',
@@ -126,7 +156,38 @@ describe('ChatPanel', () => {
     ];
     render(<ChatPanel {...baseProps} messages={messages} />);
     expect(screen.queryByText('A tool')).not.toBeInTheDocument();
-    expect(screen.queryByRole('article')).not.toBeInTheDocument();
+    expect(screen.getByText('File save finished')).toBeInTheDocument();
+    expect(screen.getAllByRole('article')).toHaveLength(1);
+  });
+
+  it('streams named code stages and keeps the completed activity visible during the next tool', () => {
+    const working = {
+      status: 'streaming', isStreaming: true, isServerStreaming: true,
+      isRecovering: false, isToolContinuation: false, contextualTurnActive: false,
+      connectionError: null, canRetry: false,
+    };
+    const preparing: UIMessage = { id: 'code', role: 'assistant', parts: [
+      { type: 'tool-codemode', toolCallId: 'code', state: 'input-streaming', input: { code: 'private code' } },
+    ] };
+    const { rerender } = render(<ChatPanel {...baseProps} messages={[preparing]}
+      activity={getChatActivity({ ...working, messages: [preparing] })} />);
+    expect(screen.getByText('Preparing code…')).toBeInTheDocument();
+    const running: UIMessage = { ...preparing, parts: [
+      { type: 'tool-codemode', toolCallId: 'code', state: 'input-available', input: { code: 'private code' } },
+    ] };
+    rerender(<ChatPanel {...baseProps} messages={[running]}
+      activity={getChatActivity({ ...working, messages: [running] })} />);
+    expect(screen.getByText('Running code…')).toBeInTheDocument();
+    const nextTool: UIMessage = { ...preparing, parts: [
+      { type: 'tool-codemode', toolCallId: 'code', state: 'output-available', input: {}, output: { private: 'result' } },
+      { type: 'tool-ui_show_file', toolCallId: 'display', state: 'input-available', input: {} },
+    ] };
+    rerender(<ChatPanel {...baseProps} messages={[nextTool]}
+      activity={getChatActivity({ ...working, messages: [nextTool] })} />);
+    expect(screen.getByText('Code run finished')).toBeInTheDocument();
+    expect(screen.getByText('Displaying a file…')).toBeInTheDocument();
+    expect(screen.queryByText('private code')).not.toBeInTheDocument();
+    expect(screen.queryByText('result')).not.toBeInTheDocument();
   });
 
   it('shows the error recovery banner and retry gating', () => {
@@ -147,6 +208,36 @@ describe('ChatPanel', () => {
     );
     expect(screen.getByText('The last response failed before it finished.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
+    expect(screen.getByText('Retry the last turn or send another message. Your conversation is kept.')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Clear conversation' })).toHaveLength(1);
+  });
+
+  it('shows elapsed work across stage changes and removes progress after failure', () => {
+    vi.useFakeTimers();
+    try {
+      const activity = getChatActivity({
+        status: 'submitted', isStreaming: false, isServerStreaming: false,
+        isRecovering: false, isToolContinuation: false, contextualTurnActive: false,
+        connectionError: null, canRetry: true,
+      });
+      const { rerender } = render(<ChatPanel {...baseProps} activity={activity} />);
+      expect(screen.getByText('Thinking…')).toBeInTheDocument();
+      act(() => vi.advanceTimersByTime(65000));
+      expect(screen.getByLabelText('Elapsed time: 65 seconds')).toHaveTextContent('1:05');
+      if (activity.phase !== 'working') throw new Error('Expected working activity');
+      rerender(<ChatPanel {...baseProps} activity={{ ...activity, detail: 'Running tools…' }} />);
+      expect(screen.getByRole('status', { name: '' })).toHaveTextContent('Running tools…');
+      expect(screen.getByLabelText('Elapsed time: 65 seconds')).toBeInTheDocument();
+      rerender(<ChatPanel {...baseProps} activity={getChatActivity({
+        status: 'error', isStreaming: false, isServerStreaming: false,
+        isRecovering: false, isToolContinuation: false, contextualTurnActive: false,
+        connectionError: null, canRetry: true,
+      })} />);
+      expect(screen.queryByText('Running tools…')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows a terminal connection failure and offers a full-page reload without exposing the socket error', async () => {

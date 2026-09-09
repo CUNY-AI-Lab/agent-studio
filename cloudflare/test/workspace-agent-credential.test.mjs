@@ -3,7 +3,8 @@ import test from 'node:test';
 import { z } from 'zod';
 import { createTestIdentityIssuer, TEST_SUBJECTS } from './helpers/identity.mjs';
 
-import { registerCloudflareStub } from './helpers/env.mjs';
+import { registerCloudflareStub, importServer, makeEnv, Session } from './helpers/env.mjs';
+import { loadIdentityVerifierConfig, verifyIdentityJwt } from '@cuny-ai-lab/cail-identity';
 
 registerCloudflareStub();
 
@@ -13,6 +14,147 @@ const {
   sessionIdForSubject,
 } = await import('../src/lib/cail-identity.ts');
 const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+
+test('a long tool step refreshes through the authenticated route before its next model request', async (t) => {
+  t.mock.method(console, 'info', () => {});
+  const start = 1_800_000_000;
+  t.mock.timers.enable({ apis: ['Date'], now: start * 1000 });
+  const issuer = await createTestIdentityIssuer();
+  const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  const { env, agents } = makeEnv();
+  Object.assign(env, identityEnv(issuer), {
+    CAIL_REQUIRE_IDENTITY: 'true', CAIL_API_BASE: 'https://cail.test',
+    CAIL_CANONICAL_ORIGIN: 'https://studio.test', CAIL_BASE_PATH: '/agent-studio',
+    GATEWAY: { fetch: async () => new Response(null, { status: 500 }) },
+  });
+  const app = await importServer();
+  const session = new Session(env);
+  const headersForNow = async () => ({
+    'content-type': 'application/json',
+    'X-CAIL-Identity-JWT': await issuer.mintIdentityJwt({ audience: 'cail:agent-studio', expiresInSeconds: 300 }),
+    'X-CAIL-Gateway-Identity-JWT': await mintGateway(issuer, { expiresInSeconds: 300 }),
+  });
+  const headers = await headersForNow();
+  assert.equal((await session.request(app, '/api/session', { headers })).status, 200);
+  const created = await session.request(app, '/api/workspaces', {
+    method: 'POST', headers, body: JSON.stringify({ name: 'Long turn workspace' }),
+  });
+  assert.equal(created.status, 201);
+  const { workspace } = await created.json();
+  const agent = await makeRealWorkspaceAgent(sessionId, env, makeStorage());
+  agents.set(`${sessionId}-${workspace.id}`, agent);
+  await agent.setCailCredential(headers['X-CAIL-Gateway-Identity-JWT']);
+  agent.requireWorkspace = () => workspace;
+  agent.requireSessionId = () => sessionId;
+  agent.messages = [{ id: 'user-message', role: 'user', parts: [{ type: 'text', text: 'Continue the saved work.' }] }];
+  const originalMessages = structuredClone(agent.messages);
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
+  agent.functionCallingModelId = DEFAULT_CAIL_MODEL;
+  const { tool } = await import('ai');
+  const lookup = tool({ inputSchema: z.object({}), execute: async () => {
+    t.mock.timers.setTime((start + 373) * 1000);
+    return 'saved work';
+  } });
+  agent.buildHostTools = () => ({});
+  agent.buildModelTools = () => ({ lookup });
+  agent.createCodeModeTool = () => lookup;
+  const requests = [];
+  env.GATEWAY = { async fetch(input, init) {
+    const jwt = new Headers(init.headers).get('authorization').slice('Bearer '.length);
+    const config = await loadIdentityVerifierConfig({
+      jwks: issuer.jwksJson, issuer: CAIL_CANONICAL_ISSUER, expectedAudience: CAIL_GATEWAY_AUDIENCE,
+      now: Math.floor(Date.now() / 1000),
+    });
+    assert.equal(config.ok, true);
+    // The shared Gateway verifier is real; provider output and Registry access
+    // are substituted. This is an in-process HTTP/DO/SDK integration test.
+    assert.ok(await verifyIdentityJwt(jwt, config.config), 'each inference must have a currently valid credential');
+    requests.push({ jwt, body: JSON.parse(init.body) });
+    const choices = requests.length === 1
+      ? [{ index: 0, delta: { tool_calls: [{ index: 0, id: 'call-lookup', type: 'function', function: { name: 'lookup', arguments: '{}' } }] }, finish_reason: null }]
+      : [{ index: 0, delta: { content: 'Continued successfully.' }, finish_reason: null }];
+    return new Response(`data: ${JSON.stringify({ id: 'synthetic', choices })}\n\n`
+      + `data: ${JSON.stringify({ id: 'synthetic', choices: [{ index: 0, delta: {}, finish_reason: requests.length === 1 ? 'tool_calls' : 'stop' }] })}\n\n`
+      + 'data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+  } };
+  const response = await agent.onChatMessage(undefined, { requestId: 'long-turn' });
+  const events = [];
+  let buffer = '';
+  for await (const chunk of response.body.pipeThrough(new TextDecoderStream())) {
+    buffer += chunk;
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
+      const event = JSON.parse(line.slice(6));
+      events.push(event);
+      if (event.type !== 'data-credential-refresh') continue;
+      assert.equal(event.transient, true);
+      const freshHeaders = await headersForNow();
+      const unrelated = await session.request(app, `/api/workspaces/${workspace.id}/model-credential`, {
+        method: 'POST', headers: freshHeaders, body: JSON.stringify({ requestId: crypto.randomUUID() }),
+      });
+      assert.equal(unrelated.status, 409);
+      const refreshed = await session.request(app, `/api/workspaces/${workspace.id}/model-credential`, {
+        method: 'POST', headers: freshHeaders, body: JSON.stringify(event.data),
+      });
+      assert.equal(refreshed.status, 204);
+    }
+  }
+  assert.equal(requests.length, 2);
+  assert.notEqual(requests[0].jwt, requests[1].jwt);
+  assert.equal(requests[1].body.messages.at(-1).role, 'tool');
+  assert.ok(events.some((event) => event.type === 'text-delta' && event.delta === 'Continued successfully.'));
+  assert.equal(events.some((event) => event.type === 'error'), false);
+  assert.deepEqual(agent.messages, originalMessages);
+});
+
+test('credential refresh cancellation and a missing browser acknowledgment release the pending step', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const issuer = await createTestIdentityIssuer();
+  const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  const agent = await makeRealWorkspaceAgent(sessionId, identityEnv(issuer), makeStorage());
+  const token = await mintGateway(issuer);
+  await agent.setCailCredential(token);
+  const requests = [];
+  const writer = { write: (part) => requests.push(part) };
+  const abort = new AbortController();
+  const cancelled = agent.requestModelCredential(writer, abort.signal);
+  const cancellation = assert.rejects(cancelled, /cancelled/);
+  abort.abort(new Error('Chat cancelled.'));
+  await cancellation;
+  assert.equal(agent.pendingCredentialRefresh, null);
+
+  const pending = agent.requestModelCredential(writer);
+  const expiry = assert.rejects(pending, /did not refresh/);
+  // A late HTTP completion from the cancelled request cannot resolve or
+  // overwrite the new request's credential.
+  assert.equal(await agent.completeModelCredentialRefresh(requests[0].data.requestId, token), false);
+  assert.equal(agent.pendingCredentialRefresh.requestId, requests[1].data.requestId);
+  t.mock.timers.tick(15_000);
+  await expiry;
+  assert.equal(agent.pendingCredentialRefresh, null);
+  assert.equal(await agent.completeModelCredentialRefresh(requests[1].data.requestId, token), false);
+  assert.equal(agent.cailIdentityJwt, token);
+});
+
+test('the first verified browser refresh wins, including an unchanged token, without accepting another subject', async () => {
+  const issuer = await createTestIdentityIssuer();
+  const sessionId = await sessionIdForSubject(TEST_SUBJECTS.alice);
+  const agent = await makeRealWorkspaceAgent(sessionId, identityEnv(issuer), makeStorage());
+  const token = await mintGateway(issuer);
+  await agent.setCailCredential(token);
+  let requestId;
+  const pending = agent.requestModelCredential({ write: (part) => { requestId = part.data.requestId; } });
+  const wrongSubject = await mintGateway(issuer, { subject: TEST_SUBJECTS.carol });
+  await assert.rejects(agent.completeModelCredentialRefresh(requestId, wrongSubject), /rejected/);
+  assert.equal(agent.cailIdentityJwt, token);
+  assert.equal(agent.pendingCredentialRefresh.requestId, requestId);
+  assert.equal(await agent.completeModelCredentialRefresh(requestId, token), true);
+  assert.equal(await pending, token);
+  assert.equal(await agent.completeModelCredentialRefresh(requestId, token), false);
+  assert.equal(agent.pendingCredentialRefresh, null);
+});
 
 function identityEnv(issuer) {
   return {
