@@ -108,4 +108,34 @@ describe('FilesShelf', () => {
     );
     expect(onSetActiveFilePillPopover).toHaveBeenCalledWith(expect.any(Function));
   });
+
+  it.each([
+    { viewportWidth: 320, expectedOffset: -149 },
+    { viewportWidth: 375, expectedOffset: -94 },
+  ])('keeps an open file menu inside a $viewportWidth px viewport', ({ viewportWidth, expectedOffset }) => {
+    const originalInnerWidth = window.innerWidth;
+    const getBoundingClientRect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({
+      left: 250,
+      right: 461,
+      top: 40,
+      bottom: 80,
+      width: 211,
+      height: 40,
+      x: 250,
+      y: 40,
+      toJSON: () => ({}),
+    });
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: viewportWidth });
+
+    try {
+      render(<FilesShelf {...makeProps({ activeFilePillPopover: 'notes.md' })} />);
+
+      expect(screen.getByRole('menu', { name: 'Actions for notes.md' })).toHaveStyle({
+        transform: `translateX(${expectedOffset}px)`,
+      });
+    } finally {
+      getBoundingClientRect.mockRestore();
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalInnerWidth });
+    }
+  });
 });

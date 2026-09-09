@@ -1,10 +1,24 @@
-import type { RefObject } from 'react';
+import { useLayoutEffect, useRef, type RefObject } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { formatFileSize } from '../../lib/format';
 import { canOpenFileInPanel, getFileName, getFileTypeBadge } from '../../lib/panelFiles';
 import type { FileDownloadHandler } from '../../lib/fileUrls';
 import type { WorkspaceFileInfo } from '../../types';
+
+const FILE_MENU_VIEWPORT_GAP = 8;
+
+function getFileMenuOffset(
+  rect: Pick<DOMRect, 'left' | 'right'>,
+  viewportWidth: number,
+): number {
+  const minOffset = FILE_MENU_VIEWPORT_GAP - rect.left;
+  const maxOffset = viewportWidth - FILE_MENU_VIEWPORT_GAP - rect.right;
+
+  if (minOffset <= 0 && maxOffset >= 0) return 0;
+  if (maxOffset < 0) return maxOffset;
+  return minOffset;
+}
 
 /**
  * Files shelf shown above the canvas: upload control, the "show files on
@@ -46,6 +60,35 @@ export function FilesShelf({
   onOpenFileOnCanvas: (file: WorkspaceFileInfo) => void;
   getFileCanvasActionLabel: (filePath: string) => string;
 }) {
+  const fileMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const menu = fileMenuRef.current;
+    if (!menu) return;
+
+    const updateMenuPosition = () => {
+      // Clear the previous correction before measuring so a resize or a
+      // different file always starts from the shelf's natural anchor point.
+      menu.style.transform = 'none';
+      const offset = getFileMenuOffset(menu.getBoundingClientRect(), window.innerWidth);
+      if (offset !== 0) {
+        menu.style.transform = `translateX(${offset}px)`;
+      }
+    };
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    const resizeObserver = new ResizeObserver(updateMenuPosition);
+    resizeObserver.observe(menu);
+
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+      resizeObserver.disconnect();
+    };
+  }, [activeFilePillPopover]);
+
   return (
     <section ref={sectionRef} aria-label="Workspace files" className="files-shelf relative z-20 flex-shrink-0 overflow-visible">
       <div className="flex items-center justify-between gap-3 px-4 py-2">
@@ -124,10 +167,11 @@ export function FilesShelf({
                   </button>
                   {activeFilePillPopover === file.path ? (
                     <div
+                      ref={fileMenuRef}
                       data-file-pill-popover
                       role="menu"
                       aria-label={`Actions for ${file.name}`}
-                      className="ui-surface ui-menu absolute left-0 top-full z-50 mt-1 flex min-w-0 gap-1"
+                      className="files-shelf-file-menu ui-surface ui-menu absolute left-0 top-full z-50 mt-1 flex min-w-0 gap-1"
                     >
                       {canOpenFileInPanel(file.path) ? (
                         <button
