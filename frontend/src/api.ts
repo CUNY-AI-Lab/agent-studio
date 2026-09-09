@@ -9,6 +9,7 @@ import type {
 import { parseCailAuthErrorEnvelope } from '@cuny-ai-lab/cail-identity';
 import { appPath } from './base-path';
 import { z } from 'zod';
+import type { DataUIPart, UIDataTypes } from 'ai';
 
 type CanonicalApiError = {
   code?: string;
@@ -314,11 +315,17 @@ async function parseJson<T>(response: Response): Promise<T> {
 export async function refreshModelCredential(
   workspaceId: string,
   signal?: AbortSignal,
+  requestId?: string,
 ): Promise<void> {
-  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/model-credential`, {
+  const init: RequestInit = {
     method: 'POST',
     signal,
-  });
+  };
+  if (requestId) {
+    init.headers = { 'Content-Type': 'application/json' };
+    init.body = JSON.stringify({ requestId });
+  }
+  const response = await mutatingFetch(`/api/workspaces/${workspaceId}/model-credential`, init);
   signal?.throwIfAborted();
   if (response.ok) {
     if (response.status !== 204) {
@@ -332,6 +339,25 @@ export async function refreshModelCredential(
     throw new ApiError('Sign in to continue.');
   }
   throw new ApiError(message);
+}
+
+const modelCredentialRefreshRequestSchema = z.object({ requestId: z.uuid() });
+
+/** Complete a server-requested renewal through the authenticated HTTP boundary. */
+export async function respondToModelCredentialRefresh(
+  part: DataUIPart<UIDataTypes>,
+  workspaceId: string,
+  signal: AbortSignal,
+): Promise<void> {
+  if (part.type !== 'data-credential-refresh') return;
+  const request = modelCredentialRefreshRequestSchema.safeParse(part.data).data;
+  if (!request || signal.aborted) return;
+  try {
+    await refreshModelCredential(workspaceId, signal, request.requestId);
+  } catch {
+    // Another connected tab may still complete renewal. The server's bounded
+    // wait owns failure if no authenticated request succeeds.
+  }
 }
 
 function encodePath(filePath: string): string {

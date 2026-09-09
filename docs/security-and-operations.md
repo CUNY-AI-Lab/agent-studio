@@ -41,6 +41,13 @@ That token is checked for the same subject and audience `cail:gateway`. The
 WebSocket carries no bearer token; it uses the session's CSRF capability while
 the Durable Object uses the already verified gateway credential.
 
+Each model continuation requests renewal through the AI SDK's `prepareStep`
+and a transient data event. The browser calls the existing authenticated
+`model-credential` endpoint with a request identifier; only the server installs
+the newly verified credential and acknowledges the matching waiting step.
+Browser acknowledgment cannot install credentials or authorize model work.
+Cancellation or failed renewal ends the wait without retrying a model request.
+
 When identity is required, `CAIL_REQUIRE_IDENTITY=true`, a complete issuer/JWKS
 pair, and the mounted base path are mandatory. Local development may leave
 identity disabled, but a partial identity configuration is rejected rather
@@ -149,6 +156,12 @@ JSON failures use the nested CAIL error shape. Authentication failures identify
 the login action without echoing a token. Model gateway quota and provider
 errors are returned as bounded error types; model work is not silently sent to
 another provider.
+
+The chat displays preparation, running tools, and response-writing progress
+from SDK message parts. Tool arguments and results are not printed as progress.
+The SDK's `createUIMessageStream` composition converts raw stream read failures
+to bounded errors. Interrupted responses retain saved conversation and files;
+users are advised to inspect existing results before retrying.
 
 ## Validation
 

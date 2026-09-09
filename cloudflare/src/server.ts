@@ -726,9 +726,18 @@ app.post('/api/workspaces/:id/model-credential', async (c) => {
   const gatewayJwt = cailGatewayJwt(c);
   if (!gatewayJwt) return cailAuthRequiredResponse();
 
+  const refreshRequest = c.req.header('content-type')?.includes('application/json')
+    ? z.strictObject({ requestId: z.uuid() }).parse(await c.req.json())
+    : null;
+
   const workspace = loadedWorkspace(c);
   const agent = await getWorkspaceAgent(c.env, requireSession(c), workspace.id);
-  await primeAgentCredential(c, agent);
+  if (refreshRequest) {
+    const completed = await agent.completeModelCredentialRefresh(refreshRequest.requestId, gatewayJwt);
+    if (!completed) return jsonError(c, 409, 'credential_refresh_not_pending', 'This credential request is no longer pending.');
+  } else {
+    await primeAgentCredential(c, agent);
+  }
 
   return new Response(null, {
     status: 204,
