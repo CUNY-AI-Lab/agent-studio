@@ -63,16 +63,21 @@ Gateway session identifier; Gateway namespaces and hashes it before provider
 egress. Agent Studio stores no provider key and does not select a second model
 path.
 
-The shared Gateway can publish models for several CAIL applications. Agent
-Studio intentionally consumes only `@cf/...` Workers AI entries because its
-workspace model and chat runtime use that namespace. Unsupported provider
-entries are ignored at the catalog boundary; a malformed supported entry fails
-closed instead of silently changing the model contract.
+Agent Studio uses the Gateway's canonical model IDs and offers models that
+advertise text generation and function calling. The Gateway owns provider
+routing for each model; Agent Studio sends the selected canonical ID through
+its existing service binding and SDK transport.
 
-The production-configured default is
-`@cf/deepseek-ai/deepseek-v4-flash-0731`. A workspace may retain another
-supported Workers AI model selected by its user; the default is used only when
-no valid workspace or environment override exists.
+The production-configured default is `deepseek-v4-flash-0731`. A workspace
+retains its user's selected model; workspaces without a selection use the
+configured default.
+
+Existing workspaces and imported bundles can contain the previous `@cf/...`
+IDs. A finite mapping verified against the Gateway's native inventory and
+canonical catalog migrates those selections without changing the model.
+Unmapped selections remain visible as unavailable until the user chooses a
+model. This data migration does not depend on catalog availability; selecting
+or invoking a model still requires current catalog admission and tool support.
 
 Gateway spend and quota are attributed to the verified canonical Gateway JWT
 subject for each user; Agent Studio also limits heavy Durable Object RPC calls
@@ -96,6 +101,11 @@ challenge.
   credentials for Primo, WorldCat, and LibGuides when those integrations are
   configured; host-side PDF, XLSX, and DOCX tools; and the runtime research
   skill documents.
+
+Later chat turns retain the stored SDK transcript, including tool calls,
+results, and reasoning. Agent Studio does not currently summarize older turns
+to fit a model's context window; the SDK's oversized-message storage protection
+is separate from conversation compaction.
 
 The interaction and state rules for tiles, associations, titles, downloads, and
 the unbounded canvas live in [Agent Studio Canvas Model](./CANVAS-DESIGN.md).

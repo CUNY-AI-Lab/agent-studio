@@ -7,8 +7,8 @@ SESSION_SECRET=agent-studio-local-development-session-secret
 # GATEWAY-compatible binding.
 # CAIL_API_BASE=https://tools.ailab.gc.cuny.edu
 # Optional model override; the proxy/AI Gateway resolves this slug.
-# CAIL policy: Workers AI catalog (@cf/...) ids only.
-CAIL_MODEL=@cf/zai-org/glm-5.2
+# Use a canonical ID from the CAIL Gateway model catalog.
+CAIL_MODEL=glm-5.2
 # Static public JWKS JSON used to verify the canonical X-CAIL-Identity-JWT
 # header with RS256 for audience cail:agent-studio. Multiple distinct kid
 # values support signing-key rotation overlap. Leave both identity values

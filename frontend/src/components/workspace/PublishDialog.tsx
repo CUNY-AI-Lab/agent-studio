@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef } from 'react';
+import { useEffect, useEffectEvent, useId, useRef } from 'react';
 import { createFocusTrap } from '../../lib/focusTrap';
 
 export function PublishDialog({
@@ -29,16 +29,17 @@ export function PublishDialog({
   const disclosureId = useId();
   const titleFieldId = useId();
   const descriptionFieldId = useId();
+  const handleEscape = useEffectEvent(() => {
+    if (!publishing) onClose();
+  });
 
   useEffect(() => {
     if (!open || !dialogRef.current) return;
     const trap = createFocusTrap(dialogRef.current, {
-      onEscape: () => {
-        if (!publishing) onClose();
-      },
+      onEscape: handleEscape,
     });
     return () => trap.release();
-  }, [open, onClose, publishing]);
+  }, [open]);
 
   if (!open) return null;
 

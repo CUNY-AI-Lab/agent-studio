@@ -1,4 +1,4 @@
-/** Names that do not establish user ownership of the workspace title. */
+/** Default names that are eligible for automatic initial naming. */
 const PLACEHOLDER_WORKSPACE_NAMES = new Set([
   'new workspace',
   'untitled workspace',

@@ -487,7 +487,11 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   await page.getByRole('button', { name: /^Publish(?: to gallery)?$/ }).click();
   const dialog = page.getByRole('dialog', { name: 'Publish to Gallery' });
   await dialog.getByRole('textbox', { name: 'Title', exact: true }).fill('Shared research');
-  await dialog.getByRole('textbox', { name: 'Description', exact: true }).fill('Local browser acceptance');
+  const publicationDescription = dialog.getByRole('textbox', { name: 'Description', exact: true });
+  await publicationDescription.fill('');
+  await publicationDescription.pressSequentially('Local browser acceptance');
+  await expect(publicationDescription).toHaveValue('Local browser acceptance');
+  await expect(dialog.getByRole('textbox', { name: 'Title', exact: true })).toHaveValue('Shared research');
   const publicationPromise = page.waitForResponse((response) => (
     response.request().method() === 'POST' && new URL(response.url()).pathname.endsWith('/publish')
   ));
@@ -800,6 +804,112 @@ async function verifyContextualRetry(page: Page): Promise<void> {
   }
 }
 
+async function verifyResumedChatHistory(page: Page): Promise<void> {
+  const chatPage = await page.context().newPage();
+  await chatPage.setViewportSize({ width: 1440, height: 1000 });
+  const cpu = await chatPage.context().newCDPSession(chatPage);
+  await cpu.send('Emulation.setCPUThrottlingRate', { rate: 8 });
+  const errors: string[] = [];
+  chatPage.on('pageerror', (error) => errors.push(error.message));
+  const markdown = Array.from({ length: 8 }, (_, index) => (
+    `### Finding ${index}\n\nThe **synthetic survey** has a [documented result](https://example.org).\n\n| Group | Count |\n| --- | --- |\n| Alpha | 12 |\n| Beta | 18 |\n\n`
+  )).join('');
+  const messages = Array.from({ length: 20 }, (_, index) => ({
+    id: `resumed-history-${index}`, role: index % 2 ? 'assistant' : 'user',
+    parts: [{ type: 'text', text: index % 2 ? markdown : `Review result ${index}.` }],
+  }));
+  // The Worker supplies workspace data and layout RPCs. This case substitutes
+  // only chat history and finite resume/model frames; it makes no provider call.
+  await chatPage.route('**/api/workspaces/*', async (route) => {
+    const response = await route.fetch();
+    const payload = WorkspacePayloadSchema.parse(await response.json());
+    await route.fulfill({ response, json: { ...payload, messages } });
+  });
+  await chatPage.route('**/model-credential', (route) => route.fulfill({ status: 204 }));
+  let replayStarted = false;
+  let replayFinished = false;
+  let requests = 0;
+  let acknowledgements = 0;
+  await chatPage.routeWebSocket('**/agents/**', (socket) => {
+    const server = socket.connectToServer();
+    const frameSchema = z.object({ type: z.string(), id: z.string().optional() });
+    server.onMessage((message) => {
+      const frame = frameSchema.parse(JSON.parse(message.toString()));
+      if (frame.type === 'rpc' || frame.type === 'cf_agent_state') socket.send(message);
+    });
+    type ScriptedChatFrame = {
+      type: string; id?: string; reason?: string; body?: string;
+      done?: boolean; replay?: boolean; replayComplete?: boolean;
+    };
+    const send = (frame: ScriptedChatFrame) => socket.send(JSON.stringify(frame));
+    socket.onMessage(async (message) => {
+      const frame = frameSchema.parse(JSON.parse(message.toString()));
+      if (frame.type === 'cf_agent_stream_resume_request') {
+        send(replayFinished
+          ? { type: 'cf_agent_stream_resume_none', reason: 'idle' }
+          : { type: 'cf_agent_stream_resuming', id: 'history-replay' });
+      } else if (frame.type === 'cf_agent_stream_resume_ack') {
+        acknowledgements += 1;
+        if (replayStarted) return;
+        replayStarted = true;
+        const chunk = (body: UIMessageChunk, replay = true) => send({
+          type: 'cf_agent_use_chat_response', id: 'history-replay',
+          body: JSON.stringify(body), done: false, replay,
+        });
+        chunk({ type: 'start', messageId: 'resumed-history-19' });
+        chunk({ type: 'start-step' });
+        chunk({ type: 'text-start', id: 'replayed-text' });
+        for (let index = 0; index < 100; index += 1) {
+          chunk({ type: 'text-delta', id: 'replayed-text', delta: 'Recovered detail. ' });
+          await new Promise((resolvePause) => setTimeout(resolvePause, 1));
+        }
+        send({ type: 'cf_agent_use_chat_response', id: 'history-replay', body: '', done: false, replay: true, replayComplete: true });
+        chunk({ type: 'text-end', id: 'replayed-text' }, false);
+        chunk({ type: 'finish-step' }, false);
+        chunk({ type: 'finish' }, false);
+        replayFinished = true;
+        send({ type: 'cf_agent_use_chat_response', id: 'history-replay', body: '', done: true });
+      } else if (frame.type === 'cf_agent_use_chat_request') {
+        const request = ChatRequestSchema.parse(JSON.parse(message.toString()));
+        requests += 1;
+        const chunk = (body: UIMessageChunk) => send({
+          type: 'cf_agent_use_chat_response', id: request.id, body: JSON.stringify(body), done: false,
+        });
+        chunk({ type: 'start', messageId: 'new-history-answer' });
+        chunk({ type: 'start-step' });
+        chunk({ type: 'text-start', id: 'new-text' });
+        for (let index = 0; index < 120; index += 1) {
+          chunk({ type: 'text-delta', id: 'new-text', delta: 'Continued detail. ' });
+          await new Promise((resolvePause) => setTimeout(resolvePause, 1));
+        }
+        chunk({ type: 'text-end', id: 'new-text' });
+        chunk({ type: 'finish-step' });
+        chunk({ type: 'finish' });
+        send({ type: 'cf_agent_use_chat_response', id: request.id, body: '', done: true });
+      } else {
+        server.send(message);
+      }
+    });
+  });
+  try {
+    await chatPage.goto(page.url(), { waitUntil: 'networkidle' });
+    await expect.poll(() => replayFinished).toBe(true);
+    expect(errors, 'Resume stream browser errors').toEqual([]);
+    await expect(chatPage.getByLabel('Chat status: Ready'), 'Resumed history reaches Ready').toBeVisible();
+    await expect(chatPage.getByText('Recovered detail. '.repeat(100).trim(), { exact: true })).toBeVisible();
+    await chatPage.getByRole('textbox', { name: 'Message the agent', exact: true }).fill('Continue the recovered conversation.');
+    await chatPage.getByRole('button', { name: 'Send message', exact: true }).click();
+    await expect.poll(() => requests).toBe(1);
+    expect(errors, 'New turn browser errors').toEqual([]);
+    await expect(chatPage.getByLabel('Chat status: Ready'), 'New turn reaches Ready').toBeVisible();
+    await expect(chatPage.getByText('Continued detail. '.repeat(120).trim(), { exact: true })).toBeVisible();
+    expect(acknowledgements).toBe(1);
+    expect(errors).toEqual([]);
+  } finally {
+    await chatPage.close();
+  }
+}
+
 async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<void> {
   const compactPage = await page.context().newPage();
   let workspaceId: string | undefined;
@@ -860,11 +970,24 @@ async function verifyCompactChatRecovery(page: Page, baseUrl: string): Promise<v
     await expect.poll(() => modelRequests).toBe(1);
     deliverChunk?.({ type: 'tool-input-start', toolCallId: 'compact-tool', toolName: 'codemode' });
     await expect(compactPage.getByRole('status').filter({ hasText: /^Preparing code…$/ })).toBeVisible();
+    await compactPage.screenshot({ path: '/tmp/agent-studio-tool-timeline.png' });
+    await compactPage.getByLabel('codemode: Preparing', { exact: true }).click();
     deliverChunk?.({ type: 'tool-input-available', toolCallId: 'compact-tool', toolName: 'codemode', input: { code: 'return 1;' } });
     await expect(compactPage.getByRole('status').filter({ hasText: /^Running code…$/ })).toBeVisible();
+    await expect(compactPage.getByText('return 1;', { exact: true })).toBeVisible();
     await compactPage.screenshot({ path: '/tmp/agent-studio-chat-progress.png' });
     deliverChunk?.({ type: 'tool-output-available', toolCallId: 'compact-tool', output: { result: 1 } });
-    await expect(compactPage.getByText('Code run finished', { exact: true })).toBeVisible();
+    await expect(compactPage.getByLabel('codemode: Done', { exact: true })).toBeVisible();
+    await expect(compactPage.getByText('{ "result": 1 }', { exact: true })).toBeVisible();
+    deliverChunk?.({ type: 'tool-input-available', toolCallId: 'failed-read', toolName: 'read_file', input: { name: 'missing.txt' } });
+    deliverChunk?.({ type: 'tool-output-error', toolCallId: 'failed-read', errorText: 'Synthetic file unavailable' });
+    await expect(compactPage.getByLabel('read_file: Failed', { exact: true })).toBeVisible();
+    deliverChunk?.({ type: 'tool-input-available', toolCallId: 'recovered-read', toolName: 'read_file', input: { name: 'result.txt' } });
+    deliverChunk?.({ type: 'tool-output-available', toolCallId: 'recovered-read', output: 'Recovered synthetic result' });
+    await compactPage.getByLabel('read_file: Done', { exact: true }).click();
+    await expect(compactPage.getByText('Recovered synthetic result', { exact: true })).toBeVisible();
+    await expect(compactPage.getByRole('alert')).toHaveCount(0);
+    await expect(compactPage.getByText('A tool attempt failed. The agent continued with other tools.', { exact: true })).toBeVisible();
     // The SDK event reaches the real browser renewal caller; only its HTTP
     // response is substituted here. Backend tests cover signed credential acceptance.
     const renewalRequestId = crypto.randomUUID();
@@ -934,6 +1057,7 @@ async function runAcceptance(baseUrl: string, headed: boolean): Promise<void> {
 
     await verifyConcurrentLayoutEdits(page, baseUrl, workspaceId);
     await verifyContextualRetry(page);
+    await verifyResumedChatHistory(page);
     await verifyCompactChatRecovery(page, baseUrl);
     await page.bringToFront();
     await verifyToolbarAtCanvasEdges(page);

@@ -1,10 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import type { UIMessage } from 'ai';
-import { extractMessageText, getContextualStatusLabel } from './messages';
+import { extractMessageText, getContextualStatusLabel, getToolNotices } from './messages';
 
 function textMessage(text: string): UIMessage {
   return { id: 'm', role: 'assistant', parts: [{ type: 'text', text }] };
 }
+
+describe('tool attempt notices', () => {
+  it('does not treat prior success or a final apology as recovery from a later failed attempt', () => {
+    expect(getToolNotices({ id: 'failure', role: 'assistant', parts: [
+      { type: 'tool-write_file', toolCallId: 'saved', state: 'output-available', input: {}, output: {} },
+      { type: 'tool-codemode', toolCallId: 'failed', state: 'output-error', input: {}, errorText: 'hidden' },
+      { type: 'text', text: 'I could not finish.' },
+    ] })).toEqual([{ kind: 'error', message: 'A tool attempt failed. Review the response and any files it produced.' }]);
+  });
+
+  it('reports continuation during a later tool attempt without claiming success', () => {
+    expect(getToolNotices({ id: 'continuing', role: 'assistant', parts: [
+      { type: 'tool-codemode', toolCallId: 'failed', state: 'output-error', input: {}, errorText: 'hidden' },
+      { type: 'tool-codemode', toolCallId: 'next', state: 'input-streaming', input: {} },
+    ] })).toEqual([{ kind: 'continued', message: 'A tool attempt failed. The agent continued with other tools.' }]);
+  });
+});
 
 describe('extractMessageText', () => {
   it('joins text parts', () => {

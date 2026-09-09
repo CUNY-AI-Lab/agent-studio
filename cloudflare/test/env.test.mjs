@@ -18,7 +18,7 @@ const DEPLOYED = {
   CAIL_IDENTITY_ISSUER: CAIL_CANONICAL_ISSUER,
   CAIL_IDENTITY_JWKS: identityIssuer.jwksJson,
   CAIL_API_BASE: 'https://model-api.example.edu',
-  CAIL_MODEL: '@cf/zai-org/glm-5.2',
+  CAIL_MODEL: 'glm-5.2',
   GATEWAY: { fetch() {} },
   CAIL_CANONICAL_ORIGIN: 'https://tools.example.edu',
   CAIL_BASE_PATH: '/agent-studio',

@@ -673,7 +673,7 @@ test('chat admission aborts a delayed model catalog before model dispatch', asyn
         description: '',
         createdAt: '',
         updatedAt: '',
-        model: '@cf/model-a',
+        model: 'model-a',
       };
     },
     requireSessionId() {
@@ -905,7 +905,7 @@ test('chat refuses a named non-function-capable model before inference', async (
         description: '',
         createdAt: '',
         updatedAt: '',
-        model: '@cf/no-tools/model',
+        model: 'model',
       };
     },
     requireSessionId() {
@@ -924,7 +924,7 @@ test('chat refuses a named non-function-capable model before inference', async (
           }
           return Response.json({
             object: 'list',
-            data: [{ id: '@cf/no-tools/model', capabilities: ['text-generation'] }],
+            data: [{ id: 'model', capabilities: ['text-generation'] }],
           });
         },
       },
@@ -949,7 +949,7 @@ test('chat caches function capability per model and revalidates a changed model'
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const { tool } = await import('ai');
   const { z } = await import('zod');
-  let workspaceModel = '@cf/model-a';
+  let workspaceModel = 'model-a';
   let catalogCalls = 0;
   let inferenceCalls = 0;
   const gateway = {
@@ -960,8 +960,8 @@ test('chat caches function capability per model and revalidates a changed model'
         return Response.json({
           object: 'list',
           data: [
-            { id: '@cf/model-a', capabilities: ['text-generation', 'function-calling'] },
-            { id: '@cf/model-b', capabilities: ['text-generation', 'function-calling'] },
+            { id: 'model-a', capabilities: ['text-generation', 'function-calling'] },
+            { id: 'model-b', capabilities: ['text-generation', 'function-calling'] },
           ],
         });
       }
@@ -1020,7 +1020,7 @@ test('chat caches function capability per model and revalidates a changed model'
   assert.equal(catalogCalls, 1, 'the same model should use the warm capability proof');
   assert.equal(inferenceCalls, 2, 'the second turn should still make one inference request');
 
-  workspaceModel = '@cf/model-b';
+  workspaceModel = 'model-b';
   await (await WorkspaceAgent.prototype.onChatMessage.call(agent, undefined, { requestId: 'cache-3' })).text();
   assert.equal(catalogCalls, 2, 'a changed model must be validated once');
   assert.equal(inferenceCalls, 3, 'the changed model should still make one inference request');
@@ -1248,4 +1248,122 @@ test('a failed provider stream during tool arguments preserves instructions and 
     && message.tool_call_id === 'partial-code' && message.content.includes('interrupted')));
   assert.match(await responseBodies[1], /Recovered chart instructions/);
   assert.deepEqual(agent.messages[0], instructions);
+});
+
+test('repeated framework turns preserve corrections across Stop during a tool and an explicit resume', { timeout: 5_000 }, async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
+  const { tool } = await import('ai');
+  const { z } = await import('zod');
+  const { MockR2 } = await import('./helpers/env.mjs');
+  const { putWorkspace, getWorkspace } = await import('../src/lib/workspaces.ts');
+  const r2 = new MockR2();
+  const sessionId = 'a'.repeat(32);
+  let catalogCalls = 0;
+  const requests = [];
+  let toolStarted;
+  const toolEntered = new Promise((resolve) => { toolStarted = resolve; });
+  let toolSignal;
+  const gateway = {
+    async fetch(input, init) {
+      if (String(input).endsWith('/v1/models')) {
+        catalogCalls += 1;
+        return Response.json({ object: 'list', data: [{ id: DEFAULT_CAIL_MODEL, capabilities: ['text-generation', 'function-calling'] }] });
+      }
+      requests.push(JSON.parse(init.body));
+      const counting = requests.length === 1;
+      const correcting = requests.length === 3;
+      const callsTool = counting || correcting;
+      const reasoning = `Synthetic reasoning for inference ${requests.length}.`;
+      const delta = callsTool
+        ? { role: 'assistant', reasoning_content: reasoning,
+          tool_calls: [{ index: 0, id: counting ? 'survey-counts' : 'chart-revision', type: 'function',
+            function: { name: 'codemode', arguments: JSON.stringify({ code: counting ? 'count emotions' : 'revise chart' }) } }] }
+        : { role: 'assistant', reasoning_content: reasoning, content: `Completed turn ${requests.length}.` };
+      return new Response(
+        'data: ' + JSON.stringify({ id: 'survey-turn', choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n'
+        + 'data: ' + JSON.stringify({ id: 'survey-turn', choices: [{ index: 0, delta: {}, finish_reason: callsTool ? 'tool_calls' : 'stop' }] }) + '\n\n'
+        + 'data: [DONE]\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  };
+  const agent = await makeRealWorkspaceAgent(WorkspaceAgent);
+  Object.assign(agent, {
+    cailIdentityJwt: 'verified-jwt',
+    verifyCurrentGatewayCredential() { return { status: 'valid' }; },
+    async requestModelCredential() { return 'verified-jwt'; },
+    env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway, WORKSPACE_FILES: r2 },
+    buildHostTools() { return {}; },
+    buildModelTools() { return {}; },
+    createCodeModeTool() {
+      return tool({
+        inputSchema: z.object({ code: z.string() }),
+        execute: async (input, options) => {
+          if (input.code === 'count emotions') return { counts: { joy: 2, nervous: 1 }, total: 3 };
+          toolSignal = options.abortSignal;
+          toolStarted();
+          await new Promise((_resolve, reject) => {
+            options.abortSignal.addEventListener('abort', () => reject(options.abortSignal.reason), { once: true });
+          });
+          throw new Error('a cancelled tool must never complete');
+        },
+      });
+    },
+  });
+  const legacyWorkspace = {
+    id: 'workspace-1', name: 'Survey workspace', description: 'Retain this description',
+    createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString(),
+    model: '@cf/deepseek-ai/deepseek-v4-flash-0731',
+  };
+  await putWorkspace(agent.env, sessionId, legacyWorkspace);
+  await agent.syncWorkspace(legacyWorkspace, sessionId);
+  // SQLite persistence, credential refresh, and provider execution are deterministic adapters;
+  // submit, cancel, history repair, tool execution, and reply use the real SDK.
+  agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
+  const userMessages = [];
+  async function submit(id, text) {
+    const message = { id, role: 'user', parts: [{ type: 'text', text }] };
+    userMessages.push(message);
+    return agent.onMessage(testConnection(), JSON.stringify({
+      type: 'cf_agent_use_chat_request', id,
+      init: { method: 'POST', body: JSON.stringify({ messages: [...agent.messages, message] }) },
+    }));
+  }
+  await submit('initial-survey', 'Use the uploaded survey. Keep all original emotion labels in a count chart.');
+  const correction = submit('correct-chart', 'Combine capitalization variants, but keep anxious and nervous separate.');
+  await toolEntered;
+  await agent.onMessage(testConnection(), JSON.stringify({ type: 'cf_agent_chat_request_cancel', id: 'correct-chart' }));
+  await correction;
+  assert.equal(toolSignal.aborted, true);
+  assert.equal(requests.length, 3, 'Stop must prevent another inference after the cancelled tool');
+  assert.deepEqual(agent.messages.filter((message) => message.role === 'user'), userMessages);
+
+  await submit('resume-chart', 'Continue with my correction.');
+  assert.equal(requests.length, 4, 'resume must send exactly one new inference');
+  assert.ok(requests[3].messages.some((message) => message.role === 'tool'
+    && message.tool_call_id === 'chart-revision'));
+  await submit('explain-chart', 'Explain which labels were combined.');
+  assert.equal(requests.length, 5, 'the later follow-up must also send exactly one inference');
+  for (const message of userMessages) {
+    assert.ok(requests[4].messages.some((sent) => sent.role === 'user' && sent.content === message.parts[0].text));
+  }
+  assert.equal(catalogCalls, 1, 'the migrated selection gets one capability proof');
+  for (const request of requests) assert.equal(request.model, 'deepseek-v4-flash-0731');
+  const canonicalWorkspace = { ...legacyWorkspace, model: 'deepseek-v4-flash-0731' };
+  assert.deepEqual(await getWorkspace(agent.env, sessionId, legacyWorkspace.id), canonicalWorkspace);
+  assert.deepEqual(agent.state.workspace, canonicalWorkspace);
+  const finalMessages = requests[4].messages;
+  const historicalCalls = finalMessages.flatMap((message) => message.tool_calls ?? []);
+  assert.ok(historicalCalls.some((call) => call.id === 'survey-counts' && call.function.name === 'codemode'));
+  assert.ok(historicalCalls.some((call) => call.id === 'chart-revision' && call.function.name === 'codemode'));
+  const countsResult = finalMessages.find((message) => message.role === 'tool' && message.tool_call_id === 'survey-counts');
+  assert.deepEqual(JSON.parse(countsResult.content), { counts: { joy: 2, nervous: 1 }, total: 3 });
+  assert.ok(finalMessages.some((message) => message.role === 'tool' && message.tool_call_id === 'chart-revision'));
+  for (const inference of [1, 2, 3, 4]) {
+    assert.ok(finalMessages.some((message) => message.role === 'assistant'
+      && message.reasoning_content === `Synthetic reasoning for inference ${inference}.`));
+  }
+  assert.deepEqual(agent.messages.filter((message) => message.role === 'user'), userMessages);
+  assert.ok(agent.messages.at(-1).parts.some((part) => part.type === 'text' && part.text === 'Completed turn 5.'));
 });

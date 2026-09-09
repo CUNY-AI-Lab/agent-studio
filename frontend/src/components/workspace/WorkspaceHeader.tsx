@@ -1,6 +1,6 @@
 import { ArrowLeft, Download, Keyboard, MessageSquare, RotateCcw, Share2, Trash2 } from 'lucide-react';
 import { ThemeToggle } from '../ThemeToggle';
-import { buildModelPickerView, modelDisplayName, type ModelCatalog } from '../../api';
+import { buildModelPickerView, type ModelCatalog } from '../../api';
 
 /**
  * Workspace canvas header: editable title/description, tile/file counts,
@@ -106,7 +106,7 @@ export function WorkspaceHeader({
                 >
                   {view.unsupportedEffectiveModel ? (
                     <option value={view.unsupportedEffectiveModel} disabled>
-                      {modelDisplayName(view.unsupportedEffectiveModel)} (tools unavailable)
+                      {view.unsupportedEffectiveModel} (tools unavailable)
                     </option>
                   ) : null}
                   {view.recommended.map((option) => (

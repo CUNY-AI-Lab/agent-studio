@@ -1950,6 +1950,46 @@ kbd.ui-kbd {
   background: color-mix(in oklch, var(--accent-teal) 8%, var(--card));
   color: var(--rule-navy);
 }
+.chat-tool-call {
+  padding: 0;
+}
+.chat-tool-summary {
+  display: block;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 11px;
+  list-style-position: inside;
+}
+.chat-tool-call[open] > .chat-tool-summary {
+  border-bottom: 1px solid var(--border);
+}
+.chat-tool-details {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.chat-tool-details h4 {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.chat-tool-details pre {
+  max-height: 16rem;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 .chat-working {
   display: flex;

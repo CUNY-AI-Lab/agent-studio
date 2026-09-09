@@ -325,11 +325,8 @@ function WorkspaceShell({
 
   const chat = useAgentChat<WorkspaceState>({
     agent,
-    // Keep streamed message/data commits on browser-frame cadence. The
-    // installed AI SDK otherwise forwards every provider chunk synchronously;
-    // dense tool streams can re-enter React's message store while the Agent
-    // broadcasts the state produced by a tool.
-    experimental_throttle: 16,
+    // Coalesce render notifications while Markdown rendering commits the previous update.
+    experimental_throttle: 50,
     getInitialMessages: async () => workspace.messages,
     body: () => selectedPanelIds.size > 0
       ? { scopePanelIds: Array.from(selectedPanelIds) }
