@@ -8,14 +8,14 @@ const previous: WorkspaceRecord = {
   description: '',
   createdAt: '2026-08-23T00:00:00.000Z',
   updatedAt: '2026-08-23T00:00:00.000Z',
-  model: '@cf/openai/gpt-oss-20b',
+  model: 'gpt-oss-20b',
 };
 
 const next: WorkspaceRecord = {
   ...previous,
   name: 'Researching title ownership',
   description: 'A model-named workspace',
-  model: '@cf/zai-org/glm-5.2',
+  model: 'glm-5.2',
 };
 
 describe('reconcileWorkspaceDraft', () => {

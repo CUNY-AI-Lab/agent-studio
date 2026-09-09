@@ -26,11 +26,10 @@ import { CAIL_APP_SLUG } from './cail-identity';
 import { isAllowedCailModelId } from './workspace-validation';
 
 /**
- * Default model slug. CAIL policy is Workers AI catalog only — `@cf/...` ids
- * resolved by the AI Gateway. Ops can override via CAIL_MODEL, and an
+ * Canonical Gateway model ID. Ops can override via CAIL_MODEL, and an
  * individual workspace can persist its own model choice.
  */
-export const DEFAULT_CAIL_MODEL = '@cf/deepseek-ai/deepseek-v4-flash-0731';
+export const DEFAULT_CAIL_MODEL = 'deepseek-v4-flash-0731';
 
 export interface CailModelEnv {
   /**
@@ -121,7 +120,7 @@ export function createCailModel(options: CreateCailModelOptions): LanguageModel 
     throw new Error('Missing CAIL identity JWT; cannot authenticate the model call.');
   }
   if (options.model !== undefined && !isAllowedCailModelId(options.model)) {
-    throw new Error('Model id is outside the Cloudflare Workers AI catalog namespace.');
+    throw new Error('Model id must be a canonical Gateway model ID.');
   }
 
   // Trim all trailing slashes once so the provider's `/chat/completions`

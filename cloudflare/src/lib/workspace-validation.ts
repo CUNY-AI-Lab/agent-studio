@@ -1,9 +1,7 @@
 import { z } from 'zod';
 
-// Agent Studio's current CAIL gateway path is Cloudflare-native Workers AI.
-// Retired external-provider namespaces must not be persisted as workspace
-// overrides even if an old or misconfigured catalog happens to return them.
-export const CAIL_MODEL_ID_PATTERN = /^@cf\/[\w./-]+$/;
+// Gateway accepts prefix-free IDs, preserving the complete model variant.
+export const CAIL_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 const allowedModelIdSchema = z.string().max(200).regex(CAIL_MODEL_ID_PATTERN);
 

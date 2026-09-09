@@ -449,11 +449,6 @@ export async function fetchModels(): Promise<ModelCatalog> {
   return parseJson<ModelCatalog>(response);
 }
 
-/** Strip the `@cf/vendor/` prefix so the picker shows a short model name. */
-export function modelDisplayName(id: string): string {
-  return id.split('/').pop() || id;
-}
-
 export interface ModelOption {
   id: string;
   /** Visible option text (short name, ' (default)', ' — retiring <date>'). */
@@ -476,7 +471,7 @@ export interface ModelPickerView {
 }
 
 function buildOption(entry: ModelCatalogEntry, catalogDefault: string): ModelOption {
-  const base = entry.name?.trim() ? entry.name.trim() : modelDisplayName(entry.id);
+  const base = entry.name?.trim() ? entry.name.trim() : entry.id;
   let label = base;
   if (entry.id === catalogDefault) {
     label += ' (default)';

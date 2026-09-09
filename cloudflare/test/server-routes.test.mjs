@@ -364,24 +364,32 @@ test('no cookie -> a signed session cookie is issued and reused', async () => {
   assert.equal((await second.json()).sessionId, sessionId);
 });
 
-test('new workspaces store the default model and preserve explicit choices', async () => {
+test('new workspaces store the default model and preserve catalog-validated choices', async () => {
   const { env } = makeEnv();
-  const { session } = await openSession(app, env);
-  const created = await createWorkspace(session, 'Default model workspace');
-  assert.equal(created.model, DEFAULT_CAIL_MODEL);
-
-  const explicitModel = '@cf/zai-org/glm-5.2';
-  const patched = await session.request(
-    app,
-    `/api/workspaces/${created.id}`,
-    jsonInit('PATCH', { model: explicitModel }),
-  );
+  const { token, gatewayToken, jwks } = await makeRouteCredential();
+  configureRequiredIdentity(env, jwks);
+  const headers = keyringHeaders(token, gatewayToken);
+  env.GATEWAY = { fetch: async () => Response.json({ object: 'list', data: [
+    { id: 'glm-5.2', capabilities: ['text-generation', 'function-calling'] },
+  ] }) };
+  const session = new Session(env);
+  await session.request(app, '/api/session', { headers });
+  const created = await session.request(app, '/api/workspaces', {
+    ...jsonInit('POST', { name: 'Default model workspace' }), headers,
+  });
+  const workspace = (await created.json()).workspace;
+  assert.equal(workspace.model, DEFAULT_CAIL_MODEL);
+  const patched = await session.request(app, `/api/workspaces/${workspace.id}`, {
+    ...jsonInit('PATCH', { model: 'glm-5.2' }), headers,
+  });
   assert.equal(patched.status, 200);
-  assert.equal((await patched.json()).workspace.model, explicitModel);
-
-  const reloaded = await session.request(app, `/api/workspaces/${created.id}`);
-  assert.equal(reloaded.status, 200);
-  assert.equal((await reloaded.json()).workspace.model, explicitModel);
+  assert.equal((await patched.json()).workspace.model, 'glm-5.2');
+  const rejected = await session.request(app, `/api/workspaces/${workspace.id}`, {
+    ...jsonInit('PATCH', { model: 'unknown-model' }), headers,
+  });
+  assert.equal(rejected.status, 400);
+  const reloaded = await session.request(app, `/api/workspaces/${workspace.id}`, { headers });
+  assert.equal((await reloaded.json()).workspace.model, 'glm-5.2');
 });
 
 test('concurrent anonymous reads issue independent cookies and reject a mixed CSRF session', async () => {
@@ -1935,7 +1943,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
   const { env } = makeEnv();
   const { token, gatewayToken, jwks } = await makeRouteCredential();
   configureRequiredIdentity(env, jwks);
-  env.CAIL_MODEL = '@cf/zai-org/glm-5.2';
+  env.CAIL_MODEL = 'glm-5.2';
   const calls = [];
   env.GATEWAY = {
     async fetch(input, init) {
@@ -1943,7 +1951,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
       return Response.json({
         object: 'list',
         data: [{
-          id: '@cf/zai-org/glm-5.2',
+          id: 'glm-5.2',
           object: 'model',
           capabilities: ['text-generation', 'function-calling'],
         }],
@@ -1957,7 +1965,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
   assert.equal(res.status, 200);
   assert.deepEqual(await res.json(), {
     models: [{
-      id: '@cf/zai-org/glm-5.2',
+      id: 'glm-5.2',
       tier: 'recommended',
       status: 'active',
       sunset: null,
@@ -1966,7 +1974,7 @@ test('/api/models uses the verified gateway leg and direct service binding', asy
       name: null,
       description: null,
     }],
-    default: '@cf/zai-org/glm-5.2',
+    default: 'glm-5.2',
   });
   assert.equal(calls.length, 1);
   assert.equal(new Headers(calls[0].init.headers).get('authorization'), `Bearer ${gatewayToken}`);
@@ -1984,7 +1992,7 @@ test('/api/models uses the configured default only when it is function-calling c
       return Response.json({
         object: 'list',
         data: [
-          { id: '@cf/aisingapore/gemma-sea-lion-v4-27b-it', object: 'model' },
+          { id: 'gemma-sea-lion-v4-27b-it', object: 'model' },
           {
             id: DEFAULT_CAIL_MODEL,
             object: 'model',
@@ -2012,7 +2020,7 @@ test('/api/models fails closed when the configured default is absent or lacks fu
   configureRequiredIdentity(env, jwks);
   const session = new Session(env);
   for (const data of [
-    [{ id: '@cf/other/model', object: 'model', capabilities: ['text-generation', 'function-calling'] }],
+    [{ id: 'model', object: 'model', capabilities: ['text-generation', 'function-calling'] }],
     [{ id: DEFAULT_CAIL_MODEL, object: 'model', capabilities: ['text-generation'] }],
   ]) {
     env.GATEWAY = { fetch: async () => Response.json({ object: 'list', data }) };
@@ -2119,6 +2127,7 @@ test('import: a valid bundle creates a workspace and its files (round-trip)', as
     workspace: {
       id: 'ignored',
       name: 'Roundtrip',
+      model: '@cf/deepseek-ai/deepseek-v4-flash-0731',
       description: 'imported desc',
       createdAt: new Date(0).toISOString(),
       updatedAt: new Date(0).toISOString(),
@@ -2134,6 +2143,7 @@ test('import: a valid bundle creates a workspace and its files (round-trip)', as
   assert.equal(res.status, 201);
   const body = await res.json();
   assert.equal(body.workspace.name, 'Roundtrip');
+  assert.equal(body.workspace.model, 'deepseek-v4-flash-0731');
   assert.match(body.workspaceId, /\S/);
 
   // File landed in the agent, and the workspace is listable.

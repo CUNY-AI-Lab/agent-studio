@@ -46,7 +46,7 @@ jobs:
           umask 077
           cat > cloudflare/.dev.vars <<'EOF'
           SESSION_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-          CAIL_MODEL=@cf/zai-org/glm-5.2
+          CAIL_MODEL=glm-5.2
           CAIL_REQUIRE_IDENTITY=false
           CAIL_BASE_PATH=/agent-studio
           CAIL_IDENTITY_JWKS=
@@ -191,6 +191,10 @@ jobs:
               | select(.type == "plain_text"
                 and .name == "CAIL_API_BASE"
                 and .text == "https://tools.ailab.gc.cuny.edu")] | length) == 1 and
+            ([.resources.bindings[]?
+              | select(.type == "plain_text"
+                and .name == "CAIL_MODEL"
+                and .text == "deepseek-v4-flash-0731")] | length) == 1 and
             ([.resources.bindings[]?
               | select(.type == "plain_text"
                 and .name == "CAIL_CANONICAL_ORIGIN"

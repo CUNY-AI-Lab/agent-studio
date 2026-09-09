@@ -351,7 +351,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
       if (String(input) === 'https://cail.test/v1/models') {
         return Response.json({
           object: 'list',
-          data: [{ id: '@cf/zai-org/glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
+          data: [{ id: 'glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
         });
       }
       const headers = new Headers(init?.headers);
@@ -418,7 +418,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     description: '',
     createdAt: new Date(0).toISOString(),
     updatedAt: new Date(0).toISOString(),
-    model: '@cf/zai-org/glm-5.2',
+    model: 'glm-5.2',
   });
   agent.requireSessionId = () => sessionId;
   agent.messages = [{
@@ -445,7 +445,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     app: 'agent-studio',
     credentials: 'omit',
     redirect: 'manual',
-    model: '@cf/zai-org/glm-5.2',
+    model: 'glm-5.2',
   });
 });
 
@@ -505,7 +505,7 @@ test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forw
         if (String(input) === 'https://cail.test/v1/models') {
           return Response.json({
             object: 'list',
-            data: [{ id: '@cf/zai-org/glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
+            data: [{ id: 'glm-5.2', capabilities: ['text-generation', 'function-calling'] }],
           });
         }
         const headers = new Headers(init?.headers);
@@ -533,7 +533,7 @@ test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forw
 
   agent.requireWorkspace = () => ({
     id: 'workspace-1',
-    model: '@cf/zai-org/glm-5.2',
+    model: 'glm-5.2',
   });
   agent.requireSessionId = () => sessionId;
   agent.messages = [{

@@ -19,11 +19,10 @@ const workspaceRecordSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   galleryId: z.string().optional(),
-  // Optional per-workspace model override. Export serializes the whole record
-  // verbatim, so a workspace with a model override would otherwise fail the
-  // .strict() parse on re-import. Same validation the PATCH route uses
-  // (single source of truth for the pattern).
-  model: z.string().regex(CAIL_MODEL_ID_PATTERN).max(200).optional(),
+  // Old exports retain their selection until the verified migration boundary.
+  model: z.string().max(200).refine((id) =>
+    CAIL_MODEL_ID_PATTERN.test(id) || /^@cf\/[\w./-]+$/.test(id),
+  ).optional(),
 }).strict();
 
 // AS-2-2 drift guard (compile-time). `workspaceRecordSchema` above is a
