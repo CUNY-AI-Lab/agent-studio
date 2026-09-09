@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useState } from 'react';
 import { PublishDialog } from './PublishDialog';
 
 const baseProps = {
@@ -17,6 +18,26 @@ const baseProps = {
 };
 
 describe('PublishDialog', () => {
+  it('preserves the chosen title while typing and publishing a description through parent rerenders', async () => {
+    const onPublish = vi.fn();
+    const user = userEvent.setup();
+    function EditableDialog() {
+      const [open, setOpen] = useState(true);
+      const [title, setTitle] = useState('Chosen title');
+      const [description, setDescription] = useState('');
+      return <PublishDialog {...baseProps} open={open} title={title} description={description}
+        onTitleChange={setTitle} onDescriptionChange={setDescription}
+        onClose={() => setOpen(false)} onPublish={() => onPublish({ title, description })} />;
+    }
+    render(<EditableDialog />);
+    await user.type(screen.getByLabelText('Description'), 'Shared research');
+    expect(screen.getByLabelText('Description')).toHaveFocus();
+    expect(screen.getByLabelText('Title')).toHaveValue('Chosen title');
+    expect(screen.getByLabelText('Description')).toHaveValue('Shared research');
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    expect(onPublish).toHaveBeenCalledWith({ title: 'Chosen title', description: 'Shared research' });
+  });
+
   it('renders nothing when closed', () => {
     const { container } = render(<PublishDialog {...baseProps} open={false} />);
     expect(container).toBeEmptyDOMElement();
@@ -76,5 +97,23 @@ describe('PublishDialog', () => {
     render(<PublishDialog {...baseProps} onClose={onClose} />);
     await user.keyboard('{Escape}');
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('retains field focus across updates while Escape uses the current publishing guard and close callback', async () => {
+    const firstClose = vi.fn();
+    const latestClose = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(<PublishDialog {...baseProps} onClose={firstClose} />);
+    await user.click(screen.getByLabelText('Description'));
+    rerender(<PublishDialog {...baseProps} publishing onClose={latestClose} />);
+    expect(screen.getByLabelText('Description')).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(firstClose).not.toHaveBeenCalled();
+    expect(latestClose).not.toHaveBeenCalled();
+    rerender(<PublishDialog {...baseProps} publishing={false} onClose={latestClose} />);
+    expect(screen.getByLabelText('Description')).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(latestClose).toHaveBeenCalledOnce();
+    expect(firstClose).not.toHaveBeenCalled();
   });
 });
