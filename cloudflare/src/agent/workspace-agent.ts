@@ -18,7 +18,6 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
-  pruneMessages,
   stepCountIs,
   streamText,
   tool,
@@ -968,10 +967,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
               maxRetries: 0,
               abortSignal,
               system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),
-              messages: pruneMessages({
-                messages: modelMessages,
-                toolCalls: 'before-last-2-messages',
-              }),
+              messages: modelMessages,
               tools: { ...modelTools, codemode },
               stopWhen: stepCountIs(MODEL_TOOL_LOOP_STEPS),
               prepareStep: async ({ stepNumber }) => {

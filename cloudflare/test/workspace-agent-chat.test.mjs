@@ -1262,14 +1262,18 @@ test('repeated framework turns preserve corrections across Stop during a tool an
   const gateway = {
     async fetch(_input, init) {
       requests.push(JSON.parse(init.body));
-      const correcting = requests.length === 2;
-      const delta = correcting
-        ? { role: 'assistant', tool_calls: [{ index: 0, id: 'chart-revision', type: 'function',
-          function: { name: 'codemode', arguments: JSON.stringify({ code: 'revise chart' }) } }] }
-        : { role: 'assistant', content: `Completed turn ${requests.length}.` };
+      const counting = requests.length === 1;
+      const correcting = requests.length === 3;
+      const callsTool = counting || correcting;
+      const reasoning = `Synthetic reasoning for inference ${requests.length}.`;
+      const delta = callsTool
+        ? { role: 'assistant', reasoning_content: reasoning,
+          tool_calls: [{ index: 0, id: counting ? 'survey-counts' : 'chart-revision', type: 'function',
+            function: { name: 'codemode', arguments: JSON.stringify({ code: counting ? 'count emotions' : 'revise chart' }) } }] }
+        : { role: 'assistant', reasoning_content: reasoning, content: `Completed turn ${requests.length}.` };
       return new Response(
         'data: ' + JSON.stringify({ id: 'survey-turn', choices: [{ index: 0, delta, finish_reason: null }] }) + '\n\n'
-        + 'data: ' + JSON.stringify({ id: 'survey-turn', choices: [{ index: 0, delta: {}, finish_reason: correcting ? 'tool_calls' : 'stop' }] }) + '\n\n'
+        + 'data: ' + JSON.stringify({ id: 'survey-turn', choices: [{ index: 0, delta: {}, finish_reason: callsTool ? 'tool_calls' : 'stop' }] }) + '\n\n'
         + 'data: [DONE]\n\n',
         { headers: { 'content-type': 'text/event-stream' } },
       );
@@ -1281,6 +1285,7 @@ test('repeated framework turns preserve corrections across Stop during a tool an
     requireSessionId() { return 'session-1'; },
     cailIdentityJwt: 'verified-jwt',
     verifyCurrentGatewayCredential() { return { status: 'valid' }; },
+    async requestModelCredential() { return 'verified-jwt'; },
     functionCallingModelId: DEFAULT_CAIL_MODEL,
     env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
     buildHostTools() { return {}; },
@@ -1288,7 +1293,8 @@ test('repeated framework turns preserve corrections across Stop during a tool an
     createCodeModeTool() {
       return tool({
         inputSchema: z.object({ code: z.string() }),
-        execute: async (_input, options) => {
+        execute: async (input, options) => {
+          if (input.code === 'count emotions') return { counts: { joy: 2, nervous: 1 }, total: 3 };
           toolSignal = options.abortSignal;
           toolStarted();
           await new Promise((_resolve, reject) => {
@@ -1299,7 +1305,7 @@ test('repeated framework turns preserve corrections across Stop during a tool an
       });
     },
   });
-  // SQLite persistence and provider execution are deterministic adapters;
+  // SQLite persistence, credential refresh, and provider execution are deterministic adapters;
   // submit, cancel, history repair, tool execution, and reply use the real SDK.
   agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
   const userMessages = [];
@@ -1317,18 +1323,29 @@ test('repeated framework turns preserve corrections across Stop during a tool an
   await agent.onMessage(testConnection(), JSON.stringify({ type: 'cf_agent_chat_request_cancel', id: 'correct-chart' }));
   await correction;
   assert.equal(toolSignal.aborted, true);
-  assert.equal(requests.length, 2, 'Stop must prevent another inference after the cancelled tool');
+  assert.equal(requests.length, 3, 'Stop must prevent another inference after the cancelled tool');
   assert.deepEqual(agent.messages.filter((message) => message.role === 'user'), userMessages);
 
   await submit('resume-chart', 'Continue with my correction.');
-  assert.equal(requests.length, 3, 'resume must send exactly one new inference');
-  assert.ok(requests[2].messages.some((message) => message.role === 'tool'
+  assert.equal(requests.length, 4, 'resume must send exactly one new inference');
+  assert.ok(requests[3].messages.some((message) => message.role === 'tool'
     && message.tool_call_id === 'chart-revision'));
   await submit('explain-chart', 'Explain which labels were combined.');
-  assert.equal(requests.length, 4, 'the later follow-up must also send exactly one inference');
+  assert.equal(requests.length, 5, 'the later follow-up must also send exactly one inference');
   for (const message of userMessages) {
-    assert.ok(requests[3].messages.some((sent) => sent.role === 'user' && sent.content === message.parts[0].text));
+    assert.ok(requests[4].messages.some((sent) => sent.role === 'user' && sent.content === message.parts[0].text));
+  }
+  const finalMessages = requests[4].messages;
+  const historicalCalls = finalMessages.flatMap((message) => message.tool_calls ?? []);
+  assert.ok(historicalCalls.some((call) => call.id === 'survey-counts' && call.function.name === 'codemode'));
+  assert.ok(historicalCalls.some((call) => call.id === 'chart-revision' && call.function.name === 'codemode'));
+  const countsResult = finalMessages.find((message) => message.role === 'tool' && message.tool_call_id === 'survey-counts');
+  assert.deepEqual(JSON.parse(countsResult.content), { counts: { joy: 2, nervous: 1 }, total: 3 });
+  assert.ok(finalMessages.some((message) => message.role === 'tool' && message.tool_call_id === 'chart-revision'));
+  for (const inference of [1, 2, 3, 4]) {
+    assert.ok(finalMessages.some((message) => message.role === 'assistant'
+      && message.reasoning_content === `Synthetic reasoning for inference ${inference}.`));
   }
   assert.deepEqual(agent.messages.filter((message) => message.role === 'user'), userMessages);
-  assert.ok(agent.messages.at(-1).parts.some((part) => part.type === 'text' && part.text === 'Completed turn 4.'));
+  assert.ok(agent.messages.at(-1).parts.some((part) => part.type === 'text' && part.text === 'Completed turn 5.'));
 });

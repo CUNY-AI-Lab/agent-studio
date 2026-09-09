@@ -97,6 +97,11 @@ challenge.
   configured; host-side PDF, XLSX, and DOCX tools; and the runtime research
   skill documents.
 
+Later chat turns retain the stored SDK transcript, including tool calls,
+results, and reasoning. Agent Studio does not currently summarize older turns
+to fit a model's context window; the SDK's oversized-message storage protection
+is separate from conversation compaction.
+
 The interaction and state rules for tiles, associations, titles, downloads, and
 the unbounded canvas live in [Agent Studio Canvas Model](./CANVAS-DESIGN.md).
 Keyboard and assistive-technology behavior lives in
