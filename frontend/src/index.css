@@ -998,6 +998,10 @@ kbd.ui-kbd {
 
 .canvas-hint {
   animation: hint-fade-in 0.3s ease-out;
+  pointer-events: none;
+}
+.canvas-hint button {
+  pointer-events: auto;
 }
 @keyframes hint-fade-in {
   from { opacity: 0; transform: translate(-50%, -4px); }
