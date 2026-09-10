@@ -68,7 +68,7 @@ advertise text generation and function calling. The Gateway owns provider
 routing for each model; Agent Studio sends the selected canonical ID through
 its existing service binding and SDK transport.
 
-The production-configured default is `deepseek-v4-flash-0731`. A workspace
+The production-configured default is `deepseek-v4.1-flash`. A workspace
 retains its user's selected model; workspaces without a selection use the
 configured default.
 
