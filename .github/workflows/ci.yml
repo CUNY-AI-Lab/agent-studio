@@ -91,6 +91,22 @@ jobs:
             exit 1
           fi
 
+          # The browser acceptance starts its own Worker on this port next.
+          # Wrangler releases the port a moment after the wrapper exits, so
+          # wait until nothing answers before this step ends; otherwise the
+          # next Worker fails to bind and the acceptance would run against a
+          # Worker that is shutting down.
+          cleanup
+          worker_pid=''
+          for _ in $(seq 1 60); do
+            if ! curl --silent --output /dev/null http://127.0.0.1:8787/agent-studio/health; then
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo 'The smoke Worker did not release port 8787 within 30s' >&2
+          exit 1
+
       - name: Local Worker browser acceptance (integration, not E2E)
         run: bun run test:browser -- --no-build
 

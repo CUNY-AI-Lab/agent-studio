@@ -18,6 +18,7 @@
  */
 
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { connect } from 'node:net';
 import { dirname, resolve } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -34,6 +35,16 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_PORT = 8787;
 const HEALTH_TIMEOUT_MS = 30_000;
 const STATE_TIMEOUT_MS = 10_000;
+/**
+ * The resumed-history scenario throttles its page's CPU eight-fold on
+ * purpose, so its turns take as long as the throttled renderer needs rather
+ * than Playwright's default five seconds. Measured on an M-series laptop with
+ * the production build: the 100-chunk replay reached Ready 3.7s after the
+ * server finished at 16x, 10s at 24x and 16s at 32x. CI runners are slower
+ * than that laptop, so 8x there lands inside the same range. The bound is
+ * deliberately generous; the assertions it guards are unchanged.
+ */
+const THROTTLED_CHAT_TIMEOUT_MS = 60_000;
 
 type WorkspaceViewport = {
   x: number;
@@ -167,9 +178,10 @@ function workspaceSnapshot(payload: WorkspacePayload): WorkspaceSnapshot {
   };
 }
 
-async function waitForHealth(baseUrl: string): Promise<void> {
+async function waitForHealth(baseUrl: string, worker?: LocalWorker): Promise<void> {
   const deadline = Date.now() + HEALTH_TIMEOUT_MS;
   while (Date.now() < deadline) {
+    if (worker?.exit) fail(`${describeWorkerExit(worker.exit)} before it became healthy`);
     try {
       const response = await fetch(appPath(baseUrl, 'health'), {
         signal: AbortSignal.timeout(2_000),
@@ -190,8 +202,42 @@ async function waitForHealth(baseUrl: string): Promise<void> {
   fail('Timed out waiting for local Worker health');
 }
 
-function startWorker(port: number): ChildProcess {
-  return spawn(
+type WorkerExit = { code: number | null; signal: NodeJS.Signals | null; addressInUse: boolean };
+
+type LocalWorker = {
+  process: ChildProcess;
+  /** Settled once the Worker process exits, whether or not that was expected. */
+  exited: Promise<WorkerExit>;
+  exit: WorkerExit | null;
+};
+
+/**
+ * Refuse to run against a stranger. If anything already listens on the port,
+ * the Worker this script is about to start cannot bind it, and a health check
+ * would silently pass against whatever is there instead.
+ */
+function assertPortFree(port: number): Promise<void> {
+  return new Promise((resolvePort, rejectPort) => {
+    const socket = connect({ host: '127.0.0.1', port });
+    socket.setTimeout(2_000);
+    socket.once('connect', () => {
+      socket.destroy();
+      rejectPort(new Error(`Port ${port} is already in use; the browser acceptance must start its own local Worker`));
+    });
+    socket.once('timeout', () => {
+      socket.destroy();
+      rejectPort(new Error(`Port ${port} did not answer within 2s; refusing to start a second local Worker on it`));
+    });
+    socket.once('error', (error: NodeJS.ErrnoException) => {
+      socket.destroy();
+      if (error.code === 'ECONNREFUSED') resolvePort();
+      else rejectPort(new Error(`Could not probe port ${port} before starting the local Worker (${error.code ?? 'unknown'})`));
+    });
+  });
+}
+
+function startWorker(port: number): LocalWorker {
+  const child = spawn(
     'bun',
     [
       'run',
@@ -205,25 +251,48 @@ function startWorker(port: number): ChildProcess {
     {
       cwd: REPO_ROOT,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', 'ignore', 'pipe'],
     },
   );
+  // Keep only the bind-failure signal from Wrangler's stderr; everything else
+  // stays out of the acceptance output.
+  let addressInUse = false;
+  child.stderr?.on('data', (chunk: Buffer) => {
+    if (chunk.toString().includes('Address already in use')) addressInUse = true;
+  });
+  const worker: LocalWorker = {
+    process: child,
+    exit: null,
+    exited: new Promise((resolveExit) => {
+      child.once('exit', (code, signal) => {
+        worker.exit = { code, signal, addressInUse };
+        resolveExit(worker.exit);
+      });
+    }),
+  };
+  return worker;
 }
 
-async function stopWorker(worker: ChildProcess | undefined): Promise<void> {
-  if (!worker?.pid || worker.exitCode !== null) return;
+function describeWorkerExit(exit: WorkerExit): string {
+  const reason = exit.addressInUse ? 'its port was already in use' : `code ${exit.code ?? 'null'}${exit.signal ? `, signal ${exit.signal}` : ''}`;
+  return `local Worker exited (${reason})`;
+}
+
+async function stopWorker(worker: LocalWorker | undefined): Promise<void> {
+  const child = worker?.process;
+  if (!child?.pid || child.exitCode !== null) return;
   try {
-    process.kill(-worker.pid, 'SIGTERM');
+    process.kill(-child.pid, 'SIGTERM');
   } catch {
     return;
   }
   await Promise.race([
-    new Promise<void>((resolveExit) => worker.once('exit', () => resolveExit())),
+    new Promise<void>((resolveExit) => child.once('exit', () => resolveExit())),
     delay(10_000),
   ]);
-  if (worker.exitCode === null) {
+  if (child.exitCode === null) {
     try {
-      process.kill(-worker.pid, 'SIGKILL');
+      process.kill(-child.pid, 'SIGKILL');
     } catch {
       // The process group may have exited between the checks.
     }
@@ -908,15 +977,15 @@ async function verifyResumedChatHistory(page: Page): Promise<void> {
   });
   try {
     await chatPage.goto(page.url(), { waitUntil: 'networkidle' });
-    await expect.poll(() => replayFinished).toBe(true);
+    await expect.poll(() => replayFinished, { timeout: THROTTLED_CHAT_TIMEOUT_MS }).toBe(true);
     expect(errors, 'Resume stream browser errors').toEqual([]);
-    await expect(chatPage.getByLabel('Chat status: Ready'), 'Resumed history reaches Ready').toBeVisible();
+    await expect(chatPage.getByLabel('Chat status: Ready'), 'Resumed history reaches Ready').toBeVisible({ timeout: THROTTLED_CHAT_TIMEOUT_MS });
     await expect(chatPage.getByText('Recovered detail. '.repeat(100).trim(), { exact: true })).toBeVisible();
     await chatPage.getByRole('textbox', { name: 'Message the agent', exact: true }).fill('Continue the recovered conversation.');
     await chatPage.getByRole('button', { name: 'Send message', exact: true }).click();
-    await expect.poll(() => requests).toBe(1);
+    await expect.poll(() => requests, { timeout: THROTTLED_CHAT_TIMEOUT_MS }).toBe(1);
     expect(errors, 'New turn browser errors').toEqual([]);
-    await expect(chatPage.getByLabel('Chat status: Ready'), 'New turn reaches Ready').toBeVisible();
+    await expect(chatPage.getByLabel('Chat status: Ready'), 'New turn reaches Ready').toBeVisible({ timeout: THROTTLED_CHAT_TIMEOUT_MS });
     await expect(chatPage.getByText('Continued detail. '.repeat(120).trim(), { exact: true })).toBeVisible();
     expect(acknowledgements).toBe(1);
     expect(errors).toEqual([]);
@@ -1313,7 +1382,7 @@ function parseArgs(argv: string[]): AcceptanceOptions {
 
 async function main(argv: string[]): Promise<number> {
   const options = parseArgs(argv);
-  let worker: ChildProcess | undefined;
+  let worker: LocalWorker | undefined;
   let baseUrl = options.url;
   try {
     if (!baseUrl) {
@@ -1321,11 +1390,17 @@ async function main(argv: string[]): Promise<number> {
         const build = spawnSync('bun', ['run', 'build'], { cwd: REPO_ROOT, stdio: 'inherit' });
         if (build.status !== 0) fail('Frontend build failed before browser acceptance');
       }
+      await assertPortFree(options.port);
       worker = startWorker(options.port);
       baseUrl = `http://127.0.0.1:${options.port}/agent-studio/`;
     }
-    await waitForHealth(baseUrl);
-    await runAcceptance(baseUrl, options.headed);
+    await waitForHealth(baseUrl, worker);
+    // A Worker that dies mid-run must name itself instead of surfacing as a
+    // page fetch failure somewhere in the journey.
+    const workerDied = worker
+      ? worker.exited.then((exit) => fail(`${describeWorkerExit(exit)} during the browser acceptance`))
+      : new Promise<never>(() => {});
+    await Promise.race([runAcceptance(baseUrl, options.headed), workerDied]);
     return 0;
   } catch (error) {
     const message = error instanceof Error ? sanitizeFailure(error) : 'unknown browser acceptance failure';

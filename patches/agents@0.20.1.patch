@@ -1,0 +1,29 @@
+diff --git a/dist/chat/react.js b/dist/chat/react.js
+index 51c24ed62b48d43a64a093b5d08e6ccb3aafcbf9..394a065e16b49549c9c084b6033e0a1d635edce4 100644
+--- a/dist/chat/react.js
++++ b/dist/chat/react.js
+@@ -1575,10 +1575,23 @@ function useAgentChat(options) {
+ 			})
+ 		}));
+ 	}, [chatMessages, clientToolResults]);
++	// CAIL patch (cloudflare/agents#2217): this cleanup ran a functional
++	// setState on every messages change even when nothing was stale. While a
++	// client falls behind a streamed turn, React cannot bail that update out
++	// eagerly, so each synchronous store commit ends with a pending update and
++	// React's nested-update counter climbs until it throws #185 and the turn
++	// errors. Dispatch only when a stale client tool result actually exists.
++	const clientToolResultsRef = useRef(clientToolResults);
++	clientToolResultsRef.current = clientToolResults;
+ 	useEffect(() => {
+ 		const currentToolCallIds = /* @__PURE__ */ new Set();
+ 		for (const msg of chatMessages) for (const part of msg.parts) if ("toolCallId" in part && part.toolCallId) currentToolCallIds.add(part.toolCallId);
+-		setClientToolResults((prev) => {
++		let hasStaleClientToolResult = false;
++		for (const toolCallId of clientToolResultsRef.current.keys()) if (!currentToolCallIds.has(toolCallId)) {
++			hasStaleClientToolResult = true;
++			break;
++		}
++		if (hasStaleClientToolResult) setClientToolResults((prev) => {
+ 			if (prev.size === 0) return prev;
+ 			let hasStaleEntries = false;
+ 			for (const toolCallId of prev.keys()) if (!currentToolCallIds.has(toolCallId)) {
