@@ -103,9 +103,16 @@ challenge.
   skill documents.
 
 Later chat turns retain the stored SDK transcript, including tool calls,
-results, and reasoning. Agent Studio does not currently summarize older turns
-to fit a model's context window; the SDK's oversized-message storage protection
-is separate from conversation compaction.
+results, and reasoning. When a model's catalog-reported context window requires
+it, Agent Studio may add a bounded, app-owned overlay that summarizes older
+settled turns while retaining the recent turns intact. The overlay is
+non-destructive: the full transcript and export remain unchanged, selected
+canvas-panel provenance is captured per turn, and a content fingerprint is
+verified before reuse. Compaction uses high-water/target-water hysteresis: it
+is triggered near 80% of the catalog context window and fits the bounded prompt
+near 60%, subject to explicit system/tool/output reserves. The SDK's
+oversized-message storage protection remains separate from this conversation
+compaction.
 
 The interaction and state rules for tiles, associations, titles, downloads, and
 the unbounded canvas live in [Agent Studio Canvas Model](./CANVAS-DESIGN.md).

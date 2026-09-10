@@ -1,5 +1,6 @@
 import {
   AIChatAgent,
+  type ChatResponseResult,
   type OnChatMessageOptions,
 } from '@cloudflare/ai-chat';
 import { callable, type Connection, type ConnectionContext } from 'agents';
@@ -21,6 +22,7 @@ import {
   stepCountIs,
   streamText,
   tool,
+  type ModelMessage,
   type StreamTextOnFinishCallback,
   type ToolSet,
   type UIMessage,
@@ -107,6 +109,21 @@ import { checkHeavyRpcLimit } from '../lib/rate-limit';
 import {
   isPlaceholderWorkspaceName,
 } from '../lib/workspace-title';
+import {
+  CHAT_COMPACTION_SCHEMA_VERSION,
+  ChatCompactionStore,
+  chatCompactionBudgets,
+  chatMessagesFingerprint,
+  estimateChatTokens,
+  panelPromptData,
+  planChatCompaction,
+  renderChatCompactionSummary,
+  sourceMessagesForChatCompaction,
+  CHAT_COMPACTION_PROVENANCE_LIMIT,
+  CHAT_COMPACTION_SOURCE_ID_LIMIT,
+  type ChatCompactionOverlay,
+  type ChatTurnScopeSnapshot,
+} from './chat-compaction';
 
 const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
 // A disconnected browser cannot acknowledge a credential request. Bound only
@@ -118,6 +135,9 @@ const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // tool plan cannot spend indefinitely. This is a loop safety boundary, not an
 // output/token cap.
 const MODEL_TOOL_LOOP_STEPS = 12;
+const CHAT_COMPACTION_TABLE = 'agent_studio_chat_compaction_overlay';
+const CHAT_TURN_CONTEXT_TABLE = 'agent_studio_chat_turn_context';
+const CHAT_COMPACTION_SUMMARY_MAX_CHARS = 24_000;
 
 const STATE_WRITE_METHODS = new Set(
   Object.entries(STATE_METHODS)
@@ -313,6 +333,10 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   private cailSubject: string | null = null;
   /** In-memory capability proof for the model used by the warm DO instance. */
   private functionCallingModelId: string | null = null;
+  /** Context window from the same model-catalog proof as the capability check. */
+  private functionCallingModelContextLength: number | null = null;
+  /** App-owned overlay metadata; canonical AIChatAgent messages remain intact. */
+  private chatCompactionStore: ChatCompactionStore | null = null;
   private pendingCredentialRefresh: {
     requestId: string;
     resolve: (identityJwt: string) => void;
@@ -356,6 +380,293 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (await this.ctx.storage.get(MIGRATION_FROZEN_KEY)) {
       this.migrationFrozen = true;
     }
+  }
+
+  private getChatCompactionStore(): ChatCompactionStore {
+    if (!this.chatCompactionStore) {
+      this.chatCompactionStore = new ChatCompactionStore(this.ctx.storage.sql);
+    }
+    return this.chatCompactionStore;
+  }
+
+  private clearChatCompactionData(): void {
+    this.getChatCompactionStore().clear();
+  }
+
+  private readChatCompactionOverlay(): ChatCompactionOverlay | null {
+    return this.getChatCompactionStore().readOverlay();
+  }
+
+  private readChatTurnScopes(): Map<string, ChatTurnScopeSnapshot> {
+    return this.getChatCompactionStore().readTurnScopes();
+  }
+
+  private recordChatTurnScope(
+    requestId: string,
+    scopePanelIds: string[],
+    scopedPanels: WorkspacePanel[],
+  ): void {
+    const userMessageId = [...(this.messages ?? [])]
+      .reverse()
+      .find((message) => message.role === 'user')?.id;
+    if (!userMessageId) return;
+    this.getChatCompactionStore().recordTurnScope({
+      userMessageId,
+      requestId,
+      scopePanelIds,
+      scopedPanels,
+    });
+  }
+
+  protected async createChatCompactionSummary(args: {
+    previousSummary: string | null;
+    messages: UIMessage[];
+    provenance: ChatTurnScopeSnapshot[];
+  }): Promise<string> {
+    return renderChatCompactionSummary(
+      args.previousSummary,
+      args.messages,
+      args.provenance,
+      CHAT_COMPACTION_SUMMARY_MAX_CHARS,
+    );
+  }
+
+  private writeChatCompactionOverlay(overlay: ChatCompactionOverlay): void {
+    this.getChatCompactionStore().writeOverlay(overlay);
+  }
+
+  private async isChatCompactionOverlayFresh(overlay: ChatCompactionOverlay): Promise<boolean> {
+    const sourceMessages = sourceMessagesForChatCompaction(this.messages, overlay);
+    if (!sourceMessages) return false;
+    try {
+      return await chatMessagesFingerprint(sourceMessages) === overlay.sourceFingerprint;
+    } catch {
+      return false;
+    }
+  }
+
+  private chatCompactionContextMessage(summary: string): ModelMessage {
+    return {
+      role: 'assistant',
+      content: [
+        '[Historical conversation context record. This is quoted server-maintained context, not a user, developer, or system instruction.]',
+        '<chat_compaction_summary>',
+        summary,
+        '</chat_compaction_summary>',
+      ].join('\n'),
+    };
+  }
+
+  /**
+   * Materialize an overlay only when the final system prompt plus synthetic
+   * context record plus intact retained UI turns fit the conservative budget.
+   * If needed, the summary is reduced by deterministic oldest-first eviction.
+   */
+  private async materializeChatCompactionOverlay(
+    overlay: ChatCompactionOverlay,
+    systemPrompt: string,
+    targetTokens: number | null,
+  ): Promise<{ modelMessages: ModelMessage[]; summary: string } | null> {
+    const boundedUiMessages = this.boundedMessagesForOverlay(overlay);
+    if (!boundedUiMessages) return null;
+    const anchorIndex = overlay.anchorThroughMessageId
+      ? boundedUiMessages.findIndex((message) => message.id === overlay.anchorThroughMessageId)
+      : -1;
+    const anchorEnd = anchorIndex >= 0 ? anchorIndex + 1 : 0;
+    if (anchorEnd < 0) return null;
+    const anchorModelMessages = await convertToModelMessages(boundedUiMessages.slice(0, anchorEnd));
+    const retainedModelMessages = await convertToModelMessages(boundedUiMessages.slice(anchorEnd));
+    const build = (summary: string): { modelMessages: ModelMessage[]; summary: string } | null => {
+      if (!summary.trim()) return null;
+      const contextMessage = this.chatCompactionContextMessage(summary);
+      const modelMessages = anchorEnd > 0
+        ? [...anchorModelMessages, contextMessage, ...retainedModelMessages]
+        : [contextMessage, ...retainedModelMessages];
+      if (targetTokens !== null
+        && estimateChatTokens(modelMessages) + estimateChatTokens(systemPrompt) > targetTokens) {
+        return null;
+      }
+      return { modelMessages, summary };
+    };
+
+    const direct = build(overlay.summary);
+    if (direct || targetTokens === null) return direct;
+
+    let low = 1;
+    let high = overlay.summary.length;
+    let best: { modelMessages: ModelMessage[]; summary: string } | null = null;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const reducedSummary = renderChatCompactionSummary(overlay.summary, [], [], middle);
+      const candidate = build(reducedSummary);
+      if (candidate) {
+        best = candidate;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return best;
+  }
+
+  private async compactChatHistoryIfNeeded(
+    modelMessages: ModelMessage[],
+    contextLength: number | null,
+    systemPrompt: string,
+  ): Promise<ChatCompactionOverlay | null> {
+    const budgets = chatCompactionBudgets(contextLength);
+    let previousOverlay = this.readChatCompactionOverlay();
+    if (previousOverlay && !(await this.isChatCompactionOverlayFresh(previousOverlay))) {
+      this.clearChatCompactionData();
+      previousOverlay = null;
+    }
+    if (!budgets) return previousOverlay;
+    const effectivePrompt = previousOverlay
+      ? await this.materializeChatCompactionOverlay(previousOverlay, systemPrompt, null)
+      : null;
+    if (previousOverlay && !effectivePrompt) return previousOverlay;
+    const estimatedTokens = effectivePrompt
+      ? estimateChatTokens(effectivePrompt.modelMessages) + estimateChatTokens(systemPrompt)
+      : estimateChatTokens(modelMessages) + estimateChatTokens(systemPrompt);
+    if (estimatedTokens <= budgets.triggerTokens) return previousOverlay;
+
+    const plan = planChatCompaction(this.messages, previousOverlay?.throughMessageId);
+    if (
+      !plan.candidateMessages.length
+      || !plan.throughMessageId
+      || plan.retainedTurns.at(-1)?.settled !== true
+    ) {
+      return previousOverlay;
+    }
+    const turnScopes = this.readChatTurnScopes();
+    const candidateUserIds = new Set(
+      plan.candidateMessages
+        .filter((message) => message.role === 'user')
+        .map((message) => message.id),
+    );
+    const addedProvenance = [...candidateUserIds]
+      .map((id) => turnScopes.get(id))
+      .filter((snapshot): snapshot is ChatTurnScopeSnapshot => Boolean(snapshot));
+    const summaryMessages = previousOverlay || !plan.anchorThroughMessageId
+      ? plan.candidateMessages
+      : plan.candidateMessages.slice(
+        plan.candidateMessages.findIndex((message) => message.id === plan.anchorThroughMessageId) + 1,
+      );
+    const previousSourceIds = previousOverlay?.sourceMessageIds ?? [];
+    const sourceMessageIds = [...new Set([
+      ...previousSourceIds,
+      ...plan.candidateMessages.map((message) => message.id),
+    ])].slice(-CHAT_COMPACTION_SOURCE_ID_LIMIT);
+    const panelProvenanceRows = [
+      ...(previousOverlay?.panelProvenance ?? []),
+      ...addedProvenance,
+    ].filter((snapshot, index, rows) => rows.findIndex((candidate) => candidate.userMessageId === snapshot.userMessageId) === index)
+      .slice(-CHAT_COMPACTION_PROVENANCE_LIMIT);
+    const summary = await this.createChatCompactionSummary({
+      previousSummary: previousOverlay?.summary ?? null,
+      messages: summaryMessages,
+      provenance: addedProvenance,
+    });
+    if (!summary.trim()) return previousOverlay;
+
+    const anchorMessageId = previousOverlay?.anchorMessageId ?? plan.anchorMessageId;
+    const anchorThroughMessageId = previousOverlay?.anchorThroughMessageId ?? plan.anchorThroughMessageId;
+    const sourceMessages = sourceMessagesForChatCompaction(this.messages, {
+      anchorMessageId,
+      anchorThroughMessageId,
+      throughMessageId: plan.throughMessageId,
+    });
+    if (!sourceMessages) return previousOverlay;
+    const sourceFingerprint = await chatMessagesFingerprint(sourceMessages);
+    const now = new Date().toISOString();
+    const overlay: ChatCompactionOverlay = {
+      version: CHAT_COMPACTION_SCHEMA_VERSION,
+      anchorMessageId,
+      anchorThroughMessageId,
+      throughMessageId: plan.throughMessageId,
+      sourceMessageIds,
+      sourceFingerprint,
+      summary,
+      panelProvenance: panelProvenanceRows,
+      modelContextLength: contextLength ?? 0,
+      triggerTokens: budgets.triggerTokens,
+      targetTokens: budgets.targetTokens,
+      createdAt: previousOverlay?.createdAt ?? now,
+      updatedAt: now,
+    };
+    const fitted = await this.materializeChatCompactionOverlay(overlay, systemPrompt, budgets.targetTokens);
+    if (!fitted) return previousOverlay;
+    overlay.summary = fitted.summary;
+    // The one-row upsert is the commit point. If summary generation or this
+    // write fails, the previous overlay and every canonical message remain.
+    this.writeChatCompactionOverlay(overlay);
+    return overlay;
+  }
+
+  private boundedMessagesForOverlay(overlay: ChatCompactionOverlay): UIMessage[] | null {
+    const throughIndex = this.messages.findIndex((message) => message.id === overlay.throughMessageId);
+    if (throughIndex < 0) return null;
+    const retained = this.messages.slice(throughIndex + 1);
+    if (!overlay.anchorMessageId || !overlay.anchorThroughMessageId) return retained;
+    const anchorIndex = this.messages.findIndex((message) => message.id === overlay.anchorMessageId);
+    const anchorThroughIndex = this.messages.findIndex((message) => message.id === overlay.anchorThroughMessageId);
+    if (anchorIndex < 0 || anchorThroughIndex < anchorIndex || anchorThroughIndex > throughIndex) return null;
+    return [...this.messages.slice(anchorIndex, anchorThroughIndex + 1), ...retained];
+  }
+
+  private async prepareChatPromptContext(args: {
+    modelMessages: ModelMessage[];
+    contextLength: number | null;
+    systemPrompt: string;
+  }): Promise<{ modelMessages: ModelMessage[]; systemPrompt: string }> {
+    let overlay = this.readChatCompactionOverlay();
+    if (overlay && !(await this.isChatCompactionOverlayFresh(overlay))) {
+      // A clear/import/replacement or an edited historical part changed the
+      // canonical transcript. Do not attach a stale summary to a new prompt.
+      this.getChatCompactionStore().clear();
+      overlay = null;
+    }
+    try {
+      if (this.getCompactionSqlAvailable()) {
+        this.activeMutations += 1;
+        try {
+          overlay = await this.compactChatHistoryIfNeeded(
+            args.modelMessages,
+            args.contextLength,
+            args.systemPrompt,
+          );
+        } finally {
+          this.activeMutations -= 1;
+        }
+      }
+    } catch {
+      // Keep the prior overlay and full transcript if compaction fails. The
+      // provider call may still fail on its own context limit, but chat state
+      // remains recoverable and unmodified.
+    }
+    const budgets = chatCompactionBudgets(args.contextLength);
+    if (!overlay || !budgets) return args;
+    try {
+      const prepared = await this.materializeChatCompactionOverlay(
+        overlay,
+        args.systemPrompt,
+        budgets.hardTokens,
+      );
+      // A retained tail that is itself too large cannot be made safe by this
+      // overlay. Leave the caller's original prompt untouched rather than
+      // silently sending an oversized compacted request.
+      if (!prepared) return args;
+      return {
+        modelMessages: prepared.modelMessages,
+        systemPrompt: args.systemPrompt,
+      };
+    } catch {
+      return args;
+    }
+  }
+
+  private getCompactionSqlAvailable(): boolean {
+    return this.getChatCompactionStore().available;
   }
 
   /**
@@ -639,6 +950,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       'cf_ai_chat_request_context',
       'cf_ai_chat_agent_tool_runs',
       'cf_ai_chat_agent_tool_milestones',
+      CHAT_COMPACTION_TABLE,
+      CHAT_TURN_CONTEXT_TABLE,
     ]) {
       this.ctx.storage.sql.exec(`DROP TABLE IF EXISTS ${table}`);
     }
@@ -849,6 +1162,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   protected override resetTurnState(): void {
     this.assertNotFrozen();
     super.resetTurnState();
+    this.clearChatCompactionData?.();
   }
 
   async persistMessages(
@@ -862,6 +1176,31 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       await super.persistMessages(messages, excludeBroadcastIds, options);
     } finally {
       this.activeMutations -= 1;
+    }
+  }
+
+  protected override async onChatResponse(result: ChatResponseResult): Promise<void> {
+    await super.onChatResponse(result);
+    if (result.status !== 'completed' || !this.functionCallingModelContextLength) return;
+
+    try {
+      const turns = planChatCompaction(this.messages).retainedTurns;
+      if (turns.at(-1)?.settled !== true) return;
+      const modelMessages = await convertToModelMessages(this.messages);
+      if (!this.getCompactionSqlAvailable()) return;
+      this.activeMutations += 1;
+      try {
+        await this.compactChatHistoryIfNeeded(
+          modelMessages,
+          this.functionCallingModelContextLength,
+          buildWorkspaceAgentSystemPrompt(),
+        );
+      } finally {
+        this.activeMutations -= 1;
+      }
+    } catch {
+      // This lifecycle hook is advisory. A failed summary or metadata write
+      // must never turn a completed assistant response into a chat failure.
     }
   }
 
@@ -920,28 +1259,23 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
           await this.syncWorkspace(migration.workspace, sessionId);
           modelName = migration.workspace.model ?? resolveCailModelName(this.env);
         }
-        requireFunctionCallingModel(models, modelName);
+        const modelInfo = requireFunctionCallingModel(models, modelName);
         this.functionCallingModelId = modelName;
+        this.functionCallingModelContextLength = modelInfo.contextLength;
       }
-      const scopedPanelIds = z.array(z.string()).safeParse(options?.body?.scopePanelIds).data ?? [];
+      const parsedScopedPanelIds = z.array(panelIdSchema).max(200).safeParse(options?.body?.scopePanelIds).data ?? [];
+      const scopedPanelIds = [...new Set(parsedScopedPanelIds)];
       const scopedPanels = scopedPanelIds
         .map((panelId) => this.state.panels.find((panel) => panel.id === panelId))
         .filter((panel): panel is WorkspacePanel => Boolean(panel));
+      if (!options?.continuation) {
+        this.recordChatTurnScope?.(options?.requestId ?? '', scopedPanelIds, scopedPanels);
+      }
       const scopedPanelPrompt = scopedPanels.length > 0
         ? [
           'The client scoped this turn to the selected canvas tiles listed below.',
           'Focus on these tiles unless the user explicitly broadens scope.',
-          ...scopedPanels.map((panel) => {
-            const details = [
-              `id=${panel.id}`,
-              `type=${panel.type}`,
-              panel.title ? `title=${panel.title}` : null,
-              'filePath' in panel ? `file=${panel.filePath}` : null,
-              'content' in panel && panel.content ? `content=${JSON.stringify(panel.content.slice(0, 240))}` : null,
-              'linkedTo' in panel && panel.linkedTo ? `linkedTo=${panel.linkedTo}` : null,
-            ].filter(Boolean).join(', ');
-            return `- ${details}`;
-          }),
+          ...scopedPanels.map((panel) => `- ${panelPromptData(panel)}`),
         ].join('\n')
         : null;
       const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, abortSignal);
@@ -954,7 +1288,17 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         model: modelName,
       });
 
-      const modelMessages = await convertToModelMessages(this.messages);
+      const baseSystemPrompt = buildWorkspaceAgentSystemPrompt(scopedPanelPrompt);
+      const fullModelMessages = await convertToModelMessages(this.messages);
+      const preparedPromptContext = await this.prepareChatPromptContext?.({
+        modelMessages: fullModelMessages,
+        contextLength: this.functionCallingModelContextLength,
+        systemPrompt: baseSystemPrompt,
+      });
+      const promptContext = preparedPromptContext
+        ?? { modelMessages: fullModelMessages, systemPrompt: baseSystemPrompt };
+      const modelMessages = promptContext.modelMessages;
+      const systemPrompt = promptContext.systemPrompt;
       throwIfAborted(abortSignal);
       const onStreamError: NonNullable<UIMessageStreamOptions<UIMessage>['onError']> = (error) => {
         const errorCandidate = error instanceof Error ? error : null;
@@ -974,14 +1318,23 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
               // possibly billed request after an uncertain response.
               maxRetries: 0,
               abortSignal,
-              system: buildWorkspaceAgentSystemPrompt(scopedPanelPrompt),
+              system: systemPrompt,
               messages: modelMessages,
               tools: { ...modelTools, codemode },
               stopWhen: stepCountIs(MODEL_TOOL_LOOP_STEPS),
-              prepareStep: async ({ stepNumber }) => {
+              prepareStep: async ({ stepNumber, messages }) => {
                 if (stepNumber === 0) return;
                 const nextIdentityJwt = await this.requestModelCredential(writer, abortSignal);
                 throwIfAborted(abortSignal);
+                // AI SDK v6 applies a prepareStep message override only to the
+                // current provider call. Rebuild the exact bounded prefix on
+                // every later step, then append only this step's fresh tool
+                // results/responses. This keeps the overlay deterministic and
+                // preserves whole recent assistant reasoning/tool groups.
+                const stablePrefix = modelMessages.length;
+                const stepMessages = messages.length >= stablePrefix
+                  ? [...modelMessages, ...messages.slice(stablePrefix)]
+                  : messages;
                 return {
                   model: createCailModel({
                     env: this.env,
@@ -989,6 +1342,8 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
                     sessionId: workspace.id,
                     model: modelName,
                   }),
+                  system: systemPrompt,
+                  messages: stepMessages,
                 };
               },
             });
