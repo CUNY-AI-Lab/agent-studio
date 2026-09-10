@@ -192,7 +192,7 @@ jobs:
             ([.resources.bindings[]?
               | select(.type == "plain_text"
                 and .name == "CAIL_MODEL"
-                and .text == "deepseek-v4-flash-0731")] | length) == 1 and
+                and .text == "deepseek-v4.1-flash")] | length) == 1 and
             ([.resources.bindings[]?
               | select(.type == "plain_text"
                 and .name == "CAIL_CANONICAL_ORIGIN"
