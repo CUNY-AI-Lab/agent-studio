@@ -28,7 +28,7 @@ export function KeyboardShortcutsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="ui-backdrop"
       onClick={onClose}
     >
       <div
@@ -37,38 +37,38 @@ export function KeyboardShortcutsDialog({
         aria-modal="true"
         aria-labelledby="keyboard-shortcuts-title"
         tabIndex={-1}
-        className="mx-4 w-full max-w-lg rounded-2xl bg-card p-6 shadow-xl focus:outline-none"
+        className="ui-surface ui-surface-lg ui-dialog rule-lead max-w-lg focus:outline-none"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="mb-4 flex items-center justify-between">
-          <h2 id="keyboard-shortcuts-title" className="text-lg font-semibold">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 id="keyboard-shortcuts-title">
             Keyboard shortcuts
           </h2>
           <button
             type="button"
             aria-label="Close keyboard shortcuts"
             onClick={onClose}
-            className="rounded-lg p-2 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            className="ui-icon-btn"
           >
             <X size={18} aria-hidden="true" />
           </button>
         </div>
-        <p className="mb-4 text-xs text-muted-foreground">
+        <p className="mb-5 text-[13px] leading-relaxed text-muted-foreground">
           Tab to a tile on the canvas, then use these keys. The canvas region
           itself handles zoom keys when focused.
         </p>
-        <div className="max-h-[60vh] space-y-5 overflow-y-auto pr-1">
+        <div className="max-h-[60vh] space-y-6 overflow-y-auto pr-1">
           {KEYBOARD_SHORTCUT_GROUPS.map((group) => (
             <div key={group.title}>
-              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                {group.title}
+              <h3 className="ui-section-head mb-2 font-sans">
+                <span className="ui-label">{group.title}</span>
               </h3>
-              <dl className="space-y-1.5">
+              <dl className="space-y-2">
                 {group.shortcuts.map((shortcut) => (
-                  <div key={shortcut.keys} className="flex items-start justify-between gap-4 text-sm">
-                    <dt className="text-foreground/80">{shortcut.description}</dt>
+                  <div key={shortcut.keys} className="flex items-start justify-between gap-4 text-[13.5px]">
+                    <dt className="text-foreground/85">{shortcut.description}</dt>
                     <dd className="shrink-0">
-                      <kbd className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+                      <kbd className="ui-kbd">
                         {shortcut.keys}
                       </kbd>
                     </dd>

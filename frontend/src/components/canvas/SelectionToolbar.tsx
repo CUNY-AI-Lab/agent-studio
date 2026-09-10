@@ -203,7 +203,7 @@ export function SelectionToolbar({
             ? 'Actions for selected tiles'
             : `Actions for ${panelTitle || 'tile'}`
       }
-      className="selection-toolbar absolute nodrag nopan nowheel"
+      className="selection-toolbar ui-surface absolute nodrag nopan nowheel"
       style={{
         left: screenX,
         top: screenY,
@@ -248,11 +248,12 @@ export function SelectionToolbar({
               <DownloadIcon className="w-4 h-4" aria-hidden="true" />
             </button>
             {openMenu === 'download' ? (
-              <div className="toolbar-dropdown-menu" role="menu" aria-label="Download formats">
+              <div className="toolbar-dropdown-menu ui-surface ui-menu" role="menu" aria-label="Download formats">
                 {downloadFormats.map((format) => (
                   <button
                     key={format}
                     role="menuitem"
+                    className="ui-menu-item"
                     onClick={() => {
                       onDownload?.(format);
                       setOpenMenu(null);
@@ -282,11 +283,12 @@ export function SelectionToolbar({
               <AlignCenter className="w-4 h-4" aria-hidden="true" />
             </button>
             {openMenu === 'align' ? (
-              <div className="toolbar-dropdown-menu" role="menu" aria-label="Align options">
+              <div className="toolbar-dropdown-menu ui-surface ui-menu" role="menu" aria-label="Align options">
                 {ALIGN_OPTIONS.map(([mode, label]) => (
                   <button
                     key={mode}
                     role="menuitem"
+                    className="ui-menu-item"
                     onClick={() => {
                       onAlign?.(mode);
                       setOpenMenu(null);
@@ -316,11 +318,12 @@ export function SelectionToolbar({
               <GripVertical className="w-4 h-4" aria-hidden="true" />
             </button>
             {openMenu === 'distribute' ? (
-              <div className="toolbar-dropdown-menu" role="menu" aria-label="Distribute options">
+              <div className="toolbar-dropdown-menu ui-surface ui-menu" role="menu" aria-label="Distribute options">
                 {DISTRIBUTE_OPTIONS.map(([axis, label]) => (
                   <button
                     key={axis}
                     role="menuitem"
+                    className="ui-menu-item"
                     onClick={() => {
                       onDistribute?.(axis);
                       setOpenMenu(null);

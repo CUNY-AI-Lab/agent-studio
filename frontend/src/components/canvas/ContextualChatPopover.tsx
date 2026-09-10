@@ -130,7 +130,7 @@ export function ContextualChatPopover({
       role="dialog"
       aria-label={`Ask about ${title}`}
       className={cn(
-        'contextual-chat-popover absolute flex flex-col nodrag nopan nowheel',
+        'contextual-chat-popover ui-surface rule-lead absolute flex flex-col nodrag nopan nowheel',
         position.placement === 'right' && 'origin-left',
         position.placement === 'left' && 'origin-right',
         position.placement === 'bottom' && 'origin-top'
@@ -158,7 +158,7 @@ export function ContextualChatPopover({
             <span className="contextual-chat-title truncate block">{title}</span>
           </div>
         </div>
-        <button onClick={onClose} className="contextual-chat-close" aria-label="Close">
+        <button onClick={onClose} className="ui-icon-btn ui-icon-btn-sm" aria-label="Close">
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
           </svg>
@@ -230,14 +230,14 @@ export function ContextualChatPopover({
           }}
           placeholder={`Ask about this ${typeLabel.toLowerCase()} tile...`}
           aria-label={`Ask about ${title}`}
-          className="contextual-chat-input"
+          className="ui-field contextual-chat-input"
           rows={1}
           disabled={isLoading}
         />
         <button
           type="submit"
           disabled={!input.trim() || isLoading}
-          className="contextual-chat-send"
+          className="ui-btn ui-btn-primary contextual-chat-send"
           aria-label="Send message"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">

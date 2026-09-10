@@ -41,12 +41,12 @@ function ToolCall({ part }: { part: ToolCallPart }) {
     'approval-responded': 'Approval received',
   }[part.state];
   return (
-    <details className="rounded-lg border border-border bg-secondary/50 text-foreground" onToggle={(event) => setExpanded(event.currentTarget.open)}>
-      <summary className="cursor-pointer px-3 py-2 text-xs" aria-label={`${getToolName(part)}: ${status}`}>
+    <details className="chat-tool-block chat-tool-call" onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary className="chat-tool-summary" aria-label={`${getToolName(part)}: ${status}`}>
         <span className="font-mono">{getToolName(part)}</span><span className="ml-2">{status}</span>
       </summary>
       {expanded ? (
-        <div className="space-y-2 border-t border-border p-3">
+        <div className="chat-tool-details">
           <h4 className="text-xs font-medium">Input</h4>
           <ToolPayload part={part} field="input" />
           {part.state === 'output-available' ? <><h4 className="text-xs font-medium">Output</h4><ToolPayload part={part} field="output" /></> : null}
@@ -60,8 +60,8 @@ function ToolCall({ part }: { part: ToolCallPart }) {
 const MessageRow = memo(function MessageRow({ message }: { message: UIMessage }) {
   if (message.role === 'user') {
     return (
-      <article className="max-w-[85%] bg-primary text-primary-foreground rounded-2xl rounded-br-sm p-3 self-end">
-        <pre className="whitespace-pre-wrap font-sans text-sm">{extractMessageText(message)}</pre>
+      <article className="chat-user-block">
+        <pre className="m-0 whitespace-pre-wrap font-sans text-sm">{extractMessageText(message)}</pre>
       </article>
     );
   }
@@ -71,18 +71,18 @@ const MessageRow = memo(function MessageRow({ message }: { message: UIMessage })
   const toolNotices = getToolNotices(message);
   if (visibleParts.length === 0 && toolNotices.length === 0) return null;
   return (
-    <article className="max-w-[90%] self-start space-y-2">
+    <article className="chat-assistant">
       {toolNotices.map((notice) => (
         <p
           key={`${message.id}-${notice.kind}`}
           role={notice.kind === 'error' ? 'alert' : 'status'}
           className={cn(
-            'rounded-2xl border px-3 py-2 text-sm',
+            'chat-tool-block',
             notice.kind === 'error'
-              ? 'border-destructive/20 bg-destructive/8 text-destructive'
+              ? 'chat-tool-block-error'
               : notice.kind === 'approval'
-                ? 'border-accent/20 bg-accent/5 text-accent'
-                : 'border-border bg-secondary text-secondary-foreground'
+                ? 'chat-tool-block-approval'
+                : null
           )}
         >
           {notice.message}
@@ -91,7 +91,7 @@ const MessageRow = memo(function MessageRow({ message }: { message: UIMessage })
       {visibleParts.map((part, index) => isToolUIPart(part) ? (
         <ToolCall key={part.toolCallId} part={part} />
       ) : isTextUIPart(part) ? (
-        <div key={index} className="bg-secondary text-secondary-foreground rounded-2xl rounded-bl-sm p-3">
+        <div key={index} className="chat-assistant-text">
           <Suspense fallback={<div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap">{part.text}</div>}>
             <LazyMarkdownRenderer
               className="prose prose-sm dark:prose-invert max-w-none"
@@ -112,13 +112,13 @@ function WorkingProgress({ detail }: { detail: string }) {
     return () => window.clearInterval(timer);
   }, [startedAt]);
   return (
-    <div className="flex items-center gap-3 border-t border-border bg-secondary px-4 py-3">
-      <LoaderCircle size={18} className="shrink-0 animate-spin motion-reduce:animate-none text-foreground" aria-hidden="true" />
+    <div className="chat-working">
+      <LoaderCircle size={18} className="shrink-0 animate-spin motion-reduce:animate-none text-rule" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <p role="status" className="text-sm font-medium text-foreground">{detail}</p>
-        <p className="text-xs text-muted-foreground">You can stop this response at any time.</p>
+        <p role="status" className="chat-working-detail">{detail}</p>
+        <p className="chat-working-hint">You can stop this response at any time.</p>
       </div>
-      <span className="shrink-0 text-xs tabular-nums text-muted-foreground" aria-label={`Elapsed time: ${elapsed} seconds`}>
+      <span className="chat-working-elapsed shrink-0" aria-label={`Elapsed time: ${elapsed} seconds`}>
         {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}
       </span>
     </div>
@@ -175,27 +175,27 @@ export function ChatPanel({
 
   return (
     <section className="flex-1 flex flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-        <h3 className="font-serif text-sm font-medium flex items-center gap-2">
-          <MessageSquare size={14} className="text-accent" aria-hidden="true" />Chat
+      <div className="chat-header">
+        <h3>
+          <MessageSquare size={15} aria-hidden="true" />Chat
         </h3>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <span
             role="status"
             aria-live="polite"
             aria-label={`Chat status: ${activity.label}`}
             className={cn(
-              'text-[10px] tracking-wide px-1.5 py-0.5 rounded',
+              'ui-status',
               activity.tone === 'ready'
-                ? 'text-green-600 bg-green-50 dark:bg-green-900/30 dark:text-green-400'
+                ? 'ui-status-ready'
                 : activity.tone === 'error'
-                  ? 'text-destructive bg-destructive/10'
-                  : 'text-accent bg-accent/10'
+                  ? 'ui-status-error'
+                  : 'ui-status-working'
             )}
           >{activity.label}</span>
           {activity.canStop ? (
             <button
-              className="inline-flex items-center gap-1.5 text-xs text-destructive hover:opacity-80 transition-opacity"
+              className="ui-link ui-link-danger"
               onClick={onStop}
               aria-label="Stop response"
             >
@@ -204,7 +204,7 @@ export function ChatPanel({
             </button>
           ) : (
             <button
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+              className="ui-link ui-link-muted"
               onClick={clearConversation}
               aria-label="Clear conversation"
             >
@@ -214,13 +214,13 @@ export function ChatPanel({
         </div>
       </div>
       {selectedScopeLabel ? (
-        <div className="flex items-center justify-between px-4 py-2 bg-accent/5 border-b border-accent/20 text-xs">
-          <span className="text-accent font-medium">{selectedScopeLabel}</span>
-          <button className="text-muted-foreground hover:text-foreground transition-colors" onClick={onClearScope}>Clear selection</button>
+        <div className="chat-scope">
+          <span className="chat-scope-label">{selectedScopeLabel}</span>
+          <button className="ui-link ui-link-muted shrink-0" onClick={onClearScope}>Clear selection</button>
         </div>
       ) : null}
       {activity.phase === 'error' ? (
-        <div className="border-b border-destructive/20 bg-destructive/8 px-4 py-3">
+        <div className="chat-error">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="space-y-1">
               <p className="text-sm font-medium text-destructive">
@@ -235,14 +235,14 @@ export function ChatPanel({
             <div className="flex items-center gap-2">
               {activity.label === 'Connection lost' ? (
                 <button
-                  className="rounded-md border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10"
+                  className="ui-btn ui-btn-sm ui-btn-danger"
                   onClick={onReload}
                 >
                   Reload page
                 </button>
               ) : (
                 <button
-                  className="rounded-md border border-destructive/30 px-2.5 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="ui-btn ui-btn-sm ui-btn-danger"
                   onClick={onRetry}
                   disabled={!activity.canRetry}
                 >
@@ -253,40 +253,41 @@ export function ChatPanel({
           </div>
         </div>
       ) : null}
-      <div className="flex-1 overflow-y-auto px-4 py-3 flex flex-col gap-3">
+      <div className="chat-messages">
         {messages.map((message) => <MessageRow key={message.id} message={message} />)}
       </div>
       {activity.phase === 'working' ? <WorkingProgress detail={activity.detail} /> : null}
       <form
-        className="flex gap-2 p-3 border-t border-border"
+        className="chat-composer"
         onSubmit={(event) => {
           event.preventDefault();
           submitComposer();
         }}
       >
-        <textarea
-          className="flex-1 rounded-xl border border-border bg-background px-3 py-2 text-sm resize-none focus:border-accent focus:ring-2 focus:ring-accent/20 outline-none transition-all placeholder:text-muted-foreground"
-          value={composer}
-          onChange={(event) => onComposerChange(event.target.value)}
-          placeholder={selectedScopeLabel ? 'Ask about the selected tiles.' : 'Ask the agent to create files and tiles.'}
-          aria-label="Message the agent"
-          disabled={!activity.canSubmit}
-          rows={2}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
-              event.preventDefault();
-              submitComposer();
-            }
-          }}
-        />
-        <button
-          className="bg-primary text-primary-foreground rounded-xl px-3 py-2 hover:opacity-90 transition-opacity self-end focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-          type="submit"
-          aria-label="Send message"
-          disabled={!activity.canSubmit || !composer.trim()}
-        >
-          <Send size={16} aria-hidden="true" />
-        </button>
+        <div className="composer-frame">
+          <textarea
+            value={composer}
+            onChange={(event) => onComposerChange(event.target.value)}
+            placeholder={selectedScopeLabel ? 'Ask about the selected tiles.' : 'Ask the agent to create files and tiles.'}
+            aria-label="Message the agent"
+            disabled={!activity.canSubmit}
+            rows={2}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                submitComposer();
+              }
+            }}
+          />
+          <button
+            className="ui-btn ui-btn-primary chat-send"
+            type="submit"
+            aria-label="Send message"
+            disabled={!activity.canSubmit || !composer.trim()}
+          >
+            <Send size={16} aria-hidden="true" />
+          </button>
+        </div>
       </form>
     </section>
   );

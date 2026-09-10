@@ -1,13 +1,28 @@
-import type { RefObject } from 'react';
+import { useLayoutEffect, useRef, type RefObject } from 'react';
+import { ChevronDown } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { formatFileSize } from '../../lib/format';
 import { canOpenFileInPanel, getFileName, getFileTypeBadge } from '../../lib/panelFiles';
 import type { FileDownloadHandler } from '../../lib/fileUrls';
 import type { WorkspaceFileInfo } from '../../types';
 
+const FILE_MENU_VIEWPORT_GAP = 8;
+
+function getFileMenuOffset(
+  rect: Pick<DOMRect, 'left' | 'right'>,
+  viewportWidth: number,
+): number {
+  const minOffset = FILE_MENU_VIEWPORT_GAP - rect.left;
+  const maxOffset = viewportWidth - FILE_MENU_VIEWPORT_GAP - rect.right;
+
+  if (minOffset <= 0 && maxOffset >= 0) return 0;
+  if (maxOffset < 0) return maxOffset;
+  return minOffset;
+}
+
 /**
  * Files shelf shown above the canvas: upload control, the "show files on
- * canvas" action, and per-file pill popovers. All interaction state lives in
+ * canvas" action, and per-file chip popovers. All interaction state lives in
  * WorkspaceShell; this component only renders and forwards events.
  */
 export function FilesShelf({
@@ -45,25 +60,52 @@ export function FilesShelf({
   onOpenFileOnCanvas: (file: WorkspaceFileInfo) => void;
   getFileCanvasActionLabel: (filePath: string) => string;
 }) {
+  const fileMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useLayoutEffect(() => {
+    const menu = fileMenuRef.current;
+    if (!menu) return;
+
+    const updateMenuPosition = () => {
+      // Clear the previous correction before measuring so a resize or a
+      // different file always starts from the shelf's natural anchor point.
+      menu.style.transform = 'none';
+      const offset = getFileMenuOffset(menu.getBoundingClientRect(), window.innerWidth);
+      if (offset !== 0) {
+        menu.style.transform = `translateX(${offset}px)`;
+      }
+    };
+
+    updateMenuPosition();
+    window.addEventListener('resize', updateMenuPosition);
+    window.addEventListener('scroll', updateMenuPosition, true);
+    const resizeObserver = new ResizeObserver(updateMenuPosition);
+    resizeObserver.observe(menu);
+
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition);
+      window.removeEventListener('scroll', updateMenuPosition, true);
+      resizeObserver.disconnect();
+    };
+  }, [activeFilePillPopover]);
+
   return (
-    <section ref={sectionRef} aria-label="Workspace files" className="flex-shrink-0 border-b border-border/50 bg-card/60 backdrop-blur-sm overflow-visible relative z-20">
+    <section ref={sectionRef} aria-label="Workspace files" className="files-shelf relative z-20 flex-shrink-0 overflow-visible">
       <div className="flex items-center justify-between gap-3 px-4 py-2">
         <button
           onClick={onToggleCollapsed}
-          className="flex items-center gap-2 text-xs font-medium text-foreground/70 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+          className="files-shelf-toggle"
           aria-expanded={!fileShelfCollapsed}
           aria-controls="files-shelf-list"
         >
-          <svg className={`w-3 h-3 transition-transform duration-200 ${fileShelfCollapsed ? '-rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-          </svg>
-          <span>Files</span>
+          <ChevronDown size={13} strokeWidth={2.25} className="text-muted-foreground" aria-hidden="true" />
+          <span className="ui-label text-foreground">Files</span>
           {workspaceFileEntries.length > 0 ? (
-            <span className="text-[10px] text-foreground/50 tabular-nums">{workspaceFileEntries.length}</span>
+            <span className="files-shelf-count tabular-nums">{workspaceFileEntries.length}</span>
           ) : null}
         </button>
-        <div className="flex items-center gap-2">
-          <label className="text-[11px] font-medium text-primary/80 hover:text-primary transition-colors cursor-pointer focus-within:ring-2 focus-within:ring-ring rounded px-1">
+        <div className="flex items-center gap-4">
+          <label className="ui-link cursor-pointer focus-within:outline-3 focus-within:outline-ring">
             {uploading ? 'Uploading…' : 'Upload'}
             <input
               className="sr-only"
@@ -79,7 +121,7 @@ export function FilesShelf({
           </label>
           <button
             onClick={onOpenFilesPanel}
-            className="text-[11px] font-medium text-primary/80 hover:text-primary transition-colors"
+            className="ui-link"
           >
             {filesTileActionLabel}
           </button>
@@ -88,9 +130,9 @@ export function FilesShelf({
       {!fileShelfCollapsed ? (
         <div id="files-shelf-list" className="px-4 pb-2.5">
           {workspaceFileEntries.length === 0 ? (
-            <p className="text-[11px] text-foreground/40 italic">No files yet</p>
+            <p className="files-empty">No files yet</p>
           ) : (
-            <ul className="flex gap-1.5 flex-wrap list-none m-0 p-0">
+            <ul className="m-0 flex list-none flex-wrap gap-1.5 p-0">
               {workspaceFileEntries.map((file) => (
                 <li
                   key={file.path}
@@ -104,34 +146,32 @@ export function FilesShelf({
                     data-file-pill-trigger
                     onClick={() => onSetActiveFilePillPopover((current) => current === file.path ? null : file.path)}
                     className={cn(
-                      'flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1 text-[11px] transition-all hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      highlightedFilePaths.has(file.path)
-                        ? 'border-primary/40 bg-primary/5 text-foreground shadow-sm shadow-primary/10'
-                        : 'border-border/50 bg-background/80 text-foreground/80',
-                      activeFilePillPopover === file.path && 'ring-1 ring-primary/30'
+                      'file-chip',
+                      highlightedFilePaths.has(file.path) && 'file-chip-highlighted'
                     )}
                     title={`${file.name} (${formatFileSize(file.size)})`}
                     aria-label={`${file.name}, ${formatFileSize(file.size)}. File actions`}
                     aria-haspopup="menu"
                     aria-expanded={activeFilePillPopover === file.path}
                   >
-                    <span className="text-[10px] leading-none opacity-60">{getFileTypeBadge(file.path)}</span>
-                    <span className="font-medium truncate max-w-[160px]" style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: '10.5px' }}>
+                    <span className="file-chip-type">{getFileTypeBadge(file.path)}</span>
+                    <span className="file-chip-name">
                       {getFileName(file.path)}
                     </span>
-                    <span className="text-foreground/35 tabular-nums" style={{ fontSize: '10px' }}>
+                    <span className="file-chip-size tabular-nums">
                       {formatFileSize(file.size)}
                     </span>
                     {highlightedFilePaths.has(file.path) ? (
-                      <span className="w-1.5 h-1.5 rounded-full bg-primary flex-shrink-0" />
+                      <span className="file-chip-dot" aria-hidden="true" />
                     ) : null}
                   </button>
                   {activeFilePillPopover === file.path ? (
                     <div
+                      ref={fileMenuRef}
                       data-file-pill-popover
                       role="menu"
                       aria-label={`Actions for ${file.name}`}
-                      className="absolute top-full left-0 z-50 mt-1 flex gap-1 rounded-lg border border-border/70 bg-card p-1 shadow-lg"
+                      className="files-shelf-file-menu ui-surface ui-menu absolute left-0 top-full z-50 mt-1 flex min-w-0 gap-1"
                     >
                       {canOpenFileInPanel(file.path) ? (
                         <button
@@ -140,7 +180,7 @@ export function FilesShelf({
                             onOpenFileOnCanvas(file);
                             onSetActiveFilePillPopover(() => null);
                           }}
-                          className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="ui-menu-item w-auto"
                         >
                           {getFileCanvasActionLabel(file.path)}
                         </button>
@@ -151,7 +191,7 @@ export function FilesShelf({
                           onDownloadFile({ kind: 'workspace', id: workspaceId }, file.path, file.name);
                           onSetActiveFilePillPopover(() => null);
                         }}
-                        className="whitespace-nowrap rounded-md px-2.5 py-1.5 text-[11px] font-medium text-foreground/80 hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="ui-menu-item w-auto"
                       >
                         Download
                       </button>

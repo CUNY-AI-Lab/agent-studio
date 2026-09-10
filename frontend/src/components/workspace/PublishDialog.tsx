@@ -45,7 +45,7 @@ export function PublishDialog({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="ui-backdrop"
       onClick={() => {
         if (!publishing) {
           onClose();
@@ -59,41 +59,41 @@ export function PublishDialog({
         aria-labelledby={titleId}
         aria-describedby={disclosureId}
         tabIndex={-1}
-        className="mx-4 w-full max-w-md rounded-2xl bg-card p-6 shadow-xl focus:outline-none"
+        className="ui-surface ui-surface-lg ui-dialog rule-lead max-w-md focus:outline-none"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id={titleId} className="mb-4 text-lg font-semibold">Publish to Gallery</h2>
+        <h2 id={titleId} className="mb-5">Publish to Gallery</h2>
         <div className="space-y-4">
           <div>
-            <label htmlFor={titleFieldId} className="mb-1.5 block text-sm font-medium">Title</label>
+            <label htmlFor={titleFieldId} className="ui-label mb-1.5 block">Title</label>
             <input
               id={titleFieldId}
               type="text"
               value={title}
               onChange={(event) => onTitleChange(event.target.value)}
               placeholder="Give your workspace a name..."
-              className="w-full rounded-lg border border-border bg-background px-3 py-2 focus:border-primary/50 focus:outline-none"
+              className="ui-field"
             />
           </div>
           <div>
-            <label htmlFor={descriptionFieldId} className="mb-1.5 block text-sm font-medium">Description</label>
+            <label htmlFor={descriptionFieldId} className="ui-label mb-1.5 block">Description</label>
             <textarea
               id={descriptionFieldId}
               value={description}
               onChange={(event) => onDescriptionChange(event.target.value)}
               placeholder="Describe what this workspace does..."
               rows={3}
-              className="w-full resize-none rounded-lg border border-border bg-background px-3 py-2 focus:border-primary/50 focus:outline-none"
+              className="ui-field resize-none"
             />
           </div>
-          <p id={disclosureId} className="text-xs text-muted-foreground">
+          <p id={disclosureId} className="border-l-3 border-lead pl-3 text-xs leading-relaxed text-muted-foreground">
             Agent Studio saves this workspace privately. Model-provider routes are configured not to retain prompts or outputs, but Agent Studio still stores the workspace. Publishing makes {publishablePanelCount} tile view{publishablePanelCount !== 1 ? 's' : ''} and {fileCount} file{fileCount !== 1 ? 's' : ''} available to signed-in CAIL members through the Agent Studio gallery. Gallery links open only for signed-in CAIL members. Don’t publish private or sensitive files.
           </p>
         </div>
-        <div className="mt-6 flex justify-end gap-3">
+        <div className="mt-6 flex justify-end gap-2">
           <button
             onClick={onClose}
-            className="rounded-lg px-4 py-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+            className="ui-btn ui-btn-quiet"
             disabled={publishing}
           >
             Cancel
@@ -101,7 +101,7 @@ export function PublishDialog({
           <button
             onClick={onPublish}
             disabled={publishing || !title.trim() || !description.trim()}
-            className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            className="ui-btn ui-btn-primary"
           >
             {publishing ? 'Publishing...' : 'Publish'}
           </button>

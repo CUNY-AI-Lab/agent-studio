@@ -440,6 +440,20 @@ async function verifyToolbarAtCanvasEdges(page: Page): Promise<void> {
   await settledReactFlowViewport(page);
 }
 
+async function expectButtonAtPointerTarget(page: Page, button: Locator, description: string): Promise<void> {
+  const box = await button.boundingBox();
+  if (!box) fail(`${description} did not expose a browser bounding box`);
+  const expectedLabel = await button.getAttribute('aria-label');
+  const actualLabel = await page.evaluate(({ x, y }) => {
+    const target = document.elementFromPoint(x, y);
+    return target?.closest('button')?.getAttribute('aria-label') ?? null;
+  }, {
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+  });
+  expect(actualLabel, description).toBe(expectedLabel);
+}
+
 async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promise<void> {
   const note = '# Research note\n\nA durable artifact with café and 数字.\n';
   const binaryText = Buffer.from([0xff, 0xfe, 0x00, 0x61]);
@@ -461,6 +475,7 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   await expect(page.getByRole('row', { name: 'Ada first line second line', exact: true })).toBeVisible();
   await expect(page.getByRole('row', { name: 'Grace comma, then "quoted"', exact: true })).toBeVisible();
   const fileActions = page.getByRole('button', { name: /^research\.md, .*File actions$/ });
+  await expectButtonAtPointerTarget(page, fileActions, 'Research file actions');
   await fileActions.click();
   await page.getByRole('menuitem', { name: 'Show on Canvas', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Research note', exact: true })).toBeVisible();

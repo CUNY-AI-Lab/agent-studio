@@ -2754,7 +2754,7 @@ function WorkspaceShell({
     <div className="flex-1 flex min-h-0">
       <a
         href="#workspace-canvas"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground focus:shadow-lg"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100] focus:bg-primary focus:px-4 focus:py-2 focus:text-sm focus:font-medium focus:text-primary-foreground"
         onClick={(event) => {
           event.preventDefault();
           canvasViewportRef.current?.focus();
@@ -2765,7 +2765,7 @@ function WorkspaceShell({
       <main
         id="workspace-canvas"
         aria-label="Workspace"
-        className={`flex-1 min-w-0 flex flex-col transition-[margin] duration-300 ${chatOpen && isDockedChatLayout ? 'mr-[400px]' : ''}`}
+        className="flex-1 min-w-0 flex flex-col"
       >
         <WorkspaceHeader
           workspaceName={workspaceName}
@@ -2797,13 +2797,13 @@ function WorkspaceShell({
         />
 
         {error || automaticLayoutSaveError || manualSaveError || viewportSaveError ? (
-          <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
+          <div className="ui-notice animate-fade-in">
             <div className="flex items-center justify-between gap-3">
               <span>{manualSaveError || automaticLayoutSaveError || viewportSaveError || error}</span>
               {manualSaveError ? (
                 <button
                   type="button"
-                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  className="ui-btn ui-btn-xs shrink-0"
                   onClick={() => window.location.reload()}
                 >
                   Reload saved workspace
@@ -2812,7 +2812,7 @@ function WorkspaceShell({
               {automaticLayoutSaveError ? (
                 <button
                   type="button"
-                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  className="ui-btn ui-btn-xs shrink-0"
                   onClick={retryAutomaticPanelLayouts}
                 >
                   Retry layout save
@@ -2821,7 +2821,7 @@ function WorkspaceShell({
               {viewportSaveError ? (
                 <button
                   type="button"
-                  className="shrink-0 rounded-md border border-destructive/30 px-2 py-1 text-xs font-medium hover:bg-destructive/10"
+                  className="ui-btn ui-btn-xs shrink-0"
                   onClick={() => {
                     setViewportSaveError(null);
                     viewportPersistenceRef.current.queue.retry();
@@ -2836,19 +2836,15 @@ function WorkspaceShell({
         ) : null}
 
         {isDrawerChatLayout ? (
-          <div className="flex-shrink-0 flex items-center gap-1 px-4 py-1.5 border-b border-border/50 bg-card/40 backdrop-blur-sm">
-            <div className="inline-flex rounded-lg bg-muted/60 p-0.5" role="tablist" aria-label="Workspace view">
+          <div className="files-shelf flex flex-shrink-0 items-center gap-1 px-4 py-1.5">
+            <div className="view-tabs" role="tablist" aria-label="Workspace view">
               <button
                 id="canvas-tab"
                 role="tab"
                 aria-selected={narrowActiveTab === 'canvas'}
                 aria-controls="canvas-panel"
                 onClick={() => setNarrowActiveTab('canvas')}
-                className={`px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                  narrowActiveTab === 'canvas'
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-foreground/50 hover:text-foreground/70'
-                }`}
+                className="view-tab"
               >
                 Canvas
               </button>
@@ -2858,15 +2854,11 @@ function WorkspaceShell({
                 aria-selected={narrowActiveTab === 'chat'}
                 aria-controls="chat-panel"
                 onClick={() => setNarrowActiveTab('chat')}
-                className={`relative px-3 py-1 rounded-md text-xs font-medium transition-all ${
-                  narrowActiveTab === 'chat'
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-foreground/50 hover:text-foreground/70'
-                }`}
+                className="view-tab"
               >
                 Chat
                 {narrowActiveTab !== 'chat' && hasUnreadAssistant ? (
-                  <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-primary" />
+                  <span className="view-tab-unread" aria-hidden="true" />
                 ) : null}
               </button>
             </div>
@@ -2880,41 +2872,39 @@ function WorkspaceShell({
           className={`flex-1 min-h-0 relative ${isDrawerChatLayout && narrowActiveTab !== 'canvas' ? 'hidden' : 'flex flex-col'}`}
         >
           {fileShelf}
-          <div className="canvas-header flex items-center justify-between px-4 py-2 z-10">
-            <div />
-            <div className="flex items-center gap-3 text-xs text-muted-foreground">
-              {visibleConnections.length > 0 ? (
-                <span aria-label={`${visibleConnections.length} tile association${visibleConnections.length === 1 ? '' : 's'}`}>
-                  {visibleConnections.length} association{visibleConnections.length === 1 ? '' : 's'}
-                </span>
-              ) : null}
-              {minimizedPanels.length > 0 ? (
-                <span className="font-mono">{minimizedPanels.length} docked</span>
-              ) : null}
-              {selectedPanelIds.size > 0 ? (
-                <button className="px-2 py-1 rounded-md border border-accent/30 text-accent hover:bg-accent/10 transition-colors" onClick={clearSelection}>
-                  {selectedPanelIds.size} selected
-                </button>
-              ) : null}
-            </div>
+          <div className="relative flex-1 min-h-0 flex flex-col">
+          <div className="canvas-status">
+            {visibleConnections.length > 0 ? (
+              <span className="canvas-stat" aria-label={`${visibleConnections.length} tile association${visibleConnections.length === 1 ? '' : 's'}`}>
+                {visibleConnections.length} association{visibleConnections.length === 1 ? '' : 's'}
+              </span>
+            ) : null}
+            {minimizedPanels.length > 0 ? (
+              <span className="canvas-stat">{minimizedPanels.length} docked</span>
+            ) : null}
+            {selectedPanelIds.size > 0 ? (
+              <button className="canvas-stat canvas-stat-selected" onClick={clearSelection}>
+                {selectedPanelIds.size} selected
+              </button>
+            ) : null}
           </div>
 
           {shouldShowCanvasHint ? (
-            <div className="canvas-hint fixed top-20 left-1/2 z-40 -translate-x-1/2">
-              <div className="flex items-center gap-3 rounded-lg border border-border bg-card/95 px-4 py-2.5 text-sm shadow-lg backdrop-blur">
-                <span className="text-muted-foreground">
-                  <strong className="text-foreground">Drag</strong> to select
-                  <span className="mx-2 text-border">|</span>
-                  <strong className="text-foreground">Space + drag</strong> to pan
-                  <span className="mx-2 text-border">|</span>
-                  <strong className="text-foreground">Scroll</strong> to zoom
+            <div className="canvas-hint fixed top-24 left-1/2 z-40 -translate-x-1/2">
+              <div className="ui-surface canvas-hint-body">
+                <span>
+                  <strong>Drag</strong> to select
+                  <span className="canvas-hint-sep" aria-hidden="true" />
+                  <strong>Space + drag</strong> to pan
+                  <span className="canvas-hint-sep" aria-hidden="true" />
+                  <strong>Scroll</strong> to zoom
                 </span>
                 <button
                   onClick={() => {
                     setShowCanvasHint(false);
                     window.localStorage.setItem('canvas-hint-dismissed', 'true');
                   }}
-                  className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  className="ui-icon-btn ui-icon-btn-sm"
                   aria-label="Dismiss hint"
                 >
                   <X size={14} />
@@ -3095,28 +3085,29 @@ function WorkspaceShell({
             ) : null}
           </CanvasFlow>
           {minimizedPanels.length > 0 ? (
-            <div className="fixed bottom-4 left-1/2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-border bg-card/90 p-2 shadow-lg backdrop-blur">
+            <div className="tile-dock ui-surface">
               <button
-                className="rounded-md px-2 py-1 text-xs text-accent transition-colors hover:bg-accent/10"
+                className="ui-btn ui-btn-quiet ui-btn-sm text-rule"
                 onClick={restoreAllPanels}
               >
                 Restore All
               </button>
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="tile-dock-chips">
                 {minimizedPanels.map((panel) => (
                   <button
                     key={panel.id}
-                    className="flex items-center gap-1.5 rounded-md bg-muted px-3 py-1.5 text-sm transition-colors hover:bg-muted/80"
+                    className="dock-chip"
                     onClick={() => restorePanel(panel.id)}
                     title={`Restore ${getPanelTitle(panel)}`}
                   >
-                    <span className="max-w-[120px] truncate">{getPanelTitle(panel)}</span>
-                    <span className="text-xs text-muted-foreground">{getPanelTypeLabel(panel)}</span>
+                    <span className="dock-chip-title">{getPanelTitle(panel)}</span>
+                    <span className="dock-chip-type">{getPanelTypeLabel(panel)}</span>
                   </button>
                 ))}
               </div>
             </div>
           ) : null}
+          </div>
         </div>
         {isDrawerChatLayout && narrowActiveTab === 'chat' ? (
           <div id="chat-panel" role="tabpanel" aria-labelledby="chat-tab" className="flex-1 min-h-0 chat-panel flex flex-col">
@@ -3124,10 +3115,10 @@ function WorkspaceShell({
           </div>
         ) : null}
       </main>
-      {isDockedChatLayout ? (
+      {isDockedChatLayout && chatOpen ? (
         <aside
           aria-label="Agent chat"
-          className={`fixed z-30 max-w-full chat-panel flex flex-col transition-transform duration-300 top-[73px] right-0 bottom-0 left-auto w-[400px] ${chatOpen ? 'translate-x-0' : 'translate-x-full'}`}
+          className="chat-panel flex w-[400px] max-w-full shrink-0 flex-col animate-fade-in"
         >
           {chatPanelContent}
         </aside>
@@ -3419,7 +3410,7 @@ export default function App() {
     return (
       <div className="grain h-screen flex items-center justify-center canvas-bg">
         <div className="text-center animate-fade-in">
-          <div className="animate-subtle-pulse text-muted-foreground text-sm">Loading workspace…</div>
+          <div className="animate-subtle-pulse ui-label">Loading workspace…</div>
         </div>
       </div>
     );
@@ -3429,10 +3420,10 @@ export default function App() {
   if (error && !selectedWorkspace && !selectedGallery && (selectedWorkspaceId || selectedGalleryId)) {
     return (
       <div className="grain h-screen flex flex-col canvas-bg">
-        <div className="px-6 py-3 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">
+        <div className="ui-notice animate-fade-in">
           {error}
           <button
-            className="ml-4 underline"
+            className="ui-link ui-link-danger ml-4"
             onClick={selectedWorkspaceId || selectedGalleryId ? handleGoHome : () => void loadHome()}
           >
             {selectedWorkspaceId || selectedGalleryId ? 'Go home' : 'Try again'}
@@ -3462,7 +3453,7 @@ export default function App() {
     return (
       <div className="grain h-screen flex flex-col">
         {error ? (
-          <div className="px-6 py-2 bg-destructive/10 border-b border-destructive/20 text-sm text-destructive animate-fade-in">{error}</div>
+          <div className="ui-notice animate-fade-in">{error}</div>
         ) : null}
         {selectedWorkspace ? (
           <WorkspaceShell

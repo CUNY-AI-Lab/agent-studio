@@ -26,17 +26,17 @@ export function DetailPanelView({
   return (
     <div className="space-y-3 pr-1">
       {linkedPanel.rows.slice(0, 8).map((row, index) => (
-        <article key={index} className="rounded-2xl border border-border/70 bg-background/90 p-4 shadow-sm">
-          <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground mb-3">
+        <article key={index} className="detail-row">
+          <div className="ui-label">
             Row {index + 1}
           </div>
-          <dl className="space-y-2">
+          <dl>
             {linkedPanel.columns.map((column) => (
-              <div key={column.key} className="grid grid-cols-[minmax(0,140px)_1fr] gap-3 items-start">
-                <dt className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              <div key={column.key} className="grid grid-cols-[minmax(0,140px)_1fr] items-start gap-3">
+                <dt>
                   {column.label}
                 </dt>
-                <dd className="text-sm leading-relaxed break-words">
+                <dd className="break-words text-[13.5px] leading-relaxed">
                   {row[column.key] == null || row[column.key] === ''
                     ? <span className="panel-muted">—</span>
                     : String(row[column.key])}

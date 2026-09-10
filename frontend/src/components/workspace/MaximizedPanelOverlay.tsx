@@ -45,23 +45,26 @@ export function MaximizedPanelOverlay({
       aria-modal="true"
       aria-labelledby={titleId}
       tabIndex={-1}
-      className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex flex-col focus:outline-none"
+      className="fixed inset-0 z-50 flex flex-col bg-background/92 backdrop-blur-sm focus:outline-none"
     >
-      <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-card">
-        <div className="flex items-center gap-3">
-          <strong id={titleId} className="font-serif text-lg font-medium">{getPanelTitle(panel)}</strong>
-          <span className="artifact-type">{getPanelTypeLabel(panel)}</span>
+      <div className="shrink-0">
+        <div className="ws-header flex items-center justify-between px-5 py-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <strong id={titleId} className="truncate font-serif text-lg font-semibold tracking-tight">{getPanelTitle(panel)}</strong>
+            <span className="artifact-type">{getPanelTypeLabel(panel)}</span>
+          </div>
+          <button
+            className="ui-icon-btn"
+            onClick={onClose}
+            aria-label="Close maximized tile"
+          >
+            <X size={18} aria-hidden="true" />
+          </button>
         </div>
-        <button
-          className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          onClick={onClose}
-          aria-label="Close maximized tile"
-        >
-          <X size={18} aria-hidden="true" />
-        </button>
+        <div className="ws-header-rule" aria-hidden="true" />
       </div>
       <div className="flex-1 overflow-auto p-6">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-sheet rule-lead mx-auto max-w-4xl">
           <PanelBody
             fileSource={fileSource}
             panel={panel}
