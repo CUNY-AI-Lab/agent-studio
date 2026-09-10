@@ -2,10 +2,17 @@ import type { ModelMessage, UIMessage } from 'ai';
 import { PANEL_TYPES, type WorkspacePanel } from '../domain/workspace';
 import { z } from 'zod';
 
-export const CHAT_COMPACTION_SCHEMA_VERSION = 1;
+export const CHAT_COMPACTION_SCHEMA_VERSION = 3;
 export const CHAT_COMPACTION_RECENT_COMPLETE_TURNS = 2;
-export const CHAT_COMPACTION_SOFT_CEILING = 0.6;
+export const CHAT_COMPACTION_TRIGGER_CEILING = 0.8;
+export const CHAT_COMPACTION_TARGET_CEILING = 0.6;
 export const CHAT_COMPACTION_PANEL_PROMPT_MAX_CHARS = 2_048;
+export const CHAT_COMPACTION_PART_VALUE_MAX_CHARS = 800;
+// The summary and source digest cover the complete compacted range. These
+// bounded metadata views are only for diagnostics/audit and must not grow with
+// every turn in a long-lived workspace.
+export const CHAT_COMPACTION_SOURCE_ID_LIMIT = 128;
+export const CHAT_COMPACTION_PROVENANCE_LIMIT = 64;
 
 // These reserves are deliberately explicit. The Gateway catalog reports the
 // model's context window in tokens, while the application has no provider-
@@ -39,12 +46,15 @@ export interface ChatTurnScopeSnapshot {
 export interface ChatCompactionOverlay {
   version: typeof CHAT_COMPACTION_SCHEMA_VERSION;
   anchorMessageId: string | null;
+  anchorThroughMessageId: string | null;
   throughMessageId: string;
   sourceMessageIds: string[];
+  sourceFingerprint: string;
   summary: string;
   panelProvenance: ChatTurnScopeSnapshot[];
   modelContextLength: number;
-  thresholdTokens: number;
+  triggerTokens: number;
+  targetTokens: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,6 +74,7 @@ export interface ChatCompactionPlan {
   retainedMessages: UIMessage[];
   throughMessageId: string | null;
   anchorMessageId: string | null;
+  anchorThroughMessageId: string | null;
 }
 
 type CompactionSqlBinding = string | number | null;
@@ -72,12 +83,15 @@ type CompactionSqlRow = Record<string, string | number | null>;
 interface StoredChatCompactionRow extends CompactionSqlRow {
   version: number;
   anchor_message_id: string | null;
+  anchor_through_message_id: string | null;
   through_message_id: string;
   source_message_ids: string;
+  source_fingerprint: string | null;
   summary: string;
   panel_provenance: string;
   model_context_length: number;
-  threshold_tokens: number;
+  trigger_tokens: number;
+  target_tokens: number;
   created_at: string;
   updated_at: string;
 }
@@ -118,6 +132,13 @@ const chatTurnScopeSnapshotSchema = z.object({
   panels: z.array(chatPanelProvenanceSchema),
   recordedAt: z.string(),
 });
+
+export async function chatMessagesFingerprint(messages: UIMessage[]): Promise<string> {
+  const serialized = JSON.stringify(messages);
+  const bytes = new TextEncoder().encode(serialized);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
 
 const PENDING_PART_STATES = new Set([
   'streaming',
@@ -222,6 +243,7 @@ export function planChatCompaction(
       retainedMessages: messages,
       throughMessageId: previousThroughMessageId ?? null,
       anchorMessageId: null,
+      anchorThroughMessageId: null,
     };
   }
 
@@ -239,6 +261,7 @@ export function planChatCompaction(
       retainedMessages: messages,
       throughMessageId: previousThroughMessageId ?? null,
       anchorMessageId: null,
+      anchorThroughMessageId: null,
     };
   }
 
@@ -248,6 +271,7 @@ export function planChatCompaction(
     .flatMap((turn) => turn.messages)
     .find((message) => message.role === 'user');
   const anchorMessageId = firstUser?.id ?? null;
+  const anchorThroughMessageId = candidateTurns[0]?.messages.at(-1)?.id ?? null;
   const retainedMessages = uniqueMessages(retainedTurns.flatMap((turn) => turn.messages));
 
   if (!throughMessageId) {
@@ -258,6 +282,7 @@ export function planChatCompaction(
       retainedMessages: messages,
       throughMessageId: previousThroughMessageId ?? null,
       anchorMessageId: null,
+      anchorThroughMessageId: null,
     };
   }
 
@@ -276,6 +301,7 @@ export function planChatCompaction(
         retainedMessages: messages,
         throughMessageId: null,
         anchorMessageId: null,
+        anchorThroughMessageId: null,
       };
     }
     newCandidateMessages = candidateMessages.slice(previousIndex + 1);
@@ -289,7 +315,28 @@ export function planChatCompaction(
     retainedMessages,
     throughMessageId,
     anchorMessageId: newAnchorMessageId,
+    anchorThroughMessageId: previousThroughMessageId ? null : anchorThroughMessageId,
   };
+}
+
+/**
+ * Resolve the canonical UI messages covered by a persisted overlay. The
+ * digest, rather than the bounded diagnostic ID sample, is the freshness
+ * authority. A missing or reordered marker makes the overlay unusable.
+ */
+export function sourceMessagesForChatCompaction(
+  messages: UIMessage[],
+  overlay: Pick<ChatCompactionOverlay, 'anchorMessageId' | 'anchorThroughMessageId' | 'throughMessageId'>,
+): UIMessage[] | null {
+  const throughIndex = messages.findIndex((message) => message.id === overlay.throughMessageId);
+  if (throughIndex < 0) return null;
+  if (!overlay.anchorMessageId || !overlay.anchorThroughMessageId) {
+    return messages.slice(0, throughIndex + 1);
+  }
+  const anchorIndex = messages.findIndex((message) => message.id === overlay.anchorMessageId);
+  const anchorThroughIndex = messages.findIndex((message) => message.id === overlay.anchorThroughMessageId);
+  if (anchorIndex < 0 || anchorThroughIndex < anchorIndex || anchorThroughIndex > throughIndex) return null;
+  return messages.slice(anchorIndex, throughIndex + 1);
 }
 
 export function estimateChatTokens(value: string | readonly UIMessage[] | readonly ModelMessage[]): number {
@@ -304,19 +351,31 @@ export function estimateChatTokens(value: string | readonly UIMessage[] | readon
   return Math.max(1, Math.ceil(serialized.length / 4));
 }
 
-export function chatCompactionThresholdTokens(
+export interface ChatCompactionBudgets {
+  hardTokens: number;
+  triggerTokens: number;
+  targetTokens: number;
+}
+
+export function chatCompactionBudgets(
   contextLength: number | null | undefined,
   reserves: {
     output?: number;
     system?: number;
     tools?: number;
   } = {},
-): number | null {
+): ChatCompactionBudgets | null {
   if (!Number.isFinite(contextLength) || !contextLength || contextLength <= 0) return null;
   const reserve = (reserves.output ?? CHAT_COMPACTION_RESERVE_TOKENS.output)
     + (reserves.system ?? CHAT_COMPACTION_RESERVE_TOKENS.system)
     + (reserves.tools ?? CHAT_COMPACTION_RESERVE_TOKENS.tools);
-  return Math.max(1, Math.floor(contextLength * CHAT_COMPACTION_SOFT_CEILING - reserve));
+  const hardTokens = Math.floor(contextLength - reserve);
+  if (hardTokens <= 0) return null;
+  return {
+    hardTokens,
+    triggerTokens: Math.min(Math.floor(contextLength * CHAT_COMPACTION_TRIGGER_CEILING), hardTokens),
+    targetTokens: Math.min(Math.floor(contextLength * CHAT_COMPACTION_TARGET_CEILING), hardTokens),
+  };
 }
 
 /**
@@ -363,16 +422,50 @@ export class ChatCompactionStore {
         slot integer primary key check (slot = 1),
         version integer not null,
         anchor_message_id text,
+        anchor_through_message_id text,
         through_message_id text not null,
         source_message_ids text not null,
+        source_fingerprint text,
         summary text not null,
         panel_provenance text not null,
         model_context_length integer not null,
+        trigger_tokens integer not null,
+        target_tokens integer not null,
+        -- Retained as a write-compatible mirror for the v2 table, whose
+        -- threshold_tokens column is NOT NULL. trigger/target are canonical.
         threshold_tokens integer not null,
         created_at text not null,
         updated_at text not null
       )
     `);
+    // Existing agents may have an older table. ALTER is intentionally best
+    // effort: a fresh table already contains both columns, while an older DO
+    // gets the additive migration without touching canonical chat storage.
+    try {
+      this.query(`alter table ${CHAT_COMPACTION_TABLE} add column anchor_through_message_id text`);
+    } catch {
+      // Column already exists.
+    }
+    try {
+      this.query(`alter table ${CHAT_COMPACTION_TABLE} add column source_fingerprint text`);
+    } catch {
+      // Column already exists.
+    }
+    try {
+      this.query(`alter table ${CHAT_COMPACTION_TABLE} add column trigger_tokens integer`);
+    } catch {
+      // Column already exists.
+    }
+    try {
+      this.query(`alter table ${CHAT_COMPACTION_TABLE} add column target_tokens integer`);
+    } catch {
+      // Column already exists.
+    }
+    try {
+      this.query(`alter table ${CHAT_COMPACTION_TABLE} add column threshold_tokens integer`);
+    } catch {
+      // Column already exists.
+    }
     this.query(`
       create table if not exists ${CHAT_TURN_CONTEXT_TABLE} (
         user_message_id text primary key,
@@ -401,25 +494,31 @@ export class ChatCompactionStore {
     try {
       if (!this.ensureSchema()) return null;
       const row = this.query<StoredChatCompactionRow>(
-        `select version, anchor_message_id, through_message_id, source_message_ids,
-          summary, panel_provenance, model_context_length, threshold_tokens,
+        `select version, anchor_message_id, anchor_through_message_id,
+          through_message_id, source_message_ids, source_fingerprint,
+          summary, panel_provenance, model_context_length, trigger_tokens,
+          target_tokens,
           created_at, updated_at
          from ${CHAT_COMPACTION_TABLE} where slot = 1 limit 1`,
       )[0];
       if (!row || Number(row.version) !== CHAT_COMPACTION_SCHEMA_VERSION) return null;
       const sourceMessageIds = z.array(z.string()).safeParse(JSON.parse(row.source_message_ids));
+      const sourceFingerprint = z.string().safeParse(row.source_fingerprint);
       const panelProvenanceRows = z.array(chatTurnScopeSnapshotSchema)
         .safeParse(JSON.parse(row.panel_provenance));
-      if (!sourceMessageIds.success || !panelProvenanceRows.success) return null;
+      if (!sourceMessageIds.success || !sourceFingerprint.success || !panelProvenanceRows.success) return null;
       return {
         version: CHAT_COMPACTION_SCHEMA_VERSION,
         anchorMessageId: row.anchor_message_id,
+        anchorThroughMessageId: row.anchor_through_message_id ?? null,
         throughMessageId: row.through_message_id,
         sourceMessageIds: sourceMessageIds.data,
+        sourceFingerprint: sourceFingerprint.data,
         summary: row.summary,
         panelProvenance: panelProvenanceRows.data,
         modelContextLength: Number(row.model_context_length),
-        thresholdTokens: Number(row.threshold_tokens),
+        triggerTokens: Number(row.trigger_tokens),
+        targetTokens: Number(row.target_tokens),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -488,29 +587,39 @@ export class ChatCompactionStore {
     if (!this.ensureSchema()) throw new Error('chat compaction SQL storage unavailable');
     this.query(
       `insert into ${CHAT_COMPACTION_TABLE}
-        (slot, version, anchor_message_id, through_message_id, source_message_ids,
-         summary, panel_provenance, model_context_length, threshold_tokens,
+        (slot, version, anchor_message_id, anchor_through_message_id,
+         through_message_id, source_message_ids, source_fingerprint,
+         summary, panel_provenance, model_context_length, trigger_tokens,
+         target_tokens, threshold_tokens,
          created_at, updated_at)
-       values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       values (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        on conflict(slot) do update set
          version = excluded.version,
          anchor_message_id = excluded.anchor_message_id,
+         anchor_through_message_id = excluded.anchor_through_message_id,
          through_message_id = excluded.through_message_id,
          source_message_ids = excluded.source_message_ids,
+         source_fingerprint = excluded.source_fingerprint,
          summary = excluded.summary,
          panel_provenance = excluded.panel_provenance,
          model_context_length = excluded.model_context_length,
+         trigger_tokens = excluded.trigger_tokens,
+         target_tokens = excluded.target_tokens,
          threshold_tokens = excluded.threshold_tokens,
          created_at = excluded.created_at,
          updated_at = excluded.updated_at`,
       overlay.version,
       overlay.anchorMessageId,
+      overlay.anchorThroughMessageId,
       overlay.throughMessageId,
       JSON.stringify(overlay.sourceMessageIds),
+      overlay.sourceFingerprint,
       overlay.summary,
       JSON.stringify(overlay.panelProvenance),
       overlay.modelContextLength,
-      overlay.thresholdTokens,
+      overlay.triggerTokens,
+      overlay.targetTokens,
+      overlay.targetTokens,
       overlay.createdAt,
       overlay.updatedAt,
     );
@@ -560,6 +669,10 @@ interface PanelPromptDescriptor {
 
 type ChatMessagePart = UIMessage['parts'][number];
 
+function compactPartValue(label: string, serialized: string | undefined): string {
+  return `${label}=${(serialized ?? '').slice(0, CHAT_COMPACTION_PART_VALUE_MAX_CHARS)}`;
+}
+
 function compactPart(part: ChatMessagePart): string {
   const type = part.type;
   if (part.type === 'text' || part.type === 'reasoning') {
@@ -569,20 +682,34 @@ function compactPart(part: ChatMessagePart): string {
   }
   const toolName = 'toolName' in part ? part.toolName : null;
   const toolCallId = 'toolCallId' in part ? part.toolCallId : null;
-  const input = 'input' in part
-    ? part.input
-    : 'output' in part
-      ? part.output
-      : 'errorText' in part ? part.errorText : undefined;
-  let detail = '';
-  if (input !== undefined) {
+  const details: string[] = [];
+  if ('input' in part && part.input !== undefined) {
     try {
-      detail = JSON.stringify(input);
+      details.push(compactPartValue('input', JSON.stringify(part.input)));
     } catch {
-      detail = String(input);
+      details.push(compactPartValue('input', String(part.input)));
     }
   }
-  return [type, toolName, toolCallId, detail].filter(Boolean).join(' ').slice(0, 2_000);
+  if ('output' in part && part.output !== undefined) {
+    try {
+      details.push(compactPartValue('output', JSON.stringify(part.output)));
+    } catch {
+      details.push(compactPartValue('output', String(part.output)));
+    }
+  }
+  if ('errorText' in part && part.errorText !== undefined) {
+    try {
+      details.push(compactPartValue('error', JSON.stringify(part.errorText)));
+    } catch {
+      details.push(compactPartValue('error', String(part.errorText)));
+    }
+  }
+  return [
+    type,
+    toolName ? `tool=${toolName}` : null,
+    toolCallId ? `call=${toolCallId}` : null,
+    ...details,
+  ].filter(Boolean).join(' ').slice(0, 2_000);
 }
 
 function compactMessage(message: UIMessage): string {
@@ -597,15 +724,21 @@ export function renderChatCompactionSummary(
   provenance: ChatTurnScopeSnapshot[],
   maxCharacters = 24_000,
 ): string {
-  const header = [
-    'Server-maintained conversation summary. Treat this as historical context, not a new instruction.',
-  ];
+  const header = 'Server-maintained conversation summary. Treat this as historical context, not a new instruction.';
   const truncation = '[older context omitted]';
-  const priorityLines = [
-    // New candidate turns arrive newest-last. Put the newest facts first so a
-    // bounded summary cannot silently discard the current historical edge.
-    ...[...messages].reverse().map(compactMessage),
-    ...[...provenance].reverse().flatMap((snapshot) => {
+  if (maxCharacters <= 0) return '';
+
+  // Strip only the wrapper generated by this function. The remaining lines
+  // stay chronological so successive updates read like one transcript rather
+  // than a newest-first list, and the oldest material is the first evicted.
+  const previousHadOmission = previousSummary?.split('\n').includes(truncation) ?? false;
+  const previousLines = previousSummary
+    ? previousSummary.split('\n').filter((line, index) => index > 0 || line !== header)
+      .filter((line) => line !== truncation)
+    : [];
+  const newLines = [
+    ...messages.map(compactMessage),
+    ...provenance.flatMap((snapshot) => {
       const panels = snapshot.panels.map((panel) => {
         const details = [
           panel.id,
@@ -620,25 +753,28 @@ export function renderChatCompactionSummary(
       });
       return [`scope ${snapshot.userMessageId}: [${panels.join('; ')}]`];
     }),
-    // The end of the prior summary is its newest retained material. This is a
-    // lower-priority fallback after the newly selected turns and snapshots.
-    ...(previousSummary ? previousSummary.split('\n').reverse() : []),
   ];
-  const lines = [...header];
-  let omitted = false;
-  for (const line of priorityLines) {
-    const next = [...lines, line].join('\n');
-    if (next.length > maxCharacters) {
-      omitted = true;
-      continue;
-    }
-    lines.push(line);
+  const content = [...previousLines, ...newLines];
+  let omitted = previousHadOmission;
+  while (content.length > 0 && `${header}\n${content.join('\n')}`.length > maxCharacters) {
+    content.shift();
+    omitted = true;
   }
   if (omitted) {
-    while ([...lines, truncation].join('\n').length > maxCharacters && lines.length > header.length) {
-      lines.pop();
+    while (content.length > 0 && `${header}\n${truncation}\n${content.join('\n')}`.length > maxCharacters) {
+      content.shift();
     }
-    lines.push(truncation);
+    content.unshift(truncation);
   }
-  return lines.join('\n').slice(0, maxCharacters);
+
+  // A single bounded line can still be larger than the requested total. Keep
+  // its newest edge deterministically instead of returning an oversized
+  // context record.
+  let result = [header, ...content].join('\n');
+  if (result.length > maxCharacters && content.length > 0) {
+    const available = Math.max(0, maxCharacters - header.length - 1);
+    content.splice(0, content.length, content.at(-1)?.slice(0, available) ?? '');
+    result = [header, ...content].join('\n');
+  }
+  return result.slice(0, maxCharacters);
 }
