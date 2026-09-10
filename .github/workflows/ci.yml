@@ -158,16 +158,14 @@ jobs:
         working-directory: cloudflare
         run: |
           set -euo pipefail
-          versions="$(bunx wrangler versions list --name agent-studio --json 2>/dev/null)"
-          version_id="$(jq -r --arg tag "$GITHUB_SHA" --arg message "main $GITHUB_SHA" '
-            [ .[]
-              | select(.annotations["workers/tag"] == $tag)
-              | select(.annotations["workers/message"] == $message)
-            ]
-            | sort_by(.metadata.created_on)
-            | last
-            | .id // empty
-          ' <<<"$versions")"
+          deployment="$(bunx wrangler deployments status --name agent-studio --json 2>/dev/null)"
+          version_id="$(jq -er '
+            .versions
+            | select(type == "array" and length == 1)
+            | .[0]
+            | select(.percentage == 100)
+            | .version_id
+          ' <<<"$deployment")"
           [[ "$version_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
           version="$(bunx wrangler versions view "$version_id" --name agent-studio --json 2>/dev/null)"
           jq -e --arg tag "$GITHUB_SHA" --arg message "main $GITHUB_SHA" '
@@ -214,16 +212,14 @@ jobs:
             ([.resources.bindings[]?
               | select(.type == "service" and (.service | contains("staging")))] | length) == 0
           ' <<<"$version" >/dev/null
-          deployments="$(bunx wrangler deployments list --name agent-studio --json 2>/dev/null)"
+          deployment="$(bunx wrangler deployments status --name agent-studio --json 2>/dev/null)"
           deployment_id="$(jq -r --arg id "$version_id" --arg message "main $GITHUB_SHA" '
-            [ .[] ]
-            | sort_by(.created_on)
-            | last
+            .
             | select(.annotations["workers/message"] == $message)
             | select((.versions | length) == 1)
             | select(.versions[0].version_id == $id and .versions[0].percentage == 100)
             | .id // empty
-          ' <<<"$deployments")"
+          ' <<<"$deployment")"
           [[ "$deployment_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
           printf 'version_id=%s\n' "$version_id" >> "$GITHUB_OUTPUT"
           api='https://api.cloudflare.com/client/v4'
