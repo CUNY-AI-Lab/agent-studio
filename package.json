@@ -46,6 +46,7 @@
     "deploy": "bun run --cwd cloudflare deploy"
   },
   "patchedDependencies": {
-    "@cloudflare/ai-chat@0.9.3": "patches/@cloudflare%2Fai-chat@0.9.3.patch"
+    "@cloudflare/ai-chat@0.9.3": "patches/@cloudflare%2Fai-chat@0.9.3.patch",
+    "agents@0.20.1": "patches/agents@0.20.1.patch"
   }
 }

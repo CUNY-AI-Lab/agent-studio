@@ -44,6 +44,16 @@
   `tools/oxlint/anti-slop/`. Fix findings at the actual contract or boundary;
   do not add rule suppressions, evasive wrappers, or generic `SAFETY` comments.
   Effect-specific rules stay disabled because this repository has no Effect code.
+- `patches/` carries the two approved dependency patches applied by `bun
+  patch`: the `@cloudflare/ai-chat` SSE framing fix and the `agents` chat-hook
+  fix for cloudflare/agents#2217 (a per-chunk no-op state dispatch that made
+  slow clients fail streamed turns with React #185). When bumping either
+  package, check whether upstream has taken the fix before carrying the patch
+  forward, and re-run the browser acceptance's throttled resume scenario.
+- The browser acceptance starts its own local Worker and refuses to run if
+  anything already answers on its port. Its resumed-history scenario throttles
+  the page's CPU on purpose and waits for the throttled renderer with an
+  explicit measured bound; do not shorten that bound or loosen its assertions.
 - Run `bun run lint`, `bun run typecheck`, `bun run test`, `bun run build`, and
   the local smoke before claiming a change is ready. Review source and checks
   before the direct staging command:
