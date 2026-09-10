@@ -1252,7 +1252,6 @@ test('a failed provider stream during tool arguments preserves instructions and 
 
 test('repeated framework turns preserve corrections across Stop during a tool and an explicit resume', { timeout: 5_000 }, async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
   const { tool } = await import('ai');
   const { z } = await import('zod');
   const { MockR2 } = await import('./helpers/env.mjs');
@@ -1268,7 +1267,8 @@ test('repeated framework turns preserve corrections across Stop during a tool an
     async fetch(input, init) {
       if (String(input).endsWith('/v1/models')) {
         catalogCalls += 1;
-        return Response.json({ object: 'list', data: [{ id: DEFAULT_CAIL_MODEL, capabilities: ['text-generation', 'function-calling'] }] });
+        // The legacy workspace below migrates to the 0731 ID, which must be in the catalog regardless of the current default.
+        return Response.json({ object: 'list', data: [{ id: 'deepseek-v4-flash-0731', capabilities: ['text-generation', 'function-calling'] }] });
       }
       requests.push(JSON.parse(init.body));
       const counting = requests.length === 1;

@@ -29,7 +29,7 @@ import { isAllowedCailModelId } from './workspace-validation';
  * Canonical Gateway model ID. Ops can override via CAIL_MODEL, and an
  * individual workspace can persist its own model choice.
  */
-export const DEFAULT_CAIL_MODEL = 'deepseek-v4-flash-0731';
+export const DEFAULT_CAIL_MODEL = 'deepseek-v4.1-flash';
 
 export interface CailModelEnv {
   /**

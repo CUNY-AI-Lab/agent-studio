@@ -455,7 +455,7 @@ test('cailAuthRequiredResponse is a 401 with the canonical nested envelope', asy
 });
 
 test('resolveCailModelName honors the override and default', () => {
-  assert.equal(DEFAULT_CAIL_MODEL, 'deepseek-v4-flash-0731');
+  assert.equal(DEFAULT_CAIL_MODEL, 'deepseek-v4.1-flash');
   assert.equal(
     resolveCailModelName({ CAIL_MODEL: 'gpt-oss-120b' }),
     'gpt-oss-120b',
