@@ -11,7 +11,7 @@ permissions:
   packages: read
 
 jobs:
-  validate:
+  quality:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -32,20 +32,39 @@ jobs:
           NODE_AUTH_TOKEN: ${{ github.token }}
         run: bun install --frozen-lockfile
 
-      - name: Install Chromium for browser integration
-        run: bunx playwright install --with-deps chromium
-
       - name: Dependency audit
         run: bun audit --audit-level high
 
       - name: Repository check
         run: bun run check
 
+  process_smoke:
+    name: Local Worker process integration smoke (not E2E)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: bun install --frozen-lockfile
+
       - name: Write local Worker variables
         run: |
           umask 077
-          cat > cloudflare/.dev.vars <<'EOF'
-          SESSION_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          printf 'SESSION_SECRET=%064d\n' 0 > cloudflare/.dev.vars
+          cat >> cloudflare/.dev.vars <<'EOF'
           CAIL_MODEL=glm-5.2
           CAIL_REQUIRE_IDENTITY=false
           CAIL_BASE_PATH=/agent-studio
@@ -54,7 +73,7 @@ jobs:
           CAIL_CANONICAL_ORIGIN=
           EOF
 
-      - name: Local Worker process integration smoke (not E2E)
+      - name: Run process integration smoke
         run: |
           set -euo pipefail
 
@@ -91,24 +110,67 @@ jobs:
             exit 1
           fi
 
-          # The browser acceptance starts its own Worker on this port next.
-          # Wrangler releases the port a moment after the wrapper exits, so
-          # wait until nothing answers before this step ends; otherwise the
-          # next Worker fails to bind and the acceptance would run against a
-          # Worker that is shutting down.
-          cleanup
-          worker_pid=''
-          for _ in $(seq 1 60); do
-            if ! curl --silent --output /dev/null http://127.0.0.1:8787/agent-studio/health; then
-              exit 0
-            fi
-            sleep 0.5
-          done
-          echo 'The smoke Worker did not release port 8787 within 30s' >&2
-          exit 1
+  browser_acceptance:
+    name: Local Worker browser acceptance (integration, not E2E)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
-      - name: Local Worker browser acceptance (integration, not E2E)
-        run: bun run test:browser -- --no-build
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Install dependencies
+        env:
+          NODE_AUTH_TOKEN: ${{ github.token }}
+        run: bun install --frozen-lockfile
+
+      - name: Install Chromium for browser integration
+        run: bunx playwright install --with-deps chromium
+
+      - name: Write local Worker variables
+        run: |
+          umask 077
+          printf 'SESSION_SECRET=%064d\n' 0 > cloudflare/.dev.vars
+          cat >> cloudflare/.dev.vars <<'EOF'
+          CAIL_MODEL=glm-5.2
+          CAIL_REQUIRE_IDENTITY=false
+          CAIL_BASE_PATH=/agent-studio
+          CAIL_IDENTITY_JWKS=
+          CAIL_IDENTITY_ISSUER=
+          CAIL_CANONICAL_ORIGIN=
+          EOF
+
+      # This lane deliberately builds its own checkout. Depending on the
+      # quality job's artifact would serialize the longest path through CI.
+      - name: Run browser acceptance
+        run: bun run test:browser
+
+  validate:
+    if: ${{ always() }}
+    needs:
+      - quality
+      - process_smoke
+      - browser_acceptance
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every validation lane
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          PROCESS_SMOKE_RESULT: ${{ needs.process_smoke.result }}
+          BROWSER_ACCEPTANCE_RESULT: ${{ needs.browser_acceptance.result }}
+        run: |
+          set -euo pipefail
+          [[ "$QUALITY_RESULT" == success ]]
+          [[ "$PROCESS_SMOKE_RESULT" == success ]]
+          [[ "$BROWSER_ACCEPTANCE_RESULT" == success ]]
 
   deploy:
     if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
