@@ -407,6 +407,7 @@ jobs:
               code="$(curl --silent --show-error --max-time "$request_timeout" \
                 --dump-header "$headers" --output "$body" \
                 --write-out '%{http_code}' \
+                --header 'Accept: text/html' \
                 --header 'Cache-Control: no-cache' "$url" 2>/dev/null || true)"
               if [[ "$code" == 302 ]]; then
                 awk 'BEGIN { IGNORECASE=1 } /^location:/ {
