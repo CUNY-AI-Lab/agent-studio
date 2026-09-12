@@ -99,18 +99,24 @@ function makeSqlStorage() {
 function makeRealSqlStorage(schema) {
   const database = new DatabaseSync(':memory:');
   database.exec(schema);
+  const result = (rows = []) => ({
+    toArray: () => rows,
+    [Symbol.iterator]: function* iterator() {
+      yield* rows;
+    },
+  });
   const sql = {
     exec(query, ...bindings) {
       const statement = database.prepare(query);
       if (/^\s*select\b/i.test(query)) {
-        return { toArray: () => statement.all(...bindings) };
+        return result(statement.all(...bindings));
       }
       if (bindings.length > 0) {
         statement.run(...bindings);
       } else {
         database.exec(query);
       }
-      return { toArray: () => [] };
+      return result();
     },
   };
   return { database, sql };
@@ -553,6 +559,88 @@ test('large seven-turn history compacts chronologically and rebuilds after a sam
   assert.notEqual(rebuiltOverlay.sourceFingerprint, firstFingerprint);
   assert.equal(changedResult.systemPrompt, 'base prompt');
   assert.match(JSON.stringify(changedResult.modelMessages.slice(0, 2)), /edited historical answer/);
+});
+
+test('new and advancing overlays fall back to the hard budget when intact retained turns cannot reach target', async () => {
+  const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
+  const { database, sql } = makeRealSqlStorage('');
+  try {
+    const agent = new WorkspaceAgent({
+      storage: { sql },
+      id: { toString: () => 'chat-compaction-new-overlay-hard-budget-test' },
+      blockConcurrencyWhile: async (operation) => operation(),
+      getWebSockets: () => [],
+      acceptWebSocket: () => {},
+      waitUntil: () => {},
+    }, {});
+    const largeText = 'x'.repeat(52_140);
+    const messages = Array.from({ length: 7 }, (_, index) => [
+      user(`user-${index + 1}`, `question ${index + 1} ${largeText}`),
+      assistant(`assistant-${index + 1}`, `answer ${index + 1} ${largeText}`),
+    ]).flat();
+    agent.messages = messages;
+    const original = structuredClone(messages);
+    const originalReferences = [...messages];
+    const fullModelMessages = await convertToModelMessages(messages);
+    const contextLength = 128_000;
+    const budgets = chatCompactionBudgets(contextLength);
+    assert.ok(budgets);
+    const systemPrompt = 'base prompt';
+    const fullEstimate = estimateChatTokens(fullModelMessages) + estimateChatTokens(systemPrompt);
+    assert.ok(fullEstimate > budgets.hardTokens);
+
+    const result = await agent.prepareChatPromptContext({
+      modelMessages: fullModelMessages,
+      contextLength,
+      systemPrompt,
+    });
+    const candidateEstimate = estimateChatTokens(result.modelMessages)
+      + estimateChatTokens(result.systemPrompt);
+    assert.ok(candidateEstimate > budgets.targetTokens);
+    assert.ok(candidateEstimate <= budgets.hardTokens);
+    assert.ok(candidateEstimate < fullEstimate);
+    assert.notDeepEqual(result.modelMessages, fullModelMessages);
+    assert.match(JSON.stringify(result.modelMessages), /<chat_compaction_summary>/);
+    assert.equal(agent.getChatCompactionStore().readOverlay()?.throughMessageId, 'assistant-4');
+    assert.deepEqual(agent.messages, original);
+    assert.equal(agent.messages[0], originalReferences[0]);
+
+    const previousOverlay = agent.getChatCompactionStore().readOverlay();
+    agent.messages = [
+      ...messages,
+      ...Array.from({ length: 3 }, (_, index) => [
+        user(`user-${index + 8}`, `question ${index + 8} ${largeText}`),
+        assistant(`assistant-${index + 8}`, `answer ${index + 8} ${largeText}`),
+      ]).flat(),
+    ];
+    const advancedOriginal = structuredClone(agent.messages);
+    const advancedReferences = [...agent.messages];
+    const advancedFullModelMessages = await convertToModelMessages(agent.messages);
+    const advancedFullEstimate = estimateChatTokens(advancedFullModelMessages)
+      + estimateChatTokens(systemPrompt);
+    assert.ok(advancedFullEstimate > budgets.hardTokens);
+
+    const advancedResult = await agent.prepareChatPromptContext({
+      modelMessages: advancedFullModelMessages,
+      contextLength,
+      systemPrompt,
+    });
+    const advancedCandidateEstimate = estimateChatTokens(advancedResult.modelMessages)
+      + estimateChatTokens(advancedResult.systemPrompt);
+    assert.ok(advancedCandidateEstimate > budgets.targetTokens);
+    assert.ok(advancedCandidateEstimate <= budgets.hardTokens);
+    assert.ok(advancedCandidateEstimate < advancedFullEstimate);
+    assert.notDeepEqual(advancedResult.modelMessages, advancedFullModelMessages);
+    assert.match(JSON.stringify(advancedResult.modelMessages), /<chat_compaction_summary>/);
+    const advancedOverlay = agent.getChatCompactionStore().readOverlay();
+    assert.equal(advancedOverlay?.throughMessageId, 'assistant-7');
+    assert.equal(advancedOverlay?.createdAt, previousOverlay?.createdAt);
+    assert.notEqual(advancedOverlay?.sourceFingerprint, previousOverlay?.sourceFingerprint);
+    assert.deepEqual(agent.messages, advancedOriginal);
+    assert.equal(agent.messages[0], advancedReferences[0]);
+  } finally {
+    database.close();
+  }
 });
 
 test('an existing overlay advances only when its effective prompt crosses the trigger watermark', async () => {
