@@ -594,8 +594,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       createdAt: previousOverlay?.createdAt ?? now,
       updatedAt: now,
     };
-    const fitted = await this.materializeChatCompactionOverlay(overlay, systemPrompt, budgets.targetTokens);
-    if (!fitted) return previousOverlay;
+    let fitted = await this.materializeChatCompactionOverlay(overlay, systemPrompt, budgets.targetTokens);
+    if (!fitted) {
+      fitted = await this.materializeChatCompactionOverlay(overlay, systemPrompt, budgets.hardTokens);
+      if (!fitted
+        || estimateChatTokens(fitted.modelMessages) + estimateChatTokens(systemPrompt) >= estimatedTokens) {
+        return previousOverlay;
+      }
+    }
     overlay.summary = fitted.summary;
     // The one-row upsert is the commit point. If summary generation or this
     // write fails, the previous overlay and every canonical message remain.
