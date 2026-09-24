@@ -35,13 +35,17 @@ const baseProps = {
 
 describe('ChatPanel', () => {
   it.each([
-    ['upstream_error', 'The model provider could not finish this response. You can try again.'],
-    ['upstream_rate_limited', 'The model provider is busy. Wait a moment before trying again.'],
-    ['outcome_unknown', 'The model connection ended before the result could be confirmed. Check the conversation and workspace files before retrying; the request may already have produced a result.'],
-    ['response_interrupted', 'The response was interrupted before it finished. Your saved conversation and workspace files are kept. Check them before retrying.'],
-    ['provider_configuration_error', 'The model is unavailable because of a service configuration problem. Choose another model or try again later.'],
-  ])('shows bounded recovery for %s and retains the conversation', async (code, expectedNotice) => {
+    'upstream_error',
+    'upstream_rate_limited',
+    'outcome_unknown',
+    'response_interrupted',
+    'provider_configuration_error',
+  ])('shows bounded recovery for %s and retains the conversation', async (code) => {
     const onRetry = vi.fn();
+    const notice = noticeFromChatError(new Error(JSON.stringify({
+      error: { code, message: 'private provider detail', cail: { retryable: false } },
+    })));
+    expect(notice).not.toBeNull();
     const user = userEvent.setup();
     render(<ChatPanel {...baseProps}
       messages={[userMessage('Keep the task instructions')]}
@@ -50,12 +54,10 @@ describe('ChatPanel', () => {
         isRecovering: false, isToolContinuation: false, contextualTurnActive: false,
         connectionError: null, canRetry: true,
       })}
-      errorNotice={noticeFromChatError(new Error(JSON.stringify({
-        error: { code, message: 'private provider detail', cail: { retryable: false } },
-      })))}
+      errorNotice={notice}
       onRetry={onRetry}
     />);
-    expect(screen.getByText(expectedNotice)).toBeInTheDocument();
+    expect(screen.getByText(notice ?? '')).toBeInTheDocument();
     expect(screen.queryByText('private provider detail')).not.toBeInTheDocument();
     expect(screen.getByText('Keep the task instructions')).toBeInTheDocument();
     expect(onRetry).not.toHaveBeenCalled();

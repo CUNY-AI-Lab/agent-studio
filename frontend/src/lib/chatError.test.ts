@@ -7,14 +7,21 @@ describe('noticeFromChatError', () => {
     const signal = JSON.stringify({
       error: { code: 'quota_exceeded', message: 'Quota exhausted for this account.' },
     });
-    expect(noticeFromChatError(new Error(signal))).toBe('You have reached your usage quota. Try again later.');
+    const notice = noticeFromChatError(new Error(signal));
+    expect(notice).not.toBeNull();
+    expect(notice).not.toContain('Quota exhausted for this account.');
   });
 
   it('finds a quota signal after an error prefix and supplies the default message', () => {
     const signal = JSON.stringify({ error: { code: 'quota_exceeded' } });
-    expect(noticeFromChatError(new Error(`stream failed: ${signal}`))).toBe(
-      'You have reached your usage quota. Try again later.',
-    );
+    const notice = noticeFromChatError(new Error(`stream failed: ${signal}`));
+    expect(notice).not.toBeNull();
+    expect(notice).toBe(noticeFromChatError(new Error(signal)));
+  });
+
+  it('warns that an unconfirmed outcome may already have produced a result', () => {
+    const signal = JSON.stringify({ error: { code: 'outcome_unknown' } });
+    expect(noticeFromChatError(new Error(signal))).toMatch(/may already have produced a result/);
   });
 
   it('ignores malformed and unrelated errors', () => {

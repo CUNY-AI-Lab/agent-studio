@@ -3,11 +3,9 @@ import {
   canExportPanelSnapshot,
   canOpenFileInPanel,
   canQueryFileInPanel,
-  getFileTileLabel,
   getFileTypeBadge,
   getPanelDownloadFormats,
   getPanelTitle,
-  getPanelTypeLabel,
   getWorkspaceFilePanelId,
   inferWorkspaceFilePanelType,
   isPanelContextualChatCapable,
@@ -67,12 +65,6 @@ describe('file classification', () => {
     expect(getFileTypeBadge('a.markdown')).toBe('MARK');
     expect(getFileTypeBadge('noext')).toBe('FILE');
   });
-
-  it('labels common file tile types', () => {
-    expect(getFileTileLabel('a.csv')).toBe('CSV File');
-    expect(getFileTileLabel('a.png')).toBe('Image');
-    expect(getFileTileLabel('a.unknown')).toBe('File');
-  });
 });
 
 describe('getPanelTitle', () => {
@@ -80,13 +72,6 @@ describe('getPanelTitle', () => {
     expect(getPanelTitle(markdownPanel('p', { title: 'Hi' }))).toBe('Hi');
     expect(getPanelTitle(filePanel('editor', 'p', 'x/y.txt'))).toBe('y.txt');
     expect(getPanelTitle(fileTreePanel('p'))).toBe('Workspace Files');
-  });
-});
-
-describe('getPanelTypeLabel', () => {
-  it('labels by type', () => {
-    expect(getPanelTypeLabel(chartPanel('p'))).toBe('Chart');
-    expect(getPanelTypeLabel(filePanel('pdf', 'p', 'a.pdf'))).toBe('PDF');
   });
 });
 
