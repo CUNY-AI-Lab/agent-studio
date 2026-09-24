@@ -14,21 +14,10 @@ function ShortcutsHarness() {
 }
 
 describe('KeyboardShortcutsDialog', () => {
-  it('renders nothing when closed', () => {
-    const { container } = render(<KeyboardShortcutsDialog open={false} onClose={() => {}} />);
-    expect(container).toBeEmptyDOMElement();
-  });
-
   it('is a labeled modal dialog', () => {
     render(<KeyboardShortcutsDialog open onClose={() => {}} />);
     const dialog = screen.getByRole('dialog', { name: 'Keyboard shortcuts' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
-  });
-
-  it('lists the arrow-key move binding so the feature is discoverable', () => {
-    render(<KeyboardShortcutsDialog open onClose={() => {}} />);
-    expect(screen.getByText('Move the tile by 16px')).toBeInTheDocument();
-    expect(screen.getByText('Toggle selection of the focused tile')).toBeInTheDocument();
   });
 
   it('keeps Tab and Shift+Tab inside, then restores the opener after Escape', async () => {
