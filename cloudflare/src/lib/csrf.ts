@@ -216,7 +216,7 @@ export function classifyOrigin(
  * the key alone; Agent Studio has no Bearer path today, so this is a documented
  * no-op — if one is added, short-circuit here before the origin check.
  */
-export async function enforceCsrf(
+async function enforceCsrf(
   c: Context<{ Bindings: Env; Variables: SessionVariables }>,
 ): Promise<Response | null> {
   if (SAFE_METHODS.has(c.req.method.toUpperCase())) return null;
