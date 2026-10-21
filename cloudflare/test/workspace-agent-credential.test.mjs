@@ -3,7 +3,13 @@ import test from 'node:test';
 import { z } from 'zod';
 import { createTestIdentityIssuer, TEST_SUBJECTS } from './helpers/identity.mjs';
 
-import { registerCloudflareStub, importServer, makeEnv, Session } from './helpers/env.mjs';
+import {
+  importServer,
+  installAgentStorageKv,
+  makeEnv,
+  registerCloudflareStub,
+  Session,
+} from './helpers/env.mjs';
 import { loadIdentityVerifierConfig, verifyIdentityJwt } from '@cuny-ai-lab/cail-identity';
 
 registerCloudflareStub();
@@ -47,6 +53,9 @@ test('a long tool step refreshes through the authenticated route before its next
   agent.requireWorkspace = () => workspace;
   agent.requireSessionId = () => sessionId;
   agent.messages = [{ id: 'user-message', role: 'user', parts: [{ type: 'text', text: 'Continue the saved work.' }] }];
+  // This test owns credential refresh across a multi-step model call. Complete
+  // history is covered by the Sessions-backed chat/export tests.
+  agent.completeMessages = async () => structuredClone(agent.messages);
   const originalMessages = structuredClone(agent.messages);
   const { DEFAULT_CAIL_MODEL } = await import('../src/lib/cail-model.ts');
   agent.functionCallingModelId = DEFAULT_CAIL_MODEL;
@@ -203,10 +212,12 @@ function makeStorage(seed = []) {
 }
 
 async function makeRealWorkspaceAgent(sessionId, env, storage) {
+  installAgentStorageKv(storage);
+  const name = `${sessionId}-workspace-1`;
   const agent = new WorkspaceAgent(
     {
       storage,
-      id: { toString: () => 'workspace-agent-credential-test' },
+      id: { name, toString: () => name },
       blockConcurrencyWhile: async (operation) => operation(),
       getWebSockets: () => [],
       acceptWebSocket: () => {},
@@ -214,7 +225,7 @@ async function makeRealWorkspaceAgent(sessionId, env, storage) {
     },
     env,
   );
-  await agent.setName(`${sessionId}-workspace-1`);
+  await agent.__unsafe_ensureInitialized();
   return agent;
 }
 
@@ -426,6 +437,7 @@ test('server credential RPC reaches a constructed WorkspaceAgent chat/model boun
     role: 'user',
     parts: [{ type: 'text', text: 'hello' }],
   }];
+  agent.completeMessages = async () => structuredClone(agent.messages);
   agent.buildHostTools = () => ({});
   agent.createCodeModeTool = () => noopTool;
   agent.buildModelTools = () => ({});
@@ -541,6 +553,7 @@ test('warm WorkspaceAgent refreshes a newly primed leg after expiry without forw
     role: 'user',
     parts: [{ type: 'text', text: 'hello' }],
   }];
+  agent.completeMessages = async () => structuredClone(agent.messages);
   const { tool } = await import('ai');
   const noopTool = tool({
     description: 'noop',

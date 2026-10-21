@@ -48,12 +48,16 @@ For the colleague-facing engineering and agent-review defaults, see the [CAIL Fl
   `tools/oxlint/anti-slop/`. Fix findings at the actual contract or boundary;
   do not add rule suppressions, evasive wrappers, or generic `SAFETY` comments.
   Effect-specific rules stay disabled because this repository has no Effect code.
-- `patches/` carries the two approved dependency patches applied by `bun
-  patch`: the `@cloudflare/ai-chat` SSE framing fix and the `agents` chat-hook
-  fix for cloudflare/agents#2217 (a per-chunk no-op state dispatch that made
-  slow clients fail streamed turns with React #185). When bumping either
-  package, check whether upstream has taken the fix before carrying the patch
-  forward, and re-run the browser acceptance's throttled resume scenario.
+- `patches/` carries the approved `@cloudflare/ai-chat` SSE framing fix applied
+  by `bun patch`. Agents 0.28 includes the former local chat-hook fix for
+  cloudflare/agents#2217, so do not restore that patch. When bumping ai-chat,
+  check whether upstream has taken the SSE fix before carrying it forward, and
+  re-run the browser acceptance's throttled resume scenario.
+- The ai-chat 0.12 legacy-message lift is guarded in `WorkspaceAgent`: validate
+  the intact legacy source, rebuild a partial Sessions copy before retry, and
+  fail startup while legacy rows remain. Keep that compatibility guard until
+  upstream makes the lift atomic or retry-safe and the injected middle-row and
+  old-SDK compatibility-wake regressions pass without it.
 - The browser acceptance starts its own local Worker and refuses to run if
   anything already answers on its port. Its resumed-history scenario throttles
   the page's CPU on purpose and waits for the throttled renderer with an

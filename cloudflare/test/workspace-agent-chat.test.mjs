@@ -1,17 +1,34 @@
 import assert from 'node:assert/strict';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { TEST_SUBJECTS } from '@cuny-ai-lab/cail-identity/testing';
 
-import { registerCloudflareStub } from './helpers/env.mjs';
+import {
+  installAgentStorageKv,
+  registerCloudflareStub,
+} from './helpers/env.mjs';
 
 registerCloudflareStub();
+
+const startedLifecycle = { isStarted: () => true };
 
 function makeAgentStorage(seed = []) {
   const values = new Map(seed);
   const writes = [];
+  const database = new DatabaseSync(':memory:');
+  let transactionDepth = 0;
+  const result = (rows = [], rowsWritten = 0) => ({
+    toArray: () => rows,
+    rowsRead: rows.length,
+    rowsWritten,
+    [Symbol.iterator]: function* iterator() {
+      yield* rows;
+    },
+  });
   return {
     values,
     writes,
+    database,
     async get(key) {
       return values.get(key);
     },
@@ -23,24 +40,46 @@ function makeAgentStorage(seed = []) {
       values.delete(key);
       writes.push(['delete', key]);
     },
+    async list({ prefix = '' } = {}) {
+      return new Map([...values].filter(([key]) => String(key).startsWith(prefix)));
+    },
     setAlarm() {},
     deleteAlarm() {},
+    transactionSync(operation) {
+      if (transactionDepth > 0) return operation();
+      database.exec('BEGIN IMMEDIATE');
+      transactionDepth += 1;
+      try {
+        const value = operation();
+        database.exec('COMMIT');
+        return value;
+      } catch (error) {
+        database.exec('ROLLBACK');
+        throw error;
+      } finally {
+        transactionDepth -= 1;
+      }
+    },
     sql: {
-      exec() {
-        return {
-          toArray: () => [],
-          [Symbol.iterator]: function* iterator() {},
-        };
+      exec(query, ...bindings) {
+        const statement = database.prepare(query);
+        if (statement.columns().length > 0) {
+          return result(statement.all(...bindings));
+        }
+        const write = statement.run(...bindings);
+        return result([], Number(write.changes));
       },
     },
   };
 }
 
 async function makeRealWorkspaceAgent(WorkspaceAgent, storage = makeAgentStorage()) {
+  installAgentStorageKv(storage, { agentSchemaVersion: null });
+  const name = `${'a'.repeat(32)}-workspace-1`;
   const agent = new WorkspaceAgent(
     {
       storage,
-      id: { toString: () => 'workspace-agent-chat-test' },
+      id: { name, toString: () => name },
       blockConcurrencyWhile: async (operation) => operation(),
       getWebSockets: () => [],
       acceptWebSocket: () => {},
@@ -48,7 +87,6 @@ async function makeRealWorkspaceAgent(WorkspaceAgent, storage = makeAgentStorage
     },
     {},
   );
-  await agent.setName(`${'a'.repeat(32)}-workspace-1`);
   return agent;
 }
 
@@ -93,8 +131,10 @@ test('chat persistence counts an admitted write and rejects only after migration
   };
   try {
     const agent = {
+      lifecycle: startedLifecycle,
       activeMutations: 0,
       migrationFrozen: false,
+      legacyChatTableExists: () => false,
       assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
     };
     await WorkspaceAgent.prototype.persistMessages.call(agent, []);
@@ -121,6 +161,7 @@ test('migration freeze waits for framework chat stability and clears admission o
   const writes = [];
   const deletes = [];
   const agent = {
+    lifecycle: startedLifecycle,
     activeMutations: 0,
     migrationFrozen: false,
     assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
@@ -180,6 +221,7 @@ test('migration freeze refuses to race an active mutation', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const writes = [];
   const agent = {
+    lifecycle: startedLifecycle,
     activeMutations: 1,
     migrationFrozen: false,
     waitUntilStable: async () => true,
@@ -200,6 +242,7 @@ test('migration freeze does not swallow falsy marker-write failures', async () =
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   for (const rejection of [null, undefined, 0, false]) {
     const agent = {
+      lifecycle: startedLifecycle,
       activeMutations: 0,
       migrationFrozen: false,
       waitUntilStable: async () => true,
@@ -342,7 +385,9 @@ test('migration freeze closes direct persistence and clear/reset paths', async (
   };
   try {
     const agent = {
+      lifecycle: startedLifecycle,
       migrationFrozen: true,
+      legacyChatTableExists: () => false,
       assertNotFrozen: WorkspaceAgent.prototype.assertNotFrozen,
     };
     await assert.rejects(
@@ -370,7 +415,7 @@ test('migration freeze closes direct persistence and clear/reset paths', async (
 
 test('destructive cleanup refuses to race an active mutation', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
-  const agent = { activeMutations: 1, migrationFrozen: false };
+  const agent = { lifecycle: startedLifecycle, activeMutations: 1, migrationFrozen: false };
   await assert.rejects(
     WorkspaceAgent.prototype.destroyWorkspaceState.call(agent),
     /active mutation/,
@@ -384,6 +429,7 @@ test('destructive cleanup defers Durable Object destruction for RPC callers', as
   let deferredDestroyCalls = 0;
   let directDestroyCalls = 0;
   const agent = {
+    lifecycle: startedLifecycle,
     activeMutations: 0,
     migrationFrozen: true,
     cailIdentityJwt: 'credential',
@@ -419,6 +465,7 @@ test('destructive cleanup defers Durable Object destruction for RPC callers', as
 test('identity enforcement rejects mutation RPCs on an anonymous pre-cutover socket', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
+    lifecycle: startedLifecycle,
     env: { CAIL_REQUIRE_IDENTITY: 'true' },
     cailSubject: null,
     migrationFrozen: false,
@@ -435,6 +482,7 @@ test('identity enforcement rejects mutation RPCs on an anonymous pre-cutover soc
 test('code rate-limit denial rejects before sandbox execution', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
+    lifecycle: startedLifecycle,
     env: {
       HEAVY_RATE_LIMIT: { limit: async () => ({ success: false }) },
     },
@@ -457,6 +505,7 @@ test('successful code execution runs the sandbox once without lifecycle writes',
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const sqlWrites = [];
   const agent = {
+    lifecycle: startedLifecycle,
     ctx: {
       storage: {
         sql: {
@@ -500,6 +549,7 @@ test('code RPC fence spans rate-limit admission and rejects queued work before s
   let executorCalls = 0;
   const sqlWrites = [];
   const agent = {
+    lifecycle: startedLifecycle,
     migrationFrozen: false,
     activeMutations: 0,
     cailSubject: TEST_SUBJECTS.alice,
@@ -577,6 +627,7 @@ test('codemode execution is held inside the migration mutation fence', async () 
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const events = [];
   const agent = {
+    lifecycle: startedLifecycle,
     env: { LOADER: {} },
     buildCodeModeHostTools: WorkspaceAgent.prototype.buildCodeModeHostTools,
     getRuntimeWorkspace() {
@@ -616,6 +667,7 @@ test('codemode execution is held inside the migration mutation fence', async () 
 test('anonymous chat streams an authentication error instead of assistant JSON', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
+    lifecycle: startedLifecycle,
     assertNotFrozen() {},
     requireWorkspace() {
       return { id: 'workspace-1' };
@@ -665,6 +717,7 @@ test('chat admission aborts a delayed model catalog before model dispatch', asyn
     },
   };
   const agent = {
+    lifecycle: startedLifecycle,
     assertNotFrozen() {},
     requireWorkspace() {
       return {
@@ -709,6 +762,7 @@ test('chat admission aborts a delayed model catalog before model dispatch', asyn
 test('WebSocket chat admission uses the heavy rate-limit binding', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
+    lifecycle: startedLifecycle,
     assertNotFrozen() {},
     requireWorkspace() { return { id: 'workspace-1' }; },
     requireSessionId() { return 'session-1'; },
@@ -773,6 +827,7 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     execute: async () => 'ok',
   });
   const agent = {
+    lifecycle: startedLifecycle,
     ctx: { storage: { sql: { exec: () => ({ toArray: () => [] }) } } },
     assertNotFrozen() {},
     requireWorkspace() {
@@ -790,6 +845,10 @@ test('gateway 429 quota_exceeded streams the verbatim quota message to the user'
     env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
     state: { panels: [] },
     messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+    async completeMessages() { return this.messages; },
+    async prepareChatPromptContext({ modelMessages, systemPrompt }) {
+      return { modelMessages, systemPrompt };
+    },
     buildHostTools() {
       return {};
     },
@@ -866,6 +925,7 @@ test('a placeholder workspace remains title-eligible after an empty prior respon
     updatedAt: '',
   };
   const agent = {
+    lifecycle: startedLifecycle,
     assertNotFrozen() {},
     requireWorkspace() { return workspace; },
     requireSessionId() { return 'session-1'; },
@@ -878,6 +938,10 @@ test('a placeholder workspace remains title-eligible after an empty prior respon
       { id: 'prior-empty-response', role: 'assistant', parts: [{ type: 'text', text: '' }] },
       { id: 'follow-up', role: 'user', parts: [{ type: 'text', text: 'Add sources' }] },
     ],
+    async completeMessages() { return this.messages; },
+    async prepareChatPromptContext({ modelMessages, systemPrompt }) {
+      return { modelMessages, systemPrompt };
+    },
     buildHostTools(workspaceArg) {
       buildWorkspace = workspaceArg;
       return {};
@@ -897,6 +961,7 @@ test('a placeholder workspace remains title-eligible after an empty prior respon
 test('chat refuses a named non-function-capable model before inference', async () => {
   const { WorkspaceAgent } = await import('../src/agent/workspace-agent.ts');
   const agent = {
+    lifecycle: startedLifecycle,
     assertNotFrozen() {},
     requireWorkspace() {
       return {
@@ -980,6 +1045,7 @@ test('chat caches function capability per model and revalidates a changed model'
     execute: async () => 'ok',
   });
   const agent = {
+    lifecycle: startedLifecycle,
     assertNotFrozen() {},
     requireWorkspace() {
       return {
@@ -1001,6 +1067,10 @@ test('chat caches function capability per model and revalidates a changed model'
     env: { CAIL_API_BASE: 'https://cail.test', GATEWAY: gateway },
     state: { panels: [] },
     messages: [{ id: 'message-1', role: 'user', parts: [{ type: 'text', text: 'hello' }] }],
+    async completeMessages() { return this.messages; },
+    async prepareChatPromptContext({ modelMessages, systemPrompt }) {
+      return { modelMessages, systemPrompt };
+    },
     buildHostTools() {
       return {};
     },
@@ -1069,9 +1139,6 @@ test('framework chat repairs an interrupted tool before a follow-up reaches infe
       return tool({ inputSchema: z.object({}), execute: async () => 'ok' });
     },
   });
-  // The storage adapter above has no SQLite rows; keep only persistence in
-  // memory while the real framework receiver, repair, and stream handler run.
-  agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
   await agent.onMessage(testConnection(), JSON.stringify({
     type: 'cf_agent_use_chat_request',
     id: 'interrupted-recovery',
@@ -1130,9 +1197,8 @@ test('framework chat surfaces known Gateway failures without retrying or clearin
         return tool({ inputSchema: z.object({}), execute: async () => 'ok' });
       },
     });
-    // Exercise the actual framework receiver and response handling with only
-    // storage and the Gateway boundary replaced by deterministic adapters.
-    agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
+    // Exercise the actual framework receiver, Sessions persistence, and
+    // response handling with only the Gateway boundary replaced.
     agent.onChatMessage = async (...args) => {
       const response = await WorkspaceAgent.prototype.onChatMessage.apply(agent, args);
       responseBody = response.clone().text();
@@ -1204,7 +1270,6 @@ test('a failed provider stream during tool arguments preserves instructions and 
       return tool({ inputSchema: z.object({ code: z.string() }), execute: async () => 'ok' });
     },
   });
-  agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
   const responseBodies = [];
   agent.onChatMessage = async (...args) => {
     const response = await WorkspaceAgent.prototype.onChatMessage.apply(agent, args);
@@ -1318,9 +1383,8 @@ test('repeated framework turns preserve corrections across Stop during a tool an
   };
   await putWorkspace(agent.env, sessionId, legacyWorkspace);
   await agent.syncWorkspace(legacyWorkspace, sessionId);
-  // SQLite persistence, credential refresh, and provider execution are deterministic adapters;
-  // submit, cancel, history repair, tool execution, and reply use the real SDK.
-  agent.persistMessages = async (next) => { agent.messages = structuredClone(next); };
+  // Provider execution is deterministic; Sessions persistence, submit,
+  // cancel, history repair, tool execution, and reply use the real SDK.
   const userMessages = [];
   async function submit(id, text) {
     const message = { id, role: 'user', parts: [{ type: 'text', text }] };

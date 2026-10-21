@@ -10,7 +10,6 @@
  * all normal reads use only the subject namespace.
  */
 
-import type { UIMessage } from 'ai';
 import { z } from 'zod';
 import type { WorkspaceRecord, WorkspaceState } from '../domain/workspace';
 import type { Env } from '../env';
@@ -37,7 +36,7 @@ export type MigratableAgent = {
   freezeForMigration(): Promise<void>;
   unfreezeAfterMigration(): Promise<void>;
   getSnapshot(): Promise<WorkspaceState>;
-  getMessages(): Promise<UIMessage[]>;
+  streamMessages(): Promise<ReadableStream<Uint8Array>>;
   getWorkspaceFiles(): Promise<Array<{ path: string; isDirectory: boolean }>>;
   readWorkspaceFileContent(filePath: string): Promise<{
     filePath: string;
@@ -55,11 +54,7 @@ export type MigratableAgent = {
     workspace: WorkspaceRecord,
     sessionId: string,
   ): Promise<void>;
-  persistMessages(
-    messages: UIMessage[],
-    excludeBroadcastIds?: string[],
-    options?: { _deleteStaleRows?: boolean },
-  ): Promise<void>;
+  replaceMessagesFromStream(stream: ReadableStream<Uint8Array>): Promise<void>;
 };
 
 type AgentFactory = (sessionId: string, workspaceId: string) => Promise<MigratableAgent>;
@@ -132,9 +127,8 @@ async function copyWorkspace(
     // No target workspace record exists yet, so this namespace is still an
     // import staging area and must exactly mirror the current frozen source.
     await target.clearWorkspaceFiles();
-    const [state, messages, runtimeFiles, legacyFiles] = await Promise.all([
+    const [state, runtimeFiles, legacyFiles] = await Promise.all([
       source.getSnapshot(),
-      source.getMessages(),
       source.getWorkspaceFiles(),
       listWorkspaceFilesRecursive(env, anonSessionId, workspace.id),
     ]);
@@ -158,10 +152,9 @@ async function copyWorkspace(
 
     await target.replaceWorkspaceState(state, workspace, subjectSessionId);
     // The target is an invisible import staging namespace until the R2 record
-    // commits. AIChatAgent only deletes stale rows when every incoming id is
-    // already known, so clear first and then write the exact frozen source.
-    await target.persistMessages([], undefined, { _deleteStaleRows: true });
-    await target.persistMessages(messages);
+    // commits. Stream the exact frozen history so a large transcript never
+    // crosses Durable Object RPC as one serialized value.
+    await target.replaceMessagesFromStream(await source.streamMessages());
 
     const queuedDownloads = await getWorkspaceDownloads(
       env,

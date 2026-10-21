@@ -82,6 +82,18 @@ downloads, exports, and gallery records. The Worker writes the R2 workspace
 record after the Durable Object and runtime state are ready, so list and get
 routes do not expose an incomplete workspace.
 
+AI Chat 0.12 moves the prior chat table into Agents Sessions on the first
+workspace wake. This is a one-way storage migration: reverting the Worker does
+not restore chat visibility to the old runtime and is not a recovery method.
+If a wake reports that saved history remains recoverable, leave the Durable
+Object in place and do not allow the old runtime to write. Correct the failing
+condition and roll forward with migration-aware code; the startup guard clears
+only the incomplete Sessions copy and rebuilds it from the intact legacy rows.
+Then verify the complete export and a reconnect before resuming ordinary use.
+If startup instead reports newer Sessions history beside legacy rows, preserve
+both stores and stop for a migration-specific repair; do not clear, delete, or
+recreate the workspace.
+
 Deletion freezes active mutations, clears runtime files, destroys Durable
 Object state, removes workspace and runtime R2 prefixes, and then removes the
 workspace record. If a step fails, the same authorized delete operation is the

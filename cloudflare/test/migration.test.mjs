@@ -23,6 +23,10 @@ import {
   MockR2,
   registerCloudflareStub,
 } from './helpers/env.mjs';
+import {
+  collectMessageStream,
+  createMessageStream,
+} from '../src/lib/message-stream.ts';
 
 registerCloudflareStub();
 
@@ -91,6 +95,7 @@ class FakeAgent {
 
   async getSnapshot() { return this.state; }
   async getMessages() { return this.messages; }
+  async streamMessages() { return createMessageStream(this.messages); }
 
   async getWorkspaceFiles() {
     return [...this.files.keys()].map((path) => ({ path, isDirectory: false }));
@@ -137,6 +142,10 @@ class FakeAgent {
     const byId = new Map(this.messages.map((message) => [message.id, message]));
     for (const message of messages) byId.set(message.id, structuredClone(message));
     this.messages = [...byId.values()];
+  }
+
+  async replaceMessagesFromStream(stream) {
+    this.messages = await collectMessageStream(stream);
   }
 }
 

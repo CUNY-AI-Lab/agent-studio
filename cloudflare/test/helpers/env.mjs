@@ -17,6 +17,37 @@ import { z } from 'zod';
 import {
   normalizePanelRelations,
 } from '../../src/lib/panel-connections.ts';
+import {
+  collectMessageStream,
+  createMessageStream,
+} from '../../src/lib/message-stream.ts';
+
+const CURRENT_AGENT_SCHEMA_VERSION = 14;
+
+/**
+ * Agents 0.28 reads its host schema version through the synchronous DO KV API
+ * during construction. Test contexts still exercise application storage via
+ * the asynchronous API, so keep both views backed by the same map.
+ */
+export function installAgentStorageKv(storage, { agentSchemaVersion = CURRENT_AGENT_SCHEMA_VERSION } = {}) {
+  const values = storage.values ?? new Map();
+  storage.values = values;
+  storage.get ??= async (key) => values.get(key);
+  storage.put ??= async (key, value) => values.set(key, value);
+  storage.delete ??= async (key) => values.delete(key);
+  storage.setAlarm ??= async () => {};
+  storage.getAlarm ??= async () => null;
+  storage.deleteAlarm ??= async () => {};
+  storage.kv ??= {
+    get: (key) => values.get(key),
+    put: (key, value) => values.set(key, value),
+    delete: (key) => values.delete(key),
+  };
+  if (agentSchemaVersion !== null) {
+    storage.kv.put('cf_agents:schema_version', agentSchemaVersion);
+  }
+  return storage;
+}
 
 // Mirror the DO's own path sanitization so the fake agent rejects traversal the
 // same way `writeWorkspaceFileContent`/`sanitizeRelativePath` do in production.
@@ -240,6 +271,8 @@ export class FakeWorkspaceAgent {
     return new Response('ok');
   }
 
+  async __unsafe_ensureInitialized() {}
+
   async setCailCredential(jwt) {
     this.credential = jwt;
   }
@@ -298,6 +331,14 @@ export class FakeWorkspaceAgent {
 
   async getMessages() {
     return this.messages;
+  }
+
+  async streamMessages() {
+    return createMessageStream(this.messages);
+  }
+
+  async replaceMessagesFromStream(stream) {
+    this.messages = await collectMessageStream(stream);
   }
 
   async executeCode(code) {
