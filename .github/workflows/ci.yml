@@ -60,7 +60,7 @@ jobs:
           umask 077
           printf 'SESSION_SECRET=%064d\n' 0 > cloudflare/.dev.vars
           cat >> cloudflare/.dev.vars <<'EOF'
-          CAIL_MODEL=glm-5.2
+          CAIL_MODEL=deepseek-v4.1-flash-1017
           CAIL_REQUIRE_IDENTITY=false
           CAIL_BASE_PATH=/agent-studio
           CAIL_IDENTITY_JWKS=
@@ -133,7 +133,7 @@ jobs:
           umask 077
           printf 'SESSION_SECRET=%064d\n' 0 > cloudflare/.dev.vars
           cat >> cloudflare/.dev.vars <<'EOF'
-          CAIL_MODEL=glm-5.2
+          CAIL_MODEL=deepseek-v4.1-flash-1017
           CAIL_REQUIRE_IDENTITY=false
           CAIL_BASE_PATH=/agent-studio
           CAIL_IDENTITY_JWKS=
@@ -260,7 +260,7 @@ jobs:
             ([.resources.bindings[]?
               | select(.type == "plain_text"
                 and .name == "CAIL_MODEL"
-                and .text == "deepseek-v4.1-flash")] | length) == 1 and
+                and .text == "deepseek-v4.1-flash-1017")] | length) == 1 and
             ([.resources.bindings[]?
               | select(.type == "plain_text"
                 and .name == "CAIL_CANONICAL_ORIGIN"
