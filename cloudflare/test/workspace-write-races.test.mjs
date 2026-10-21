@@ -818,6 +818,7 @@ test('deployed-v1 relations survive import/onStart and normalization is idempote
   const onStart = {
     state: imported.state,
     cailIdentityJwt: 'already-verified-for-test',
+    legacyChatTableExists: () => false,
     ctx: { storage: { get: async () => undefined } },
     setState(next) {
       this.state = next;
@@ -964,6 +965,7 @@ test('a persisted canonical-id collision survives import, boot, patch, and remov
   const booted = {
     state: imported.state,
     cailIdentityJwt: 'already-verified-for-test',
+    legacyChatTableExists: () => false,
     ctx: { storage: { get: async () => undefined } },
     setState(next) {
       this.state = next;
@@ -1053,6 +1055,7 @@ test('import, boot, and edits keep only distinct existing group members', async 
 
   fake.state = state;
   fake.cailIdentityJwt = 'already-verified-for-test';
+  fake.legacyChatTableExists = () => false;
   fake.ctx = { storage: { get: async () => undefined } };
   await WorkspaceAgent.prototype.onStart.call(fake);
   assert.deepEqual(fake.state.groups, expected);

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { UIMessage } from 'ai';
 import type { WorkspaceExportBundle } from './export';
 import type { WorkspaceRecord } from '../domain/workspace';
 import { CAIL_MODEL_ID_PATTERN } from './workspace-validation';
@@ -145,7 +146,7 @@ const workspaceExportFileSchema = z.object({
   content: z.string(),
 }).strict();
 
-const uiMessageSchema = z.object({
+export const uiMessageSchema = z.object({
   id: z.string().min(1),
   role: z.enum(['system', 'user', 'assistant']),
   metadata: z.json().optional(),
@@ -154,6 +155,14 @@ const uiMessageSchema = z.object({
   // the message envelope above still rejects malformed IDs and roles.
   parts: z.array(z.json()),
 }).strict();
+
+type UIMessagePayload = z.input<typeof uiMessageSchema>;
+
+export function parseUiMessage(payload: UIMessagePayload): UIMessage {
+  // SAFETY: the schema validates the serialized UIMessage envelope; parts are
+  // intentionally preserved as JSON so current and future SDK variants round-trip.
+  return uiMessageSchema.parse(payload) as UIMessage;
+}
 
 const workspaceImportBundleSchema = z.object({
   version: z.literal(1),

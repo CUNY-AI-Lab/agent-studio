@@ -112,6 +112,9 @@ function makeAgent() {
       _completeStream(streamId) {
         completed.push(streamId);
       },
+      _finishStream(streamId) {
+        completed.push(streamId);
+      },
       _broadcastChatMessage(event) {
         broadcasts.push(event);
       },
@@ -160,7 +163,7 @@ async function readParsedResults(chunks) {
 }
 
 function assertCompletedToolTurn({ context, message, result, streamCompleted }) {
-  assert.deepEqual(result, { status: 'completed' });
+  assert.deepEqual(result, { status: 'completed', finishReason: 'stop' });
   assert.equal(streamCompleted.value, true);
   assert.deepEqual(context.completed, ['stream-1']);
   assert.deepEqual(context.errors, []);
@@ -261,7 +264,7 @@ test('the framed transport skips malformed events and preserves later completion
   );
   const result = await runPatchedStream([body]);
 
-  assert.deepEqual(result.result, { status: 'completed' });
+  assert.deepEqual(result.result, { status: 'completed', finishReason: 'stop' });
   assert.deepEqual(result.message.parts, [
     { type: 'text', text: 'survived', state: 'done' },
   ]);
@@ -303,7 +306,7 @@ test('UTF-8 code points survive splits inside their encoded bytes', async () => 
       bytes.slice(0, split),
       bytes.slice(split),
     ]);
-    assert.deepEqual(result.result, { status: 'completed' });
+    assert.deepEqual(result.result, { status: 'completed', finishReason: 'stop' });
     assert.deepEqual(result.message.parts, [
       { type: 'text', text: 'café 🌊', state: 'done' },
     ]);
@@ -468,7 +471,7 @@ test('a large event in tiny chunks is parsed without an application cap', async 
 
   const result = await runPatchedStream(chunks);
 
-  assert.deepEqual(result.result, { status: 'completed' });
+  assert.deepEqual(result.result, { status: 'completed', finishReason: 'stop' });
   assert.deepEqual(
     result.context.stored.map(({ body }) => JSON.parse(body).type),
     ['data-large', 'finish'],

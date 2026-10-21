@@ -1,9 +1,17 @@
 import {
   AIChatAgent,
+  type ChatRecoveryContext,
+  type ChatRecoveryOptions,
   type ChatResponseResult,
   type OnChatMessageOptions,
 } from '@cloudflare/ai-chat';
-import { callable, type Connection, type ConnectionContext } from 'agents';
+import { autoTransformMessages } from '@cloudflare/ai-chat/ai-chat-v5-migration';
+import {
+  callable,
+  type AgentContext,
+  type Connection,
+  type ConnectionContext,
+} from 'agents';
 import { DynamicWorkerExecutor, type ExecuteResult } from '@cloudflare/codemode';
 import {
   createCodeTool,
@@ -19,9 +27,11 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  safeValidateUIMessages,
   stepCountIs,
   streamText,
   tool,
+  validateUIMessages,
   type ModelMessage,
   type StreamTextOnFinishCallback,
   type ToolSet,
@@ -105,6 +115,8 @@ import {
 import { verifyCsrfToken, wsOriginAllowed } from '../lib/csrf';
 import { guardGitToken, parseGitAllowedHosts } from '../lib/git-guard';
 import { modelErrorSignal } from '../lib/model-error';
+import { createMessageStream, readMessageStream } from '../lib/message-stream';
+import { completeSessionHistory } from '../lib/session-history';
 import { checkHeavyRpcLimit } from '../lib/rate-limit';
 import {
   isPlaceholderWorkspaceName,
@@ -130,6 +142,9 @@ const RUNTIME_R2_PREFIX = 'agent-studio/runtime';
 // that HTTP round trip; model execution itself has no added deadline.
 const CREDENTIAL_REFRESH_WAIT_MS = 15_000;
 const MIGRATION_FROZEN_KEY = 'migrationFrozen:v1';
+const LEGACY_CHAT_TABLE = 'cf_ai_chat_agent_messages';
+const LEGACY_CHAT_VALIDATION_ROWS = 25;
+const LEGACY_CHAT_VALIDATION_BYTES = 4 * 1024 * 1024;
 const MIGRATION_STABILITY_TIMEOUT_MS = 5_000;
 // Keep a finite stop for the AI SDK tool loop so a malformed or non-terminating
 // tool plan cannot spend indefinitely. This is a loop safety boundary, not an
@@ -343,7 +358,118 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     reject: (error: Error) => void;
   } | null = null;
 
+  constructor(ctx: AgentContext, env: Env) {
+    super(ctx, env);
+
+    // AIChatAgent installs its legacy-table lift as an instance onStart
+    // wrapper inside super(). Put this wrapper around that saved function so
+    // an interrupted lift is rebuilt from the still-intact legacy source
+    // before the SDK retries. Only public Sessions APIs mutate the new store.
+    const startWithLegacyChatLift = this.onStart.bind(this);
+    this.onStart = async () => {
+      await this.prepareLegacyChatLift();
+      return startWithLegacyChatLift();
+    };
+  }
+
+  private legacyChatTableExists(): boolean {
+    return this.ctx.storage.sql.exec<{ name: string }>(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table' AND name = ?
+    `, LEGACY_CHAT_TABLE).toArray().length > 0;
+  }
+
+  private async prepareLegacyChatLift(): Promise<void> {
+    if (!this.legacyChatTableExists()) return;
+
+    const order = this.ctx.storage.sql.exec<{
+      id: string;
+      bytes: number;
+    }>(`
+      SELECT id, LENGTH(CAST(message AS BLOB)) AS bytes
+      FROM cf_ai_chat_agent_messages
+      ORDER BY created_at ASC, rowid ASC
+    `).toArray();
+    // The old SDK creates its table eagerly. A minimal old-SDK compatibility
+    // wake therefore leaves an empty table beside valid Sessions history; the
+    // upstream lift can safely drop it without rebuilding or clearing anything.
+    if (order.length === 0) return;
+
+    const transformedIds = new Set<string>();
+    const transformedFingerprints = new Map<string, string>();
+    let index = 0;
+
+    while (index < order.length) {
+      const window: typeof order = [];
+      let bytes = 0;
+      while (
+        index < order.length
+        && window.length < LEGACY_CHAT_VALIDATION_ROWS
+        && (
+          window.length === 0
+          || bytes + order[index].bytes <= LEGACY_CHAT_VALIDATION_BYTES
+        )
+      ) {
+        bytes += order[index].bytes;
+        window.push(order[index]);
+        index += 1;
+      }
+
+      const ids = JSON.stringify(window.map((row) => row.id));
+      const bodies = new Map(
+        this.ctx.storage.sql.exec<{ id: string; message: string }>(`
+          SELECT id, message FROM cf_ai_chat_agent_messages
+          WHERE id IN (SELECT value FROM json_each(?))
+        `, ids).toArray().map((row) => [row.id, row.message]),
+      );
+
+      for (const [windowIndex, row] of window.entries()) {
+        try {
+          const body = bodies.get(row.id);
+          if (body === undefined) throw new Error('missing legacy row');
+          // Use the SDK's public transformer so supported AI SDK v4 rows are
+          // accepted exactly as they will be by the following upstream lift.
+          const transformed = autoTransformMessages([JSON.parse(body)])[0];
+          const validated = await safeValidateUIMessages<UIMessage>({ messages: [transformed] });
+          const message = validated.success ? validated.data[0] : null;
+          if (!message || transformedIds.has(message.id)) {
+            throw new Error('invalid legacy row');
+          }
+          transformedIds.add(message.id);
+          transformedFingerprints.set(
+            message.id,
+            await chatMessagesFingerprint([message]),
+          );
+        } catch {
+          // Do not include the row id or serialized message in startup errors.
+          // The intact legacy table remains the recovery source.
+          const rowNumber = index - window.length + windowIndex + 1;
+          throw new Error(`Legacy chat migration validation failed at row ${rowNumber}.`);
+        }
+      }
+    }
+
+    for await (const existing of completeSessionHistory(this.sessions.session())) {
+      const expected = transformedFingerprints.get(existing.id);
+      if (!expected || await chatMessagesFingerprint([existing]) !== expected) {
+        // This is not a retry of the same lift: some Sessions-only data exists,
+        // as could happen if an old runtime was allowed to write after rollback.
+        // Preserve both stores for an operator-guided roll-forward recovery.
+        throw new Error('Legacy chat migration found newer Sessions history; refusing automatic rebuild.');
+      }
+    }
+
+    // A retained legacy table means either this is the first new-code wake or
+    // an earlier lift did not finish. No application request can run after an
+    // incomplete lift because onStart fails closed below, so clearing the new
+    // Sessions copy cannot discard post-migration user activity.
+    await this.sessions.session().clearMessages();
+  }
+
   async onStart() {
+    if (this.legacyChatTableExists()) {
+      throw new Error('Legacy chat migration did not complete; saved history remains recoverable.');
+    }
     if (!this.state.workspace) {
       this.setState(DEFAULT_WORKSPACE_STATE);
     }
@@ -435,8 +561,11 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     this.getChatCompactionStore().writeOverlay(overlay);
   }
 
-  private async isChatCompactionOverlayFresh(overlay: ChatCompactionOverlay): Promise<boolean> {
-    const sourceMessages = sourceMessagesForChatCompaction(this.messages, overlay);
+  private async isChatCompactionOverlayFresh(
+    overlay: ChatCompactionOverlay,
+    messages: UIMessage[],
+  ): Promise<boolean> {
+    const sourceMessages = sourceMessagesForChatCompaction(messages, overlay);
     if (!sourceMessages) return false;
     try {
       return await chatMessagesFingerprint(sourceMessages) === overlay.sourceFingerprint;
@@ -466,8 +595,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     overlay: ChatCompactionOverlay,
     systemPrompt: string,
     targetTokens: number | null,
+    messages: UIMessage[],
   ): Promise<{ modelMessages: ModelMessage[]; summary: string } | null> {
-    const boundedUiMessages = this.boundedMessagesForOverlay(overlay);
+    const boundedUiMessages = this.boundedMessagesForOverlay(overlay, messages);
     if (!boundedUiMessages) return null;
     const anchorIndex = overlay.anchorThroughMessageId
       ? boundedUiMessages.findIndex((message) => message.id === overlay.anchorThroughMessageId)
@@ -510,19 +640,20 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
   }
 
   private async compactChatHistoryIfNeeded(
+    messages: UIMessage[],
     modelMessages: ModelMessage[],
     contextLength: number | null,
     systemPrompt: string,
   ): Promise<ChatCompactionOverlay | null> {
     const budgets = chatCompactionBudgets(contextLength);
     let previousOverlay = this.readChatCompactionOverlay();
-    if (previousOverlay && !(await this.isChatCompactionOverlayFresh(previousOverlay))) {
+    if (previousOverlay && !(await this.isChatCompactionOverlayFresh(previousOverlay, messages))) {
       this.clearChatCompactionData();
       previousOverlay = null;
     }
     if (!budgets) return previousOverlay;
     const effectivePrompt = previousOverlay
-      ? await this.materializeChatCompactionOverlay(previousOverlay, systemPrompt, null)
+      ? await this.materializeChatCompactionOverlay(previousOverlay, systemPrompt, null, messages)
       : null;
     if (previousOverlay && !effectivePrompt) return previousOverlay;
     const estimatedTokens = effectivePrompt
@@ -530,7 +661,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       : estimateChatTokens(modelMessages) + estimateChatTokens(systemPrompt);
     if (estimatedTokens <= budgets.triggerTokens) return previousOverlay;
 
-    const plan = planChatCompaction(this.messages, previousOverlay?.throughMessageId);
+    const plan = planChatCompaction(messages, previousOverlay?.throughMessageId);
     if (
       !plan.candidateMessages.length
       || !plan.throughMessageId
@@ -571,7 +702,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
 
     const anchorMessageId = previousOverlay?.anchorMessageId ?? plan.anchorMessageId;
     const anchorThroughMessageId = previousOverlay?.anchorThroughMessageId ?? plan.anchorThroughMessageId;
-    const sourceMessages = sourceMessagesForChatCompaction(this.messages, {
+    const sourceMessages = sourceMessagesForChatCompaction(messages, {
       anchorMessageId,
       anchorThroughMessageId,
       throughMessageId: plan.throughMessageId,
@@ -594,9 +725,19 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       createdAt: previousOverlay?.createdAt ?? now,
       updatedAt: now,
     };
-    let fitted = await this.materializeChatCompactionOverlay(overlay, systemPrompt, budgets.targetTokens);
+    let fitted = await this.materializeChatCompactionOverlay(
+      overlay,
+      systemPrompt,
+      budgets.targetTokens,
+      messages,
+    );
     if (!fitted) {
-      fitted = await this.materializeChatCompactionOverlay(overlay, systemPrompt, budgets.hardTokens);
+      fitted = await this.materializeChatCompactionOverlay(
+        overlay,
+        systemPrompt,
+        budgets.hardTokens,
+        messages,
+      );
       if (!fitted
         || estimateChatTokens(fitted.modelMessages) + estimateChatTokens(systemPrompt) >= estimatedTokens) {
         return previousOverlay;
@@ -609,24 +750,29 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return overlay;
   }
 
-  private boundedMessagesForOverlay(overlay: ChatCompactionOverlay): UIMessage[] | null {
-    const throughIndex = this.messages.findIndex((message) => message.id === overlay.throughMessageId);
+  private boundedMessagesForOverlay(
+    overlay: ChatCompactionOverlay,
+    messages: UIMessage[],
+  ): UIMessage[] | null {
+    const throughIndex = messages.findIndex((message) => message.id === overlay.throughMessageId);
     if (throughIndex < 0) return null;
-    const retained = this.messages.slice(throughIndex + 1);
+    const retained = messages.slice(throughIndex + 1);
     if (!overlay.anchorMessageId || !overlay.anchorThroughMessageId) return retained;
-    const anchorIndex = this.messages.findIndex((message) => message.id === overlay.anchorMessageId);
-    const anchorThroughIndex = this.messages.findIndex((message) => message.id === overlay.anchorThroughMessageId);
+    const anchorIndex = messages.findIndex((message) => message.id === overlay.anchorMessageId);
+    const anchorThroughIndex = messages.findIndex((message) => message.id === overlay.anchorThroughMessageId);
     if (anchorIndex < 0 || anchorThroughIndex < anchorIndex || anchorThroughIndex > throughIndex) return null;
-    return [...this.messages.slice(anchorIndex, anchorThroughIndex + 1), ...retained];
+    return [...messages.slice(anchorIndex, anchorThroughIndex + 1), ...retained];
   }
 
   private async prepareChatPromptContext(args: {
+    messages: UIMessage[];
     modelMessages: ModelMessage[];
     contextLength: number | null;
     systemPrompt: string;
   }): Promise<{ modelMessages: ModelMessage[]; systemPrompt: string }> {
+    const { messages } = args;
     let overlay = this.readChatCompactionOverlay();
-    if (overlay && !(await this.isChatCompactionOverlayFresh(overlay))) {
+    if (overlay && !(await this.isChatCompactionOverlayFresh(overlay, messages))) {
       // A clear/import/replacement or an edited historical part changed the
       // canonical transcript. Do not attach a stale summary to a new prompt.
       this.getChatCompactionStore().clear();
@@ -637,6 +783,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         this.activeMutations += 1;
         try {
           overlay = await this.compactChatHistoryIfNeeded(
+            messages,
             args.modelMessages,
             args.contextLength,
             args.systemPrompt,
@@ -657,6 +804,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         overlay,
         args.systemPrompt,
         budgets.hardTokens,
+        messages,
       );
       // A retained tail that is itself too large cannot be made safe by this
       // overlay. Leave the caller's original prompt untouched rather than
@@ -1176,6 +1324,13 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     excludeBroadcastIds?: string[],
     options?: { _deleteStaleRows?: boolean },
   ): Promise<void> {
+    // Agent lifecycle recovery runs before AIChatAgent's onStart wrapper can
+    // finish (or reject) the legacy-table lift. Refuse its orphan-stream write
+    // while the source table remains so a partial recovery cannot be mistaken
+    // for newer Sessions history or be cleared on the next roll-forward wake.
+    if (this.legacyChatTableExists()) {
+      throw new Error('Legacy chat migration did not complete; saved history remains recoverable.');
+    }
     this.assertNotFrozen();
     this.activeMutations += 1;
     try {
@@ -1190,13 +1345,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     if (result.status !== 'completed' || !this.functionCallingModelContextLength) return;
 
     try {
-      const turns = planChatCompaction(this.messages).retainedTurns;
+      const messages = await this.completeMessages();
+      const turns = planChatCompaction(messages).retainedTurns;
       if (turns.at(-1)?.settled !== true) return;
-      const modelMessages = await convertToModelMessages(this.messages);
+      const modelMessages = await convertToModelMessages(messages);
       if (!this.getCompactionSqlAvailable()) return;
       this.activeMutations += 1;
       try {
         await this.compactChatHistoryIfNeeded(
+          messages,
           modelMessages,
           this.functionCallingModelContextLength,
           buildWorkspaceAgentSystemPrompt(),
@@ -1208,6 +1365,15 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       // This lifecycle hook is advisory. A failed summary or metadata write
       // must never turn a completed assistant response into a chat failure.
     }
+  }
+
+  protected override async onChatRecovery(
+    _context: ChatRecoveryContext,
+  ): Promise<ChatRecoveryOptions> {
+    // Gateway requests are billed and have no execution deduplication. Keep the
+    // durable partial response, but never launch an unattended second inference
+    // after an isolate reset, provider stall, or interrupted response stream.
+    return { continue: false };
   }
 
   async onChatMessage(
@@ -1295,14 +1461,14 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       });
 
       const baseSystemPrompt = buildWorkspaceAgentSystemPrompt(scopedPanelPrompt);
-      const fullModelMessages = await convertToModelMessages(this.messages);
-      const preparedPromptContext = await this.prepareChatPromptContext?.({
+      const completeMessages = await this.completeMessages();
+      const fullModelMessages = await convertToModelMessages(completeMessages);
+      const promptContext = await this.prepareChatPromptContext({
+        messages: completeMessages,
         modelMessages: fullModelMessages,
         contextLength: this.functionCallingModelContextLength,
         systemPrompt: baseSystemPrompt,
       });
-      const promptContext = preparedPromptContext
-        ?? { modelMessages: fullModelMessages, systemPrompt: baseSystemPrompt };
       const modelMessages = promptContext.modelMessages;
       const systemPrompt = promptContext.systemPrompt;
       throwIfAborted(abortSignal);
@@ -1393,8 +1559,42 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     return this.state;
   }
 
-  async getMessages(): Promise<UIMessage[]> {
-    return this.messages;
+  private async completeMessages(): Promise<UIMessage[]> {
+    const messages: UIMessage[] = [];
+    for await (const message of completeSessionHistory(this.sessions.session())) {
+      messages.push(message);
+    }
+    return messages;
+  }
+
+  async streamMessages(): Promise<ReadableStream<Uint8Array>> {
+    return createMessageStream(completeSessionHistory(this.sessions.session()));
+  }
+
+  async replaceMessagesFromStream(stream: ReadableStream<Uint8Array>): Promise<void> {
+    this.assertNotFrozen();
+    this.activeMutations += 1;
+    try {
+      const session = this.sessions.session();
+      await session.clearMessages();
+      this.clearChatCompactionData();
+      let parentId: string | null = null;
+      let createdAt = 0;
+      for await (const message of readMessageStream(stream)) {
+        await session.importMessage(message, { parentId, createdAt });
+        parentId = message.id;
+        createdAt += 1;
+      }
+      const budget = this.hydrationByteBudget;
+      const stored = Number.isFinite(budget) && budget > 0
+        ? (await session.getRecentHistory(budget)).messages
+        : await session.getHistory();
+      this.messages = stored.length === 0
+        ? []
+        : await validateUIMessages<UIMessage>({ messages: stored });
+    } finally {
+      this.activeMutations -= 1;
+    }
   }
 
   @callable()

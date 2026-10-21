@@ -14,6 +14,7 @@ import {
 } from './lib/gallery';
 import { createWorkspaceExportBundle } from './lib/export';
 import { decodeWorkspaceImportFile, panelSchema, parseWorkspaceImportBundle } from './lib/import';
+import { collectMessageStream, createMessageStream } from './lib/message-stream';
 import {
   clearWorkspaceDownloads,
   downloadIdSchema,
@@ -669,7 +670,7 @@ app.post('/api/workspaces/import', async (c) => {
     }
 
     await agent.replaceWorkspaceState(bundle.state, workspace, sessionId);
-    await agent.persistMessages(bundle.messages);
+    await agent.replaceMessagesFromStream(createMessageStream(bundle.messages));
     // The R2 record is the visibility/commit marker for list/get routes.
     await putWorkspace(c.env, sessionId, workspace);
   } catch {
@@ -715,7 +716,7 @@ app.get('/api/workspaces/:id', async (c) => {
   const { agent } = await syncedWorkspaceAgent(c, workspace, { primeCredential: true });
   const [state, messages, files] = await Promise.all([
     agent.getSnapshot(),
-    agent.getMessages(),
+    agent.streamMessages().then(collectMessageStream),
     agent.getWorkspaceFiles(),
   ]);
   const downloads = await getWorkspaceDownloads(c.env, sessionId, workspaceId);
@@ -845,7 +846,7 @@ app.get('/api/workspaces/:id/export', async (c) => {
   const { agent } = await syncedWorkspaceAgent(c, workspace);
   const [state, messages, files] = await Promise.all([
     agent.getSnapshot(),
-    agent.getMessages(),
+    agent.streamMessages().then(collectMessageStream),
     agent.getWorkspaceFiles(),
   ]);
 

@@ -3,7 +3,10 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import { convertToModelMessages } from 'ai';
 
-import { registerCloudflareStub } from './helpers/env.mjs';
+import {
+  installAgentStorageKv,
+  registerCloudflareStub,
+} from './helpers/env.mjs';
 
 import {
   CHAT_COMPACTION_RECENT_COMPLETE_TURNS,
@@ -93,7 +96,7 @@ function makeSqlStorage() {
     }
     throw new Error(`unsupported SQL: ${normalized}`);
   };
-  return { tables, sql: { exec } };
+  return installAgentStorageKv({ tables, sql: { exec } });
 }
 
 function makeRealSqlStorage(schema) {
@@ -135,6 +138,14 @@ function turn(index) {
     user(`user-${index}`, `question ${index}`),
     assistant(`assistant-${index}`, `answer ${index}`),
   ];
+}
+
+function markLifecycleStartedForCompactionUnit(agent) {
+  // These tests call an internal compaction method with explicit canonical
+  // messages and storage. Agents 0.28 wraps every async subclass method as a
+  // potential RPC entry, so prevent that wrapper from starting unrelated
+  // scheduler/task capabilities in this unit-test SQL double.
+  agent.lifecycle.isStarted = () => true;
 }
 
 test('splitChatTurns preserves whole UI turns and marks unresolved tool work', () => {
@@ -460,12 +471,13 @@ test('WorkspaceAgent compaction writes only the overlay and preserves transcript
   const storage = makeSqlStorage();
   const agent = new WorkspaceAgent({
     storage,
-    id: { toString: () => 'chat-compaction-test' },
+    id: { name: 'chat-compaction-test', toString: () => 'chat-compaction-test' },
     blockConcurrencyWhile: async (operation) => operation(),
     getWebSockets: () => [],
     acceptWebSocket: () => {},
     waitUntil: () => {},
   }, {});
+  markLifecycleStartedForCompactionUnit(agent);
   const messages = [
     ...turn(1),
     ...turn(2),
@@ -482,6 +494,7 @@ test('WorkspaceAgent compaction writes only the overlay and preserves transcript
   const original = structuredClone(agent.messages);
   const originalReferences = [...agent.messages];
   const result = await agent.prepareChatPromptContext({
+    messages,
     modelMessages: [{ role: 'user', content: 'x'.repeat(500_000) }],
     contextLength: 128_000,
     systemPrompt: 'base prompt',
@@ -512,12 +525,13 @@ test('large seven-turn history compacts chronologically and rebuilds after a sam
   const storage = makeSqlStorage();
   const agent = new WorkspaceAgent({
     storage,
-    id: { toString: () => 'chat-compaction-large-history-test' },
+    id: { name: 'chat-compaction-large-history-test', toString: () => 'chat-compaction-large-history-test' },
     blockConcurrencyWhile: async (operation) => operation(),
     getWebSockets: () => [],
     acceptWebSocket: () => {},
     waitUntil: () => {},
   }, {});
+  markLifecycleStartedForCompactionUnit(agent);
   const largeText = 'x'.repeat(30_000);
   const messages = Array.from({ length: 7 }, (_, index) => [
     user(`user-${index + 1}`, `question ${index + 1} ${largeText}`),
@@ -529,6 +543,7 @@ test('large seven-turn history compacts chronologically and rebuilds after a sam
   const contextLength = 128_000;
   const targetTokens = chatCompactionBudgets(contextLength).targetTokens;
   const result = await agent.prepareChatPromptContext({
+    messages,
     modelMessages: fullModelMessages,
     contextLength,
     systemPrompt: 'base prompt',
@@ -550,6 +565,7 @@ test('large seven-turn history compacts chronologically and rebuilds after a sam
   agent.messages[1].parts[0].text = `edited historical answer with the same message id ${'e'.repeat(30_000)}`;
   const changedModelMessages = await convertToModelMessages(agent.messages);
   const changedResult = await agent.prepareChatPromptContext({
+    messages: agent.messages,
     modelMessages: changedModelMessages,
     contextLength,
     systemPrompt: 'base prompt',
@@ -566,13 +582,17 @@ test('new and advancing overlays fall back to the hard budget when intact retain
   const { database, sql } = makeRealSqlStorage('');
   try {
     const agent = new WorkspaceAgent({
-      storage: { sql },
-      id: { toString: () => 'chat-compaction-new-overlay-hard-budget-test' },
+      storage: installAgentStorageKv({ sql }),
+      id: {
+        name: 'chat-compaction-new-overlay-hard-budget-test',
+        toString: () => 'chat-compaction-new-overlay-hard-budget-test',
+      },
       blockConcurrencyWhile: async (operation) => operation(),
       getWebSockets: () => [],
       acceptWebSocket: () => {},
       waitUntil: () => {},
     }, {});
+    markLifecycleStartedForCompactionUnit(agent);
     const largeText = 'x'.repeat(52_140);
     const messages = Array.from({ length: 7 }, (_, index) => [
       user(`user-${index + 1}`, `question ${index + 1} ${largeText}`),
@@ -590,6 +610,7 @@ test('new and advancing overlays fall back to the hard budget when intact retain
     assert.ok(fullEstimate > budgets.hardTokens);
 
     const result = await agent.prepareChatPromptContext({
+      messages,
       modelMessages: fullModelMessages,
       contextLength,
       systemPrompt,
@@ -621,6 +642,7 @@ test('new and advancing overlays fall back to the hard budget when intact retain
     assert.ok(advancedFullEstimate > budgets.hardTokens);
 
     const advancedResult = await agent.prepareChatPromptContext({
+      messages: agent.messages,
       modelMessages: advancedFullModelMessages,
       contextLength,
       systemPrompt,
@@ -648,12 +670,16 @@ test('an existing overlay advances only when its effective prompt crosses the tr
   const storage = makeSqlStorage();
   const agent = new WorkspaceAgent({
     storage,
-    id: { toString: () => 'chat-compaction-effective-watermark-test' },
+    id: {
+      name: 'chat-compaction-effective-watermark-test',
+      toString: () => 'chat-compaction-effective-watermark-test',
+    },
     blockConcurrencyWhile: async (operation) => operation(),
     getWebSockets: () => [],
     acceptWebSocket: () => {},
     waitUntil: () => {},
   }, {});
+  markLifecycleStartedForCompactionUnit(agent);
   agent.messages = Array.from({ length: 5 }, (_, index) => turn(index + 1)).flat();
   const budgets = chatCompactionBudgets(128_000);
   const sourceOverlay = {
@@ -678,6 +704,7 @@ test('an existing overlay advances only when its effective prompt crosses the tr
   agent.getChatCompactionStore().writeOverlay(overlay);
   const excessiveModelMessages = [{ role: 'user', content: 'z'.repeat(500_000) }];
   const before = await agent.prepareChatPromptContext({
+    messages: agent.messages,
     modelMessages: excessiveModelMessages,
     contextLength: 128_000,
     systemPrompt: 'base prompt',
@@ -687,6 +714,7 @@ test('an existing overlay advances only when its effective prompt crosses the tr
 
   agent.messages[3].parts[0].text = `large retained result ${'r'.repeat(500_000)}`;
   const after = await agent.prepareChatPromptContext({
+    messages: agent.messages,
     modelMessages: excessiveModelMessages,
     contextLength: 128_000,
     systemPrompt: 'base prompt',
@@ -703,12 +731,13 @@ test('reused overlays fit the hard budget when effective history is between targ
   const storage = makeSqlStorage();
   const agent = new WorkspaceAgent({
     storage,
-    id: { toString: () => 'chat-compaction-hard-budget-test' },
+    id: { name: 'chat-compaction-hard-budget-test', toString: () => 'chat-compaction-hard-budget-test' },
     blockConcurrencyWhile: async (operation) => operation(),
     getWebSockets: () => [],
     acceptWebSocket: () => {},
     waitUntil: () => {},
   }, {});
+  markLifecycleStartedForCompactionUnit(agent);
   const sourceText = 's'.repeat(40_000);
   const tailText = 't'.repeat(55_000);
   const messages = [
@@ -755,6 +784,7 @@ test('reused overlays fit the hard budget when effective history is between targ
   assert.ok(canonicalEstimate > budgets.triggerTokens);
 
   const result = await agent.prepareChatPromptContext({
+    messages,
     modelMessages: fullModelMessages,
     contextLength,
     systemPrompt,
@@ -772,12 +802,13 @@ test('history between target and trigger watermarks does not compact', async () 
   const storage = makeSqlStorage();
   const agent = new WorkspaceAgent({
     storage,
-    id: { toString: () => 'chat-compaction-hysteresis-test' },
+    id: { name: 'chat-compaction-hysteresis-test', toString: () => 'chat-compaction-hysteresis-test' },
     blockConcurrencyWhile: async (operation) => operation(),
     getWebSockets: () => [],
     acceptWebSocket: () => {},
     waitUntil: () => {},
   }, {});
+  markLifecycleStartedForCompactionUnit(agent);
   const mediumText = 'm'.repeat(25_000);
   agent.messages = Array.from({ length: 7 }, (_, index) => [
     user(`medium-user-${index + 1}`, mediumText),
@@ -789,6 +820,7 @@ test('history between target and trigger watermarks does not compact', async () 
   assert.ok(estimated > budgets.targetTokens);
   assert.ok(estimated <= budgets.triggerTokens);
   const result = await agent.prepareChatPromptContext({
+    messages: agent.messages,
     modelMessages: fullModelMessages,
     contextLength: 128_000,
     systemPrompt: 'base prompt',
@@ -803,12 +835,13 @@ test('WorkspaceAgent keeps canonical chat usable when deterministic summary gene
   const storage = makeSqlStorage();
   const agent = new WorkspaceAgent({
     storage,
-    id: { toString: () => 'chat-compaction-failure-test' },
+    id: { name: 'chat-compaction-failure-test', toString: () => 'chat-compaction-failure-test' },
     blockConcurrencyWhile: async (operation) => operation(),
     getWebSockets: () => [],
     acceptWebSocket: () => {},
     waitUntil: () => {},
   }, {});
+  markLifecycleStartedForCompactionUnit(agent);
   agent.messages = [...turn(1), ...turn(2), ...turn(3), ...turn(4)];
   const original = structuredClone(agent.messages);
   agent.createChatCompactionSummary = async () => {
@@ -816,6 +849,7 @@ test('WorkspaceAgent keeps canonical chat usable when deterministic summary gene
   };
 
   const result = await agent.prepareChatPromptContext({
+    messages: agent.messages,
     modelMessages: [{ role: 'user', content: 'x'.repeat(400_000) }],
     contextLength: 128_000,
     systemPrompt: 'base prompt',
