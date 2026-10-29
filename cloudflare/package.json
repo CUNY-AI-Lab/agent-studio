@@ -32,6 +32,6 @@
     "jszip": "3.10.1",
     "tsx": "4.23.1",
     "typescript": "7.0.2",
-    "wrangler": "4.143.1"
+    "wrangler": "4.153.0"
   }
 }
