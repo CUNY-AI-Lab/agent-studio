@@ -567,7 +567,13 @@ async function verifyFileAndSharingLifecycle(page: Page, baseUrl: string): Promi
   const bundle = await readFile(exportPath);
 
   await page.getByRole('textbox', { name: 'Workspace description' }).fill('Private planning note: synthetic gallery boundary check');
+  const workspaceSave = page.waitForResponse((response) => (
+    response.request().method() === 'PATCH' &&
+    new URL(response.url()).pathname.endsWith(`/api/workspaces/${workspaceIdFromUrl(page.url())}`)
+  ));
   await page.getByRole('button', { name: 'Save', exact: true }).click();
+  if ((await workspaceSave).status() !== 200) fail('Workspace description did not save');
+  await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
   await page.getByRole('button', { name: /^Publish(?: to gallery)?$/ }).click();
   const dialog = page.getByRole('dialog', { name: 'Publish to Gallery' });
   await dialog.getByRole('textbox', { name: 'Title', exact: true }).fill('Shared research');
