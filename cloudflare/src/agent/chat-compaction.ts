@@ -31,7 +31,7 @@ export interface ChatPanelProvenance {
   sourcePanelId?: string;
   linkedTo?: string;
   filePath?: string;
-  /** Exact bounded panel descriptor included in the scoped model prompt. */
+  /** Exact bounded panel descriptor retained for audit metadata only. */
   promptData: string;
 }
 
@@ -653,7 +653,6 @@ export function panelPromptData(panel: WorkspacePanel): string {
   if (panel.sourcePanelId) descriptor.sourcePanelId = panel.sourcePanelId;
   if ('linkedTo' in panel && panel.linkedTo) descriptor.linkedTo = panel.linkedTo;
   if ('filePath' in panel && panel.filePath) descriptor.filePath = panel.filePath;
-  if ('content' in panel && panel.content) descriptor.content = panel.content.slice(0, 240);
   return JSON.stringify(descriptor).slice(0, CHAT_COMPACTION_PANEL_PROMPT_MAX_CHARS);
 }
 
@@ -664,7 +663,6 @@ interface PanelPromptDescriptor {
   sourcePanelId?: string;
   linkedTo?: string;
   filePath?: string;
-  content?: string;
 }
 
 type ChatMessagePart = UIMessage['parts'][number];
@@ -736,23 +734,15 @@ export function renderChatCompactionSummary(
     ? previousSummary.split('\n').filter((line, index) => index > 0 || line !== header)
       .filter((line) => line !== truncation)
     : [];
+  const scopedPanelCount = provenance.reduce(
+    (count, snapshot) => count + snapshot.panels.length,
+    0,
+  );
   const newLines = [
     ...messages.map(compactMessage),
-    ...provenance.flatMap((snapshot) => {
-      const panels = snapshot.panels.map((panel) => {
-        const details = [
-          panel.id,
-          `type=${panel.type}`,
-          panel.title ? `title=${panel.title}` : null,
-          panel.filePath ? `file=${panel.filePath}` : null,
-          panel.sourcePanelId ? `source=${panel.sourcePanelId}` : null,
-          panel.linkedTo ? `linkedTo=${panel.linkedTo}` : null,
-          panel.promptData ? `prompt=${panel.promptData}` : null,
-        ].filter(Boolean).join(' ');
-        return details;
-      });
-      return [`scope ${snapshot.userMessageId}: [${panels.join('; ')}]`];
-    }),
+    ...(scopedPanelCount > 0
+      ? [`[${scopedPanelCount} scoped canvas selection(s) omitted from the historical summary.]`]
+      : []),
   ];
   const content = [...previousLines, ...newLines];
   let omitted = previousHadOmission;
