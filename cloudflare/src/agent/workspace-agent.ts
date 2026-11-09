@@ -127,7 +127,6 @@ import {
   chatCompactionBudgets,
   chatMessagesFingerprint,
   estimateChatTokens,
-  panelPromptData,
   planChatCompaction,
   renderChatCompactionSummary,
   sourceMessagesForChatCompaction,
@@ -197,6 +196,19 @@ function inferFilePanelType(filePath: string): 'pdf' | 'preview' | 'editor' {
 function deterministicPanelId(turnMessageId: string, toolName: string, occurrence: number): string {
   const safeMessageId = turnMessageId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120);
   return `agent-${safeMessageId}-${toolName}-${occurrence}`;
+}
+
+/**
+ * Older compaction overlays included scoped-panel metadata and a bounded copy
+ * of panel content on their `scope ...` lines. Never replay those lines into
+ * model context after the scoped-panel prompt was moved behind a tool
+ * boundary.
+ */
+function stripLegacyScopedPanelPrompts(summary: string): string {
+  return summary
+    .split('\n')
+    .filter((line) => !line.startsWith('scope '))
+    .join('\n');
 }
 
 function fromRuntimePath(filePath: string): string {
@@ -607,8 +619,9 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
     const anchorModelMessages = await convertToModelMessages(boundedUiMessages.slice(0, anchorEnd));
     const retainedModelMessages = await convertToModelMessages(boundedUiMessages.slice(anchorEnd));
     const build = (summary: string): { modelMessages: ModelMessage[]; summary: string } | null => {
-      if (!summary.trim()) return null;
-      const contextMessage = this.chatCompactionContextMessage(summary);
+      const safeSummary = stripLegacyScopedPanelPrompts(summary);
+      if (!safeSummary.trim()) return null;
+      const contextMessage = this.chatCompactionContextMessage(safeSummary);
       const modelMessages = anchorEnd > 0
         ? [...anchorModelMessages, contextMessage, ...retainedModelMessages]
         : [contextMessage, ...retainedModelMessages];
@@ -616,7 +629,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         && estimateChatTokens(modelMessages) + estimateChatTokens(systemPrompt) > targetTokens) {
         return null;
       }
-      return { modelMessages, summary };
+      return { modelMessages, summary: safeSummary };
     };
 
     const direct = build(overlay.summary);
@@ -1443,13 +1456,6 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
       if (!options?.continuation) {
         this.recordChatTurnScope?.(options?.requestId ?? '', scopedPanelIds, scopedPanels);
       }
-      const scopedPanelPrompt = scopedPanels.length > 0
-        ? [
-          'The client scoped this turn to the selected canvas tiles listed below.',
-          'Focus on these tiles unless the user explicitly broadens scope.',
-          ...scopedPanels.map((panel) => `- ${panelPromptData(panel)}`),
-        ].join('\n')
-        : null;
       const hostTools = this.buildHostTools(workspace, sessionId, scopedPanels, abortSignal);
       const codemode = this.createCodeModeTool(hostTools, abortSignal);
       const modelTools = this.buildModelTools(hostTools);
@@ -1460,7 +1466,7 @@ export class WorkspaceAgent extends AIChatAgent<Env, WorkspaceState> {
         model: modelName,
       });
 
-      const baseSystemPrompt = buildWorkspaceAgentSystemPrompt(scopedPanelPrompt);
+      const baseSystemPrompt = buildWorkspaceAgentSystemPrompt();
       const completeMessages = await this.completeMessages();
       const fullModelMessages = await convertToModelMessages(completeMessages);
       const promptContext = await this.prepareChatPromptContext({
