@@ -108,6 +108,8 @@ jobs:
   browser_acceptance:
     name: Local Worker browser acceptance (integration, not E2E)
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.1-noble@sha256:c091b21d9fae78c76e85cd4356431e9b018402f172a214fc7d7a5e9a7e29d8ac
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -126,7 +128,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Install Chromium for browser integration
-        run: bunx playwright install --with-deps chromium
+        run: bunx playwright install chromium
 
       - name: Write local Worker variables
         run: |
