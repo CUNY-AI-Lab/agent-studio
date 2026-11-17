@@ -70,6 +70,15 @@ describe('WorkspaceHeader', () => {
     expect(screen.getByRole('option', { name: 'Advanced model' })).toBeInTheDocument();
   });
 
+  it('links to CAIL support in a new tab so a user can report a problem', () => {
+    render(<WorkspaceHeader {...baseProps} />);
+
+    const link = screen.getByRole('link', { name: 'Report a problem' });
+    expect(link).toHaveAttribute('href', 'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=other');
+    expect(link).toHaveAttribute('target', '_blank');
+    expect(link).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
   it('lets a docked layout toggle chat from the header', async () => {
     const user = userEvent.setup();
     const onToggleChat = vi.fn();
