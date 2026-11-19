@@ -63,7 +63,7 @@ describe('HomePage', () => {
 
     expect(screen.getByRole('link', { name: 'Report a problem' })).toHaveAttribute(
       'href',
-      'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=other',
+      'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=agent-studio',
     );
   });
 

@@ -1,6 +1,6 @@
 import { LifeBuoy } from 'lucide-react';
 
-const REPORT_PROBLEM_URL = 'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=other';
+const REPORT_PROBLEM_URL = 'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=agent-studio';
 
 export function ReportProblemLink() {
   return (

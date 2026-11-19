@@ -74,7 +74,7 @@ describe('WorkspaceHeader', () => {
     render(<WorkspaceHeader {...baseProps} />);
 
     const link = screen.getByRole('link', { name: 'Report a problem' });
-    expect(link).toHaveAttribute('href', 'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=other');
+    expect(link).toHaveAttribute('href', 'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=agent-studio');
     expect(link).toHaveAttribute('target', '_blank');
     expect(link).toHaveAttribute('rel', 'noopener noreferrer');
   });
