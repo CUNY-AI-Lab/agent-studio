@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from 'react';
+import { ReportProblemLink } from './ReportProblemLink';
 import { ThemeToggle } from './ThemeToggle';
 import type { GalleryItem, WorkspaceRecord } from '../types';
 
@@ -68,7 +69,10 @@ export function HomePage({
     <div className="grain min-h-screen canvas-bg">
       <div className="accent-rule fixed top-0 left-0 z-40 w-full" aria-hidden="true" />
 
-      <ThemeToggle className="fixed top-4 right-4 z-50" />
+      <div className="fixed top-4 right-4 z-50 flex items-center gap-1">
+        <ReportProblemLink />
+        <ThemeToggle />
+      </div>
 
       {error ? (
         <div role="alert" className="mx-auto mt-8 max-w-3xl px-6">

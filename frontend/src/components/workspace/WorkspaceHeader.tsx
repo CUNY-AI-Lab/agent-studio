@@ -1,4 +1,5 @@
 import { ArrowLeft, Download, Keyboard, MessageSquare, RotateCcw, Share2, Trash2 } from 'lucide-react';
+import { ReportProblemLink } from '../ReportProblemLink';
 import { ThemeToggle } from '../ThemeToggle';
 import { buildModelPickerView, type ModelCatalog } from '../../api';
 
@@ -200,6 +201,7 @@ export function WorkspaceHeader({
           >
             <Keyboard size={16} aria-hidden="true" />
           </button>
+          <ReportProblemLink />
           <span className="ui-sep hidden sm:block" aria-hidden="true" />
           <button className="ui-btn ui-btn-sm ui-btn-primary" onClick={onSave}>
             {savingWorkspace ? 'Saving…' : 'Save'}

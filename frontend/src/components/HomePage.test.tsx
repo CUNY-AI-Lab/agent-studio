@@ -58,6 +58,15 @@ describe('HomePage', () => {
     expect(screen.getByRole('main')).toBeInTheDocument();
   });
 
+  it('offers the CAIL support link before a workspace is open', () => {
+    render(<HomePage {...props()} />);
+
+    expect(screen.getByRole('link', { name: 'Report a problem' })).toHaveAttribute(
+      'href',
+      'https://tools.ailab.gc.cuny.edu/help/projects/support/issues/new?topic=agent-studio',
+    );
+  });
+
   it('passes a selected workspace bundle to the import handler', async () => {
     const user = userEvent.setup();
     const onImportWorkspace = vi.fn(async () => {});
